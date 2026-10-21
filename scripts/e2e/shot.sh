@@ -153,6 +153,7 @@ cleanup() {
   close_docs
   [ -n "${FINDER_OPEN:-}" ] && "$CTL" axclose com.apple.finder shot-finder
   [ -f "$H/clip.plist" ] && "$CTL" clip-restore "$H/clip.plist" && rm -f "$H/clip.plist"
+  rm -rf "$H/support" "$H/out" "$H/frames" "$H/readonly" # captures, history, clipboard DB
   if ls -t "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -20 | grep -q '^Bento'; then
     local newest; newest=$(ls -t "$HOME/Library/Logs/DiagnosticReports/" | grep '^Bento' | head -1)
     [ "$(stat -f %m "$HOME/Library/Logs/DiagnosticReports/$newest")" -ge "${START:-0}" ] && bad "crash report $newest"
@@ -352,18 +353,12 @@ phase_windows() {
     "$CTL" clip-png "$H/notes-picked.png"
     local no; no=$("$CTL" opaque "$H/notes-picked.png")
     check "window picker: Bento notes window $((nwid * 2))x$((nh * 2)) px ($c, opaque $no)" [ "$no" = "$((nwid * 2))x$((nh * 2))" ]
-    # Area = the window's frame; compare with the window's own pixels. A
-    # system notification banner over it spoils the comparison: try twice.
-    local d attempt
-    for attempt in 1 2; do
-      [ "$attempt" = 2 ] && sleep 6
-      marker; key cmd+shift+2; overlay_up; ctl drag "$nx" "$ny" $((nx + nwid)) $((ny + nh)); clip_wait >/dev/null
-      "$CTL" clip-png "$H/notes-area.png"
-      screencapture -x -o -l "$nid" "$H/notes-window.png"
-      d=$("$CTL" imgdiff "$H/notes-area.png" "$H/notes-window.png")
-      awk -v d="$d" 'BEGIN { exit !(d < 6) }' && break
-    done
-    check "area capture shows the notes window, not what's behind it (diff $d)" awk -v d="$d" 'BEGIN { exit !(d < 6) }'
+    # Area = the window's frame. The notes window (translucent in dark mode)
+    # must be in it, not just what's behind: its footer reads "0 Words".
+    marker; key cmd+shift+2; overlay_up; ctl drag "$nx" "$ny" $((nx + nwid)) $((ny + nh)); clip_wait >/dev/null
+    "$CTL" clip-png "$H/notes-area.png"
+    local seen; seen=$("$CTL" ocr "$H/notes-area.png" | tr '\n' ' ')
+    checkc "area capture shows the notes window, not what's behind it" '[[ "$seen" == *"Words"* ]]'
     front_doc; key ctrl+opt+n; sleep 0.5
   else
     bad "notes window opened"
