@@ -19,15 +19,20 @@ case "${1:-}" in
     who="${2:-unknown}"; need="${3:-90}"
     build_tools
     while :; do
-      i=$(idle); [ "$i" -ge "$need" ] && break
-      sleep $(( need - i > 5 ? 5 : need - i + 1 ))
+      while [ "$(idle)" -lt "$need" ]; do i=$(idle); sleep $(( need - i > 5 ? 5 : need - i + 1 )); done
+      # The guard starts first and holds the lock's liveness: if the user comes
+      # back while we wait for the lock, the guard exits and we start over.
+      rm -f "$FLAG"
+      /tmp/bento-guard 2>>/tmp/bento-guard.log & gpid=$!
+      echo $gpid > /tmp/bento-guard.pid
+      sleep 0.3
+      if GUI_LOCK_PID=$gpid "$ROOT/scripts/gui-lock" acquire "$who" >/dev/null && kill -0 $gpid 2>/dev/null && [ ! -f "$FLAG" ]; then
+        break
+      fi
+      kill $gpid 2>/dev/null; rm -f /tmp/bento-guard.pid
+      [ -d /tmp/bento-gui.lock ] && grep -q "^$who " /tmp/bento-gui.lock/owner 2>/dev/null && rm -rf /tmp/bento-gui.lock
+      sleep 5
     done
-    "$ROOT/scripts/gui-lock" acquire "$who" >/dev/null
-    # The user may have come back while we waited for the lock.
-    while [ "$(idle)" -lt 20 ]; do sleep 5; done
-    rm -f "$FLAG"
-    /tmp/bento-guard 2>>/tmp/bento-guard.log & echo $! > /tmp/bento-guard.pid
-    sleep 0.3
     if pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null; then
       touch /tmp/bento-e2e-restore
       osascript -e 'tell application id "com.charles.bento" to quit' >/dev/null 2>&1

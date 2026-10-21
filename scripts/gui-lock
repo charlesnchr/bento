@@ -1,24 +1,41 @@
 #!/bin/bash
 # Serialises GUI testing between parallel agents (screen, mouse, keyboard,
-# focus are shared). Hold the lock only while driving the UI / taking
-# screenshots, never while building.
-#   scripts/gui-lock acquire <who>   # blocks until free (stale after 8 min)
+# focus are shared). Normally used through scripts/e2e/session.
+#   scripts/gui-lock acquire <who>   # blocks until free
 #   scripts/gui-lock release <who>
+#   scripts/gui-lock status
+# The lock records a liveness pid (GUI_LOCK_PID, default: the caller). A lock
+# whose pid is gone, or older than 8 minutes, is stale; it is broken with an
+# atomic rename so two waiters can never both take it. If GUI_LOCK_PID dies
+# while waiting (e.g. the session's input guard saw the user), acquire fails.
 LOCK=/tmp/bento-gui.lock
+holder_pid="${GUI_LOCK_PID:-$PPID}"
 case "$1" in
   acquire)
-    while ! mkdir "$LOCK" 2>/dev/null; do
-      if [ -f "$LOCK/owner" ] && [ $(( $(date +%s) - $(stat -f %m "$LOCK/owner") )) -gt 480 ]; then
-        echo "breaking stale lock held by $(cat "$LOCK/owner")" >&2
-        rm -rf "$LOCK"; continue
+    while :; do
+      if mkdir "$LOCK" 2>/dev/null; then
+        echo "${2:-unknown} $holder_pid" > "$LOCK/owner"
+        echo "gui lock acquired by ${2:-unknown}"; exit 0
       fi
-      sleep 3
-    done
-    echo "${2:-unknown}" > "$LOCK/owner"
-    echo "gui lock acquired by ${2:-unknown}" ;;
+      if [ -f "$LOCK/owner" ]; then
+        read -r name pid < "$LOCK/owner"
+        age=$(( $(date +%s) - $(stat -f %m "$LOCK/owner" 2>/dev/null || date +%s) ))
+        if { [ -n "${pid:-}" ] && ! kill -0 "$pid" 2>/dev/null; } || [ "$age" -gt 480 ]; then
+          stale="$LOCK.stale.$$"
+          if mv "$LOCK" "$stale" 2>/dev/null; then
+            echo "broke stale lock held by ${name:-?}" >&2
+            rm -rf "$stale"
+          fi
+          continue
+        fi
+      fi
+      kill -0 "$holder_pid" 2>/dev/null || { echo "gui-lock: waiter $holder_pid is gone" >&2; exit 1; }
+      sleep 2
+    done ;;
   release)
-    if [ -f "$LOCK/owner" ] && [ "$(cat "$LOCK/owner")" != "${2:-unknown}" ]; then
-      echo "lock is held by $(cat "$LOCK/owner"), not releasing" >&2; exit 1
+    if [ -f "$LOCK/owner" ]; then
+      read -r name pid < "$LOCK/owner"
+      if [ "${name:-}" != "${2:-unknown}" ]; then echo "lock is held by ${name:-?}, not releasing" >&2; exit 1; fi
     fi
     rm -rf "$LOCK"; echo "gui lock released" ;;
   status) [ -d "$LOCK" ] && echo "held by $(cat "$LOCK/owner" 2>/dev/null)" || echo "free" ;;
