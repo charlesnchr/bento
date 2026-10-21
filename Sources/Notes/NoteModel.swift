@@ -67,6 +67,20 @@ struct Note: Equatable {
 
     static func now() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
+    /// updated_at for a new local version: now, but always after `t` (timestamps come from
+    /// other clients' clocks and may be far in the future; never overflow).
+    static func nextUpdate(after t: Int64...) -> Int64 {
+        t.reduce(now()) { acc, x in max(acc, x == .max ? .max : x + 1) }
+    }
+
+    /// Int64 from a JSON number of any size (meta values come from other clients).
+    static func int64(_ d: Double) -> Int64? {
+        guard d.isFinite else { return nil }
+        if d >= 9.2e18 { return .max }
+        if d <= -9.2e18 { return .min }
+        return Int64(d)
+    }
+
     // MARK: Meta helpers (synced client extras)
 
     var pinned: Bool {
@@ -82,7 +96,7 @@ struct Note: Equatable {
 
     /// When the note was moved to Recently Deleted (ms), nil when live.
     var trashedAt: Int64? {
-        get { meta["trashedAt"]?.double.map { Int64($0) } }
+        get { meta["trashedAt"]?.double.flatMap(Note.int64) }
         set { if let v = newValue { meta["trashedAt"] = .number(Double(v)) } else { meta.removeValue(forKey: "trashedAt") } }
     }
 
@@ -189,7 +203,8 @@ enum NoteText {
 /// "4m ago", "3w ago" style relative dates like Raycast's notes list.
 enum RelativeDate {
     static func short(_ ms: Int64, now: Int64 = Note.now()) -> String {
-        let s = max(0, (now - ms) / 1000)
+        let (diff, overflow) = now.subtractingReportingOverflow(ms)
+        let s = overflow ? (ms < 0 ? Int64.max / 1000 : 0) : max(0, diff / 1000)
         if s < 60 { return "just now" }
         let m = s / 60
         if m < 60 { return "\(m)m ago" }

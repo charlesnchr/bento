@@ -312,6 +312,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     var currentText: String { storage.string }
 
+    // dev harness state dump
+    var debugFooter: String { footer.status }
+    var debugHeader: String { header.title }
+
     var selectedRange: NSRange { textView.selectedRange() }
 
     // MARK: Text delegate

@@ -407,6 +407,7 @@ final class PalettePanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, 
     }
 
     func debugActivate() { activate() }
+    var debugRowCount: Int { rows.count }
     func debugAppearance(_ a: NSAppearance?) { panel.appearance = a }
     func debugMove(_ d: Int) { move(d) }
 

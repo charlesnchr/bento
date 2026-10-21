@@ -103,7 +103,7 @@ final class SyncEngine {
                     var n = local
                     n.meta = r.meta
                     n.seq = r.seq
-                    n.updatedAt = max(Note.now(), r.updatedAt + 1, local.updatedAt + 1)
+                    n.updatedAt = Note.nextUpdate(after: r.updatedAt, local.updatedAt)
                     n.dirty = true
                     repo.save(n)
                     onRemoteChange?(n, .merged)
@@ -120,7 +120,7 @@ final class SyncEngine {
                 if !localBodyChanged {
                     // We only changed meta, they changed the text: take their text.
                     n.body = r.body
-                    n.updatedAt = max(Note.now(), local.updatedAt + 1)
+                    n.updatedAt = Note.nextUpdate(after: local.updatedAt)
                     n.seq = r.seq
                     n.baseHash = NoteText.hash(r.body)
                     repo.save(n)
@@ -269,7 +269,7 @@ final class SyncEngine {
            existing.isLive, existing.updatedAt == c.updatedAt {
             guard existing.body != copyBody else { return }
             existing.body = copyBody
-            existing.updatedAt = max(now, existing.updatedAt + 1)
+            existing.updatedAt = Note.nextUpdate(after: existing.updatedAt)
             existing.dirty = true
             repo.save(existing)
             conflictCopies[key] = (existing.id, existing.updatedAt, c.created)

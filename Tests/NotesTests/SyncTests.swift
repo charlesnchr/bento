@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import BentoCore
 import Testing
 @testable import Notes
@@ -411,6 +411,28 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(NoteText.hash("abc") != NoteText.hash("acb"))
     }
 
+    @Test func hostileTimestampsDontTrap() {
+        // other clients' clocks/values are untrusted: never overflow
+        #expect(Note.nextUpdate(after: .max) == .max)
+        #expect(Note.nextUpdate(after: 5) >= Note.now())
+        #expect(Note.nextUpdate(after: Note.now() + 10_000) > Note.now() + 9_000)
+        #expect(Note.int64(.infinity) == nil && Note.int64(.nan) == nil)
+        #expect(Note.int64(1e300) == .max && Note.int64(-1e300) == .min && Note.int64(12.7) == 12)
+        var n = Note(id: "x", body: "", createdAt: .min, updatedAt: .max)
+        n.meta["trashedAt"] = .number(1e300)
+        #expect(n.trashedAt == .max)
+        #expect(RelativeDate.short(.min) == "292471208y ago" || RelativeDate.short(.min).hasSuffix("y ago"))
+        #expect(RelativeDate.short(.max) == "just now")
+        let repo = MemoryRepo()
+        repo.save(local("a", "base + mine", updated: .max, dirty: true, seq: 1))
+        let e = SyncEngine(repo: repo)
+        e.device = "me"
+        var r = remote("a", "base", updated: 1, seq: 2)
+        r.device = "other"
+        r.meta = ["pinned": .bool(true)]
+        _ = e.applyRemote(r) // must not trap on updatedAt + 1
+    }
+
     @Test func isolatedInstancesNeverUseTheLiveServer() {
         #expect(SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
         #expect(SyncSettings.isBlocked(serverHost: "BENTO.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
@@ -534,6 +556,49 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(RelativeDate.short(now - 40 * 60_000, now: now) == "40m ago")
         #expect(RelativeDate.short(now - 3 * 3_600_000, now: now) == "3h ago")
         #expect(RelativeDate.short(now - 21 * 86_400_000, now: now) == "3w ago")
+    }
+}
+
+@Suite struct PasteTests {
+    func pasteboard(_ type: NSPasteboard.PasteboardType, _ data: Data) -> NSPasteboard {
+        let pb = NSPasteboard(name: NSPasteboard.Name("bento-notes-test-\(UUID().uuidString)"))
+        pb.clearContents()
+        pb.setData(data, forType: type)
+        return pb
+    }
+
+    @Test func plainTextAndLineEndings() {
+        let pb = pasteboard(.string, Data("a\r\nb\rc\u{2028}d\u{0}e".utf8))
+        #expect(NoteTextView.plainText(from: pb) == "a\nb\nc\nde")
+        pb.releaseGlobally()
+    }
+
+    @Test func richTextLosesStylingAndListsBecomeMarkdown() {
+        let rtf = Data(#"{\rtf1\ansi{\fonttbl\f0 Helvetica;}\f0 Rich {\b bold} text\par second line}"#.utf8)
+        let pb = pasteboard(.rtf, rtf)
+        #expect(NoteTextView.plainText(from: pb) == "Rich bold text\nsecond line")
+        pb.releaseGlobally()
+        #expect(NoteTextView.markdownLists("\t•\tone\n\t\t◦\tnested\n\t1.\tfirst\nplain\ttab") == "- one\n    - nested\n1. first\nplain\ttab")
+    }
+
+    @Test func imagesHaveNoText() {
+        let pb = pasteboard(.png, Data([0x89, 0x50, 0x4e, 0x47]))
+        #expect(NoteTextView.plainText(from: pb) == nil)
+        pb.releaseGlobally()
+    }
+}
+
+@Suite struct FrameTests {
+    @Test func reachableFrames() {
+        let screens = [NSRect(x: 0, y: 0, width: 1440, height: 875)]
+        #expect(NotesWindowController.isReachable(NSRect(x: 100, y: 100, width: 400, height: 450), screens: screens))
+        // saved on a display that's gone
+        #expect(!NotesWindowController.isReachable(NSRect(x: 3000, y: 100, width: 400, height: 450), screens: screens))
+        // title bar above the top of the screen (only the bottom sliver visible)
+        #expect(!NotesWindowController.isReachable(NSRect(x: 100, y: 860, width: 400, height: 450), screens: screens))
+        // only 20 pt of the title bar on screen horizontally
+        #expect(!NotesWindowController.isReachable(NSRect(x: 1420, y: 100, width: 400, height: 450), screens: screens))
+        #expect(NotesWindowController.isReachable(NSRect(x: -300, y: 100, width: 400, height: 450), screens: screens))
     }
 }
 

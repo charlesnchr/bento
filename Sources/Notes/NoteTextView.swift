@@ -110,7 +110,61 @@ final class NoteTextView: NSTextView {
 
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
 
-    override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
+    override func paste(_ sender: Any?) { pastePlain(from: .general) }
+    override func pasteAsPlainText(_ sender: Any?) { pastePlain(from: .general) }
+    override func pasteAsRichText(_ sender: Any?) { pastePlain(from: .general) }
+
+    /// Pastes the text of whatever is on the pasteboard (rich text loses its styling,
+    /// line endings become "\n"); beeps for content without text (e.g. an image).
+    func pastePlain(from pb: NSPasteboard) {
+        guard let s = NoteTextView.plainText(from: pb), !s.isEmpty else { NSSound.beep(); return }
+        breakUndoCoalescing()
+        insertText(s, replacementRange: selectedRange())
+        breakUndoCoalescing()
+        scrollRangeToVisible(selectedRange())
+    }
+
+    static func plainText(from pb: NSPasteboard) -> String? {
+        var s = pb.string(forType: .string)
+        if s == nil, let data = pb.data(forType: .rtf) ?? pb.data(forType: .rtfd) {
+            s = NSAttributedString(rtf: data, documentAttributes: nil)?.string ?? NSAttributedString(rtfd: data, documentAttributes: nil)?.string
+        }
+        if s == nil, let data = pb.data(forType: .html) {
+            s = NSAttributedString(html: data, documentAttributes: nil)?.string
+        }
+        if s == nil, let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
+            s = urls.map { $0.isFileURL ? $0.path : $0.absoluteString }.joined(separator: "\n")
+        }
+        guard var text = s else { return nil }
+        // one line terminator everywhere: the parser and the sync format work on "\n"
+        if text.utf16.contains(13) { text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n") }
+        if text.utf16.contains(where: { $0 == 0x2028 || $0 == 0x2029 || $0 == 0x85 }) {
+            text = text.replacingOccurrences(of: "\u{2028}", with: "\n").replacingOccurrences(of: "\u{2029}", with: "\n")
+                .replacingOccurrences(of: "\u{85}", with: "\n")
+        }
+        if text.utf8.contains(0) { text = text.replacingOccurrences(of: "\u{0}", with: "") }
+        if text.utf16.contains(9) { text = markdownLists(text) }
+        return text
+    }
+
+    private static let richListRE = try? NSRegularExpression(pattern: #"^(\t*)([•◦▪▫‣⁃∙●○■□-]|\d{1,3}[.)])\t"#)
+
+    /// Lists copied as rich text (Notes, TextEdit, web pages) arrive as "\t•\titem" /
+    /// "\t1.\titem" lines: turn them into markdown list items.
+    static func markdownLists(_ text: String) -> String {
+        guard let re = richListRE else { return text }
+        var changed = false
+        let lines = text.components(separatedBy: "\n").map { line -> String in
+            let ns = line as NSString
+            guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return line }
+            changed = true
+            let marker = ns.substring(with: m.range(at: 2))
+            let indent = String(repeating: MarkdownParser.indentUnit, count: max(0, m.range(at: 1).length - 1))
+            let prefix = marker.first?.isNumber == true ? marker.dropLast() + ". " : "- "
+            return indent + prefix + ns.substring(from: NSMaxRange(m.range))
+        }
+        return changed ? lines.joined(separator: "\n") : text
+    }
 
     // MARK: Drawing
 

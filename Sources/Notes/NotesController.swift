@@ -39,7 +39,8 @@ final class NotesController {
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
         engine.onConflictCopy = { [weak self] copy, _ in
             self?.countCache.removeValue(forKey: copy.id)
-            HUD.show("Conflicting Edit Kept as a Copy", symbol: "doc.on.doc")
+            // only tell someone who is looking at notes; the copy tops the list either way
+            if self?.windowController?.isVisible == true { HUD.show("Conflicting Edit Kept as a Copy", symbol: "doc.on.doc") }
         }
     }
 
@@ -329,7 +330,7 @@ final class NotesController {
     func editorChanged(_ body: String) {
         guard let id = currentID, var n = store.note(id) else { return }
         n.body = body
-        n.updatedAt = max(Note.now(), n.updatedAt + 1)
+        n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true
         // keep in memory immediately (sync reads the store), write to disk debounced
         pendingNote = n
@@ -376,7 +377,7 @@ final class NotesController {
         toSave.seq = stored.seq
         toSave.openedAt = stored.openedAt
         toSave.baseHash = stored.baseHash
-        toSave.updatedAt = max(n.updatedAt, stored.updatedAt + (stored.body == n.body ? 0 : 1))
+        if stored.updatedAt >= n.updatedAt, stored.body != n.body { toSave.updatedAt = Note.nextUpdate(after: stored.updatedAt) }
         store.save(toSave)
         sync.localChange()
     }
@@ -389,7 +390,7 @@ final class NotesController {
         flushPendingSave()
         guard var n = store.note(id) else { return }
         change(&n)
-        n.updatedAt = max(Note.now(), n.updatedAt + 1)
+        n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true
         store.save(n)
         sync.localChange()
@@ -829,4 +830,29 @@ final class NotesController {
     // MARK: Debug hooks (dev harness only)
 
     var debugWindow: NotesWindowController? { windowController }
+
+    /// A local edit by id, like typing (the editor is updated if the note is open).
+    func debugPut(id: String, body: String) {
+        if let w = windowController, w.noteID == id, currentID == id {
+            let len = (w.textView.string as NSString).length
+            w.textView.apply(EditResult(edits: [TextEdit(range: NSRange(location: 0, length: len), replacement: body)],
+                                        selection: NSRange(location: (body as NSString).length, length: 0)))
+            return
+        }
+        if store.note(id) != nil {
+            mutate(id) { $0.body = body; $0.deleted = false }
+            return
+        }
+        var n = Note(id: id, body: body)
+        n.device = sync.device
+        n.dirty = true
+        store.save(n)
+        sync.localChange()
+    }
+
+    func debugMutate(_ id: String, _ change: (inout Note) -> Void) {
+        guard store.note(id) != nil else { return }
+        mutate(id, change)
+        if let n = store.note(id), id == currentID, !n.isLive { remoteChanged(n) }
+    }
 }
