@@ -230,11 +230,6 @@ final class RecorderView: NSView {
         onChange?(sc)
     }
 
-    static let functionKeys: Set<Int> = [
-        kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
-        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20,
-    ]
-
     static let modifierKeys: Set<Int> = [
         kVK_Command, kVK_Shift, kVK_Option, kVK_Control, kVK_RightCommand, kVK_RightShift,
         kVK_RightOption, kVK_RightControl, kVK_CapsLock, kVK_Function,
@@ -244,10 +239,9 @@ final class RecorderView: NSView {
     /// typing, so they need ⌘, ⌥ or ⌃ — except function keys.
     static func shortcut(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Shortcut? {
         let mods = modifiers.intersection([.command, .option, .control, .shift])
-        let hasCommandish = !mods.intersection([.command, .option, .control]).isEmpty
         guard keyCode <= 0xFF, !modifierKeys.contains(Int(keyCode)) else { return nil }
-        guard hasCommandish || functionKeys.contains(Int(keyCode)) else { return nil }
-        return Shortcut(keyCode: keyCode, modifiers: mods)
+        let sc = Shortcut(keyCode: keyCode, modifiers: mods)
+        return sc.isSafeGlobalHotkey ? sc : nil
     }
 
     /// Ends recording without changing the shortcut.

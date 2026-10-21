@@ -332,6 +332,32 @@ private let isolatedHome: Bool = {
         #expect(reg.failed.isEmpty)
     }
 
+    @Test func systemShortcutsAreReportedNotSilentlyDead() throws {
+        try #require(isolatedHome)
+        // Whatever macOS has enabled on this machine (Spotlight's ⌘Space, …).
+        guard let reserved = SystemShortcuts.reserved().first(where: \.isSafeGlobalHotkey) else { return }
+        let m = FakeModule("fakee", [("fakee.sys", reserved.configString)])
+        reg.isModuleEnabled = { _ in true }
+        let before = HotkeyCenter.shared.registrationCount
+        reg.setModules([m])
+        #expect(reg.failed == ["fakee.sys"])
+        #expect(reg.failureReason(for: "fakee.sys")?.contains("macOS") == true)
+        #expect(HotkeyCenter.shared.registrationCount == before)
+        reg.setModules([])
+    }
+
+    @Test func handEditedShortcutsThatWouldBlockTypingAreNotRegistered() throws {
+        try #require(isolatedHome)
+        let m = FakeModule("faked", [("faked.t", "t"), ("faked.shift", "shift+t"), ("faked.f16", "f16")])
+        reg.isModuleEnabled = { _ in true }
+        let before = HotkeyCenter.shared.registrationCount
+        reg.setModules([m])
+        #expect(reg.failed == ["faked.t", "faked.shift"])
+        #expect(reg.failureReason(for: "faked.t")?.contains("typing") == true)
+        #expect(HotkeyCenter.shared.registrationCount == before + 1) // only F16
+        reg.setModules([])
+    }
+
     @Test func disabledModuleShortcutsCanBeClearedAndReset() throws {
         try #require(isolatedHome)
         let m = FakeModule("fakec", [("fakec.one", testKeys[3].configString)])

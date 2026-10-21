@@ -140,6 +140,9 @@ public final class HotkeyCenter {
         return id
     }
 
+    /// Only same-process duplicates fail here: RegisterEventHotKey accepts a
+    /// combination another app or macOS already uses (it just never fires),
+    /// so callers check `SystemShortcuts.isReserved` for the system's own.
     private func carbonRegister(_ s: Shortcut, id: UInt32) -> EventHotKeyRef? {
         var ref: EventHotKeyRef?
         let hkID = EventHotKeyID(signature: HotkeyCenter.signature, id: id)
@@ -149,5 +152,37 @@ public final class HotkeyCenter {
             return nil
         }
         return ref
+    }
+}
+
+/// macOS's own enabled shortcuts (System Settings → Keyboard → Shortcuts:
+/// Spotlight, Mission Control, screenshots, input sources…). The system
+/// handles them before any app, so a Bento hotkey on one of them never fires.
+public enum SystemShortcuts {
+    private static var cache: (time: Date, set: Set<Shortcut>)?
+
+    public static func isReserved(_ shortcut: Shortcut) -> Bool {
+        reserved().contains(Shortcut(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers.subtracting(.function)))
+    }
+
+    /// Re-read at most every few seconds (the user can change them any time).
+    static func reserved() -> Set<Shortcut> {
+        if let cache, Date().timeIntervalSince(cache.time) < 5 { return cache.set }
+        var out = Set<Shortcut>()
+        var array: Unmanaged<CFArray>?
+        if CopySymbolicHotKeys(&array) == noErr, let list = array?.takeRetainedValue() as? [[String: Any]] {
+            for entry in list where (entry[kHISymbolicHotKeyEnabled] as? Bool) == true {
+                guard let code = (entry[kHISymbolicHotKeyCode] as? NSNumber)?.intValue, (0..<0xFFFF).contains(code),
+                      let mods = (entry[kHISymbolicHotKeyModifiers] as? NSNumber)?.intValue else { continue }
+                var flags: NSEvent.ModifierFlags = []
+                if mods & cmdKey != 0 { flags.insert(.command) }
+                if mods & optionKey != 0 { flags.insert(.option) }
+                if mods & controlKey != 0 { flags.insert(.control) }
+                if mods & shiftKey != 0 { flags.insert(.shift) }
+                out.insert(Shortcut(keyCode: UInt32(code), modifiers: flags))
+            }
+        }
+        cache = (Date(), out)
+        return out
     }
 }

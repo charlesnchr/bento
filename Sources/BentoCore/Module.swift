@@ -83,6 +83,10 @@ public final class ActionRegistry {
     public private(set) var failed: Set<String> = []
     /// Failed ids that lost a conflict inside Bento -> the id that owns the shortcut.
     private var conflicts: [String: String] = [:]
+    /// Failed ids whose shortcut has no ⌘/⌥/⌃ (would block typing), not registered.
+    private var unsafe: Set<String> = []
+    /// Failed ids whose shortcut macOS itself uses (Spotlight, Mission Control…).
+    private var systemReserved: Set<String> = []
     /// Ids declared more than once (the first declaration wins).
     public private(set) var duplicateIDs: Set<String> = []
     private var batchDepth = 0
@@ -162,8 +166,22 @@ public final class ActionRegistry {
         var claimed: [Shortcut: String] = [:]
         var newFailed = Set<String>()
         var newConflicts: [String: String] = [:]
+        var newUnsafe = Set<String>()
+        var newSystem = Set<String>()
         for id in order {
             guard let sc = shortcut(for: id) else { continue }
+            guard sc.isSafeGlobalHotkey else {
+                BentoLog.core.error("Not registering \(sc.configString, privacy: .public) for \(id, privacy: .public): it would block typing")
+                newFailed.insert(id)
+                newUnsafe.insert(id)
+                continue
+            }
+            if SystemShortcuts.isReserved(sc) {
+                // Registering would "succeed" but never fire: say so instead.
+                newFailed.insert(id)
+                newSystem.insert(id)
+                continue
+            }
             if let other = claimed[sc] {
                 BentoLog.core.error("Shortcut \(sc.configString, privacy: .public) of \(id, privacy: .public) already used by \(other, privacy: .public)")
                 newFailed.insert(id)
@@ -192,6 +210,8 @@ public final class ActionRegistry {
         }
         failed = newFailed
         conflicts = newConflicts
+        unsafe = newUnsafe
+        systemReserved = newSystem
         NotificationCenter.default.post(name: ActionRegistry.didReload, object: self)
     }
 
@@ -249,7 +269,9 @@ public final class ActionRegistry {
     public func failureReason(for id: String) -> String? {
         guard failed.contains(id) else { return nil }
         if let other = conflicts[id] { return "Also assigned to “\(actionsByID[other]?.title ?? other)”" }
-        return "Used by another app or the system"
+        if unsafe.contains(id) { return "Needs ⌘, ⌥ or ⌃ (it would block typing)" }
+        if systemReserved.contains(id) { return "Used by macOS (System Settings → Keyboard → Keyboard Shortcuts)" }
+        return "Couldn’t be registered"
     }
 
     /// Stores a user override (nil = unbound). Passing the default clears the
