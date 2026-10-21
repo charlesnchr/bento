@@ -476,6 +476,21 @@ struct EditorBehaviourTests {
         ed.close()
     }
 
+    @Test func cropAndUndoKeepAFittingCanvasAt100Percent() {
+        // Just fits the 900×574 pt scroll area: must stay at a sharp 100%.
+        let ed = makeEditor(width: 890, height: 565, scale: 1)
+        tool(ed, "v")
+        drag(ed, from: CGPoint(x: 10, y: 10), to: CGPoint(x: 300, y: 200))
+        ed.cropToRegion()
+        settle()
+        #expect(ed.magnification == 1)
+        ed.performUndo()
+        #expect(ed.doc.crop == nil && ed.magnification == 1)
+        ed.zoomToFit() // ⌘1 still fits with its margin
+        #expect(ed.magnification > 0.98 && ed.magnification < 1.01)
+        ed.close()
+    }
+
     @Test func closingDropsTheImagePixelsRightAway() {
         let ed = makeEditor(width: 2880, height: 3000, scale: 2)
         ed.canvas.imageView.layer?.display()

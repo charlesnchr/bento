@@ -763,7 +763,10 @@ final class EditorController: NSObject, NSWindowDelegate {
         let size = canvas.frame.size
         let avail = scrollView.contentSize
         guard size.width > 0, size.height > 0 else { return }
-        let z = min(min(avail.width / size.width, avail.height / size.height) * 0.98, maxZoom)
+        let fit = min(avail.width / size.width, avail.height / size.height)
+        // A canvas that fits at 100% stays pixel-sharp at 100%: with the 2%
+        // margin a crop (or undoing one) left it at a blurry 98–99%.
+        let z = fit >= 1 && maxZoom <= 1 ? maxZoom : min(fit * 0.98, maxZoom)
         scrollView.magnification = z.clamped(scrollView.minMagnification...scrollView.maxMagnification)
         centerCanvas()
         magnificationChanged()
