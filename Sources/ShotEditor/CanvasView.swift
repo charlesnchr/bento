@@ -41,7 +41,16 @@ final class CanvasView: NSView {
 }
 
 final class ImageLayerView: NSView {
-    var image: CGImage? { didSet { needsDisplay = true } }
+    var image: CGImage? {
+        didSet {
+            // A closed window is never displayed again, so updateLayer() would
+            // never clear the layer: drop the pixels now (otherwise the most
+            // recently closed editor's image, up to hundreds of MB for a
+            // scrolling capture, stays in memory while AppKit keeps its window).
+            if image == nil { layer?.contents = nil }
+            needsDisplay = true
+        }
+    }
 
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }

@@ -243,10 +243,19 @@ final class EditorController: NSObject, NSWindowDelegate {
         doc.modified = Date()
         var flat: CGImage?
         if final && thumbDirty {
-            flat = flattened()
+            flat = thumbnailImage()
             thumbDirty = false
         }
         HistoryStore.shared.update(doc, flattened: flat)
+    }
+
+    /// The flattened canvas rendered straight at thumbnail size (a full-size
+    /// render of a 15 000 px capture would allocate 170 MB just to shrink it).
+    func thumbnailImage(maxPixels: CGFloat = 480) -> CGImage? {
+        let c = doc.canvasRect
+        let longest = max(c.width, c.height)
+        guard longest > 0 else { return nil }
+        return Renderer.flatten(doc, image: image, effects: effects, outputScale: min(doc.scale, maxPixels / longest))
     }
 
     // MARK: Edits & undo
@@ -482,9 +491,12 @@ final class EditorController: NSObject, NSWindowDelegate {
     func copyImage(hud: Bool = true) {
         if editingTextID != nil { endTextEditing() }
         let area = region
-        guard let img = flattened(region: area, forExport: true) else { return }
-        Clipboard.copy(img, scale: exportScale)
-        if hud { HUD.show(area == nil ? "Copied" : "Copied selection", symbol: "doc.on.doc") }
+        let copied: Bool = autoreleasepool {
+            guard let img = flattened(region: area, forExport: true) else { return false }
+            Clipboard.copy(img, scale: exportScale)
+            return true
+        }
+        if hud && copied { Feedback.hud(area == nil ? "Copied" : "Copied selection", symbol: "doc.on.doc") }
     }
 
     private func suggestedName(_ save: SaveSettings) -> String {
@@ -657,7 +669,11 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     /// Selects the uniform-colour object under the pointer (⌘-click).
     func selectMonotone(at p: CGPoint) {
-        guard let r = sampler.monotoneRegion(at: p, within: doc.canvasRect) else { return }
+        // Flood-fill only what is on screen: a whole 15 000 px capture would
+        // need hundreds of MB of scratch buffers.
+        let c = doc.canvasRect
+        let visible = canvas.visibleRect.offsetBy(dx: c.minX, dy: c.minY).intersection(c)
+        guard !visible.isNull, let r = sampler.monotoneRegion(at: p, within: visible) else { return }
         if tool != .select { setTool(.select) }
         selectedID = nil
         region = r
