@@ -191,7 +191,12 @@ struct WindowsSettingsView: View {
                         Button("Update with Current Windows") { module.saveLayout(named: layout.name) }
                         Toggle("Launch Missing Apps", isOn: $layout.launchApps)
                         Divider()
-                        Button("Delete", role: .destructive) { model.value.layouts.removeAll { $0.id == layout.id } }
+                        Button("Delete", role: .destructive) {
+                            model.value.layouts.removeAll { $0.id == layout.id }
+                            // Drop its shortcut too, or a stale binding lingers in the config.
+                            var overrides = ConfigStore.shared.shortcutOverrides
+                            if overrides.removeValue(forKey: layout.actionID) != nil { ConfigStore.shared.shortcutOverrides = overrides }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -327,7 +332,7 @@ private struct WindowShortcutRow: View {
             Spacer()
             if reg.shortcut(for: action.id) != action.defaultShortcut {
                 Button {
-                    reg.setShortcut(action.defaultShortcut, for: action.id)
+                    reg.assign(action.defaultShortcut, to: action.id)
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }

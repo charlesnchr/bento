@@ -22,6 +22,7 @@ public final class TilingModule: BentoModule {
     // MARK: Lifecycle
 
     public func start() {
+        guard configToken == nil else { return } // already started
         ConfigStore.shared.materialize(id, default: TilingSettings())
         settings = ConfigStore.shared.section(id, default: TilingSettings())
         configToken = ConfigStore.shared.observe(id) { [weak self] in self?.configChanged() }

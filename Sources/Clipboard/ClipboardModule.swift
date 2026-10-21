@@ -55,6 +55,7 @@ public final class ClipboardModule: BentoModule {
     // MARK: Lifecycle
 
     public func start() {
+        guard configObserver == nil else { return } // already started
         ConfigStore.shared.materialize(id, default: ClipboardSettings())
         settings = ConfigStore.shared.section(id, default: ClipboardSettings())
         do {

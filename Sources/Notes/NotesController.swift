@@ -74,6 +74,8 @@ final class NotesController {
         guard running else { return }
         running = false
         flushPendingSave()
+        syncConfigWork?.cancel()
+        syncConfigWork = nil
         sync.stop()
         windowController?.hide()
         windowController = nil

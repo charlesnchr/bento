@@ -334,11 +334,14 @@ enum RectangleImport {
 
     static func apply(_ plan: Plan) {
         let reg = ActionRegistry.shared
-        for (id, a) in plan.assignments.sorted(by: { $0.key < $1.key }) where reg.shortcut(for: id) != a.shortcut {
-            reg.setShortcut(a.shortcut, for: id)
-        }
-        for id in plan.unbind where reg.shortcut(for: id) != nil {
-            reg.setShortcut(nil, for: id)
+        // One hotkey reload for the whole import instead of one per shortcut.
+        reg.performBatch {
+            for (id, a) in plan.assignments.sorted(by: { $0.key < $1.key }) where reg.shortcut(for: id) != a.shortcut {
+                reg.setShortcut(a.shortcut, for: id)
+            }
+            for id in plan.unbind where reg.shortcut(for: id) != nil {
+                reg.setShortcut(nil, for: id)
+            }
         }
         ConfigStore.shared.setSection("windows", plan.settings)
     }
