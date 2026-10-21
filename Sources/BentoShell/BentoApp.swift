@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var observers: [NSObjectProtocol] = []
     private let navigator = SettingsNavigator()
     private var signalSources: [DispatchSourceSignal] = []
+    private var retryHotkeysWork: DispatchWorkItem?
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
     /// Number of times the settings window was created / torn down (diagnostics).
     private var settingsOpened = 0
@@ -91,6 +92,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                app.processIdentifier != getpid() {
                 AppActivation.previousApp = app
             }
+        })
+        // A shortcut that failed to register may be free once another app quits:
+        // retry failed ones without a restart. (Most cross-app clashes don't fail
+        // at all; macOS lets both apps register the same combination.)
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            guard !ActionRegistry.shared.failed.isEmpty else { return }
+            self?.retryHotkeysWork?.cancel()
+            let work = DispatchWorkItem { ActionRegistry.shared.reload() }
+            self?.retryHotkeysWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
         })
         AppActivation.previousApp = NSWorkspace.shared.frontmostApplication
 
