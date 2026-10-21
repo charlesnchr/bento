@@ -59,6 +59,27 @@ struct Annotation: Codable, Equatable, Identifiable {
         path = path?.map { CGPoint(x: $0.x + d.dx, y: $0.y + d.dy) }
     }
 
+    /// Drops or repairs values a damaged or hand-edited document could hold
+    /// (NaN / huge coordinates, empty stroke paths, out-of-range sizes), so the
+    /// drawing and hit-testing code never sees them. Nil = unusable.
+    func sanitized() -> Annotation? {
+        let limit: CGFloat = 1_000_000
+        func ok(_ p: CGPoint) -> Bool { p.x.isFinite && p.y.isFinite && abs(p.x) < limit && abs(p.y) < limit }
+        guard ok(p1), ok(p2) else { return nil }
+        // An empty label autosaved mid-typing (the editor deletes these when editing ends).
+        if kind == .text, (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
+        var a = self
+        if let path {
+            let good = path.filter(ok)
+            a.path = good.isEmpty ? [p1] : good
+        }
+        a.size = size.isFinite ? size.clamped(1...10) : 4
+        a.style = style.clamped(0...7)
+        a.number = number?.clamped(-9_999...99_999)
+        a.dim = dim.flatMap { $0.isFinite ? $0.clamped(0...1) : nil }
+        return a
+    }
+
     /// Variant names per kind, shown in the style control and cycled by
     /// pressing the tool key again.
     static func styles(for kind: Kind) -> [(name: String, symbol: String)] {
@@ -98,7 +119,33 @@ struct ShotDocument: Codable, Equatable {
     var pointSize: CGSize { CGSize(width: CGFloat(pixelWidth) / scale, height: CGFloat(pixelHeight) / scale) }
     var imageBounds: CGRect { CGRect(origin: .zero, size: pointSize) }
     /// The visible canvas (crop or whole image) in image points.
-    var canvasRect: CGRect { (crop ?? imageBounds).intersection(imageBounds).integralIfNeeded }
+    var canvasRect: CGRect {
+        let r = (crop ?? imageBounds).intersection(imageBounds)
+        // A crop outside the image (damaged document) shows the whole image.
+        return r.isNull || r.width <= 0 || r.height <= 0 ? imageBounds : r.integralIfNeeded
+    }
+
+    /// Repairs a document read from disk: pixel size from the actual image
+    /// when known, a sane scale, a crop inside the image, usable annotations.
+    func sanitized(imageWidth: Int? = nil, imageHeight: Int? = nil) -> ShotDocument {
+        var d = self
+        if let imageWidth, let imageHeight, imageWidth > 0, imageHeight > 0 {
+            d.pixelWidth = imageWidth
+            d.pixelHeight = imageHeight
+        }
+        d.pixelWidth = max(1, d.pixelWidth)
+        d.pixelHeight = max(1, d.pixelHeight)
+        if !(d.scale.isFinite && d.scale >= 0.5 && d.scale <= 8) { d.scale = 1 }
+        let finite = [d.captureRect.minX, d.captureRect.minY, d.captureRect.width, d.captureRect.height].allSatisfy(\.isFinite)
+        if !finite { d.captureRect = .zero }
+        if let c = d.crop {
+            let values = [c.minX, c.minY, c.width, c.height]
+            let inside = c.intersection(d.imageBounds)
+            if !values.allSatisfy(\.isFinite) || inside.isNull || inside.width < 0.5 || inside.height < 0.5 { d.crop = nil }
+        }
+        d.annotations = d.annotations.compactMap { $0.sanitized() }
+        return d
+    }
     var isEdited: Bool { crop != nil || !annotations.isEmpty }
 
     /// Next number for a step counter.
@@ -217,7 +264,7 @@ enum HexColor {
 
     static func hex(_ color: NSColor, alpha: Bool = false) -> String {
         let c = color.usingColorSpace(.sRGB) ?? color
-        func b(_ v: CGFloat) -> Int { Int((v.clamped(0...1) * 255).rounded()) }
+        func b(_ v: CGFloat) -> Int { v.isFinite ? Int((v.clamped(0...1) * 255).rounded()) : 0 }
         let base = String(format: "#%02X%02X%02X", b(c.redComponent), b(c.greenComponent), b(c.blueComponent))
         return alpha && c.alphaComponent < 1 ? base + String(format: "%02X", b(c.alphaComponent)) : base
     }

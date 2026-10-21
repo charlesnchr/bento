@@ -41,7 +41,16 @@ final class CanvasView: NSView {
 }
 
 final class ImageLayerView: NSView {
-    var image: CGImage? { didSet { needsDisplay = true } }
+    var image: CGImage? {
+        didSet {
+            // A closed window is never displayed again, so updateLayer() would
+            // never clear the layer: drop the pixels now (otherwise the most
+            // recently closed editor's image, up to hundreds of MB for a
+            // scrolling capture, stays in memory while AppKit keeps its window).
+            if image == nil { layer?.contents = nil }
+            needsDisplay = true
+        }
+    }
 
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -127,8 +136,12 @@ final class AnnotationView: NSView {
         cg.translateBy(x: -canvasOrigin.x, y: -canvasOrigin.y)
         var anns = doc.annotations
         if let d = editor.draft { anns.append(d) }
+        // Shadow blur is in device pixels and its cost grows with the radius:
+        // scaled with the zoom, one shape at 3200% took seconds per redraw
+        // (Gaussian blur over the whole view) and froze the editor. Above 4x the
+        // shadow stops growing; nobody inspects shadows at pixel zoom.
         let rc = RenderContext(image: editor.image, scale: doc.scale, canvas: doc.canvasRect, effects: editor.effects,
-                               shadowScale: mag * (window?.backingScaleFactor ?? 2) / 2, editingTextID: editor.editingTextID)
+                               shadowScale: min(mag, 4) * (window?.backingScaleFactor ?? 2) / 2, editingTextID: editor.editingTextID)
         Renderer.drawAll(anns, rc: rc, cg: cg)
 
         let accent = NSColor.controlAccentColor
@@ -512,8 +525,16 @@ final class AnnotationView: NSView {
             }
         case .moving(_, _, _, let duplicated):
             editor.commit(duplicated ? "Duplicate" : "Move", from: before)
-        case .handle:
-            editor.commit("Resize", from: before)
+        case let .handle(id, _, original):
+            // Dragging a handle onto the opposite one would leave an invisible,
+            // unselectable annotation: keep the original size instead.
+            let tiny = 3 / mag
+            if let a = editor.doc.annotations.first(where: { $0.id == id }),
+               (a.isBoxKind && (a.rect.width < tiny || a.rect.height < tiny)) || (a.isTwoPointKind && a.p1.distance(to: a.p2) < tiny * 2) {
+                editor.updateAnnotation(id) { $0 = original }
+            } else {
+                editor.commit("Resize", from: before)
+            }
         case .region:
             if let r = editor.region, r.width < 2 || r.height < 2 { editor.region = nil }
         case .regionMove, .regionHandle, .pan:
@@ -588,8 +609,9 @@ final class AnnotationView: NSView {
             editor.typeDigit(d)
             return
         }
-        if c == "[" || c == "]" {
-            editor.growRegion((c == "]" ? 1 : -1) * step)
+        // By key code: with ⇧ the characters are "{" / "}" (and differ per layout).
+        if e.keyCode == 33 || e.keyCode == 30 {
+            editor.growRegion((e.keyCode == 30 ? 1 : -1) * step)
             return
         }
         if c == "z" { zoomClickArmed = true; NSCursor(image: NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: nil) ?? NSImage(), hotSpot: NSPoint(x: 8, y: 8)).set(); return }
@@ -598,6 +620,7 @@ final class AnnotationView: NSView {
         if editor.region != nil, c == "a" { editor.autoAdjustRegion(); return }
         if editor.region != nil, c == "b" { editor.obfuscateRegion(.blur); return }
         if editor.region != nil, c == "e" { editor.obfuscateRegion(.erase); return }
+        if editor.region != nil, c == "c" { editor.copyAverageColor(); return }
         if let tool = EditorTool.forKey(c) {
             editor.setTool(tool)
             return

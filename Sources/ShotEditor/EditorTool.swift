@@ -89,7 +89,7 @@ enum EditorTool: String, CaseIterable {
 
     var hint: String {
         switch self {
-        case .select: return "Drag to select (⌘-click an object) · ↩ crop · A fit · ⌘C copy · B blur · ⌫ erase"
+        case .select: return "Drag to select (⌘-click an object) · ↩ crop · A fit · ⌘C copy · B blur · ⌫ erase · C colour"
         case .arrow: return "Drag to draw an arrow · ⇧ snaps to 45° · A again: style"
         case .text: return "Click to add text · Esc to finish"
         case .rect: return "Drag to draw · ⇧ square · R again: outline/translucent/filled"
@@ -112,7 +112,8 @@ enum EditorTool: String, CaseIterable {
 
 /// Remembers size and style per annotation kind across editors (like Shottr).
 enum ToolMemory {
-    private static let defaults = UserDefaults.standard
+    /// Replaceable so tests don't read or write the app's remembered sizes.
+    static var defaults = UserDefaults.standard
     private static let sizeKey = "ShotEditor.toolSizes"
     private static let styleKey = "ShotEditor.toolStyles"
 

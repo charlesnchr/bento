@@ -47,14 +47,27 @@ public final class ShotEditor {
     private var pins: [PinController] = []
     private var history: HistoryWindowController?
     private var lastPrune = Date.distantPast
-    /// The most recently recorded capture, so `pin(_:)` after `record(_:)` can
-    /// link the pin to its history entry (double-click re-opens it).
+    /// The capture recorded during the current event, so `pin(_:)` right after
+    /// `record(_:)` can link the pin to its history entry (double-click
+    /// re-opens it). Cleared on the next run-loop turn: holding it longer kept
+    /// the last capture's full-size pixels in memory until the next capture
+    /// (hundreds of MB after a scrolling capture).
     private var lastRecorded: (image: CGImage, id: String)?
     private var store: HistoryStore { .shared }
 
     private init() {
         ConfigStore.shared.materialize(EditorSettings.section, default: EditorSettings())
         DispatchQueue.main.async { [weak self] in self?.pruneIfNeeded(force: true) }
+        // Quitting doesn't close windows: save open editors and let queued
+        // PNG writes finish, or the newest captures lose their original.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.prepareForTermination()
+        }
+    }
+
+    func prepareForTermination() {
+        for ed in editors { ed.saveNow() }
+        store.waitForWrites()
     }
 
     /// Stores the capture in history and opens it in an editor window.
@@ -73,8 +86,10 @@ public final class ShotEditor {
 
     /// Re-opens the most recent capture, with its annotations still editable.
     public func reopenLast() {
-        guard let e = store.entries().first else {
-            HUD.show("No captures yet", symbol: "photo.on.rectangle")
+        // Skip captures whose original is gone (deleted by hand, or a write
+        // that never finished) instead of failing on the newest one.
+        guard let e = store.entries().first(where: { store.hasImage($0) }) else {
+            Feedback.hud("No captures yet", symbol: "photo.on.rectangle")
             return
         }
         reopen(entryID: e.id)
@@ -108,7 +123,7 @@ public final class ShotEditor {
             return
         }
         guard let (image, scale) = ImageCodec.load(fileURL) else {
-            HUD.show("Can't open \(fileURL.lastPathComponent)", symbol: "exclamationmark.triangle")
+            Feedback.hud("Can't open \(fileURL.lastPathComponent)", symbol: "exclamationmark.triangle")
             return
         }
         open(CapturedImage(image: image, scale: scale, kind: .file))
@@ -129,7 +144,7 @@ public final class ShotEditor {
     /// Opens the image on the clipboard (or a copied image file) in the editor.
     public func openClipboardImage() {
         guard let (image, scale) = Clipboard.image() else {
-            HUD.show("No image on the clipboard", symbol: "doc.on.clipboard")
+            Feedback.hud("No image on the clipboard", symbol: "doc.on.clipboard")
             return
         }
         open(CapturedImage(image: image, scale: scale, kind: .pasted))
@@ -154,6 +169,7 @@ public final class ShotEditor {
         let entry = store.add(image: capture.image, scale: capture.scale, date: capture.date, kind: capture.kind.rawValue,
                               rect: capture.rect, appName: capture.sourceAppName, bundleID: capture.sourceBundleID, async: async)
         lastRecorded = (capture.image, entry.id)
+        DispatchQueue.main.async { [weak self] in self?.lastRecorded = nil }
         pruneIfNeeded()
         historyChanged()
         return entry
@@ -168,10 +184,11 @@ public final class ShotEditor {
             return true
         }
         guard let e = store.entry(id: entryID), let image = store.loadImage(e) else {
-            HUD.show("Capture not found", symbol: "exclamationmark.triangle")
+            Feedback.hud("Capture not found", symbol: "exclamationmark.triangle")
             return false
         }
-        presentEditor(doc: e.doc, image: image, near: e.doc.captureRect)
+        let doc = e.doc.sanitized(imageWidth: image.width, imageHeight: image.height)
+        presentEditor(doc: doc, image: image, near: doc.captureRect)
         return true
     }
 
@@ -227,27 +244,37 @@ public enum TextRecognizer {
     /// Recognizes text, preserving reading order. Vision returns one observation
     /// per text run, so runs on the same baseline (table cells, "0001  text")
     /// are joined into one line instead of one line each.
+    /// Runs off the main thread (Vision takes 0.2–2 s on a large image).
     public static func recognize(_ image: CGImage, languages: [String]? = nil) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
-            let request = VNRecognizeTextRequest { req, err in
-                if let err { cont.resume(throwing: err); return }
-                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> Run? in
-                    guard let s = o.topCandidates(1).first?.string else { return nil }
-                    let b = o.boundingBox // bottom-left origin; flip to top-down
-                    return Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    cont.resume(returning: try recognizeSync(image, languages: languages))
+                } catch {
+                    cont.resume(throwing: error)
                 }
-                cont.resume(returning: lines(runs))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = true
-            if let languages { request.recognitionLanguages = languages }
-            do {
-                try VNImageRequestHandler(cgImage: image).perform([request])
-            } catch {
-                cont.resume(throwing: error)
             }
         }
+    }
+
+    /// Synchronous OCR. Results are read after `perform` instead of in a
+    /// completion handler, which Vision may call and then also throw, so the
+    /// continuation above is resumed exactly once.
+    static func recognizeSync(_ image: CGImage, languages: [String]? = nil) throws -> String {
+        // Vision rejects images this small; there is no text in them anyway.
+        guard image.width >= 3, image.height >= 3 else { return "" }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.automaticallyDetectsLanguage = true
+        if let languages { request.recognitionLanguages = languages }
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let runs = (request.results ?? []).compactMap { o -> Run? in
+            guard let s = o.topCandidates(1).first?.string else { return nil }
+            let b = o.boundingBox // bottom-left origin; flip to top-down
+            return Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+        }
+        return lines(runs)
     }
 
     /// Groups runs into lines (vertical overlap of at least half the smaller
@@ -270,6 +297,7 @@ public enum TextRecognizer {
 
     /// Detects QR / barcodes and returns their payloads.
     public static func barcodes(_ image: CGImage) -> [String] {
+        guard image.width >= 3, image.height >= 3 else { return [] }
         let request = VNDetectBarcodesRequest()
         try? VNImageRequestHandler(cgImage: image).perform([request])
         return (request.results ?? []).compactMap { $0.payloadStringValue }

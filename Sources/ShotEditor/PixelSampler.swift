@@ -18,7 +18,9 @@ final class PixelSampler {
     var pixelSize: (w: Int, h: Int) { (image.width, image.height) }
 
     func pixelPoint(_ p: CGPoint) -> (x: Int, y: Int)? {
-        let x = Int(floor(p.x * scale)), y = Int(floor(p.y * scale))
+        let fx = floor(p.x * scale), fy = floor(p.y * scale)
+        guard fx.isFinite, fy.isFinite, fx >= 0, fy >= 0, fx < CGFloat(image.width), fy < CGFloat(image.height) else { return nil }
+        let x = Int(fx), y = Int(fy)
         guard x >= 0, y >= 0, x < image.width, y < image.height else { return nil }
         return (x, y)
     }
@@ -38,6 +40,26 @@ final class PixelSampler {
         let px = read(r)
         guard let best = px.min(by: { PixelSampler.luma($0) < PixelSampler.luma($1) }) else { return nil }
         return PixelSampler.unpack(best)
+    }
+
+    /// Average sRGB colour of an area (image points). Large areas are
+    /// downsampled first (area-averaging), so this stays cheap on big captures.
+    func averageColor(in r: CGRect) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        let area = CGRect(x: r.minX * scale, y: r.minY * scale, width: r.width * scale, height: r.height * scale)
+            .integral.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard !area.isNull, area.width >= 1, area.height >= 1, let crop = image.cropping(to: area) else { return nil }
+        let f = min(1, 128 / max(area.width, area.height))
+        let w = max(1, Int((area.width * f).rounded())), h = max(1, Int((area.height * f).rounded()))
+        var px = [UInt32](repeating: 0, count: w * h)
+        let drawn = px.withUnsafeMutableBytes { ptr -> Bool in
+            guard let ctx = CGContext(data: ptr.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: srgb, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return nil }
+        return PixelSampler.average(px)
     }
 
     func row(_ y: Int) -> [UInt32] {
@@ -160,6 +182,17 @@ final class PixelSampler {
         while lo > 0, similar(line[lo - 1], ref, tolerance) { lo -= 1 }
         while hi < line.count - 1, similar(line[hi + 1], ref, tolerance) { hi += 1 }
         return (lo, hi)
+    }
+
+    static func average(_ px: [UInt32]) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard !px.isEmpty else { return nil }
+        var r = 0, g = 0, b = 0
+        for v in px {
+            let c = unpack(v)
+            r += Int(c.r); g += Int(c.g); b += Int(c.b)
+        }
+        let n = px.count
+        return (UInt8((r + n / 2) / n), UInt8((g + n / 2) / n), UInt8((b + n / 2) / n))
     }
 
     static func similar(_ a: UInt32, _ b: UInt32, _ t: Int) -> Bool {

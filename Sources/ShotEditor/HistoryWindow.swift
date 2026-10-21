@@ -41,6 +41,9 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         collection.delegate = self
         collection.controller = self
         collection.register(HistoryItem.self, forItemWithIdentifier: HistoryItem.id)
+        // Bounded: scrolling through hundreds of captures must not keep every
+        // decoded thumbnail (NSCache also drops them under memory pressure).
+        thumbs.countLimit = 150
 
         let scroll = NSScrollView()
         scroll.documentView = collection
@@ -113,7 +116,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
     func copySelected() {
         guard let e = selectedEntries.first, let img = flattened(e) else { return }
         Clipboard.copy(img, scale: e.doc.scale)
-        HUD.show("Copied", symbol: "doc.on.doc")
+        Feedback.hud("Copied", symbol: "doc.on.doc")
     }
 
     func deleteSelected() {
@@ -146,13 +149,26 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         panel.beginSheetModal(for: window) { [weak self] resp in
             guard resp == .OK, let url = panel.url, let img = self?.flattened(e) else { return }
             let format: EditorSettings.Format = ["jpg", "jpeg"].contains(url.pathExtension.lowercased()) ? .jpeg : .png
-            try? ImageCodec.write(img, scale: e.doc.scale, format: format, quality: save.jpegQuality, to: url)
+            do {
+                try ImageCodec.write(img, scale: e.doc.scale, format: format, quality: save.jpegQuality, to: url)
+            } catch {
+                guard let window = self?.window else { return }
+                let alert = NSAlert()
+                alert.messageText = "Couldn't save the image"
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
         }
     }
 
     private func flattened(_ e: HistoryStore.Entry) -> CGImage? {
-        guard let image = HistoryStore.shared.loadImage(e) else { return nil }
-        return Renderer.flatten(e.doc, image: image, effects: EffectCache())
+        guard let image = HistoryStore.shared.loadImage(e) else {
+            Feedback.hud("Capture not found", symbol: "exclamationmark.triangle")
+            return nil
+        }
+        // The document's pixel size must match the file actually on disk.
+        let doc = e.doc.sanitized(imageWidth: image.width, imageHeight: image.height)
+        return Renderer.flatten(doc, image: image, effects: EffectCache())
     }
 
     func contextMenu() -> NSMenu {
@@ -181,12 +197,23 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         let e = entries[indexPath.item]
         let key = "\(e.id)-\(e.doc.modified.timeIntervalSince1970)" as NSString
         var thumb = thumbs.object(forKey: key)
-        if thumb == nil, let img = NSImage(contentsOf: e.thumbURL) {
+        if thumb == nil, let img = HistoryWindowController.loadThumbnail(e.thumbURL) {
             thumbs.setObject(img, forKey: key)
             thumb = img
         }
         item.configure(entry: e, thumbnail: thumb)
         return item
+    }
+
+    /// Thumbnail decoded at cell size (2x the 184 pt cell), not the stored 480 px.
+    static func loadThumbnail(_ url: URL) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 400,
+                  kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / 2, height: CGFloat(cg.height) / 2))
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { refreshPreview() }

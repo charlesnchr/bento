@@ -41,6 +41,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     private var thumbDirty = false
     private var autosave: DispatchWorkItem?
     private var closed = false
+    var isClosed: Bool { closed }
     private var counterTyping: (id: UUID, time: Date, text: String)?
 
     var state: EditState {
@@ -132,7 +133,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         statusBar.onColorClick = { [weak self] in
             guard let self, let hex = self.statusBar.lastHex else { return }
             Clipboard.copyText(hex)
-            HUD.show("Copied \(hex)", symbol: "eyedropper")
+            Feedback.hud("Copied \(hex)", symbol: "eyedropper")
         }
         toolbar.update()
         updateStatus()
@@ -197,7 +198,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         closed = true
-        if editingTextID != nil { endTextEditing() }
+        settleForUndo()
         persist(final: true)
         NotificationCenter.default.removeObserver(self)
         undo.removeAllActions()
@@ -233,6 +234,13 @@ final class EditorController: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
+    /// Saves everything now (the app is quitting): ends text editing and
+    /// slider drags first, so typed text and the last edits are kept.
+    func saveNow() {
+        settleForUndo()
+        persist(final: true)
+    }
+
     /// Writes the document (and on close a fresh thumbnail) to history.
     func persist(final: Bool) {
         autosave?.cancel()
@@ -242,10 +250,19 @@ final class EditorController: NSObject, NSWindowDelegate {
         doc.modified = Date()
         var flat: CGImage?
         if final && thumbDirty {
-            flat = flattened()
+            flat = thumbnailImage()
             thumbDirty = false
         }
         HistoryStore.shared.update(doc, flattened: flat)
+    }
+
+    /// The flattened canvas rendered straight at thumbnail size (a full-size
+    /// render of a 15 000 px capture would allocate 170 MB just to shrink it).
+    func thumbnailImage(maxPixels: CGFloat = 480) -> CGImage? {
+        let c = doc.canvasRect
+        let longest = max(c.width, c.height)
+        guard longest > 0 else { return nil }
+        return Renderer.flatten(doc, image: image, effects: effects, outputScale: min(doc.scale, maxPixels / longest))
     }
 
     // MARK: Edits & undo
@@ -271,6 +288,7 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     /// Applies a change to the document and records it for undo.
     func mutate(_ name: String, _ change: (inout EditState) -> Void) {
+        finishStyleEdit()
         let before = state
         var s = before
         change(&s)
@@ -293,12 +311,22 @@ final class EditorController: NSObject, NSWindowDelegate {
     }
 
     func performUndo() {
-        if editingTextID != nil { endTextEditing() }
-        if undo.canUndo { undo.undo() } else { NSSound.beep() }
+        settleForUndo()
+        if undo.canUndo { undo.undo() } else { Feedback.beep() }
     }
 
     func performRedo() {
-        if undo.canRedo { undo.redo() } else { NSSound.beep() }
+        settleForUndo()
+        if undo.canRedo { undo.redo() } else { Feedback.beep() }
+    }
+
+    /// Finishes whatever is in progress (text editing, a size-slider drag, a
+    /// mouse drag) so undo/redo acts on a committed state; a drag still running
+    /// would otherwise write its stale snapshot back over the undone state.
+    private func settleForUndo() {
+        _ = canvas.annotationView.cancelDrag()
+        if editingTextID != nil { endTextEditing() }
+        finishStyleEdit()
     }
 
     // MARK: Tools & style
@@ -330,25 +358,39 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     func setSize(_ v: Double, final: Bool) {
         if let kind = styleKind { ToolMemory.setSize(v, for: kind) }
-        if let id = selectedID {
-            if styleEditBase == nil { styleEditBase = state }
+        guard let id = selectedID else { return }
+        if editingTextID == id {
+            // Part of the text edit: committed with it when editing ends.
             updateAnnotation(id) { $0.size = v }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
-            if final, let base = styleEditBase {
-                styleEditBase = nil
-                commit("Size", from: base)
-            }
+            canvas.annotationView.syncTextEditor()
+            return
         }
+        if styleEditBase == nil { styleEditBase = state }
+        updateAnnotation(id) { $0.size = v }
+        if final { finishStyleEdit() }
+    }
+
+    /// Commits a size change made with the slider (one undo step per drag).
+    /// Also called before any other edit, selection change or undo, so a drag
+    /// whose final event never arrived can't leave a stale base behind.
+    private func finishStyleEdit() {
+        guard let base = styleEditBase else { return }
+        styleEditBase = nil
+        commit("Size", from: base)
     }
 
     func setStyle(_ s: Int) {
         guard let kind = styleKind else { return }
         ToolMemory.setStyle(s, for: kind)
         if let id = selectedID {
-            mutate("Style") { st in
-                if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].style = s }
+            if editingTextID == id {
+                updateAnnotation(id) { $0.style = s }
+                canvas.annotationView.syncTextEditor()
+            } else {
+                mutate("Style") { st in
+                    if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].style = s }
+                }
             }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
         }
         toolbar.update()
     }
@@ -356,15 +398,20 @@ final class EditorController: NSObject, NSWindowDelegate {
     func setColor(_ hex: String) {
         color = hex
         if let id = selectedID {
-            mutate("Colour") { st in
-                if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].color = hex }
+            if editingTextID == id {
+                updateAnnotation(id) { $0.color = hex }
+                canvas.annotationView.syncTextEditor()
+            } else {
+                mutate("Colour") { st in
+                    if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].color = hex }
+                }
             }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
         }
         toolbar.update()
     }
 
     private func selectionChanged() {
+        finishStyleEdit()
         if let sel = selected { color = sel.color }
         toolbar?.update()
         canvas.annotationView.needsDisplay = true
@@ -399,6 +446,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     func textChanged(_ text: String) {
         guard let id = editingTextID else { return }
         updateAnnotation(id) { $0.text = text }
+        markDirty() // autosaved while typing, not only when editing ends
     }
 
     func endTextEditing() {
@@ -451,9 +499,12 @@ final class EditorController: NSObject, NSWindowDelegate {
     func copyImage(hud: Bool = true) {
         if editingTextID != nil { endTextEditing() }
         let area = region
-        guard let img = flattened(region: area, forExport: true) else { return }
-        Clipboard.copy(img, scale: exportScale)
-        if hud { HUD.show(area == nil ? "Copied" : "Copied selection", symbol: "doc.on.doc") }
+        let copied: Bool = autoreleasepool {
+            guard let img = flattened(region: area, forExport: true) else { return false }
+            Clipboard.copy(img, scale: exportScale)
+            return true
+        }
+        if hud && copied { Feedback.hud(area == nil ? "Copied" : "Copied selection", symbol: "doc.on.doc") }
     }
 
     private func suggestedName(_ save: SaveSettings) -> String {
@@ -471,7 +522,7 @@ final class EditorController: NSObject, NSWindowDelegate {
             let url = FilenamePattern.uniqueURL(in: folder, name: suggestedName(save), ext: save.format.ext)
             guard let img = flattened(forExport: true) else { return false }
             try ImageCodec.write(img, scale: exportScale, format: save.format, quality: save.jpegQuality, to: url)
-            if showHUD { HUD.show("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down") }
+            if showHUD { Feedback.hud("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down") }
             return true
         } catch {
             presentError("Couldn't save the image", error)
@@ -499,7 +550,7 @@ final class EditorController: NSObject, NSWindowDelegate {
             guard let img = self.flattened(forExport: true) else { return }
             do {
                 try ImageCodec.write(img, scale: self.exportScale, format: format, quality: save.jpegQuality, to: url)
-                HUD.show("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down")
+                Feedback.hud("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down")
             } catch {
                 self.presentError("Couldn't save the image", error)
             }
@@ -546,17 +597,17 @@ final class EditorController: NSObject, NSWindowDelegate {
     func recognizeText() {
         if editingTextID != nil { endTextEditing() }
         guard let img = flattened(region: region) else { return }
-        HUD.show("Recognising text…", symbol: "text.viewfinder", duration: 5)
+        Feedback.hud("Recognising text…", symbol: "text.viewfinder", duration: 5)
         Task { @MainActor in
             let text = (try? await TextRecognizer.recognize(img)) ?? ""
-            let codes = text.isEmpty ? TextRecognizer.barcodes(img) : []
+            let codes = text.isEmpty ? await Task.detached(priority: .userInitiated) { TextRecognizer.barcodes(img) }.value : []
             let result = text.isEmpty ? codes.joined(separator: "\n") : text
             if result.isEmpty {
-                HUD.show("No text found", symbol: "text.viewfinder")
+                Feedback.hud("No text found", symbol: "text.viewfinder")
             } else {
                 Clipboard.copyText(result)
                 let lines = result.split(separator: "\n").count
-                HUD.show(codes.isEmpty ? "Copied \(lines) line\(lines == 1 ? "" : "s") of text" : "Copied QR code", symbol: "text.viewfinder")
+                Feedback.hud(codes.isEmpty ? "Copied \(lines) line\(lines == 1 ? "" : "s") of text" : "Copied QR code", symbol: "text.viewfinder")
             }
         }
     }
@@ -620,13 +671,17 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     /// Shrinks the selection to the content inside it (A with a selection).
     func autoAdjustRegion() {
-        guard let r = region, let adjusted = sampler.contentBounds(in: r) else { NSSound.beep(); return }
+        guard let r = region, let adjusted = sampler.contentBounds(in: r) else { Feedback.beep(); return }
         region = adjusted
     }
 
     /// Selects the uniform-colour object under the pointer (⌘-click).
     func selectMonotone(at p: CGPoint) {
-        guard let r = sampler.monotoneRegion(at: p, within: doc.canvasRect) else { return }
+        // Flood-fill only what is on screen: a whole 15 000 px capture would
+        // need hundreds of MB of scratch buffers.
+        let c = doc.canvasRect
+        let visible = canvas.visibleRect.offsetBy(dx: c.minX, dy: c.minY).intersection(c)
+        guard !visible.isNull, let r = sampler.monotoneRegion(at: p, within: visible) else { return }
         if tool != .select { setTool(.select) }
         selectedID = nil
         region = r
@@ -671,15 +726,23 @@ final class EditorController: NSObject, NSWindowDelegate {
         guard let c = darkest ? sampler.darkest(around: p) : sampler.color(at: p) else { return }
         let hex = HexColor.hex(r: c.r, g: c.g, b: c.b)
         Clipboard.copyText(hex)
-        HUD.show("Copied \(hex)", symbol: "eyedropper")
+        Feedback.hud("Copied \(hex)", symbol: "eyedropper")
         if setAsColor { setColor(hex) }
+    }
+
+    /// Copies the average colour of the selection (Shottr: select, then C).
+    func copyAverageColor() {
+        guard let r = region, let c = sampler.averageColor(in: r) else { Feedback.beep(); return }
+        let hex = HexColor.hex(r: c.r, g: c.g, b: c.b)
+        Clipboard.copyText(hex)
+        Feedback.hud("Copied average \(hex)", symbol: "eyedropper")
     }
 
     func copySizeToClipboard() {
         let r = region ?? doc.canvasRect
         let s = "\(Int(r.width.rounded())) × \(Int(r.height.rounded()))"
         Clipboard.copyText(s)
-        HUD.show("Copied \(s)", symbol: "ruler")
+        Feedback.hud("Copied \(s)", symbol: "ruler")
     }
 
     // MARK: Zoom
@@ -689,6 +752,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     }
 
     func setZoom(_ z: CGFloat, centeredAt p: NSPoint? = nil) {
+        guard z.isFinite, z > 0 else { return }
         let clip = scrollView.contentView
         let center = p ?? NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
         scrollView.setMagnification(z.clamped(scrollView.minMagnification...scrollView.maxMagnification), centeredAt: center)
@@ -699,7 +763,10 @@ final class EditorController: NSObject, NSWindowDelegate {
         let size = canvas.frame.size
         let avail = scrollView.contentSize
         guard size.width > 0, size.height > 0 else { return }
-        let z = min(min(avail.width / size.width, avail.height / size.height) * 0.98, maxZoom)
+        let fit = min(avail.width / size.width, avail.height / size.height)
+        // A canvas that fits at 100% stays pixel-sharp at 100%: with the 2%
+        // margin a crop (or undoing one) left it at a blurry 98–99%.
+        let z = fit >= 1 && maxZoom <= 1 ? maxZoom : min(fit * 0.98, maxZoom)
         scrollView.magnification = z.clamped(scrollView.minMagnification...scrollView.maxMagnification)
         centerCanvas()
         magnificationChanged()
