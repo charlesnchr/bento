@@ -15,6 +15,7 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
     private(set) var targetApp: NSRunningApplication?
     /// Bento's own window that had focus when the panel opened.
     private weak var returnWindow: NSWindow?
+    private let log = BentoLog.make("clipboard")
 
     static let size = NSSize(width: 820, height: 500)
 
@@ -32,6 +33,11 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
+        let started = DispatchTime.now()
+        defer {
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e6
+            log.debug("panel shown in \(ms, format: .fixed(precision: 1), privacy: .public) ms")
+        }
         // Opened over one of Bento's own windows (notes, editor): paste there
         // and give it focus back on close.
         let ownKey = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() ? NSApp.keyWindow : nil
@@ -46,6 +52,7 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         let w = KeyablePanel(contentRect: NSRect(origin: .zero, size: Self.size),
                              styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
                              backing: .buffered, defer: true)
+        w.title = "Clipboard History" // not shown; for VoiceOver and window lists
         w.titleVisibility = .hidden
         w.titlebarAppearsTransparent = true
         for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] { w.standardWindowButton(b)?.isHidden = true }

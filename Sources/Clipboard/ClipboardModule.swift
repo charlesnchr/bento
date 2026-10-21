@@ -31,7 +31,7 @@ public final class ClipboardModule: BentoModule {
     private var devMode: Bool { ProcessInfo.processInfo.environment["BENTO_DEV"] != nil }
     /// Dev only: `BENTO_CLIPBOARD_PASTEBOARD=<name>` records a private named
     /// pasteboard instead of the general one, so capture stress tests never
-    /// touch the user's clipboard (scripts/e2e/clipboard-stress.sh).
+    /// touch the user's clipboard (scripts/e2e/clipboard.sh stress).
     private var monitoredPasteboard: NSPasteboard {
         guard devMode, let name = ProcessInfo.processInfo.environment["BENTO_CLIPBOARD_PASTEBOARD"], !name.isEmpty else { return .general }
         return NSPasteboard(name: NSPasteboard.Name(name))

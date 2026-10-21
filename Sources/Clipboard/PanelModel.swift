@@ -28,6 +28,7 @@ final class PanelModel: ObservableObject {
     var perform: (Action) -> Void = { _ in }
     weak var searchField: NSTextField?
 
+    private static let log = BentoLog.make("clipboard")
     private let pageSize = 120
     private var limit = 120
     private var exhausted = false
@@ -44,7 +45,10 @@ final class PanelModel: ObservableObject {
 
     func reload(resetSelection: Bool = false, preferIndex: Int? = nil) {
         if resetSelection { limit = pageSize }
+        let start = DispatchTime.now()
         let fresh = store.rows(filter: filter, query: query, limit: limit)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6
+        Self.log.debug("rows: \(fresh.count, privacy: .public) in \(ms, format: .fixed(precision: 1), privacy: .public) ms (query \(self.query.count, privacy: .public) chars, filter \(self.filter.rawValue, privacy: .public))")
         exhausted = fresh.count < limit
         let oldIndex = selectedIndex
         rows = fresh

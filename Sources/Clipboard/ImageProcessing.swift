@@ -156,7 +156,7 @@ final class OCRWorker {
     /// background pass got to it).
     func recognizeNow(id: Int64, url: URL, completion: @escaping (String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let text = TextRecognition.recognize(url: url)
+            let text = autoreleasepool { TextRecognition.recognize(url: url) }
             DispatchQueue.main.async {
                 self?.store?.setOCR(id, text: text)
                 completion(text)
