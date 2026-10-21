@@ -95,17 +95,20 @@ enum OverlapFinder {
     /// Row hashes, ignoring `ignoreRight` columns on the right (overlay
     /// scroll bars move while scrolling). Low bits of each channel are masked
     /// so tiny rendering noise doesn't break matches.
-    static func signature(_ f: PixelFrame, ignoreRight: Int = 0) -> Signature {
+    /// `columns`: only hash the columns marked true (see `staticColumns`).
+    static func signature(_ f: PixelFrame, ignoreRight: Int = 0, columns: [Bool]? = nil) -> Signature {
         let w = max(1, f.width - max(0, min(ignoreRight, f.width - 1)))
+        let xs: [Int] = columns.map { cols in (0..<w).filter { $0 < cols.count && cols[$0] } } ?? Array(0..<w)
         var hashes = [UInt64](repeating: 0, count: f.height)
         var flat = [Bool](repeating: true, count: f.height)
+        guard let x0 = xs.first else { return Signature(hashes: hashes, flat: flat) }
         f.pixels.withUnsafeBufferPointer { px in
             for y in 0..<f.height {
                 let base = px.baseAddress! + y * f.width
-                let first = base[0] & 0xFCFC_FCFC
+                let first = base[x0] & 0xFCFC_FCFC
                 var h: UInt64 = 0xcbf2_9ce4_8422_2325
                 var isFlat = true
-                for x in 0..<w {
+                for x in xs {
                     let v = base[x] & 0xFCFC_FCFC
                     if v != first { isFlat = false }
                     h = (h ^ UInt64(v)) &* 0x0000_0100_0000_01B3
@@ -115,6 +118,28 @@ enum OverlapFinder {
             }
         }
         return Signature(hashes: hashes, flat: flat)
+    }
+
+    /// Columns that are (nearly) the same in both frames at the same
+    /// position: fixed sidebars, floating panels or banners over part of the
+    /// region, plain margins. They carry no motion, and a fixed element in a
+    /// row would otherwise keep that row from matching at any shift (a
+    /// window with a sidebar never stitched). Nil when no column is static.
+    static func staticColumns(_ a: PixelFrame, _ b: PixelFrame) -> [Bool]? {
+        guard a.width == b.width, a.height == b.height, a.width > 0, a.height > 0 else { return nil }
+        let w = a.width, h = a.height
+        let allowed = max(2, h / 50) // differing rows still counted as static
+        var diffs = [Int](repeating: 0, count: w)
+        a.pixels.withUnsafeBufferPointer { pa in
+            b.pixels.withUnsafeBufferPointer { pb in
+                for y in 0..<h {
+                    let ra = pa.baseAddress! + y * w, rb = pb.baseAddress! + y * w
+                    for x in 0..<w where (ra[x] ^ rb[x]) & 0xFCFC_FCFC != 0 { diffs[x] += 1 }
+                }
+            }
+        }
+        let cols = diffs.map { $0 <= allowed }
+        return cols.contains(true) && cols.contains(false) ? cols : nil
     }
 
     static func match(_ a: Signature, _ b: Signature, expected: Int? = nil, minRatio: Double = 0.5) -> Match {
@@ -227,7 +252,15 @@ final class ScrollStitcher {
     func add(_ frame: PixelFrame, expectedShift: Int? = nil) -> Result {
         guard frame.width == width, frame.height == frameHeight else { return .noMatch }
         let sig = OverlapFinder.signature(frame, ignoreRight: ignoreRight)
-        switch OverlapFinder.match(refSig, sig, expected: expectedShift) {
+        var refMatch = refSig, newMatch = sig
+        if refSig.hashes != sig.hashes, let fixed = OverlapFinder.staticColumns(reference, frame) {
+            let moving = fixed.map { !$0 }
+            // Only a sliver changed (a blinking caret): nothing scrolled.
+            if moving.filter({ $0 }).count <= max(2, width / 100) { return .unchanged }
+            refMatch = OverlapFinder.signature(reference, ignoreRight: ignoreRight, columns: moving)
+            newMatch = OverlapFinder.signature(frame, ignoreRight: ignoreRight, columns: moving)
+        }
+        switch OverlapFinder.match(refMatch, newMatch, expected: expectedShift) {
         case .identical: return .unchanged
         case .none: return .noMatch
         case .backward: return .backward

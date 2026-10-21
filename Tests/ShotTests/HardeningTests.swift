@@ -95,6 +95,47 @@ import ShotEditor
         #expect(pixels(of: img) == Array(rows[0..<(offset + visible)].joined()))
     }
 
+    /// A fixed sidebar, and a floating panel over the page margin (a source
+    /// list, a notification over a document) don't scroll; every row with
+    /// them used to be unmatched, so the capture lost track. (A panel over
+    /// moving content is still a known limit: whole-row matching.)
+    @Test func stitchesPastFixedSidebarAndFloatingPanel() throws {
+        let doc = SyntheticDoc(width: 48, seed: 11)
+        let side = 12, visible = 300
+        func frame(_ offset: Int) -> PixelFrame {
+            let content = doc.frame(offset: offset, visible: visible)
+            var px: [UInt32] = []
+            for y in 0..<visible {
+                for x in 0..<side { let v: UInt32 = UInt32((x * 13 + y * 7) & 0xFF); px.append(0xFF30_0000 | v) } // sidebar
+                var row = Array(content.pixels[(y * 48)..<(y * 48 + 30)]) + [UInt32](repeating: 0xFFFF_FFFF, count: 18) // text + margin
+                if y < 90 { for x in 30..<48 { let v: UInt32 = UInt32((x + y) & 0x3F); row[x] = 0xFF00_8000 | v } } // floating panel
+                px += row
+            }
+            return PixelFrame(width: side + 48, height: visible, pixels: px)
+        }
+        let st = ScrollStitcher(first: frame(0))
+        for o in [170, 340, 510, 700, 880] {
+            let r = st.add(frame(o), expectedShift: 170)
+            guard case .appended = r else { Issue.record("offset \(o): \(r)"); return }
+        }
+        let img = try #require(st.makeImage())
+        #expect(img.height == 880 + visible)
+        // The content below the panel is the document, row for row.
+        let out = pixels(of: img), w = side + 48
+        for y in stride(from: 100, to: img.height, by: 37) {
+            #expect(Array(out[(y * w + side)..<(y * w + side + 30)]) == Array(doc.rows[y][0..<30]), "row \(y)")
+        }
+    }
+
+    @Test func caretBlinkAloneIsUnchanged() {
+        let doc = SyntheticDoc(seed: 5)
+        let a = doc.frame(offset: 40, visible: 200)
+        var b = a
+        for y in 50..<70 { b.pixels[y * b.width + 20] = 0xFF00_00FF }
+        let st = ScrollStitcher(first: a)
+        #expect(st.add(b) == .unchanged)
+    }
+
     @Test func shadowCanvasKeepsWindowAtOneToOne() {
         let content = CGSize(width: 1000, height: 600)
         let probe = CGSize(width: 500, height: 300)
