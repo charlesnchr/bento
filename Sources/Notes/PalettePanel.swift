@@ -6,6 +6,8 @@ struct PaletteItem {
     var id: String
     var title: String
     var subtitle: String?
+    /// Computed only when the row is shown (word counts of hundreds of notes are not free).
+    var lazySubtitle: (() -> String)?
     /// Small coloured dot before the subtitle (Raycast's red "Current" dot).
     var subtitleDot: NSColor?
     var symbol: String?
@@ -519,8 +521,9 @@ private final class PaletteRowView: NSView {
         }
         icon.contentTintColor = item.destructive ? .systemRed : .secondaryLabelColor
         icon.isHidden = !hasIcon
-        subtitle.stringValue = item.subtitle ?? ""
-        subtitle.isHidden = !twoLine || item.subtitle == nil
+        let sub = item.subtitle ?? (twoLine ? item.lazySubtitle?() : nil)
+        subtitle.stringValue = sub ?? ""
+        subtitle.isHidden = !twoLine || sub == nil
         dot.isHidden = subtitle.isHidden || item.subtitleDot == nil
         dot.layer?.backgroundColor = item.subtitleDot?.cgColor
         check.isHidden = !item.checked

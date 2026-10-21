@@ -662,7 +662,7 @@ final class NotesController {
         return PaletteItem(
             id: n.id,
             title: NoteText.displayTitle(of: n.body),
-            subtitle: "\(when)  •  \(countText(n))",
+            lazySubtitle: { [weak self] in "\(when)  •  \(self?.countText(n) ?? "")" },
             subtitleDot: isCurrent ? styledAccent : nil,
             buttons: [
                 PaletteButton(symbol: n.pinned ? "pin.slash" : "pin", help: n.pinned ? "Unpin Note  ⌘." : "Pin Note  ⌘.") { [weak self] in self?.togglePin(id) },
@@ -695,7 +695,7 @@ final class NotesController {
                 let items = self.store.trashedNotes.filter { FuzzyMatch.noteScore(q, title: NoteText.displayTitle(of: $0.body), body: $0.body) != nil }.map { n -> PaletteItem in
                     let id = n.id
                     return PaletteItem(id: id, title: NoteText.displayTitle(of: n.body),
-                                       subtitle: "Deleted \(RelativeDate.short(n.trashedAt ?? n.updatedAt))  •  \(self.countText(n))",
+                                       lazySubtitle: { [weak self] in "Deleted \(RelativeDate.short(n.trashedAt ?? n.updatedAt))  •  \(self?.countText(n) ?? "")" },
                                        buttons: [
                                            PaletteButton(symbol: "arrow.uturn.backward", help: "Restore Note  ↩") { [weak self] in self?.window.palette.close(); self?.restore(id) },
                                            PaletteButton(symbol: "trash", help: "Delete Permanently  ⌃X") { [weak self] in self?.deletePermanently(id) },
