@@ -546,17 +546,17 @@ final class EditorController: NSObject, NSWindowDelegate {
     func recognizeText() {
         if editingTextID != nil { endTextEditing() }
         guard let img = flattened(region: region) else { return }
-        HUD.show("Recognising text…", symbol: "text.viewfinder", duration: 5)
+        Feedback.hud("Recognising text…", symbol: "text.viewfinder", duration: 5)
         Task { @MainActor in
             let text = (try? await TextRecognizer.recognize(img)) ?? ""
-            let codes = text.isEmpty ? TextRecognizer.barcodes(img) : []
+            let codes = text.isEmpty ? await Task.detached(priority: .userInitiated) { TextRecognizer.barcodes(img) }.value : []
             let result = text.isEmpty ? codes.joined(separator: "\n") : text
             if result.isEmpty {
-                HUD.show("No text found", symbol: "text.viewfinder")
+                Feedback.hud("No text found", symbol: "text.viewfinder")
             } else {
                 Clipboard.copyText(result)
                 let lines = result.split(separator: "\n").count
-                HUD.show(codes.isEmpty ? "Copied \(lines) line\(lines == 1 ? "" : "s") of text" : "Copied QR code", symbol: "text.viewfinder")
+                Feedback.hud(codes.isEmpty ? "Copied \(lines) line\(lines == 1 ? "" : "s") of text" : "Copied QR code", symbol: "text.viewfinder")
             }
         }
     }

@@ -227,27 +227,37 @@ public enum TextRecognizer {
     /// Recognizes text, preserving reading order. Vision returns one observation
     /// per text run, so runs on the same baseline (table cells, "0001  text")
     /// are joined into one line instead of one line each.
+    /// Runs off the main thread (Vision takes 0.2–2 s on a large image).
     public static func recognize(_ image: CGImage, languages: [String]? = nil) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
-            let request = VNRecognizeTextRequest { req, err in
-                if let err { cont.resume(throwing: err); return }
-                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> Run? in
-                    guard let s = o.topCandidates(1).first?.string else { return nil }
-                    let b = o.boundingBox // bottom-left origin; flip to top-down
-                    return Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    cont.resume(returning: try recognizeSync(image, languages: languages))
+                } catch {
+                    cont.resume(throwing: error)
                 }
-                cont.resume(returning: lines(runs))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = true
-            if let languages { request.recognitionLanguages = languages }
-            do {
-                try VNImageRequestHandler(cgImage: image).perform([request])
-            } catch {
-                cont.resume(throwing: error)
             }
         }
+    }
+
+    /// Synchronous OCR. Results are read after `perform` instead of in a
+    /// completion handler, which Vision may call and then also throw, so the
+    /// continuation above is resumed exactly once.
+    static func recognizeSync(_ image: CGImage, languages: [String]? = nil) throws -> String {
+        // Vision rejects images this small; there is no text in them anyway.
+        guard image.width >= 3, image.height >= 3 else { return "" }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.automaticallyDetectsLanguage = true
+        if let languages { request.recognitionLanguages = languages }
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let runs = (request.results ?? []).compactMap { o -> Run? in
+            guard let s = o.topCandidates(1).first?.string else { return nil }
+            let b = o.boundingBox // bottom-left origin; flip to top-down
+            return Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+        }
+        return lines(runs)
     }
 
     /// Groups runs into lines (vertical overlap of at least half the smaller
@@ -270,6 +280,7 @@ public enum TextRecognizer {
 
     /// Detects QR / barcodes and returns their payloads.
     public static func barcodes(_ image: CGImage) -> [String] {
+        guard image.width >= 3, image.height >= 3 else { return [] }
         let request = VNDetectBarcodesRequest()
         try? VNImageRequestHandler(cgImage: image).perform([request])
         return (request.results ?? []).compactMap { $0.payloadStringValue }
