@@ -32,10 +32,10 @@ public enum BentoApp {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let modules: [BentoModule]
     private var statusItem: NSStatusItem?
-    private var settingsWindow: NSWindow?
+    fileprivate(set) var settingsWindow: NSWindow?
     private var running: Set<String> = []
     private var observers: [NSObjectProtocol] = []
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
@@ -243,11 +243,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.isReleasedWhenClosed = false
             w.center()
             w.setFrameAutosaveName("BentoSettings")
+            w.delegate = self
             settingsWindow = w
         }
         AppActivation.activateSelf()
         settingsWindow?.makeKeyAndOrderFront(nil)
         settingsWindow?.orderFrontRegardless()
+    }
+}
+
+extension AppDelegate {
+    /// Drop the settings UI entirely when closed so it costs nothing while idle.
+    func windowWillClose(_ notification: Notification) {
+        guard let w = notification.object as? NSWindow, w === settingsWindow else { return }
+        DispatchQueue.main.async { [weak self] in
+            w.contentViewController = nil
+            self?.settingsWindow = nil
+        }
     }
 }
 
