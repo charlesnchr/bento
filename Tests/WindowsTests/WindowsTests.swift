@@ -512,3 +512,139 @@ private func snap(_ x: CGFloat, _ y: CGFloat, screens: [ScreenRect] = [screenA],
     let gone = LayoutManager.map(entry(R(-1920, 0, 960, 1080), on: R(-1920, 0, 1920, 1080)), to: snap)
     #expect(gone.1 == 0 && gone.0 == R(0, 25, 800, 960))
 }
+
+// MARK: - Rectangle import
+
+private func sc(_ s: String) -> Shortcut { Shortcut(s)! }
+
+private var bentoDefaults: [String: Shortcut] {
+    var d: [String: Shortcut] = [:]
+    for c in WindowCommand.allCases { if let s = c.defaultShortcut { d[c.actionID] = Shortcut(s) } }
+    return d
+}
+
+private func mas(_ code: Int, _ flags: Int) -> [String: Any] { ["keyCode": code, "modifierFlags": flags] }
+
+private let ctrlOpt = 0x40000 | 0x80000
+
+/// This Mac's Rectangle Pro preferences.
+private let thisMacPro: [String: Any] = [
+    "leftHalf": mas(43, 0x80000), "rightHalf": mas(47, 0x80000),
+    "topHalf": mas(43, 0xA0000), "bottomHalf": mas(47, 0xA0000),
+    "moveLeft": mas(123, ctrlOpt), "moveRight": mas(124, ctrlOpt), "moveUp": mas(126, ctrlOpt), "moveDown": mas(125, ctrlOpt),
+    "nextDisplayRatio": mas(30, ctrlOpt), "prevDisplayRatio": mas(33, ctrlOpt),
+    "nextSpace": mas(30, 0xE0000), "prevSpace": mas(33, 0xE0000),
+    "gestures": "[33,{\"flags\":1703936,\"trail\":0},32,{\"flags\":1572864,\"trail\":0}]",
+    "almostMaximize": [String: Any](), "centerThird": [String: Any](), "centerTwoThirds": [String: Any](),
+    "topLeftSixth": [String: Any](), "fillLeft": [String: Any](), "tidy": [String: Any](),
+    "hideMenubarIcon": true, "lastVersion": "192",
+]
+
+private func importPlan(_ prefs: [String: Any], pro: Bool = true, settings: WindowsSettings = WindowsSettings()) -> RectangleImport.Plan {
+    RectangleImport.plan(prefs: prefs, sourceName: pro ? "Rectangle Pro" : "Rectangle", isPro: pro, settings: settings,
+                         current: bentoDefaults, spaces: true)
+}
+
+@Test func importThisMacRectanglePro() {
+    let p = importPlan(thisMacPro)
+    func bound(_ id: String) -> Shortcut? { p.assignments[id]?.shortcut }
+    #expect(bound("windows.left-half") == sc("opt+comma"))
+    #expect(bound("windows.right-half") == sc("opt+period"))
+    #expect(bound("windows.top-half") == sc("opt+shift+comma"))
+    #expect(bound("windows.bottom-half") == sc("opt+shift+period"))
+    #expect(bound("windows.move-left") == sc("ctrl+opt+left"))
+    #expect(bound("windows.move-down") == sc("ctrl+opt+down"))
+    #expect(bound("windows.next-display") == sc("ctrl+opt+rightbracket"))
+    #expect(bound("windows.previous-display") == sc("ctrl+opt+leftbracket"))
+    #expect(bound("windows.next-space") == sc("ctrl+opt+shift+rightbracket"))
+    #expect(bound("windows.prev-space") == sc("ctrl+opt+shift+leftbracket"))
+    // {} = explicitly unbound.
+    #expect(p.assignments["windows.center-third"] == .init(shortcut: nil, origin: .unbound, key: "centerThird"))
+    #expect(p.assignments["windows.almost-maximize"]?.origin == .unbound)
+    #expect(p.assignments["windows.top-left-sixth"]?.shortcut == nil)
+    // Missing = Rectangle's default.
+    #expect(p.assignments["windows.first-third"] == .init(shortcut: sc("ctrl+opt+d"), origin: .rectangleDefault, key: "firstThird"))
+    #expect(bound("windows.maximize") == sc("ctrl+opt+return"))
+    #expect(bound("windows.display-right") == sc("ctrl+opt+cmd+right")) // Pro's plain nextDisplay
+    #expect(p.count(.explicit) == 12)
+    #expect(p.unbind.isEmpty)
+    #expect(p.skipped.isEmpty)
+    #expect(p.notes.isEmpty)
+    // Gestures: 32 = move, 33 = resize.
+    #expect(p.settings.dragMove && Set(p.settings.dragMoveModifiers) == ["cmd", "opt"])
+    #expect(p.settings.dragResize && Set(p.settings.dragResizeModifiers) == ["cmd", "opt", "shift"])
+    #expect(p.settings.importedFromRectangle)
+    // Untouched settings keep their values.
+    #expect(p.settings.snapping && p.settings.windowGap == 0 && p.settings.cycleOnRepeat)
+}
+
+@Test func importGskm4StyleRectanglePro() {
+    var prefs: [String: Any] = [
+        "nextDisplayRatio": mas(30, ctrlOpt), "prevDisplayRatio": mas(33, ctrlOpt),
+        "gestures": "[32,{\"flags\":1572864,\"trail\":0}]",
+        "fillLeft": mas(123, 0x40000 | 0x100000),
+    ]
+    for k in ["almostMaximize", "firstThird", "centerThird", "lastThird", "firstTwoThirds", "lastTwoThirds", "centerTwoThirds",
+              "topLeftSixth", "nextSpace", "prevSpace"] { prefs[k] = [String: Any]() }
+    let p = importPlan(prefs)
+    #expect(p.assignments["windows.first-third"]?.origin == .unbound)
+    #expect(p.assignments["windows.last-two-thirds"]?.shortcut == nil)
+    #expect(p.assignments["windows.next-space"]?.origin == .unbound)
+    #expect(p.assignments["windows.left-half"]?.shortcut == sc("ctrl+opt+left"))
+    #expect(p.assignments["windows.next-display"]?.shortcut == sc("ctrl+opt+rightbracket"))
+    #expect(p.skipped == ["fillLeft ⌃⌘←"])
+    #expect(p.settings.dragMove && !p.settings.dragResize)
+}
+
+@Test func importPlainRectangleFreesConflictingBentoShortcuts() {
+    let prefs: [String: Any] = [
+        "alternateDefaultShortcuts": true,
+        "gapSize": 8, "screenEdgeGapTop": 10,
+        "subsequentExecutionMode": 3,
+        "cycleSizesIsChanged": true, "selectedCycleSizes": 0b11010,
+        "windowSnapping": 2, "almostMaximizeWidth": 0.8, "sizeOffset": 50,
+        "applyGapsToMaximize": 2,
+    ]
+    let p = importPlan(prefs, pro: false)
+    // Plain Rectangle's Next/Previous Display defaults to ⌃⌥⌘→/←, which Bento's spatial actions use.
+    #expect(p.assignments["windows.next-display"]?.shortcut == sc("ctrl+opt+cmd+right"))
+    #expect(p.unbind == ["windows.display-left", "windows.display-right"])
+    #expect(p.assignments["windows.next-space"] == nil) // Pro only
+    let s = p.settings
+    #expect(s.windowGap == 8 && s.screenMargin == 18 && !s.gapsOnMaximize)
+    #expect(s.cycleOnRepeat && s.moveToAdjacentDisplayOnRepeat)
+    #expect(s.cycleSizes == ["1/4", "1/2", "3/4"])
+    #expect(!s.snapping)
+    #expect(s.almostMaximizeWidth == 0.8 && s.sizeStep == 50)
+    #expect(s.dragMove && s.dragResize) // no gestures key: unchanged
+}
+
+@Test func importSpectacleDefaultsAndDuplicates() {
+    let p = importPlan(["alternateDefaultShortcuts": false, "maximize": mas(43, 0x80000), "center": mas(43, 0x80000)], pro: false)
+    #expect(p.assignments["windows.left-half"]?.shortcut == sc("cmd+opt+left"))
+    #expect(p.assignments["windows.top-left"]?.shortcut == sc("ctrl+cmd+left"))
+    #expect(p.assignments["windows.first-third"]?.shortcut == nil) // no Spectacle default
+    #expect(p.notes.count == 1)
+    #expect(RectangleImport.summary(p).contains("2 shortcuts set"))
+}
+
+@Test func importValueParsing() {
+    #expect(RectangleImport.optionalBool(NSNumber(value: 1)) == true)
+    #expect(RectangleImport.optionalBool(NSNumber(value: 2)) == false)
+    #expect(RectangleImport.optionalBool(NSNumber(value: 0)) == nil)
+    #expect(RectangleImport.optionalBool(true) == true)
+    #expect(RectangleImport.optionalBool(false) == false)
+    // Function / keypad bits on arrow keys are dropped.
+    #expect(RectangleImport.shortcut(mas(123, ctrlOpt | 0x800000 | 0x200000)) == sc("ctrl+opt+left"))
+    #expect(RectangleImport.shortcut([String: Any]()) == nil)
+    #expect(RectangleImport.modifierNames(0x1A0000) == ["opt", "shift", "cmd"])
+}
+
+@Test func symbolicHotKeyParsing() {
+    let on: [String: Any] = ["enabled": true, "value": ["parameters": [65535, 124, 8650752], "type": "standard"]]
+    let r = SpaceMover.shortcut(fromSymbolicHotKey: on)
+    #expect(r?.0 == 124 && r?.1 == [.maskControl, .maskSecondaryFn])
+    var off = on
+    off["enabled"] = false
+    #expect(SpaceMover.shortcut(fromSymbolicHotKey: off) == nil)
+}

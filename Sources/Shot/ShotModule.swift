@@ -334,46 +334,14 @@ public final class ShotModule: BentoModule {
 
 /// OCR text helpers.
 enum OCRText {
-    /// Recognizes text and rebuilds lines: Vision returns one observation per
-    /// text run, so runs on the same baseline (e.g. table cells, "0001  text")
-    /// are joined with spaces instead of newlines.
     static func recognize(_ image: CGImage) async throws -> String {
-        try await withCheckedThrowingContinuation { cont in
-            let request = VNRecognizeTextRequest { req, err in
-                if let err { cont.resume(throwing: err); return }
-                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> OCRRun? in
-                    guard let s = o.topCandidates(1).first?.string else { return nil }
-                    // Vision boxes are normalized with a bottom-left origin; flip to top-down.
-                    let b = o.boundingBox
-                    return OCRRun(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
-                }
-                cont.resume(returning: lines(runs))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = true
-            do { try VNImageRequestHandler(cgImage: image).perform([request]) } catch { cont.resume(throwing: error) }
-        }
+        try await TextRecognizer.recognize(image)
     }
 
     struct OCRRun { var text: String; var minX: CGFloat; var minY: CGFloat; var maxY: CGFloat }
 
-    /// Groups runs into lines (vertical overlap of at least half the smaller
-    /// height), each line left to right, lines top to bottom.
     static func lines(_ runs: [OCRRun]) -> String {
-        var lines: [[OCRRun]] = []
-        for r in runs.sorted(by: { $0.minY < $1.minY }) {
-            if let i = lines.lastIndex(where: { line in
-                guard let f = line.first else { return false }
-                let overlap = min(f.maxY, r.maxY) - max(f.minY, r.minY)
-                return overlap >= 0.5 * min(f.maxY - f.minY, r.maxY - r.minY)
-            }) {
-                lines[i].append(r)
-            } else {
-                lines.append([r])
-            }
-        }
-        return lines.map { $0.sorted { $0.minX < $1.minX }.map(\.text).joined(separator: " ") }.joined(separator: "\n")
+        TextRecognizer.lines(runs.map { .init(text: $0.text, minX: $0.minX, minY: $0.minY, maxY: $0.maxY) })
     }
 
     /// Joins recognized lines into flowing text (Shottr's "remove line breaks"),

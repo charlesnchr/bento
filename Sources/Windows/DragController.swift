@@ -289,7 +289,8 @@ final class DragController: NSObject {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             enhancedUIApp = nil
         }
-        if s.handle == nil, config.snap { snapper.endExternalMove(commit: true) }
+        let snapped = s.handle == nil && config.snap && snapper.endExternalMove(commit: true)
+        if !snapped, let a = s.applied, a != s.startMouse { engine.didPlace(s.window) }
         locked { if session === s { session = nil } }
     }
 

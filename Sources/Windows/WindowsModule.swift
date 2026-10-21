@@ -15,6 +15,7 @@ public final class WindowsModule: BentoModule {
     private(set) lazy var drag = DragController(engine: engine, snapper: snapper)
     private(set) lazy var layouts = LayoutManager(engine: engine)
     let stash = StashManager()
+    let spaces = SpaceMover()
 
     private var configObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
@@ -39,6 +40,15 @@ public final class WindowsModule: BentoModule {
             BentoAction("windows.stash-reveal", "Reveal Stashed Window", group: "Stash", hiddenFromMenu: true) { [weak self] in self?.stash.toggleReveal() },
             BentoAction("windows.stash-unstash-all", "Unstash All", group: "Stash", hiddenFromMenu: true) { [weak self] in self?.stash.unstashAll() },
             BentoAction("windows.save-layout", "Save Layout…", group: "Layouts", hiddenFromMenu: true) { [weak self] in self?.promptSaveLayout() },
+            BentoAction(RectangleImport.nextSpaceID, "Next Space", group: WindowCommand.Group.display.rawValue, hiddenFromMenu: true) { [weak self] in
+                self?.spaces.move(direction: 1)
+            },
+            BentoAction(RectangleImport.prevSpaceID, "Previous Space", group: WindowCommand.Group.display.rawValue, hiddenFromMenu: true) { [weak self] in
+                self?.spaces.move(direction: -1)
+            },
+            BentoAction("windows.import-rectangle", "Import Rectangle Settings…", group: "Other", hiddenFromMenu: true) { [weak self] in
+                self?.importFromRectangle(interactive: true)
+            },
         ]
         for layout in settings.layouts {
             out.append(BentoAction(layout.actionID, "Restore “\(layout.name)”", group: "Layouts", hiddenFromMenu: true) { [weak self] in
@@ -55,9 +65,14 @@ public final class WindowsModule: BentoModule {
         started = true
         ConfigStore.shared.materialize(id, default: WindowsSettings())
         layoutSignature = signature(settings)
-        snapper.isSuspended = { [weak self] in self?.drag.isDragging ?? false }
+        snapper.isSuspended = { [weak self] in (self?.drag.isDragging ?? false) || (self?.spaces.isBusy ?? false) }
         applySettings()
         configObserver = ConfigStore.shared.observe(id) { [weak self] in self?.settingsChanged() }
+        if !settings.importedFromRectangle {
+            // First start: pick up this Mac's Rectangle habits. Deferred so the
+            // registry has registered our actions (setShortcut compares defaults).
+            DispatchQueue.main.async { [weak self] in self?.importFromRectangle(interactive: false) }
+        }
     }
 
     public func stop() {
@@ -130,6 +145,44 @@ public final class WindowsModule: BentoModule {
         activationObserver = nil
     }
 
+    // MARK: Rectangle import
+
+    var rectangleSource: RectangleImport.Source? { RectangleImport.locate() }
+
+    func importFromRectangle(interactive: Bool) {
+        guard started else { return }
+        guard let src = RectangleImport.locate(), let prefs = RectangleImport.read(src.url) else {
+            if interactive {
+                showAlert("No Rectangle settings found",
+                          "Looked for ~/Library/Preferences/com.knollsoft.Hookshot.plist (Rectangle Pro) and com.knollsoft.Rectangle.plist.")
+            } else {
+                var s = settings
+                s.importedFromRectangle = true
+                ConfigStore.shared.setSection(id, s)
+            }
+            return
+        }
+        let reg = ActionRegistry.shared
+        var current: [String: Shortcut] = [:]
+        for a in actions { if let sc = reg.shortcut(for: a.id) { current[a.id] = sc } }
+        let plan = RectangleImport.plan(prefs: prefs, sourceName: src.name, isPro: src.isPro, settings: settings,
+                                        current: current, spaces: true)
+        RectangleImport.apply(plan)
+        if interactive {
+            showAlert("Imported from \(src.name)", RectangleImport.summary(plan))
+        } else {
+            HUD.show("Imported \(src.name) shortcuts", symbol: "square.and.arrow.down", duration: 2)
+        }
+    }
+
+    private func showAlert(_ title: String, _ text: String) {
+        AppActivation.activateSelf()
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.runModal()
+    }
+
     // MARK: Layouts
 
     func saveLayout(named name: String) {
@@ -185,6 +238,11 @@ public final class WindowsModule: BentoModule {
             if let g = lastGroup, g != cmd.group { menu.addItem(.separator()) }
             lastGroup = cmd.group
             if let a = reg.action(cmd.actionID) { menu.addItem(reg.menuItem(for: a)) }
+            if cmd == .displayRight {
+                for sid in [RectangleImport.nextSpaceID, RectangleImport.prevSpaceID] {
+                    if let a = reg.action(sid) { menu.addItem(reg.menuItem(for: a)) }
+                }
+            }
         }
         menu.addItem(.separator())
         for group in [WindowCommand.Group.fourths, .sixths, .move, .more, .multi] {

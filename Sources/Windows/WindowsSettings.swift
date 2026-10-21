@@ -44,6 +44,10 @@ struct WindowsSettings: Codable, Equatable {
     var stashSliver = 12.0
     var stashRevealOnHover = true
 
+    /// Set once Rectangle / Rectangle Pro settings were imported (automatically
+    /// on first start, or from settings), so the automatic import runs once.
+    var importedFromRectangle = false
+
     init() {}
 
     // MARK: Derived

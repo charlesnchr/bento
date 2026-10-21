@@ -72,6 +72,7 @@ final class WindowEngine {
             window.setFrame(r)
             lastActions[wid] = nil
             hud(cmd)
+            didPlace(window)
             return true
         }
         // Drag-to-snap records the frame from before the drag itself.
@@ -95,7 +96,13 @@ final class WindowEngine {
         }
         prune()
         if source == .keyboard { hud(cmd) }
+        didPlace(window)
         return true
+    }
+
+    /// Tells other modules (Tiling) that the user explicitly placed a window.
+    func didPlace(_ w: AXWindow) {
+        NotificationCenter.default.post(name: BentoEvents.windowPlaced, object: nil, userInfo: ["window": w])
     }
 
     /// Sets a frame and, when the app keeps a different size (minimum size,
@@ -218,6 +225,7 @@ final class WindowEngine {
             lastActions[id] = nil
         }
         apply(r, to: w, from: current, visible: v, crossDisplay: false)
+        didPlace(w)
     }
 }
 

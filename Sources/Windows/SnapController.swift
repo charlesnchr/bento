@@ -129,14 +129,16 @@ final class SnapController {
         }
     }
 
-    /// Snaps the window if the cursor is in a snap area.
-    private func commit() {
+    /// Snaps the window if the cursor is in a snap area. Returns true if it will.
+    @discardableResult
+    private func commit() -> Bool {
         footprint.hide()
-        guard let area, let w = axWindow else { return }
+        guard let area, let w = axWindow else { return false }
         // Let the app finish its own drag handling before moving the window.
         DispatchQueue.main.async { [engine] in
             engine.perform(area.command, on: w, screenIndex: area.screenIndex, source: .snap)
         }
+        return true
     }
 
     /// Modifier-drag entry points: the drag controller moves the window itself
@@ -149,9 +151,12 @@ final class SnapController {
         screens = ScreenSnapshot.current()
     }
 
-    func endExternalMove(commit doCommit: Bool) {
-        if doCommit { commit() }
+    /// Returns true if the window is being snapped (the engine then reports the placement).
+    @discardableResult
+    func endExternalMove(commit doCommit: Bool) -> Bool {
+        let snapped = doCommit && commit()
         reset()
+        return snapped
     }
 
     // MARK: AX lookup

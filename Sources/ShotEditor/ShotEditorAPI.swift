@@ -215,21 +215,28 @@ public final class ShotEditor {
 
 /// On-device OCR (Vision). Shared by capture ("copy text from area") and editor.
 public enum TextRecognizer {
-    /// Recognizes text, preserving line order. Accurate mode with language correction.
+    /// A recognized text run in normalized, top-left-origin coordinates.
+    public struct Run {
+        public var text: String
+        public var minX: CGFloat, minY: CGFloat, maxY: CGFloat
+        public init(text: String, minX: CGFloat, minY: CGFloat, maxY: CGFloat) {
+            self.text = text; self.minX = minX; self.minY = minY; self.maxY = maxY
+        }
+    }
+
+    /// Recognizes text, preserving reading order. Vision returns one observation
+    /// per text run, so runs on the same baseline (table cells, "0001  text")
+    /// are joined into one line instead of one line each.
     public static func recognize(_ image: CGImage, languages: [String]? = nil) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
             let request = VNRecognizeTextRequest { req, err in
                 if let err { cont.resume(throwing: err); return }
-                let obs = (req.results as? [VNRecognizedTextObservation]) ?? []
-                let lines = obs
-                    .sorted { a, b in
-                        // Top-to-bottom, then left-to-right (Vision uses bottom-left origin).
-                        abs(a.boundingBox.midY - b.boundingBox.midY) > 0.01
-                            ? a.boundingBox.midY > b.boundingBox.midY
-                            : a.boundingBox.minX < b.boundingBox.minX
-                    }
-                    .compactMap { $0.topCandidates(1).first?.string }
-                cont.resume(returning: lines.joined(separator: "\n"))
+                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> Run? in
+                    guard let s = o.topCandidates(1).first?.string else { return nil }
+                    let b = o.boundingBox // bottom-left origin; flip to top-down
+                    return Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+                }
+                cont.resume(returning: lines(runs))
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
@@ -241,6 +248,24 @@ public enum TextRecognizer {
                 cont.resume(throwing: error)
             }
         }
+    }
+
+    /// Groups runs into lines (vertical overlap of at least half the smaller
+    /// height), each line left to right, lines top to bottom.
+    public static func lines(_ runs: [Run]) -> String {
+        var lines: [[Run]] = []
+        for r in runs.sorted(by: { $0.minY < $1.minY }) {
+            if let i = lines.lastIndex(where: { line in
+                guard let f = line.first else { return false }
+                let overlap = min(f.maxY, r.maxY) - max(f.minY, r.minY)
+                return overlap >= 0.5 * min(f.maxY - f.minY, r.maxY - r.minY)
+            }) {
+                lines[i].append(r)
+            } else {
+                lines.append([r])
+            }
+        }
+        return lines.map { $0.sorted { $0.minX < $1.minX }.map(\.text).joined(separator: " ") }.joined(separator: "\n")
     }
 
     /// Detects QR / barcodes and returns their payloads.

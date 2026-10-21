@@ -111,15 +111,20 @@ enum ImageCodec {
 }
 
 enum Clipboard {
+    /// Puts PNG on the pasteboard and promises TIFF lazily: an uncompressed
+    /// TIFF of a Retina fullscreen capture is ~24 MB, and most apps take PNG.
     static func copy(_ image: CGImage, scale: CGFloat) {
         let rep = NSBitmapImageRep(cgImage: image)
         rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        guard let png = ImageCodec.data(image, scale: scale, format: .png) ?? rep.representation(using: .png, properties: [:]) else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
-        if let png = ImageCodec.data(image, scale: scale, format: .png) ?? rep.representation(using: .png, properties: [:]) {
-            pb.setData(png, forType: .png)
-        }
-        if let tiff = rep.tiffRepresentation { pb.setData(tiff, forType: .tiff) }
+        let item = NSPasteboardItem()
+        item.setData(png, forType: .png)
+        let provider = LazyTIFFProvider(png: png, pointSize: rep.size)
+        item.setDataProvider(provider, forTypes: [.tiff])
+        LazyTIFFProvider.current = provider
+        pb.writeObjects([item])
     }
 
     static func copyText(_ s: String) {
@@ -139,5 +144,28 @@ enum Clipboard {
               let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
         let scale = img.size.width > 0 ? max(1, (CGFloat(rep.pixelsWide) / img.size.width).rounded()) : 1
         return (cg, scale)
+    }
+}
+
+/// Produces TIFF from the stored PNG only when a paste target asks for it.
+final class LazyTIFFProvider: NSObject, NSPasteboardItemDataProvider {
+    /// The pasteboard doesn't retain providers; keep the latest alive.
+    static var current: LazyTIFFProvider?
+    private let png: Data
+    private let pointSize: NSSize
+
+    init(png: Data, pointSize: NSSize) {
+        self.png = png
+        self.pointSize = pointSize
+    }
+
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        guard type == .tiff, let rep = NSBitmapImageRep(data: png) else { return }
+        rep.size = pointSize
+        if let tiff = rep.tiffRepresentation { item.setData(tiff, forType: .tiff) }
+    }
+
+    func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {
+        if LazyTIFFProvider.current === self { LazyTIFFProvider.current = nil }
     }
 }

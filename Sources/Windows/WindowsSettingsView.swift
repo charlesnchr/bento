@@ -24,6 +24,7 @@ struct WindowsSettingsView: View {
                     }
                 }
             }
+            importSection
             keyboardSection
             gapsSection
             snappingSection
@@ -37,6 +38,25 @@ struct WindowsSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             axGranted = Permissions.accessibility
+        }
+    }
+
+    // MARK: Import
+
+    private var importSection: some View {
+        let source = module.rectangleSource
+        return Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.map { "Import from \($0.name)" } ?? "Import from Rectangle")
+                    Text(source == nil ? "No Rectangle or Rectangle Pro settings on this Mac."
+                                       : "Shortcuts, modifier-drag, gaps, snapping and repeat behaviour.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Import…") { module.importFromRectangle(interactive: true) }
+                    .disabled(source == nil)
+            }
         }
     }
 
@@ -269,7 +289,7 @@ struct WindowsSettingsView: View {
 
     private var shortcutSections: some View {
         let actions = module.actions
-        let groups: [String] = WindowCommand.Group.allCases.map(\.rawValue) + ["Stash"]
+        let groups: [String] = WindowCommand.Group.allCases.map(\.rawValue) + ["Stash", "Other"]
         return ForEach(groups, id: \.self) { group in
             let items = actions.filter { $0.group == group }
             if !items.isEmpty {
