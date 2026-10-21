@@ -40,7 +40,6 @@ public struct AXWindow: Hashable {
     /// The window under a point in AX coordinates (e.g. under the mouse).
     public static func at(_ point: CGPoint) -> AXWindow? {
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.5)
         var el: AXUIElement?
         guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &el) == .success, var cur = el else { return nil }
         var pid: pid_t = 0
@@ -182,12 +181,26 @@ public extension AXUIElement {
     func ax<T>(_ attribute: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(self, attribute as CFString, &value) == .success, let value else { return nil }
-        if T.self == AXUIElement.self || T.self == AXValue.self { return (value as! T) }
+        // CF types can't be checked with `as?`; compare type ids before casting.
+        if T.self == AXUIElement.self {
+            return CFGetTypeID(value) == AXUIElementGetTypeID() ? (value as! T) : nil
+        }
+        if T.self == AXValue.self {
+            return CFGetTypeID(value) == AXValueGetTypeID() ? (value as! T) : nil
+        }
         return value as? T
     }
 }
 
 // MARK: - Screen geometry
+
+public enum AXDefaults {
+    /// Caps every AX call (the system-wide element's timeout is the process
+    /// default) so a hung app can never stall Bento for the 6 s default.
+    public static func install(timeout: Float = 1.0) {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), timeout)
+    }
+}
 
 public extension NSScreen {
     /// Height of the primary display (the one with the menu bar at origin).

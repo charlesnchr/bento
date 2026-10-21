@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             signalSources.append(src)
         }
         installMainMenu()
+        AXDefaults.install()
         ConfigStore.shared.materialize("general", default: GeneralSettings())
 
         ActionRegistry.shared.isModuleEnabled = { [weak self] id in self?.running.contains(id) ?? false }
