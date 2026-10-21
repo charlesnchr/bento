@@ -146,13 +146,26 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         panel.beginSheetModal(for: window) { [weak self] resp in
             guard resp == .OK, let url = panel.url, let img = self?.flattened(e) else { return }
             let format: EditorSettings.Format = ["jpg", "jpeg"].contains(url.pathExtension.lowercased()) ? .jpeg : .png
-            try? ImageCodec.write(img, scale: e.doc.scale, format: format, quality: save.jpegQuality, to: url)
+            do {
+                try ImageCodec.write(img, scale: e.doc.scale, format: format, quality: save.jpegQuality, to: url)
+            } catch {
+                guard let window = self?.window else { return }
+                let alert = NSAlert()
+                alert.messageText = "Couldn't save the image"
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
         }
     }
 
     private func flattened(_ e: HistoryStore.Entry) -> CGImage? {
-        guard let image = HistoryStore.shared.loadImage(e) else { return nil }
-        return Renderer.flatten(e.doc, image: image, effects: EffectCache())
+        guard let image = HistoryStore.shared.loadImage(e) else {
+            Feedback.hud("Capture not found", symbol: "exclamationmark.triangle")
+            return nil
+        }
+        // The document's pixel size must match the file actually on disk.
+        let doc = e.doc.sanitized(imageWidth: image.width, imageHeight: image.height)
+        return Renderer.flatten(doc, image: image, effects: EffectCache())
     }
 
     func contextMenu() -> NSMenu {
