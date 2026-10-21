@@ -320,3 +320,12 @@ private func state(_ kind: LayoutKind, _ ids: [WindowID], placement: Placement =
     #expect(s.clampedMasterRatio == LayoutMath.maxRatio)
     #expect(s.clampedResizeStep == 0.01)
 }
+
+@Test func mouseResizeVersusMove() {
+    let old = CGRect(x: 0, y: 0, width: 500, height: 600)
+    #expect(TilingManager.isResize(from: old, to: CGRect(x: 0, y: 0, width: 620, height: 600)))       // right edge
+    #expect(TilingManager.isResize(from: old, to: CGRect(x: -50, y: -40, width: 550, height: 640)))   // top-left corner
+    #expect(!TilingManager.isResize(from: old, to: CGRect(x: 100, y: 50, width: 500, height: 600)))   // plain move
+    // A move whose size changed too (Windows restores the pre-snap size on drag) is still a move.
+    #expect(!TilingManager.isResize(from: old, to: CGRect(x: 300, y: 200, width: 400, height: 300)))
+}

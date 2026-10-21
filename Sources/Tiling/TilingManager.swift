@@ -134,8 +134,7 @@ final class TilingManager {
         observers = [:]
         refreshWork?.cancel(); refreshWork = nil; refreshDeadline = nil
         externalWork?.cancel(); externalWork = nil
-        if let m = mouseMonitor { NSEvent.removeMonitor(m) }
-        mouseMonitor = nil
+        removeMouseMonitor()
         displays = [:]; screenAreas = [:]; windows = [:]; idByElement = [:]; visible = []
         expected = [:]; lastSet = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]; externallyMoved = []
         forcedPIDs = []; observerFailures = [:]
@@ -213,9 +212,15 @@ final class TilingManager {
     // MARK: - Moves and drags
 
     private func windowMoved(_ wid: WindowID) {
-        guard !dragging.contains(wid), visible.contains(wid), let t = windows[wid], !t.floating, let cur = t.ax.frame else { return }
+        guard !dragging.contains(wid), let t = windows[wid], !t.floating else { return }
+        guard visible.contains(wid) else {
+            // Not laid out right now (full screen, another Space…): its state may have changed.
+            scheduleRefresh(after: 0.3)
+            return
+        }
+        guard let cur = t.ax.frame else { return }
         if let e = expected[wid], cur.approxEqual(e) { return }
-        if NSEvent.pressedMouseButtons & 1 != 0 {
+        if TilingManager.leftButtonDown {
             beginDrag(wid)
             return
         }
@@ -267,21 +272,46 @@ final class TilingManager {
     private func beginDrag(_ wid: WindowID) {
         if !dragging.contains(wid) { log.info("drag started \(wid, privacy: .public)") }
         if dragOrigin[wid] == nil, let e = expected[wid] { dragOrigin[wid] = e }
+        let first = dragging.isEmpty
         dragging.insert(wid)
         if mouseMonitor == nil {
             mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
                 // CG event location is already in AX (top-left) coordinates.
-                self?.endDrag(at: event.cgEvent?.location)
+                let location = event.cgEvent?.location
+                // A moment later, so a snap by the Windows module (dispatched on the
+                // same mouse-up) floats the window before we would snap it back.
+                self?.later(0.08) { $0.endDrag(at: location) }
             }
         }
-        if NSEvent.pressedMouseButtons & 1 == 0 {
-            DispatchQueue.main.async { [weak self] in self?.endDrag() }
+        if first { watchDrag() }
+    }
+
+    /// The mouse-up can be missed (swallowed by an event tap, or released over
+    /// our own window where global monitors are blind): while a drag lasts,
+    /// check the button a few times a second.
+    private func watchDrag() {
+        later(0.25) { m in
+            guard !m.dragging.isEmpty else { return }
+            if !TilingManager.leftButtonDown {
+                m.later(0.1) { $0.endDrag() }
+            } else {
+                m.watchDrag()
+            }
         }
     }
 
-    private func endDrag(at location: CGPoint? = nil) {
+    /// Hardware button state. `NSEvent.pressedMouseButtons` follows the session's
+    /// event stream, which misses a mouse-down swallowed by an event tap (the
+    /// Windows module's modifier-drag), so such drags looked like external moves.
+    static var leftButtonDown: Bool { CGEventSource.buttonState(.hidSystemState, button: .left) }
+
+    private func removeMouseMonitor() {
         if let m = mouseMonitor { NSEvent.removeMonitor(m) }
         mouseMonitor = nil
+    }
+
+    private func endDrag(at location: CGPoint? = nil) {
+        removeMouseMonitor()
         guard running, !dragging.isEmpty else { return }
         let ids = dragging
         dragging = []
@@ -289,22 +319,25 @@ final class TilingManager {
         dragOrigin = [:]
         let point = location ?? NSScreen.mouseAX
         log.info("drag ended at \(point.x, privacy: .public),\(point.y, privacy: .public) windows \(ids, privacy: .public)")
-        for wid in ids { finishDrag(wid, from: origins[wid], at: point) }
+        // The Space may have changed during the drag (window dragged to another Space).
+        let onScreen = Set(WindowList.onScreen().map(\.id))
+        for wid in ids { finishDrag(wid, from: origins[wid], at: point, onScreen: onScreen) }
         refresh()
     }
 
-    private func finishDrag(_ wid: WindowID, from origin: CGRect?, at point: CGPoint) {
-        guard let t = windows[wid], let cur = t.ax.frame, let old = origin, let did = display(of: wid) else { return }
+    private func finishDrag(_ wid: WindowID, from origin: CGRect?, at point: CGPoint, onScreen: Set<WindowID>) {
+        guard onScreen.contains(wid), let t = windows[wid], let cur = t.ax.frame, let old = origin,
+              let did = display(of: wid) else { return }
         expected[wid] = cur // so the next layout pass really moves it
         guard settings.mouseSupport else { return } // just snap back
-        if abs(cur.width - old.width) > 2 || abs(cur.height - old.height) > 2 {
+        if TilingManager.isResize(from: old, to: cur) {
             // Resized with the mouse: move the matching split(s).
             if let area = layoutArea(did) {
                 _ = displays[did]?.applyUserResize(wid, from: old, to: cur, area: area, gap: innerGap, visible: visible)
             }
             return
         }
-        if let (target, targetDisplay) = tiledWindow(at: point, excluding: wid) {
+        if let (target, targetDisplay) = tiledWindow(at: point, excluding: wid), onScreen.contains(target) {
             log.info("drop \(wid, privacy: .public) onto \(target, privacy: .public)")
             if targetDisplay == did {
                 displays[did]?.swap(wid, target)
@@ -318,6 +351,17 @@ final class TilingManager {
             insert(wid, into: pd, placement: .end)
         }
         // Otherwise: dropped on empty space or itself; the refresh snaps it back.
+    }
+
+    /// A mouse resize keeps an edge of each axis in place; a move shifts them
+    /// all, even when the size changes too (the Windows module restores a
+    /// window's pre-snap size when its title-bar drag starts).
+    static func isResize(from old: CGRect, to new: CGRect) -> Bool {
+        let t: CGFloat = 2
+        guard abs(new.width - old.width) > t || abs(new.height - old.height) > t else { return false }
+        let anchoredX = abs(new.minX - old.minX) <= t || abs(new.maxX - old.maxX) <= t
+        let anchoredY = abs(new.minY - old.minY) <= t || abs(new.maxY - old.maxY) <= t
+        return anchoredX && anchoredY
     }
 
     // MARK: - Refresh (discover windows, update trees, apply)
@@ -348,7 +392,7 @@ final class TilingManager {
         if !dragging.isEmpty {
             // endDrag refreshes. If the mouse-up was missed (released over our own
             // window, where the global monitor is blind), finish the drag now.
-            if NSEvent.pressedMouseButtons & 1 == 0 { endDrag() }
+            if !TilingManager.leftButtonDown { endDrag() }
             return
         }
         if force { expected = [:] }
@@ -787,6 +831,12 @@ final class TilingManager {
         if let did = display(of: wid) { displays[did]?.remove(wid) }
         visible.remove(wid)
         expected[wid] = nil
+        // A modifier-drag swallows the mouse-up our drag tracking waits for:
+        // the drag of this window is over now.
+        if dragging.remove(wid) != nil {
+            dragOrigin[wid] = nil
+            if dragging.isEmpty { removeMouseMonitor() }
+        }
         applyLayout()
     }
 
