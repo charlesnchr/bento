@@ -15,7 +15,8 @@ screen, keyboard or mouse, and must never touch the user's own windows or data.
   post input (exit 75) and `scripts/e2e/session check` exits 75. When that happens: stop immediately,
   release any held mouse button (`bentoctl up x y` is refused too — it's fine, the user's own input
   resolves it), end the session, and retry later with a new `session start`.
-- Only post input through `/tmp/bentoctl … --expect <bundleid>` targeting your own windows: a TextEdit
+- Only post input through `/tmp/bentoctl … --expect <bundleid>` (or `--expect-pid <pid>` for a raw debug
+  binary) targeting your own windows: a TextEdit
   document you opened (`/tmp/<who>-qa.txt`), or the Bento process under test. Never type into or click
   on other apps (T3 Code, browsers, terminals…). `--expect` refuses otherwise; keep it on every input.
 - Never move/resize/close windows you didn't create. Tiling tests must set `tiling.onlyApps` to

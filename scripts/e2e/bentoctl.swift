@@ -9,7 +9,7 @@
 //   bentoctl click x y [mods]
 //   bentoctl screens                      print screens' AX frames and visible frames
 //   bentoctl windows <owner>              print on-screen CG windows of an owner: id layer x y w h title
-//   add --expect <bundleid> to key/drag/click/down to refuse input unless it goes to that app.
+//   add --expect <bundleid> (or --expect-pid <pid>) to key/drag/click/down to refuse input unless it goes to that app.
 //   All input commands refuse to run while /tmp/bento-user-active exists (user came back).
 import AppKit
 import ApplicationServices
@@ -109,9 +109,24 @@ func mouse(_ type: CGEventType, _ p: CGPoint, _ flags: CGEventFlags) {
 var argv = args
 var expectBID: String?
 if let i = argv.firstIndex(of: "--expect"), i + 1 < argv.count { expectBID = argv[i + 1]; argv.removeSubrange(i...(i + 1)) }
+// --expect-pid <pid>: same checks by process id (raw debug binaries have no bundle id).
+var expectPID: pid_t?
+if let i = argv.firstIndex(of: "--expect-pid"), i + 1 < argv.count, let p = pid_t(argv[i + 1]) { expectPID = p; argv.removeSubrange(i...(i + 1)) }
 let inputCommands: Set<String> = ["key", "drag", "click", "down", "move", "up"]
 if let c = argv.first, inputCommands.contains(c) {
     if FileManager.default.fileExists(atPath: "/tmp/bento-user-active") { FileHandle.standardError.write("user is active; refusing to post input\n".data(using: .utf8)!); exit(75) }
+    if let pid = expectPID {
+        if c == "key", NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            fail("frontmost pid is \(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1), expected \(pid); not typing")
+        }
+        if c == "drag" || c == "click" || c == "down" {
+            let p = CGPoint(x: Double(argv[1])!, y: Double(argv[2])!)
+            var el: AXUIElement?
+            var owner: pid_t = 0
+            if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(p.x), Float(p.y), &el) == .success, let el { AXUIElementGetPid(el, &owner) }
+            if owner != pid { fail("point \(p) belongs to pid \(owner), expected \(pid); not clicking") }
+        }
+    }
     if let bid = expectBID {
         if c == "key", NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bid {
             fail("frontmost is \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"), expected \(bid); not typing")
