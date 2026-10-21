@@ -648,4 +648,8 @@ esac
 log ""
 log "notes e2e: $PASSES passed, $FAILS failed"
 for f in "${FAILED[@]+"${FAILED[@]}"}"; do log "  failed: $f"; done
+kill_all 2>/dev/null
+rm -f /tmp/notes-qa.txt
+# keep instance homes, DBs and logs only when something failed
+if [ "$FAILS" -eq 0 ]; then rm -rf "$WORK"; else log "logs and databases kept in $WORK"; fi
 [ "$FAILS" -eq 0 ]
