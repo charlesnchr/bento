@@ -737,14 +737,14 @@ func phasePanels() {
     pause(1.0)
     let children: [AXUIElement] = myWindow().flatMap { w -> [AXUIElement]? in attr(w, kAXChildrenAttribute) } ?? []
     let sheets = children.filter { (attr($0, kAXRoleAttribute) as String?) == "AXSheet" }
-    if let sheet = sheets.first, let sf = axFrame(sheet) {
+    if let sheet = sheets.first, let sf = axFrame(sheet), let w0 = frame() { // (macOS may shift the window to fit a wide sheet)
         let p = CGPoint(x: sf.midX, y: sf.minY + 20)
         let n = placedCount()
         ctl(["drag", "\(Int(p.x))", "\(Int(p.y))", "\(Int(p.x + 50))", "\(Int(p.y + 30))", "cmd+opt"])
         pause(0.4)
         let got = frame()
-        record(got.map { near($0, S.offsetBy(dx: 50, dy: 30), 1) } ?? false, "⌘⌥ on a sheet moves its document window",
-               "window \(fmt(got)) want \(fmt(S.offsetBy(dx: 50, dy: 30))), sheet was \(fmt(sf)), windowPlaced ×\(placedCount() - n)")
+        record((got.map { near($0, w0.offsetBy(dx: 50, dy: 30), 1) } ?? false) && placedCount() - n == 1, "⌘⌥ on a sheet moves its document window",
+               "window \(fmt(got)) want \(fmt(w0.offsetBy(dx: 50, dy: 30))), sheet was \(fmt(sf)), windowPlaced ×\(placedCount() - n)")
         ensureFrontSheetAware()
         ctl(["key", "escape"])
         pause(0.5)
