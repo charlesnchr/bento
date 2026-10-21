@@ -581,6 +581,15 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(NoteTextView.markdownLists("\t•\tone\n\t\t◦\tnested\n\t1.\tfirst\nplain\ttab") == "- one\n    - nested\n1. first\nplain\ttab")
     }
 
+    @Test func urlDetectionForLinkOnPaste() {
+        #expect(NoteTextView.singleURL(" https://raycast.com/notes \n") == "https://raycast.com/notes")
+        #expect(NoteTextView.singleURL("mailto:a@b.c") == "mailto:a@b.c")
+        #expect(NoteTextView.singleURL("https://a.b two") == nil)
+        #expect(NoteTextView.singleURL("file:///etc/hosts") == nil)
+        #expect(NoteTextView.singleURL("just text") == nil)
+        #expect(NoteTextView.singleURL("https://") == nil)
+    }
+
     @Test func imagesHaveNoText() {
         let pb = pasteboard(.png, Data([0x89, 0x50, 0x4e, 0x47]))
         #expect(NoteTextView.plainText(from: pb) == nil)

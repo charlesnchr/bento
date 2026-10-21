@@ -61,7 +61,10 @@ enum NotesDebug {
                                 selection: NSRange(location: (text as NSString).length, length: 0)))
         case "select":
             let n = arg.split(separator: " ").compactMap { Int($0) }
-            if n.count == 2 { w?.textView.setSelectedRange(NSRange(location: n[0], length: n[1])) }
+            if n.count == 2, let tv = w?.textView {
+                tv.setSelectedRange(NSRange(location: n[0], length: n[1]))
+                tv.scrollRangeToVisible(tv.selectedRange()) // like typing: the caret is on screen
+            }
         case "caret":
             if let tv = w?.textView {
                 tv.setSelectedRange(NSRange(location: arg == "start" ? 0 : (tv.string as NSString).length, length: 0))

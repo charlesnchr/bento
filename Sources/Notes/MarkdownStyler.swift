@@ -8,7 +8,14 @@ import AppKit
 /// selection is inside the code block. Restyling is incremental: only edited lines,
 /// plus following lines whose decoration changes (fences, list numbering).
 final class MarkdownStyler {
-    var theme = NotesTheme() { didSet { styleCache.removeAll(); lineHeights.removeAll() } }
+    var theme = NotesTheme() {
+        didSet { styleCache.removeAll(); lineHeights.removeAll(); linkColors = MarkdownStyler.linkColors(theme) }
+    }
+    /// Derived colours made once per theme (equal attribute values let unchanged lines skip writes).
+    private lazy var linkColors = MarkdownStyler.linkColors(theme)
+    private static func linkColors(_ t: NotesTheme) -> (checked: NSColor, underline: NSColor) {
+        (t.accent.withAlphaComponent(0.7), t.accent.withAlphaComponent(0.6))
+    }
     /// Selection used to decide which markers are revealed.
     private(set) var selection = NSRange(location: 0, length: 0)
     private var revealedRegion: NSRange?
@@ -116,7 +123,7 @@ final class MarkdownStyler {
             if full.length == 0 { break } // empty last line: nothing to style
             if !force, loc >= minEnd, let old = decoration(s, at: loc), old == deco { break }
             if force || NSMaxRange(full) > applyFrom || decoration(s, at: loc) != deco {
-                apply(s, line: r, full: full, parsed: p, deco: deco, text: text)
+                apply(s, line: r, full: full, parsed: p, deco: deco, text: text, compare: !force)
             }
 
             prevDeco = deco
@@ -175,7 +182,7 @@ final class MarkdownStyler {
 
     // MARK: Attributes
 
-    private func apply(_ s: NSTextStorage, line r: NSRange, full: NSRange, parsed p: ParsedLine, deco: BlockDecoration, text: NSMutableString) {
+    private func apply(_ s: NSTextStorage, line r: NSRange, full: NSRange, parsed p: ParsedLine, deco: BlockDecoration, text: NSMutableString, compare: Bool = true) {
         let t = theme
         var font = t.bodyFont
         var color = t.paragraph
@@ -224,19 +231,32 @@ final class MarkdownStyler {
 
         var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: ps, .notesBlock: deco]
         if deco.isCode { attrs[.notesCodeBlock] = true }
-        s.setAttributes(attrs, range: full)
+        // Incremental restyles build the line's attributes off-storage and write them only if
+        // they differ (unchanged neighbours of an edit then cost no writes and no layout
+        // invalidation). styleAll writes straight into the storage: everything changes anyway.
+        let out: NSMutableAttributedString
+        let base: Int
+        if compare {
+            out = NSMutableAttributedString(string: text.substring(with: full), attributes: attrs)
+            base = full.location
+        } else {
+            s.setAttributes(attrs, range: full)
+            out = s
+            base = 0
+        }
+        defer { if compare { commit(s, out, at: full) } }
 
         // Block prefix: hidden, remembered for caret snapping.
         switch deco.kind {
         case .heading, .bullet, .ordered, .task, .quote:
             if p.prefixRange.length > 0 {
-                let pr = NSRange(location: r.location + p.prefixRange.location, length: p.prefixRange.length)
-                s.addAttributes([.notesHidden: true, .notesPrefixLen: p.prefixRange.length], range: pr)
+                let pr = NSRange(location: r.location + p.prefixRange.location - base, length: p.prefixRange.length)
+                out.addAttributes([.notesHidden: true, .notesPrefixLen: p.prefixRange.length], range: pr)
             }
         case .rule(let revealed):
-            if !revealed, r.length > 0 { s.addAttribute(.notesHidden, value: true, range: r) }
+            if !revealed, r.length > 0 { out.addAttribute(.notesHidden, value: true, range: NSRange(location: r.location - base, length: r.length)) }
         case .fence(_, let revealed):
-            if !revealed, r.length > 0 { s.addAttribute(.notesHidden, value: true, range: r) }
+            if !revealed, r.length > 0 { out.addAttribute(.notesHidden, value: true, range: NSRange(location: r.location - base, length: r.length)) }
             return
         case .code:
             return
@@ -247,7 +267,16 @@ final class MarkdownStyler {
 
         let content = NSRange(location: r.location + p.contentRange.location, length: p.contentRange.length)
         guard content.length > 0 else { return }
-        styleInline(s, content: content, text: text, baseFont: font, baseColor: color, deco: deco)
+        styleInline(out, base: base, content: content, text: text, baseFont: font, baseColor: color, deco: deco)
+    }
+
+    /// Writes a line's attributes (built in `out`) unless the storage already has them.
+    private func commit(_ s: NSTextStorage, _ out: NSAttributedString, at full: NSRange) {
+        guard NSMaxRange(full) <= s.length else { return }
+        if s.attributedSubstring(from: full).isEqual(to: out) { return }
+        out.enumerateAttributes(in: NSRange(location: 0, length: out.length), options: []) { a, r, _ in
+            s.setAttributes(a, range: NSRange(location: r.location + full.location, length: r.length))
+        }
     }
 
     private struct Flags: OptionSet, Hashable {
@@ -256,7 +285,10 @@ final class MarkdownStyler {
         static let underline = Flags(rawValue: 8), code = Flags(rawValue: 16), link = Flags(rawValue: 32)
     }
 
-    private func styleInline(_ s: NSTextStorage, content: NSRange, text: NSMutableString, baseFont: NSFont, baseColor: NSColor, deco: BlockDecoration) {
+    /// Inline styles of `content` (storage coordinates) written into `s`, which holds the
+    /// line starting at storage location `base`.
+    private func styleInline(_ s: NSMutableAttributedString, base: Int, content: NSRange, text: NSMutableString, baseFont: NSFont, baseColor: NSColor, deco: BlockDecoration) {
+        func local(_ r: NSRange) -> NSRange { NSRange(location: r.location - base, length: r.length) }
         let spans = MarkdownParser.inlineSpans(text, in: content)
         guard !spans.isEmpty else { return }
         let t = theme
@@ -304,15 +336,15 @@ final class MarkdownStyler {
                 if f.contains(.underline) || f.contains(.link) { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
                 if f.contains(.link) {
                     let checked: Bool = { if case .task(_, true) = deco.kind { return true }; return false }()
-                    attrs[.foregroundColor] = checked ? t.accent.withAlphaComponent(0.7) : t.accent
-                    attrs[.underlineColor] = t.accent.withAlphaComponent(0.6)
+                    attrs[.foregroundColor] = checked ? linkColors.checked : t.accent
+                    attrs[.underlineColor] = linkColors.underline
                 }
-                s.addAttributes(attrs, range: range)
+                s.addAttributes(attrs, range: local(range))
             }
             i = j
         }
         for (r, url) in links {
-            s.addAttributes([.notesLink: url, .toolTip: "\(url)\n⌘-click to open"], range: r)
+            s.addAttributes([.notesLink: url, .toolTip: "\(url)\n⌘-click to open"], range: local(r))
         }
         // Markers: hidden unless the selection touches the span.
         for sp in spans where !sp.markers.isEmpty {
@@ -321,15 +353,15 @@ final class MarkdownStyler {
                 if sp.kind == .code {
                     // backticks stay as thin transparent padding inside the pill
                     if revealed {
-                        s.addAttributes([.foregroundColor: t.marker], range: m)
+                        s.addAttributes([.foregroundColor: t.marker], range: local(m))
                     } else {
-                        s.addAttributes([.foregroundColor: NSColor.clear, .font: t.mono(max(4, (baseFont.pointSize * 0.45).rounded()))], range: m)
+                        s.addAttributes([.foregroundColor: NSColor.clear, .font: t.mono(max(4, (baseFont.pointSize * 0.45).rounded()))], range: local(m))
                     }
                 } else if revealed {
-                    s.addAttributes([.foregroundColor: t.marker], range: m)
-                    s.removeAttribute(.underlineStyle, range: m)
+                    s.addAttributes([.foregroundColor: t.marker], range: local(m))
+                    s.removeAttribute(.underlineStyle, range: local(m))
                 } else {
-                    s.addAttribute(.notesHidden, value: true, range: m)
+                    s.addAttribute(.notesHidden, value: true, range: local(m))
                 }
             }
         }

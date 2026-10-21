@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SystemConfiguration
 import AppKit
 import BentoCore
 
@@ -119,7 +120,8 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     private var lastPoll: Date?
 
     let device: String = {
-        var name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        // SCDynamicStore is instant; Host.current() can block on name resolution at launch
+        var name = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? ProcessInfo.processInfo.hostName
         if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil, let home = ProcessInfo.processInfo.environment["BENTO_HOME"] {
             name += " (dev \((home as NSString).lastPathComponent))"
         }

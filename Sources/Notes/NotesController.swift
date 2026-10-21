@@ -398,6 +398,9 @@ final class NotesController {
 
     private func remoteChanged(_ note: Note) {
         countCache.removeValue(forKey: note.id)
+        // A kept undo history refers to ranges of the old text: undoing it on the new text
+        // would corrupt it or raise. (The open note's history is cleared by applyExternalBody.)
+        if note.id != windowController?.noteID { windowController?.forgetUndo(note.id) }
         guard note.id == currentID, let w = windowController else { return }
         if !note.isLive {
             // deleted or trashed elsewhere: move on

@@ -118,6 +118,13 @@ final class NoteTextView: NSTextView {
     /// line endings become "\n"); beeps for content without text (e.g. an image).
     func pastePlain(from pb: NSPasteboard) {
         guard let s = NoteTextView.plainText(from: pb), !s.isEmpty else { NSSound.beep(); return }
+        // Pasting a URL over selected text links it, like Raycast's editor.
+        let sel = selectedRange()
+        if sel.length > 0, let url = NoteTextView.singleURL(s),
+           !(string as NSString).substring(with: sel).contains("\n") {
+            apply(MarkdownCommands.insertLink(string as NSString, selection: sel, url: url))
+            return
+        }
         breakUndoCoalescing()
         insertText(s, replacementRange: selectedRange())
         breakUndoCoalescing()
@@ -145,6 +152,14 @@ final class NoteTextView: NSTextView {
         if text.utf8.contains(0) { text = text.replacingOccurrences(of: "\u{0}", with: "") }
         if text.utf16.contains(9) { text = markdownLists(text) }
         return text
+    }
+
+    /// The text when it is exactly one http(s)/mailto URL.
+    static func singleURL(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !t.contains(where: { $0.isWhitespace }), let u = URL(string: t), let scheme = u.scheme?.lowercased(),
+              ["http", "https", "mailto"].contains(scheme), scheme == "mailto" || u.host != nil else { return nil }
+        return t
     }
 
     private static let richListRE = try? NSRegularExpression(pattern: #"^(\t*)([•◦▪▫‣⁃∙●○■□-]|\d{1,3}[.)])\t"#)

@@ -390,7 +390,18 @@ type_into() {
   done
   "$CTL" key "${keys[@]}" --expect "$b"
 }
-press() { local b=$1; shift; "$CTL" key "$@" --expect "$b"; }
+# press/click: exit 75 (user came back) stops the session; a refused input (target not ours)
+# is a test failure, never a reason to send input elsewhere
+press() { local b=$1; shift; "$CTL" key "$@" --expect "$b"; local rc=$?; [ $rc = 75 ] && return 75; [ $rc != 0 ] && bad "keys refused: $*"; return 0; }
+click() { local b=$1; shift; "$CTL" click "$@" --expect "$b"; local rc=$?; [ $rc = 75 ] && return 75; [ $rc != 0 ] && bad "click refused: $*"; return 0; }
+# aframe <instance>: AX-style frame "x y w h" of its notes window (largest on-screen window)
+aframe() {
+  local o
+  for o in "BentoE2E-$1" Bento; do
+    "$CTL" windows "$o" 2>/dev/null | awk '$5 >= 300 && $6 >= 140 {printf "%d %d %d %d %d\n", $5 * $6, $3, $4, $5, $6}' | sort -rn | head -1 | cut -d' ' -f2- | grep . && return 0
+  done
+  return 1
+}
 guarded() { "$ROOT/scripts/e2e/session" check >/dev/null || { log "user became active: stopping"; return 75; }; }
 frontmost() { "$CTL" frontmost; }
 gui_cleanup() {
@@ -488,12 +499,23 @@ gui_session_1() {
 gui_session_2() {
   log "== GUI 2: frame restore, full screen, footer, paste, long note, live typing =="
   local A B; A=$(bid a); B=$(bid b)
+  [ -f "$WORK/a/support/Notes/notes.sqlite" ] || { launch a; quit_app a; }
   sqlite3 "$WORK/a/support/Notes/notes.sqlite" "insert or replace into kv (key, value) values ('window.frame', '{{6000, 4000}, {400, 450}}')"
+  python3 - "$WORK/a/support/Notes/notes.sqlite" <<'EOF2'
+import random, sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1]); now = int(time.time() * 1000); random.seed(1)
+words = "milk eggs bread project meeting idea plan travel budget review notes code swift rust design".split()
+for i in range(500):
+    body = "# Seed %d %s\n" % (i, random.choice(words)) + "\n".join("- [ ] %s %d" % (random.choice(words), j) for j in range(20))
+    t = now - i * 60000
+    c.execute("insert or replace into notes (id, body, created_at, updated_at, dirty, opened_at) values (?, ?, ?, ?, 0, ?)", ("seed-%d" % i, body, t, t, t))
+c.commit()
+EOF2
   launch a
   open -a TextEdit /tmp/notes-qa.txt; sleep 1
   "$CTL" front com.apple.TextEdit notes-qa >/dev/null
   press com.apple.TextEdit ctrl+opt+n || return 75; sleep 0.8
-  local f; f=$("$CTL" frame "$A" "" 2>/dev/null)
+  local f; f=$(aframe a)
   log "    window frame after an off-screen saved frame: $f"
   check "off-screen saved frame comes back on screen" bash -c "python3 -c 'import sys; x,y,w,h=map(int,sys.argv[1:5]); sys.exit(0 if 0<=x<4000 and 0<=y<3000 else 1)' $f"
 
@@ -502,7 +524,7 @@ gui_session_2() {
   dbg a 'cmd newNote' 'type Footer test words' >/dev/null
   local before; before=$(dumpq a "d['footer']")
   read -r fx fy fw fh <<< "$f"
-  "$CTL" click $((fx + fw / 2)) $((fy + fh - 15)) --expect "$A" || return 75; sleep 0.3; dbg a >/dev/null
+  click "$A" $((fx + fw / 2)) $((fy + fh - 15)) || return 75; sleep 0.3; dbg a >/dev/null
   local after; after=$(dumpq a "d['footer']")
   log "    footer: '$before' → '$after'"
   check "clicking the footer switches words ↔ characters" bash -c "[ '$before' != '$after' ] && echo '$after' | grep -q Character"
@@ -510,13 +532,13 @@ gui_session_2() {
   check "⌥⌘, shows the format bar" bash -c "python3 '$WORK/q.py' json '$WORK/a/dump.json' \"d['settings']['showFormatBar']\" | grep -qx True"
   press "$A" cmd+opt+comma || return 75
 
-  # auto-size: ⇧⌘/ then more lines -> taller window
-  local h0; h0=$("$CTL" frame "$A" "" | awk '{print $4}')
+  # auto-size: ⇧⌘/ fits the short note, more lines make it taller
   press "$A" cmd+shift+slash || return 75; sleep 0.3
-  dbg a 'type \nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline\nline' >/dev/null
-  local h1; h1=$("$CTL" frame "$A" "" | awk '{print $4}')
+  local h0; h0=$(aframe a | awk '{print $4}')
+  dbg a 'type \nline\nline\nline\nline\nline\nline\nline\nline' >/dev/null
+  local h1; h1=$(aframe a | awk '{print $4}')
   log "    auto-size: height $h0 → $h1"
-  check "auto-size follows the content" bash -c "[ ${h1:-0} -ne ${h0:-0} ]"
+  check "auto-size grows with the content" bash -c "[ ${h1:-0} -gt ${h0:-0} ]"
   press "$A" cmd+shift+slash || return 75
 
   log "- checkbox click"
@@ -525,7 +547,7 @@ gui_session_2() {
   if [ -n "$box" ]; then
     local cx cy
     read -r cx cy <<< "$(python3 -c 'import re,sys; n=[float(v) for v in re.findall(r"[-0-9.]+", sys.argv[1])]; h=float(sys.argv[2]); print(int(n[0]+n[2]/2), int(h-(n[1]+n[3]/2)))' "$box" "$("$CTL" screens | head -1 | awk '{print $5}')")"
-    "$CTL" click "$cx" "$cy" --expect "$A" || return 75; sleep 0.3; dbg a >/dev/null
+    click "$A" "$cx" "$cy" || return 75; sleep 0.3; dbg a >/dev/null
     check "clicking the checkbox ticks the task" bash -c "python3 '$WORK/q.py' json '$WORK/a/dump.json' \"d['body'].startswith('- [x] click me')\" | grep -qx True"
   else
     bad "no checkbox rect in dump"
@@ -541,6 +563,12 @@ gui_session_2() {
   dbg a 'cmd newNote' "paste-file $WORK/p.txt public.utf8-plain-text" >/dev/null
   check "large paste (390 KB, CRLF) lands with \\n line ends" bash -c "python3 '$WORK/q.py' json '$WORK/a/dump.json' \"(len(d['body']), chr(13) in d['body'])\" | grep -qx '(360000, False)'"
 
+  log "- browse 500 notes"
+  dbg a 'bench-browse milk' >/dev/null
+  log "    open Browse: $(dumpq a "round(d['bench']['openMs'])") ms, filter 'milk': $(dumpq a "round(d['bench']['filterMs'])") ms, rows $(dumpq a "d['bench']['rows']")"
+  check "searching 500+ notes stays under 100 ms (debug build)" bash -c "python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 100 else 1)' $(dumpq a "d['bench']['filterMs']")"
+  press "$A" escape || return 75; sleep 0.2
+
   log "- very long note (100k characters)"
   python3 -c 'import sys; L=["## Section %d" % i if i%7==0 else ("- [ ] task %d with **bold** and `code`" % i if i%3 else "Plain text line %d with a [link](https://example.com) and emoji 😀 日本語 مرحبا" % i) for i in range(1800)]; open(sys.argv[1],"w").write("\n".join(L))' "$WORK/long.md"
   dbg a "put-file long $WORK/long.md" 'bench-open long' >/dev/null
@@ -551,8 +579,8 @@ gui_session_2() {
   check "typing in a 100k note stays under 16 ms per key (debug build)" bash -c "python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 16 else 1)' $mean"
   dbg a 'select 5000 0' 'bench-type 40' >/dev/null
   mean=$(dumpq a "round(d['bench']['meanMs'], 1)")
-  log "    typing in the middle: mean $mean ms per keystroke"
-  check "typing in the middle of a 100k note stays under 16 ms per key" bash -c "python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 16 else 1)' $mean"
+  log "    typing near the top (caret scrolled into view): mean $mean ms per keystroke"
+  check "typing near the top of a 100k note stays under 16 ms per key" bash -c "python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 16 else 1)' $mean"
 
   log "- live typing between two instances"
   guarded || return 75
@@ -588,12 +616,14 @@ gui_suite() {
   start_server || return 1
   home a gui; home b gui-b
   local rc=0
-  "$ROOT/scripts/e2e/session" start notes
-  gui_session_1 || rc=$?
-  for n in a b; do alive "$n" && kill "$(pid "$n")" 2>/dev/null; done
-  osascript -e 'tell application "TextEdit" to close (every document whose path is "/tmp/notes-qa.txt") saving no' >/dev/null 2>&1
-  "$ROOT/scripts/e2e/session" end notes
-  [ "$rc" = 75 ] && { log "GUI session 1 interrupted by the user"; return 75; }
+  if [ "${1:-}" != 2 ]; then
+    "$ROOT/scripts/e2e/session" start notes
+    gui_session_1 || rc=$?
+    for n in a b; do alive "$n" && kill "$(pid "$n")" 2>/dev/null; done
+    close_scratch
+    "$ROOT/scripts/e2e/session" end notes
+    [ "$rc" = 75 ] && { log "GUI session 1 interrupted by the user"; return 75; }
+  fi
   "$ROOT/scripts/e2e/session" start notes
   gui_session_2 || rc=$?
   gui_cleanup
@@ -611,6 +641,7 @@ prepare
 case "$mode" in
   sync) sync_suite ;;
   gui) gui_suite ;;
+  gui2) gui_suite 2 ;;
   all) sync_suite; prepare; gui_suite ;;
   *) log "usage: $0 sync|gui|all"; exit 2 ;;
 esac

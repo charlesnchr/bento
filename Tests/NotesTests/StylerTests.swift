@@ -117,6 +117,57 @@ import Testing
     }
 }
 
+/// Styles from `didProcessEditing`, like NotesWindowController.
+final class StylingDelegate: NSObject, NSTextStorageDelegate {
+    let styler = MarkdownStyler()
+    func textStorage(_ ts: NSTextStorage, didProcessEditing m: NSTextStorageEditActions, range r: NSRange, changeInLength d: Int) {
+        guard m.contains(.editedCharacters) else { return }
+        styler.didEdit(ts, editedRange: r)
+    }
+}
+
+@Suite struct EditorPipelinePerformance {
+    /// Keystroke cost (storage edit + styling + layout of the visible part) in a ~110k
+    /// character note, the way the editor runs it.
+    func perKeystroke(_ storage: NSTextStorage, at fraction: Double) -> Double {
+        var lines: [String] = []
+        for i in 0..<1800 {
+            switch i % 4 {
+            case 0: lines.append("## Section \(i)")
+            case 1: lines.append("- [ ] task \(i) with **bold** and `code` 日本語")
+            case 2: lines.append("Plain line \(i) with a [link](https://example.com) and emoji 😀, long enough to wrap in the window.")
+            default: lines.append("1. item \(i)")
+            }
+        }
+        let lm = NotesLayoutManager()
+        let tc = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        lm.addTextContainer(tc)
+        storage.addLayoutManager(lm)
+        let del = StylingDelegate()
+        storage.delegate = del
+        storage.setAttributedString(NSAttributedString(string: lines.joined(separator: "\n"), attributes: [.font: del.styler.theme.bodyFont]))
+        del.styler.styleAll(storage)
+        let loc = (storage.string as NSString).lineRange(for: NSRange(location: Int(Double(storage.length) * fraction), length: 0)).location + 5
+        lm.ensureLayout(forCharacterRange: NSRange(location: max(0, loc - 1500), length: 3000))
+        var total = 0.0
+        for k in 0..<40 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            storage.replaceCharacters(in: NSRange(location: loc + k, length: 0), with: k % 6 == 5 ? " " : "x")
+            lm.ensureLayout(forCharacterRange: NSRange(location: max(0, loc - 1500), length: 3000))
+            total += CFAbsoluteTimeGetCurrent() - t0
+        }
+        withExtendedLifetime(del) {}
+        return total / 40 * 1000
+    }
+
+    @Test func typingInALongNoteIsCheap() {
+        let top = perKeystroke(NSTextStorage(), at: 0.05)
+        let end = perKeystroke(NSTextStorage(), at: 0.95)
+        print("keystroke in a 110k note: \(String(format: "%.2f", top)) ms near the top, \(String(format: "%.2f", end)) ms near the end")
+        #expect(top < 8 && end < 8) // AppKit re-fixes attributes after an edit: costs more near the top
+    }
+}
+
 @Suite struct StylerPerformance {
     @Test func longNotesStayFast() {
         var lines: [String] = []

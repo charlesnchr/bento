@@ -245,6 +245,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     func load(_ note: Note, selection: NSRange?) {
         closeInline()
         if textView.hasMarkedText() { textView.unmarkText() } // the IME's range would point into the old text
+        textView.breakUndoCoalescing() // typing in the previous note must not continue into this one
         loadingNote = true
         noteID = note.id
         let attrs: [NSAttributedString.Key: Any] = [.font: styler.theme.bodyFont, .foregroundColor: styler.theme.paragraph]
@@ -498,7 +499,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         return u
     }
 
-    func forgetUndo(_ id: String) { undoManagers.removeValue(forKey: id) }
+    func forgetUndo(_ id: String) {
+        undoManagers.removeValue(forKey: id)?.removeAllActions()
+        undoOrder.removeAll { $0 == id }
+    }
 
     // MARK: Commands on the editor
 
