@@ -64,6 +64,7 @@ final class CaptureOverlay {
     private var flashWork: DispatchWorkItem?
     private var finished = false
     private var pixelCache: [Int: PixelFrame] = [:]
+    private var screenObserver: NSObjectProtocol?
 
     enum AdjustDrag { case move(start: CGPoint, original: CGRect), resize(edges: Edges, original: CGRect) }
     struct Edges: OptionSet { let rawValue: Int; static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), top = Edges(rawValue: 4), bottom = Edges(rawValue: 8) }
@@ -109,12 +110,29 @@ final class CaptureOverlay {
         keyPanel.makeKeyAndOrderFront(nil)
         keyPanel.makeFirstResponder(keyPanel.contentView)
         currentCursor.set()
+        // A display added, removed or rearranged invalidates the frozen
+        // frames and panel positions: cancel rather than capture wrong pixels.
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            guard let self, !CaptureOverlay.layoutMatches(self.snapshots) else { return }
+            ScreenGrabber.log.debug("overlay cancelled: display configuration changed")
+            self.finish(.cancelled)
+        }
         ScreenGrabber.log.debug("overlay shown on \(self.panels.count) display(s), key=\(keyPanel.isKeyWindow), mode=\(String(describing: self.mode), privacy: .public)")
+    }
+
+    /// Whether every frozen display still exists with the same frame (a
+    /// resolution or scale change changes the point frame too).
+    static func layoutMatches(_ snaps: [DisplaySnapshot]) -> Bool {
+        let now = Dictionary(NSScreen.screens.map { ($0.displayID, $0.axFrame) }, uniquingKeysWith: { a, _ in a })
+        return snaps.allSatisfy { now[$0.displayID] == $0.axFrame }
     }
 
     func finish(_ outcome: OverlayOutcome) {
         guard !finished else { return }
         finished = true
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         ScreenGrabber.log.debug("overlay finished: \(String(describing: outcome).prefix(80), privacy: .public)")
         for p in panels { p.orderOut(nil) }
         for v in views { v.teardown() }
