@@ -148,7 +148,7 @@ struct ShotSettingsView: View {
     }()
 
     private var maxHeights: [Int] {
-        var list = [10_000, 20_000, 50_000, 100_000, 200_000]
+        var list = [10_000, 20_000, 50_000, ScrollStitcher.heightLimit]
         if !list.contains(model.value.scrollMaxHeight) { list.append(model.value.scrollMaxHeight); list.sort() }
         return list
     }

@@ -282,10 +282,14 @@ final class ScrollStitcher {
     /// can't exhaust memory (the image is also copied once when finished).
     static let pixelBudget = 80_000_000
 
+    /// Upper bound of the max-height setting (a hand-edited 200,000 px used
+    /// to mean a 2+ GB image).
+    static let heightLimit = 100_000
+
     /// The maximum height (pixels) for frames of `width` pixels: the user's
-    /// setting (at least 1000 px), capped by `pixelBudget`.
+    /// setting (1,000…100,000 px), capped by `pixelBudget`.
     static func cappedMaxHeight(_ requested: Int, width: Int) -> Int {
-        min(max(requested, 1000), max(1000, pixelBudget / max(1, width)))
+        min(requested.clamped(1000...heightLimit), max(1000, pixelBudget / max(1, width)))
     }
 
     /// Height of the image `makeImage()` would produce now.

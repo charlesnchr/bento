@@ -212,7 +212,11 @@ final class ScrollCaptureSession {
                     }
                 }
             case .reachedMax:
-                message = "Reached the maximum height"
+                // Shown in the progress panel and as a HUD when it closes.
+                let px = NumberFormatter.localizedString(from: NSNumber(value: st.maxHeight), number: .decimal)
+                message = st.maxHeight < settings.scrollMaxHeight.clamped(1000...ScrollStitcher.heightLimit)
+                    ? "Reached the size limit for this width (\(px) px)"
+                    : "Reached the maximum height (\(px) px)"
                 stopRequested = true
             }
             updateStatus()

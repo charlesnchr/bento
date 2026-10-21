@@ -347,38 +347,14 @@ enum OCRText {
     /// Vision rejects images of 2 px or less in either dimension.
     static func canRecognize(_ image: CGImage) -> Bool { image.width > 2 && image.height > 2 }
 
-    /// Recognizes text in reading order (lines grouped like the editor's OCR).
-    /// Vision reports some failures both to the request's handler and by
-    /// throwing from `perform`, so the continuation is guarded to resume
-    /// exactly once (and always: `perform` is synchronous).
-    /// `language`: a Vision language code ("zh-Hans") to prefer, "" = automatic.
+    /// Recognizes text in reading order (the editor's recognizer). Images of
+    /// 2 px or less never reach Vision: it reports those both to the request
+    /// handler and by throwing, which used to resume the continuation twice
+    /// (fixed in ShotEditor on main; the guard stays, there's no text anyway).
+    /// `language`: a Vision language code to prefer, "" = automatic.
     static func recognize(_ image: CGImage, language: String = "") async throws -> String {
         guard canRecognize(image) else { return "" }
-        return try await withCheckedThrowingContinuation { cont in
-            let once = ResumeOnce(cont)
-            let request = VNRecognizeTextRequest { req, err in
-                if let err { once.resume(throwing: err); return }
-                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> TextRecognizer.Run? in
-                    guard let s = o.topCandidates(1).first?.string else { return nil }
-                    let b = o.boundingBox // bottom-left origin; flip to top-down
-                    return TextRecognizer.Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
-                }
-                once.resume(returning: TextRecognizer.lines(runs))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            if language.isEmpty {
-                request.automaticallyDetectsLanguage = true
-            } else {
-                request.recognitionLanguages = [language]
-            }
-            do {
-                try VNImageRequestHandler(cgImage: image).perform([request])
-            } catch {
-                once.resume(throwing: error)
-            }
-            once.resume(returning: "")
-        }
+        return try await TextRecognizer.recognize(image, languages: language.isEmpty ? nil : [language])
     }
 
     /// Languages Vision can read, for the settings picker.
@@ -414,25 +390,6 @@ enum OCRText {
             }
         }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-/// Resumes a checked continuation at most once, from any thread.
-final class ResumeOnce<T> {
-    private var continuation: CheckedContinuation<T, Error>?
-    private let lock = NSLock()
-
-    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
-
-    func resume(returning value: T) { take()?.resume(returning: value) }
-    func resume(throwing error: Error) { take()?.resume(throwing: error) }
-
-    private func take() -> CheckedContinuation<T, Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        let c = continuation
-        continuation = nil
-        return c
     }
 }
 

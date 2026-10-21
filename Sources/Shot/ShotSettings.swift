@@ -93,8 +93,9 @@ struct ShotSettings: Codable, Equatable {
     // Scrolling capture
     var scrollMode: ScrollMode = .auto
     var scrollSpeed: ScrollSpeed = .normal
-    /// Stop when the stitched image reaches this many pixels.
-    var scrollMaxHeight = 20000
+    /// Stop when the stitched image reaches this many pixels (1,000…100,000;
+    /// wide regions stop earlier, see `ScrollStitcher.pixelBudget`).
+    var scrollMaxHeight = 50_000
     /// For mouse utilities that invert synthetic scroll events (Mos, Scroll Reverser, …).
     var scrollReverse = false
 

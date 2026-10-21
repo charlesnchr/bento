@@ -39,6 +39,8 @@ import ShotEditor
 
     @Test func scrollMaxHeightIsCappedByPixelBudget() {
         #expect(ScrollStitcher.cappedMaxHeight(20_000, width: 1600) == 20_000)
+        #expect(ScrollStitcher.cappedMaxHeight(ShotSettings().scrollMaxHeight, width: 1470) == 50_000)
+        #expect(ScrollStitcher.cappedMaxHeight(200_000, width: 400) == ScrollStitcher.heightLimit)
         #expect(ScrollStitcher.cappedMaxHeight(200_000, width: 2880) == ScrollStitcher.pixelBudget / 2880)
         #expect(ScrollStitcher.cappedMaxHeight(10, width: 800) == 1000)
         #expect(ScrollStitcher.cappedMaxHeight(200_000, width: 1_000_000) == 1000)
@@ -201,7 +203,7 @@ func textImage(width: Int, height: Int, text: String? = nil) -> CGImage {
 
 @Suite struct OCRTests {
     /// Vision both calls the request handler with an error and throws from
-    /// `perform` for images of 2 px or less; resuming twice trapped.
+    /// `perform` for images of 2 px or less (a double resume used to trap).
     @Test func tinyAndBlankImagesHaveNoText() async throws {
         for (w, h) in [(1, 1), (2, 2), (2, 500), (500, 2), (3, 3), (200, 120)] {
             let text = try await OCRText.recognize(textImage(width: w, height: h))
@@ -217,15 +219,6 @@ func textImage(width: Int, height: Int, text: String? = nil) -> CGImage {
         #expect(text.contains("42"))
     }
 
-    @Test func resumeOnceIgnoresLaterResumes() async throws {
-        let v: Int = try await withCheckedThrowingContinuation { cont in
-            let once = ResumeOnce(cont)
-            once.resume(returning: 1)
-            once.resume(throwing: CocoaError(.featureUnsupported))
-            once.resume(returning: 2)
-        }
-        #expect(v == 1)
-    }
 }
 
 @Suite struct SaveTests {
