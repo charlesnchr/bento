@@ -47,8 +47,11 @@ public final class ShotEditor {
     private var pins: [PinController] = []
     private var history: HistoryWindowController?
     private var lastPrune = Date.distantPast
-    /// The most recently recorded capture, so `pin(_:)` after `record(_:)` can
-    /// link the pin to its history entry (double-click re-opens it).
+    /// The capture recorded during the current event, so `pin(_:)` right after
+    /// `record(_:)` can link the pin to its history entry (double-click
+    /// re-opens it). Cleared on the next run-loop turn: holding it longer kept
+    /// the last capture's full-size pixels in memory until the next capture
+    /// (hundreds of MB after a scrolling capture).
     private var lastRecorded: (image: CGImage, id: String)?
     private var store: HistoryStore { .shared }
 
@@ -166,6 +169,7 @@ public final class ShotEditor {
         let entry = store.add(image: capture.image, scale: capture.scale, date: capture.date, kind: capture.kind.rawValue,
                               rect: capture.rect, appName: capture.sourceAppName, bundleID: capture.sourceBundleID, async: async)
         lastRecorded = (capture.image, entry.id)
+        DispatchQueue.main.async { [weak self] in self?.lastRecorded = nil }
         pruneIfNeeded()
         historyChanged()
         return entry
