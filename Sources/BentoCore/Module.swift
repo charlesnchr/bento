@@ -177,10 +177,11 @@ public final class ActionRegistry {
                 continue
             }
             if SystemShortcuts.isReserved(sc) {
-                // Registering would "succeed" but never fire: say so instead.
+                // macOS handles its own shortcuts first, so this one will most
+                // likely never fire: report it (still registered, in case the
+                // user turns the macOS one off later).
                 newFailed.insert(id)
                 newSystem.insert(id)
-                continue
             }
             if let other = claimed[sc] {
                 BentoLog.core.error("Shortcut \(sc.configString, privacy: .public) of \(id, privacy: .public) already used by \(other, privacy: .public)")

@@ -342,7 +342,7 @@ private let isolatedHome: Bool = {
         reg.setModules([m])
         #expect(reg.failed == ["fakee.sys"])
         #expect(reg.failureReason(for: "fakee.sys")?.contains("macOS") == true)
-        #expect(HotkeyCenter.shared.registrationCount == before)
+        #expect(HotkeyCenter.shared.registrationCount == before + 1) // still registered, just reported
         reg.setModules([])
     }
 

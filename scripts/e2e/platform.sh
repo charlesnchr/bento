@@ -349,13 +349,13 @@ phase_launcher() {
   c press "$PID" "role=AXMenuItem title=Running_App"; sleep 0.6
   c press "$PID" "role=AXMenuItem id=menuAction: title=Calculator"; sleep 0.8
   local KEY RC
-  KEY=$(cfg '[.launcher.entries[] | select(.target == "com.apple.calculator")][0].key')
+  KEY=$(cfg '[.launcher.entries[] | objects | select(.target == "com.apple.calculator")][0].key')
   check "Add → Running App adds Calculator by bundle id" test -n "$KEY" -a "$KEY" != null
   RC="id=recorder:launcher.$KEY"
   c wait "$PID" "$RC" 3 >/dev/null
   c front "$PID" >/dev/null
   c press "$PID" "$RC"; c key "$PID" ctrl+opt+cmd+6; sleep 0.5
-  eq "hotkey recorded in the row" "ctrl+opt+cmd+6" "$(cfg "[.launcher.entries[] | select(.key == \"$KEY\")][0].shortcut")"
+  eq "hotkey recorded in the row" "ctrl+opt+cmd+6" "$(cfg "[.launcher.entries[] | objects | select(.key == \"$KEY\")][0].shortcut")"
 
   # Toggle (default): launch/focus, hide when frontmost, show again.
   c key "$PID" ctrl+opt+cmd+6
@@ -366,7 +366,7 @@ phase_launcher() {
   c key "$PID" ctrl+opt+cmd+6
   check "and brings it back" wait_for 5 front_is com.apple.calculator
   # Focus: pressing while frontmost keeps it (behaviour changed by editing the file).
-  set_cfg "(.launcher.entries[] | select(.key == \"$KEY\") | .behavior) = \"focus\""; sleep 0.8
+  set_cfg "(.launcher.entries[] | objects | select(.key == \"$KEY\") | .behavior) = \"focus\""; sleep 0.8
   c keyto com.apple.calculator ctrl+opt+cmd+6; sleep 0.8
   eq "focus keeps it frontmost" com.apple.calculator "$(frontbid)"
   eq "focus doesn't hide" false "$("$CTL" appstate com.apple.calculator | cut -d' ' -f2)"
@@ -384,7 +384,7 @@ phase_launcher() {
     t=$("$CTL" focusedtitle "$TESTAPP_ID"); titles="$titles$t|"
   done
   eq "cycle walks through all three windows ($titles)" 3 "$(echo "$titles" | tr '|' '\n' | grep -v '^$' | sort -u | wc -l | tr -d ' ')"
-  set_cfg '(.launcher.entries[] | select(.key == "qa-cycle") | .behavior) = "toggle"'; sleep 0.8
+  set_cfg '(.launcher.entries[] | objects | select(.key == "qa-cycle") | .behavior) = "toggle"'; sleep 0.8
   c keyto "$TESTAPP_ID" ctrl+opt+cmd+9
   check "toggle hides the test app" wait_for 3 app_hidden "$TESTAPP_ID"
   c front "$PID" >/dev/null
@@ -414,15 +414,17 @@ phase_launcher() {
   c press "$PID" "id=launcher.add"; sleep 0.5
   c press "$PID" "role=AXMenuItem id=menuAction: title=URL…"; sleep 0.8
   "$CTL" tree "$PID" 40 > "$ART/url-sheet.txt" 2>/dev/null
-  local ADDQ="role=AXButton title=Add"
-  [ "$("$CTL" count "$PID" "$ADDQ")" = 0 ] && ADDQ="role=AXButton desc=Add"
+  local ADDQ="role=AXButton desc=Add"   # SwiftUI sheet buttons expose their label as AXDescription
+  c wait "$PID" "$ADDQ" 3 >/dev/null
   c type "$PID" "not a url"; sleep 0.3
   eq "invalid URL can't be added" 0 "$("$CTL" attr "$PID" "$ADDQ" AXEnabled)"
   c key "$PID" return; sleep 0.3
-  eq "Return doesn't add an invalid URL" 0 "$(cfg '[.launcher.entries[] | select(.kind == "url")] | length')"
-  c setvalue "$PID" "role=AXTextField" "example.com"; sleep 0.3
+  eq "Return doesn't add an invalid URL" 0 "$(cfg '[.launcher.entries[] | objects | select(.kind == "url")] | length')"
+  c key "$PID" cmd+a; c type "$PID" "example.com"; sleep 0.3
+  eq "valid URL enables Add" 1 "$("$CTL" attr "$PID" "$ADDQ" AXEnabled)"
   c press "$PID" "$ADDQ"; sleep 0.6
-  eq "URL entry added" url "$(cfg '[.launcher.entries[] | select(.target == "example.com")][0].kind')"
+  eq "URL entry added" url "$(cfg '[.launcher.entries[] | objects | select(.target == "example.com")][0].kind')"
+  c gone "$PID" "role=AXSheet" 2 >/dev/null || c key "$PID" escape
 
   # Add → Application… (open panel, driven by typing a path), then remove the row.
   c front "$PID" >/dev/null
@@ -433,12 +435,12 @@ phase_launcher() {
   c key "$PID" return; sleep 1.2
   c key "$PID" return; sleep 1.2
   local CK
-  CK=$(cfg '[.launcher.entries[] | select(.target == "com.apple.Chess")][0].key')
+  CK=$(cfg '[.launcher.entries[] | objects | select(.target == "com.apple.Chess")][0].key')
   if [ -n "$CK" ] && [ "$CK" != null ]; then
     ok "Add → Application… adds Chess"
     c front "$PID" >/dev/null
     c press "$PID" "id=remove:launcher.$CK"; sleep 0.6
-    eq "the row's remove button deletes it" 0 "$(cfg '[.launcher.entries[] | select(.target == "com.apple.Chess")] | length')"
+    eq "the row's remove button deletes it" 0 "$(cfg '[.launcher.entries[] | objects | select(.target == "com.apple.Chess")] | length')"
   else
     screencapture -x -l "$("$CTL" cgwindows "$PID" | awk '$2==0 {print $1}' | tail -1)" "$ART/openpanel.png" 2>/dev/null
     bad "Add → Application… adds Chess (see $ART/openpanel.png)"
@@ -464,7 +466,7 @@ phase_shell() {
   eq "status item shown" true "$(d '.statusItem')"
 
   # Status menu.
-  c press "$PID" "in=extras role=AXMenuBarItem"; sleep 0.6
+  c press "$PID" "in=extras role=AXMenuBarItem" 2>/dev/null; sleep 0.6  # menu tracking outlasts the AX call
   check "status menu lists Settings…" "$CTL" wait "$PID" "in=extras role=AXMenuItem title=Settings…" 2
   check "status menu lists module submenus" "$CTL" wait "$PID" "in=extras role=AXMenuItem title=Windows" 2
   c press "$PID" "in=extras role=AXMenuItem title=Settings…"
@@ -564,7 +566,7 @@ phase_shell() {
   kill -TERM $first $second 2>/dev/null; wait $first $second 2>/dev/null
 
   # Quit from the status menu: clean exit.
-  c press "$PID" "in=extras role=AXMenuBarItem"; sleep 0.6
+  c press "$PID" "in=extras role=AXMenuBarItem" 2>/dev/null; sleep 0.6  # menu tracking outlasts the AX call
   c press "$PID" "in=extras role=AXMenuItem title=Quit_Bento"
   check "Quit Bento quits" wait_for 5 bash -c "! kill -0 $PID 2>/dev/null"
   wait "$PID" 2>/dev/null; LAST_EXIT=$?; PID=""
