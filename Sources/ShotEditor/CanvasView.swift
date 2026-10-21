@@ -599,6 +599,7 @@ final class AnnotationView: NSView {
         if editor.region != nil, c == "a" { editor.autoAdjustRegion(); return }
         if editor.region != nil, c == "b" { editor.obfuscateRegion(.blur); return }
         if editor.region != nil, c == "e" { editor.obfuscateRegion(.erase); return }
+        if editor.region != nil, c == "c" { editor.copyAverageColor(); return }
         if let tool = EditorTool.forKey(c) {
             editor.setTool(tool)
             return

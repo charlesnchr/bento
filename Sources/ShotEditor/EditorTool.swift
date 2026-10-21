@@ -89,7 +89,7 @@ enum EditorTool: String, CaseIterable {
 
     var hint: String {
         switch self {
-        case .select: return "Drag to select (⌘-click an object) · ↩ crop · A fit · ⌘C copy · B blur · ⌫ erase"
+        case .select: return "Drag to select (⌘-click an object) · ↩ crop · A fit · ⌘C copy · B blur · ⌫ erase · C colour"
         case .arrow: return "Drag to draw an arrow · ⇧ snaps to 45° · A again: style"
         case .text: return "Click to add text · Esc to finish"
         case .rect: return "Drag to draw · ⇧ square · R again: outline/translucent/filled"

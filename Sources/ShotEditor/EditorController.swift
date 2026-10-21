@@ -702,15 +702,23 @@ final class EditorController: NSObject, NSWindowDelegate {
         guard let c = darkest ? sampler.darkest(around: p) : sampler.color(at: p) else { return }
         let hex = HexColor.hex(r: c.r, g: c.g, b: c.b)
         Clipboard.copyText(hex)
-        HUD.show("Copied \(hex)", symbol: "eyedropper")
+        Feedback.hud("Copied \(hex)", symbol: "eyedropper")
         if setAsColor { setColor(hex) }
+    }
+
+    /// Copies the average colour of the selection (Shottr: select, then C).
+    func copyAverageColor() {
+        guard let r = region, let c = sampler.averageColor(in: r) else { Feedback.beep(); return }
+        let hex = HexColor.hex(r: c.r, g: c.g, b: c.b)
+        Clipboard.copyText(hex)
+        Feedback.hud("Copied average \(hex)", symbol: "eyedropper")
     }
 
     func copySizeToClipboard() {
         let r = region ?? doc.canvasRect
         let s = "\(Int(r.width.rounded())) × \(Int(r.height.rounded()))"
         Clipboard.copyText(s)
-        HUD.show("Copied \(s)", symbol: "ruler")
+        Feedback.hud("Copied \(s)", symbol: "ruler")
     }
 
     // MARK: Zoom

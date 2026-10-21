@@ -112,6 +112,7 @@ struct EditorSettingsView: View {
                     keyRow("Pan", "Space-drag · scroll · right-drag")
                     keyRow("Duplicate / delete annotation", "⌘D ⌥-drag · ⌫")
                     keyRow("Blur / erase the selection", "B · E or ⌫")
+                    keyRow("Copy the selection's average colour", "C")
                     keyRow("Select object / fit selection to content", "⌘-click · A")
                     keyRow("Zoom on selection corners / click-zoom", "Q W · Z")
                     keyRow("History / open file / open clipboard", "⌘Y  ⇧⌘O  ⇧⌘V")
