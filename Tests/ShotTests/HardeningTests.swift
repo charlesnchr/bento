@@ -86,6 +86,18 @@ import ShotEditor
         #expect(ScreenGrabber.safeScale(.infinity, fallback: 0) == 1)
     }
 
+    @Test func transparentWindowAreasAreSkippedInPicking() {
+        // 4×2 probe of a 400×200 pt window at (100, 50): left half transparent.
+        let clear: UInt32 = 0x0000_0000, solid: UInt32 = 0xFF20_4060
+        let probe = PixelFrame(width: 4, height: 2, pixels: [clear, clear, solid, solid, clear, clear, solid, solid])
+        let frame = CGRect(x: 100, y: 50, width: 400, height: 200)
+        #expect(ShotGeometry.isTransparent(probe, frame: frame, at: CGPoint(x: 150, y: 100)))
+        #expect(!ShotGeometry.isTransparent(probe, frame: frame, at: CGPoint(x: 450, y: 220)))
+        // Outside the window or a degenerate frame: never "transparent".
+        #expect(!ShotGeometry.isTransparent(probe, frame: frame, at: CGPoint(x: 50, y: 100)))
+        #expect(!ShotGeometry.isTransparent(probe, frame: .zero, at: .zero))
+    }
+
     @Test func windowPaddingIsClamped() {
         #expect(WindowComposer.clampedPadding(-5) == 0)
         #expect(WindowComposer.clampedPadding(1_000_000) == 500)

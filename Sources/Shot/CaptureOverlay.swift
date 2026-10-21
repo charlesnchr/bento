@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import ScreenCaptureKit
 import BentoCore
 
 /// What the frozen-screen overlay is used for.
@@ -65,6 +66,10 @@ final class CaptureOverlay {
     private var finished = false
     private var pixelCache: [Int: PixelFrame] = [:]
     private var screenObserver: NSObjectProtocol?
+    /// Alpha probes of windows under the pointer (window mode), by window id.
+    private var probes: [CGWindowID: PixelFrame] = [:]
+    private var probing: Set<CGWindowID> = []
+    private var probeContent: SCShareableContent?
 
     enum AdjustDrag { case move(start: CGPoint, original: CGRect), resize(edges: Edges, original: CGRect) }
     struct Edges: OptionSet { let rawValue: Int; static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), top = Edges(rawValue: 4), bottom = Edges(rawValue: 8) }
@@ -103,6 +108,7 @@ final class CaptureOverlay {
             panels.append(panel)
             views.append(view)
         }
+        if mode == .window { prefetchProbes() }
         updateHover()
         for v in views { v.refresh() }
         for p in panels { p.orderFrontRegardless() }
@@ -140,6 +146,8 @@ final class CaptureOverlay {
         panels = []
         views = []
         pixelCache = [:]
+        probes = [:]
+        probeContent = nil
         flashWork?.cancel()
         flashWork = nil
         CaptureOverlay.current = nil
@@ -426,6 +434,7 @@ final class CaptureOverlay {
             } else if options.allowWindowMode && !adjusting && mode != .color {
                 mode = mode == .window ? .area : .window
                 showHint = true
+                if mode == .window { prefetchProbes() }
                 updateHover()
                 currentCursor.set()
                 refreshAll()
@@ -564,9 +573,43 @@ final class CaptureOverlay {
 
     // MARK: Hover / refresh
 
+    /// The frontmost window under the pointer that has visible pixels there.
+    /// Windows without a probe yet count as opaque (and get probed).
     private func updateHover() {
         guard mode == .window else { hoveredWindow = nil; return }
-        hoveredWindow = ShotGeometry.frontmost(at: cursor, in: windows.map(\.frame))
+        var pick: Int?
+        for (i, w) in windows.enumerated() where w.frame.contains(cursor) {
+            if probes[w.id] == nil { requestProbe(w.id) }
+            if let f = probes[w.id], ShotGeometry.isTransparent(f, frame: w.frame, at: cursor) { continue }
+            pick = i
+            break
+        }
+        hoveredWindow = pick
+    }
+
+    /// Floating windows (above normal level) are the usual invisible
+    /// overlays; probe them as soon as window mode starts.
+    private func prefetchProbes() {
+        for w in windows where w.layer > 0 { requestProbe(w.id) }
+    }
+
+    private func requestProbe(_ id: CGWindowID) {
+        guard probes[id] == nil, !probing.contains(id) else { return }
+        probing.insert(id)
+        Task { @MainActor [weak self] in
+            if self?.probeContent == nil { self?.probeContent = try? await ScreenGrabber.content() }
+            guard let self, !self.finished, let content = self.probeContent else { return }
+            let frame = try? await ScreenGrabber.alphaProbe(windowID: id, content: content)
+            guard !self.finished else { return }
+            // No probe (window gone, capture failed): treat as opaque.
+            self.probes[id] = frame ?? PixelFrame(width: 1, height: 1, pixels: [0xFF00_0000])
+            self.probing.remove(id)
+            if self.mode == .window {
+                let before = self.hoveredWindow
+                self.updateHover()
+                if self.hoveredWindow != before { self.refreshAll() }
+            }
+        }
     }
 
     private func refresh(displays: Set<Int>) {

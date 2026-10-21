@@ -121,6 +121,16 @@ enum ShotGeometry {
         return CGPoint(x: x, y: y)
     }
 
+    /// Whether a window's alpha probe (its image scaled to `frame`) is
+    /// transparent at a global point.
+    static func isTransparent(_ probe: PixelFrame, frame: CGRect, at p: CGPoint, threshold: UInt32 = 24) -> Bool {
+        guard frame.width > 0, frame.height > 0, probe.width > 0, probe.height > 0 else { return false }
+        let x = int(((p.x - frame.minX) / frame.width * CGFloat(probe.width)).rounded(.down))
+        let y = int(((p.y - frame.minY) / frame.height * CGFloat(probe.height)).rounded(.down))
+        guard x >= 0, y >= 0, x < probe.width, y < probe.height else { return false }
+        return (probe.pixels[y * probe.width + x] >> 24) < threshold
+    }
+
     /// The rect in `rects` (front-to-back order) that contains the point.
     static func frontmost(at p: CGPoint, in rects: [CGRect]) -> Int? {
         rects.firstIndex { $0.contains(p) }

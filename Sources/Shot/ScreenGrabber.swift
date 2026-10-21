@@ -31,6 +31,7 @@ struct WindowInfo {
     let frame: CGRect // AX
     let appName: String
     let title: String
+    var layer = 0
 }
 
 /// ScreenCaptureKit wrappers. All captures exclude Bento's own windows and
@@ -214,6 +215,23 @@ enum ScreenGrabber {
         return CGSize(width: fit(content.width, kx), height: fit(content.height, ky))
     }
 
+    /// Low-resolution image of one window on its own (no shadow, at most
+    /// 256 px on the long side). Its alpha tells visible parts from
+    /// transparent ones: apps keep invisible, click-through windows on screen
+    /// (e.g. a floating chat bar's full-height container) that must not win
+    /// window picking over the window the user actually points at.
+    static func alphaProbe(windowID: CGWindowID, content: SCShareableContent) async throws -> PixelFrame? {
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else { return nil }
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let rect = filter.contentRect
+        guard rect.width >= 1, rect.height >= 1 else { return nil }
+        let k = min(1, 256 / max(rect.width, rect.height))
+        let cfg = configuration(width: Int((rect.width * k).rounded(.up)), height: Int((rect.height * k).rounded(.up)))
+        cfg.ignoreShadowsSingleWindow = true
+        cfg.shouldBeOpaque = false
+        return PixelFrame(try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg))
+    }
+
     /// The wallpaper behind a global AX rect (for "window over wallpaper").
     @MainActor
     static func wallpaper(axRect: CGRect) async throws -> CGImage? {
@@ -250,7 +268,7 @@ enum ScreenGrabber {
             if let alpha = d[kCGWindowAlpha as String] as? Double, alpha < 0.05 { return nil }
             let owner = d[kCGWindowOwnerName as String] as? String ?? ""
             if owner == "Window Server" || owner == "Dock" { return nil }
-            return WindowInfo(id: id, pid: pid, frame: frame, appName: owner, title: d[kCGWindowName as String] as? String ?? "")
+            return WindowInfo(id: id, pid: pid, frame: frame, appName: owner, title: d[kCGWindowName as String] as? String ?? "", layer: layer)
         }
     }
 
