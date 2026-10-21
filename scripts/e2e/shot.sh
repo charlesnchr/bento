@@ -108,6 +108,7 @@ setup() {
   local phase="$1" lines="${2:-160}"
   DOCNAME="shot-qa-$phase"; DOC="/tmp/$DOCNAME.rtf"
   "$SESSION" start shot || exit 75
+  STARTED=1
   START=$(date +%s)
   close_docs
   "$CTL" clip-save "$H/clip.plist" 2>/dev/null
@@ -130,6 +131,9 @@ setup() {
 }
 
 cleanup() {
+  # Interrupted while waiting for the GUI lock: the session (guard, lock,
+  # installed Bento) belongs to someone else; touch nothing.
+  [ -n "${STARTED:-}" ] || return 0
   snap_doc "${DOCNAME#shot-qa-}-end"
   textedit_ok || bad "TextEdit answers at the end of the phase (a mouse-up went missing)"
   [ -n "${PID:-}" ] && alive && kill "$PID" 2>/dev/null
@@ -137,7 +141,7 @@ cleanup() {
   [ -n "${LOGPID:-}" ] && kill "$LOGPID" 2>/dev/null
   close_docs
   [ -n "${FINDER_OPEN:-}" ] && "$CTL" axclose com.apple.finder shot-finder
-  [ -f "$H/clip.plist" ] && "$CTL" clip-restore "$H/clip.plist"
+  [ -f "$H/clip.plist" ] && "$CTL" clip-restore "$H/clip.plist" && rm -f "$H/clip.plist"
   if ls -t "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -20 | grep -q '^Bento'; then
     local newest; newest=$(ls -t "$HOME/Library/Logs/DiagnosticReports/" | grep '^Bento' | head -1)
     [ "$(stat -f %m "$HOME/Library/Logs/DiagnosticReports/$newest")" -ge "${START:-0}" ] && bad "crash report $newest"
@@ -442,6 +446,8 @@ phase_scroll() {
   c=$(clip_wait 200)
   checkc "manual scrolling capture ($c)" '[ "${c%% *}" = image ] && [ "${c##*x}" -gt 1100 ]'
   kill $sampler 2>/dev/null
+  sleep 3
+  echo "  info  heap in use: $(heap "$PID" 2>/dev/null | awk '/^All zones: .* bytes\)/ {print $5, $6}' | tr -d '()')"
   peak=$(sort -n "$H/rss.txt" | tail -1)
   footprint "$PID" 2>/dev/null | awk '/^ *[0-9.]+ [KMG]B/ && NR > 3' | head -5 | sed 's/^/        /'
   echo "  info  RSS start ${rss0} KB, peak ${peak} KB; phys_footprint now $(footprint "$PID" 2>/dev/null | awk '/phys_footprint:/ {print $2 $3}'), peak $(footprint "$PID" 2>/dev/null | awk '/phys_footprint_peak:/ {print $2 $3}')"
@@ -466,6 +472,7 @@ phase_memory() {
   sleep 3
   check "no overlay windows left behind" [ "$(win_count 1000)" = 0 ]
   f40=$(fp)
+  echo "  info  heap in use: $(heap "$PID" 2>/dev/null | awk '/^All zones: .* bytes\)/ {print $5, $6}' | tr -d '()')"
   echo "  info  footprint after 1 capture: $f0, 21: $f20, 41: $f40; windows: $("$CTL" windows "$PID" | wc -l | tr -d ' ')"
   footprint "$PID" 2>/dev/null | awk '/^ *[0-9.]+ [KMG]B/ && NR > 3' | head -8 | sed 's/^/        /'
   sleep 5

@@ -43,15 +43,16 @@ struct PixelFrame {
         return PixelFrame(width: width, height: height, pixels: out)
     }
 
-    /// Builds a CGImage from raw rows without copying them again.
+    /// Builds a CGImage from raw rows without copying them again. The pixels
+    /// live in their own mapping (see `MappedPixels`), unmapped when the
+    /// image is released.
     static func makeImage(width: Int, height: Int, fill: (UnsafeMutablePointer<UInt32>) -> Void) -> CGImage? {
-        guard width > 0, height > 0 else { return nil }
-        let count = width * height
-        let ptr = UnsafeMutablePointer<UInt32>.allocate(capacity: count)
-        fill(ptr)
-        guard let provider = CGDataProvider(dataInfo: nil, data: ptr, size: count * 4, releaseData: { _, data, _ in
-            data.assumingMemoryBound(to: UInt32.self).deallocate()
-        }) else { ptr.deallocate(); return nil }
+        guard width > 0, height > 0, let buffer = MappedPixels(count: width * height) else { return nil }
+        fill(buffer.base)
+        let (ptr, bytes) = buffer.detach()
+        guard let provider = CGDataProvider(dataInfo: nil, data: ptr, size: bytes, releaseData: { _, data, size in
+            MappedPixels.release(UnsafeMutableRawPointer(mutating: data), bytes: size)
+        }) else { MappedPixels.release(ptr, bytes: bytes); return nil }
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
                        space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo), provider: provider,
                        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
@@ -62,6 +63,48 @@ struct PixelFrame {
             pixels.withUnsafeBufferPointer { dst.update(from: $0.baseAddress!, count: pixels.count) }
         }
     }
+}
+
+/// Pixel memory that goes straight back to the system when freed. On macOS
+/// 26, malloc keeps freed large blocks in the process footprint (a few long
+/// scrolling captures left 250+ MB that `malloc_zone_pressure_relief` won't
+/// return), so the big, long-lived buffers (stitched strips, finished images)
+/// are anonymous mappings instead. Small buffers (< 1 MB) still use malloc.
+final class MappedPixels {
+    let count: Int
+    private(set) var base: UnsafeMutablePointer<UInt32>
+    private var raw: UnsafeMutableRawPointer?
+    private let bytes: Int
+
+    static let threshold = 1 << 20
+
+    init?(count: Int) {
+        guard count > 0 else { return nil }
+        self.count = count
+        bytes = count * 4
+        if bytes >= MappedPixels.threshold {
+            let p = mmap(nil, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+            guard let p, p != MAP_FAILED else { return nil }
+            raw = p
+        } else {
+            raw = malloc(bytes)
+            guard raw != nil else { return nil }
+        }
+        base = raw!.bindMemory(to: UInt32.self, capacity: count)
+    }
+
+    /// Hands ownership of the memory to the caller (free with `release`).
+    func detach() -> (UnsafeMutableRawPointer, Int) {
+        let p = raw!
+        raw = nil
+        return (p, bytes)
+    }
+
+    static func release(_ p: UnsafeMutableRawPointer, bytes: Int) {
+        if bytes >= threshold { munmap(p, bytes) } else { free(p) }
+    }
+
+    deinit { if let raw { MappedPixels.release(raw, bytes: bytes) } }
 }
 
 /// Finds how far content moved between two consecutive frames of a
@@ -219,7 +262,7 @@ final class ScrollStitcher {
     let ignoreRight: Int
     private var reference: PixelFrame
     private var refSig: OverlapFinder.Signature
-    private var strips: [[UInt32]] = []
+    private var strips: [MappedPixels] = []
     private var committedRows = 0
     /// Row of `reference` up to which content is committed (nil until the first shift).
     private var committedEnd: Int?
@@ -288,8 +331,9 @@ final class ScrollStitcher {
     }
 
     private func commit(_ f: PixelFrame, from: Int, to: Int) {
-        guard to > from else { return }
-        strips.append(Array(f.pixels[(from * width)..<(to * width)]))
+        guard to > from, let strip = MappedPixels(count: (to - from) * width) else { return }
+        f.pixels.withUnsafeBufferPointer { strip.base.update(from: $0.baseAddress! + from * width, count: strip.count) }
+        strips.append(strip)
         committedRows += to - from
     }
 
@@ -313,7 +357,7 @@ final class ScrollStitcher {
                 }
             }
             strips.reverse()
-            while let s = strips.popLast() { s.withUnsafeBufferPointer { put($0, rows: s.count / w) } }
+            while let s = strips.popLast() { put(UnsafeBufferPointer(start: s.base, count: s.count), rows: s.count / w) }
             ref.pixels.withUnsafeBufferPointer { buf in
                 let tail = UnsafeBufferPointer(rebasing: buf[(tailStart * w)...])
                 put(tail, rows: ref.height - tailStart)
