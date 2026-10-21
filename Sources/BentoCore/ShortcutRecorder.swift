@@ -16,11 +16,12 @@ public struct ShortcutRecorder: View {
         self.placeholder = placeholder
     }
 
-    /// Recorder that reads/writes the registry binding for an action.
+    /// Recorder that reads/writes the registry binding for an action. A
+    /// combination already used by another action moves to this one.
     public init(actionID: String, placeholder: String = "Record Shortcut") {
         _shortcut = Binding(
             get: { ActionRegistry.shared.shortcut(for: actionID) },
-            set: { ActionRegistry.shared.setShortcut($0, for: actionID) }
+            set: { ActionRegistry.shared.assign($0, to: actionID) }
         )
         self.placeholder = placeholder
     }
@@ -118,18 +119,35 @@ final class RecorderView: NSView {
         let code = Int(e.keyCode)
         if mods.isEmpty && code == kVK_Escape { stop(); return }
         if mods.isEmpty && (code == kVK_Delete || code == kVK_ForwardDelete) {
+            stop()
             shortcut = nil
             onChange?(nil)
-            stop()
             return
         }
-        let isFKey = (kVK_F1...kVK_F20).contains(code) || [kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20].contains(code)
-        // Plain keys would hijack typing; require a modifier except for F-keys.
-        guard !mods.isEmpty || isFKey else { NSSound.beep(); return }
-        let sc = Shortcut(keyCode: UInt32(e.keyCode), modifiers: mods)
+        guard let sc = RecorderView.shortcut(keyCode: UInt32(e.keyCode), modifiers: mods) else {
+            NSSound.beep()
+            return
+        }
+        // Stop first: onChange can rebuild the SwiftUI row (and this view).
+        stop()
         shortcut = sc
         onChange?(sc)
-        stop()
+    }
+
+    static let functionKeys: Set<Int> = [
+        kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20,
+    ]
+
+    /// Validates a recorded combination. Plain or Shift-only keys would hijack
+    /// typing, so they need ⌘, ⌥ or ⌃ — except function keys.
+    static func shortcut(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Shortcut? {
+        let mods = modifiers.intersection([.command, .option, .control, .shift])
+        let hasCommandish = !mods.intersection([.command, .option, .control]).isEmpty
+        guard hasCommandish || functionKeys.contains(Int(keyCode)) else { return nil }
+        if [kVK_Command, kVK_Shift, kVK_Option, kVK_Control, kVK_RightCommand, kVK_RightShift,
+            kVK_RightOption, kVK_RightControl, kVK_CapsLock, kVK_Function].contains(Int(keyCode)) { return nil }
+        return Shortcut(keyCode: keyCode, modifiers: mods)
     }
 
     private func stop() {

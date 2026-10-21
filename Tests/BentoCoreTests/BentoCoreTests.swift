@@ -86,3 +86,17 @@ import Testing
     #expect((back["b"] as? Double) == 0.9)
     #expect(text.firstRange(of: "\"a\"")!.lowerBound < text.firstRange(of: "\"b\"")!.lowerBound)
 }
+
+@Test func recorderValidatesCombinations() {
+    // Every key code must be safe to check (regression: an inverted F-key range crashed on any key).
+    for code in UInt32(0)...UInt32(127) {
+        _ = RecorderView.shortcut(keyCode: code, modifiers: [])
+        _ = RecorderView.shortcut(keyCode: code, modifiers: [.command])
+    }
+    #expect(RecorderView.shortcut(keyCode: 0, modifiers: []) == nil)                 // plain "a"
+    #expect(RecorderView.shortcut(keyCode: 0, modifiers: [.shift]) == nil)           // shift+a types "A"
+    #expect(RecorderView.shortcut(keyCode: 0, modifiers: [.command]) == Shortcut("cmd+a"))
+    #expect(RecorderView.shortcut(keyCode: 122, modifiers: []) == Shortcut("f1"))    // F1 alone is fine
+    #expect(RecorderView.shortcut(keyCode: 90, modifiers: [.shift]) == Shortcut("shift+f20"))
+    #expect(RecorderView.shortcut(keyCode: 55, modifiers: [.command]) == nil)        // bare modifier key
+}

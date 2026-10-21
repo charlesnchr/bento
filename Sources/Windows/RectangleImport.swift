@@ -50,6 +50,13 @@ enum RectangleImport {
         return nil
     }
 
+    /// Rectangle or Rectangle Pro is running (its settings are current).
+    static var isRunning: Bool {
+        ["com.knollsoft.Hookshot", "com.knollsoft.Rectangle"].contains {
+            !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty
+        }
+    }
+
     static func read(_ url: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]

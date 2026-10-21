@@ -69,9 +69,17 @@ public final class WindowsModule: BentoModule {
         applySettings()
         configObserver = ConfigStore.shared.observe(id) { [weak self] in self?.settingsChanged() }
         if !settings.importedFromRectangle {
-            // First start: pick up this Mac's Rectangle habits. Deferred so the
+            // First start: adopt Rectangle's shortcuts only if it is in use right
+            // now — a leftover preferences file from an app the user stopped
+            // using months ago is not their current habit. Deferred so the
             // registry has registered our actions (setShortcut compares defaults).
-            DispatchQueue.main.async { [weak self] in self?.importFromRectangle(interactive: false) }
+            if RectangleImport.isRunning {
+                DispatchQueue.main.async { [weak self] in self?.importFromRectangle(interactive: false) }
+            } else {
+                var s = settings
+                s.importedFromRectangle = true
+                ConfigStore.shared.setSection(id, s)
+            }
         }
     }
 
@@ -99,6 +107,11 @@ public final class WindowsModule: BentoModule {
             pendingReload = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
         }
+    }
+
+    public func diagnostics() -> [String: Any] {
+        ["started": started, "dragTap": drag.isRunning, "snapMonitor": snapper.isRunning,
+         "waitingForAccessibility": activationObserver != nil]
     }
 
     private func signature(_ s: WindowsSettings) -> [String] { s.layouts.map { "\($0.id)|\($0.name)" } }

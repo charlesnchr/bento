@@ -1,0 +1,46 @@
+#!/bin/bash
+# GUI end-to-end test sessions that never fight the user for the machine.
+#   scripts/e2e/session start <who> [idle-seconds]   wait until the user has been idle (default 90 s),
+#                                                     take the GUI lock, start the input guard, quit the
+#                                                     installed Bento (restored on end)
+#   scripts/e2e/session check                         exit 75 if the user touched mouse/keyboard
+#   scripts/e2e/session end <who>                     stop guard, relaunch installed Bento, release lock
+# bentoctl refuses to post events while the user-active flag exists.
+set -u
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+FLAG=/tmp/bento-user-active
+idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
+build_tools() {
+  [ /tmp/bentoctl -nt "$ROOT/scripts/e2e/bentoctl.swift" ] || swiftc -O "$ROOT/scripts/e2e/bentoctl.swift" -o /tmp/bentoctl
+  [ /tmp/bento-guard -nt "$ROOT/scripts/e2e/guard.swift" ] || swiftc -O "$ROOT/scripts/e2e/guard.swift" -o /tmp/bento-guard
+}
+case "${1:-}" in
+  start)
+    who="${2:-unknown}"; need="${3:-90}"
+    build_tools
+    while :; do
+      i=$(idle); [ "$i" -ge "$need" ] && break
+      sleep $(( need - i > 5 ? 5 : need - i + 1 ))
+    done
+    "$ROOT/scripts/gui-lock" acquire "$who" >/dev/null
+    # The user may have come back while we waited for the lock.
+    while [ "$(idle)" -lt 20 ]; do sleep 5; done
+    rm -f "$FLAG"
+    /tmp/bento-guard 2>>/tmp/bento-guard.log & echo $! > /tmp/bento-guard.pid
+    sleep 0.3
+    if pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null; then
+      touch /tmp/bento-e2e-restore
+      osascript -e 'tell application id "com.charles.bento" to quit' >/dev/null 2>&1
+      for _ in $(seq 1 20); do pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null || break; sleep 0.25; done
+    fi
+    echo "session started for $who (user idle, guard running)" ;;
+  check)
+    [ -f "$FLAG" ] && { cat "$FLAG"; exit 75; }; exit 0 ;;
+  end)
+    who="${2:-unknown}"
+    [ -f /tmp/bento-guard.pid ] && kill "$(cat /tmp/bento-guard.pid)" 2>/dev/null; rm -f /tmp/bento-guard.pid
+    if [ -f /tmp/bento-e2e-restore ]; then rm -f /tmp/bento-e2e-restore; open -g /Applications/Bento.app; fi
+    "$ROOT/scripts/gui-lock" release "$who" >/dev/null
+    [ -f "$FLAG" ] && echo "session ended early: $(cat $FLAG)" || echo "session ended" ;;
+  *) echo "usage: $0 start|check|end <who> [idle-seconds]" >&2; exit 2 ;;
+esac

@@ -149,11 +149,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case "action":
             let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if !ActionRegistry.shared.perform(id) { HUD.show("Unknown action \(id)", symbol: "questionmark.circle") }
+        case "debug":
+            writeDiagnostics()
         case "settings":
             let page = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             showSettings(page: page.isEmpty ? nil : page)
         default:
             break
+        }
+    }
+
+    /// `bento://debug/state` → `<support>/diagnostics.json`, for end-to-end tests.
+    private func writeDiagnostics() {
+        let reg = ActionRegistry.shared
+        let actions: [[String: Any]] = reg.allActions.map { a in
+            ["id": a.id, "shortcut": reg.shortcut(for: a.id)?.configString ?? "", "failed": reg.failed.contains(a.id)]
+        }
+        var modulesInfo: [String: Any] = [:]
+        for m in modules { modulesInfo[m.id] = ["running": running.contains(m.id), "state": m.diagnostics()] }
+        let info: [String: Any] = [
+            "pid": Int(getpid()),
+            "bundle": Bundle.main.bundlePath,
+            "version": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev",
+            "accessibility": Permissions.accessibility,
+            "screenRecording": Permissions.screenRecording,
+            "modules": modulesInfo,
+            "actions": actions,
+            "failed": Array(reg.failed).sorted(),
+            "time": Date().timeIntervalSince1970,
+        ]
+        let url = AppPaths.supportDir.appendingPathComponent("diagnostics.json")
+        if let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url, options: .atomic)
         }
     }
 

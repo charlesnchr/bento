@@ -54,12 +54,15 @@ public protocol BentoModule: AnyObject {
     func makeSettingsView() -> AnyView?
     /// Items for the menu bar menu. Default: a submenu with all visible actions.
     func menuItems() -> [NSMenuItem]
+    /// Runtime state for `bento://debug/state` (event taps, observers, …).
+    func diagnostics() -> [String: Any]
 }
 
 public extension BentoModule {
     var enabledByDefault: Bool { true }
     func makeSettingsView() -> AnyView? { nil }
     func menuItems() -> [NSMenuItem] { ActionRegistry.shared.defaultMenuItems(for: self) }
+    func diagnostics() -> [String: Any] { [:] }
 }
 
 /// Owns the mapping from actions to global hotkeys.
@@ -155,6 +158,16 @@ public final class ActionRegistry {
             overrides[id] = shortcut?.configString ?? ""
         }
         ConfigStore.shared.shortcutOverrides = overrides // triggers reload via observer
+    }
+
+    /// Binds `shortcut` to `id`, first unbinding any other action that uses it
+    /// (with a HUD saying so), so a recorded combination never ends up dead.
+    public func assign(_ shortcut: Shortcut?, to id: String) {
+        if let shortcut, let other = actionUsing(shortcut), other.id != id {
+            setShortcut(nil, for: other.id)
+            HUD.show("Removed from “\(other.title)”", symbol: "arrow.triangle.swap", duration: 1.6)
+        }
+        setShortcut(shortcut, for: id)
     }
 
     /// Which action (if any) already uses a shortcut.
