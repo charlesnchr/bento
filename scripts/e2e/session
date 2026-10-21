@@ -30,7 +30,7 @@ case "${1:-}" in
         break
       fi
       kill $gpid 2>/dev/null; rm -f /tmp/bento-guard.pid
-      [ -d /tmp/bento-gui.lock ] && grep -q "^$who " /tmp/bento-gui.lock/owner 2>/dev/null && rm -rf /tmp/bento-gui.lock
+      [ -d /tmp/bento-gui.lock ] && [ "$(sed -n 1p /tmp/bento-gui.lock/owner 2>/dev/null)" = "$who" ] && rm -rf /tmp/bento-gui.lock
       sleep 5
     done
     if pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null; then

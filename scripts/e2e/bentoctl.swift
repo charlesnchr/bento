@@ -7,6 +7,7 @@
 //   bentoctl setframe <bundleid> <title> x y w h
 //   bentoctl drag x1 y1 x2 y2 [mods]      mouse drag (mods like cmd+opt held during the drag)
 //   bentoctl click x y [mods]
+//   bentoctl throw x1 y1 x2 y2 [mods]     press at 1, release at 2, no drag events (one process)
 //   bentoctl screens                      print screens' AX frames and visible frames
 //   bentoctl windows <owner>              print on-screen CG windows of an owner: id layer x y w h title
 //   add --expect <bundleid> (or --expect-pid <pid>) to key/drag/click/down to refuse input unless it goes to that app.
@@ -112,14 +113,14 @@ if let i = argv.firstIndex(of: "--expect"), i + 1 < argv.count { expectBID = arg
 // --expect-pid <pid>: same checks by process id (raw debug binaries have no bundle id).
 var expectPID: pid_t?
 if let i = argv.firstIndex(of: "--expect-pid"), i + 1 < argv.count, let p = pid_t(argv[i + 1]) { expectPID = p; argv.removeSubrange(i...(i + 1)) }
-let inputCommands: Set<String> = ["key", "drag", "click", "down", "move", "up"]
+let inputCommands: Set<String> = ["key", "drag", "click", "down", "move", "up", "throw"]
 if let c = argv.first, inputCommands.contains(c) {
     if FileManager.default.fileExists(atPath: "/tmp/bento-user-active") { FileHandle.standardError.write("user is active; refusing to post input\n".data(using: .utf8)!); exit(75) }
     if let pid = expectPID {
         if c == "key", NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
             fail("frontmost pid is \(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1), expected \(pid); not typing")
         }
-        if c == "drag" || c == "click" || c == "down" {
+        if c == "drag" || c == "click" || c == "down" || c == "throw" {
             let p = CGPoint(x: Double(argv[1])!, y: Double(argv[2])!)
             var el: AXUIElement?
             var owner: pid_t = 0
@@ -131,7 +132,7 @@ if let c = argv.first, inputCommands.contains(c) {
         if c == "key", NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bid {
             fail("frontmost is \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"), expected \(bid); not typing")
         }
-        if c == "drag" || c == "click" || c == "down" {
+        if c == "drag" || c == "click" || c == "down" || c == "throw" {
             let p = CGPoint(x: Double(argv[1])!, y: Double(argv[2])!)
             var el: AXUIElement?
             var pid: pid_t = 0
@@ -202,6 +203,14 @@ case "down", "move", "up":
             usleep(16000)
         }
     }
+case "throw":
+    // Press and release far apart with no drag events in between (one process).
+    let a = args2[1...4].map { Double($0)! }
+    let flags = args2.count > 5 ? parseFlags(args2[5].split(separator: "+", omittingEmptySubsequences: false)) : []
+    let p1 = CGPoint(x: a[0], y: a[1]), p2 = CGPoint(x: a[2], y: a[3])
+    mouse(.mouseMoved, p1, flags); usleep(60000)
+    mouse(.leftMouseDown, p1, flags); usleep(80000)
+    mouse(.leftMouseUp, p2, flags)
 case "click":
     let p = CGPoint(x: Double(args2[1])!, y: Double(args2[2])!)
     let flags = args2.count > 3 ? parseFlags(args2[3].split(separator: "+", omittingEmptySubsequences: false)) : []

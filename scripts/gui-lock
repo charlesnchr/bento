@@ -14,11 +14,11 @@ case "$1" in
   acquire)
     while :; do
       if mkdir "$LOCK" 2>/dev/null; then
-        echo "${2:-unknown} $holder_pid" > "$LOCK/owner"
+        printf '%s\n%s\n' "${2:-unknown}" "$holder_pid" > "$LOCK/owner"   # line 1: who, line 2: liveness pid
         echo "gui lock acquired by ${2:-unknown}"; exit 0
       fi
       if [ -f "$LOCK/owner" ]; then
-        read -r name pid < "$LOCK/owner"
+        name=$(sed -n 1p "$LOCK/owner"); pid=$(sed -n 2p "$LOCK/owner")
         age=$(( $(date +%s) - $(stat -f %m "$LOCK/owner" 2>/dev/null || date +%s) ))
         if { [ -n "${pid:-}" ] && ! kill -0 "$pid" 2>/dev/null; } || [ "$age" -gt 480 ]; then
           stale="$LOCK.stale.$$"
@@ -34,10 +34,10 @@ case "$1" in
     done ;;
   release)
     if [ -f "$LOCK/owner" ]; then
-      read -r name pid < "$LOCK/owner"
+      name=$(sed -n 1p "$LOCK/owner")
       if [ "${name:-}" != "${2:-unknown}" ]; then echo "lock is held by ${name:-?}, not releasing" >&2; exit 1; fi
     fi
     rm -rf "$LOCK"; echo "gui lock released" ;;
-  status) [ -d "$LOCK" ] && echo "held by $(cat "$LOCK/owner" 2>/dev/null)" || echo "free" ;;
+  status) [ -d "$LOCK" ] && echo "held by $(sed -n 1p "$LOCK/owner" 2>/dev/null) (pid $(sed -n 2p "$LOCK/owner" 2>/dev/null))" || echo "free" ;;
   *) echo "usage: $0 acquire|release|status <who>" >&2; exit 2 ;;
 esac

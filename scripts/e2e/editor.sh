@@ -42,7 +42,7 @@ expect_eq() { if [ "$3" = "$2" ]; then ok "$1"; else fail "$1 (want '$2', got '$
 
 # Input goes through editor-ctl (pid-targeted, refuses while the user is active):
 # the whole phase stops with 75 the moment the user touches anything.
-owns_lock() { [ "$(cat /tmp/bento-gui.lock/owner 2>/dev/null)" = "$WHO" ]; }
+owns_lock() { [ "$(sed -n 1p /tmp/bento-gui.lock/owner 2>/dev/null)" = "$WHO" ]; }
 ctl() {
   # Another session may have broken the lock (gui-lock's stale-lock race): never
   # keep driving the screen without it.

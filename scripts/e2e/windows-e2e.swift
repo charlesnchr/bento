@@ -243,7 +243,8 @@ var S: CGRect = {
               let b = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
         return r
     }
-    for (dx, dy) in [(300.0, 167.0), (10.0, 167.0), (900.0, 167.0), (300.0, 470.0), (10.0, 470.0), (900.0, 470.0)] {
+    // Keep ≥ 40 pt from the screen edges so "make larger" (+15 per side) never touches them.
+    for (dx, dy) in [(300.0, 167.0), (40.0, 167.0), (870.0, 167.0), (300.0, 440.0), (40.0, 440.0), (870.0, 440.0)] {
         let r = CGRect(x: V.minX + dx, y: V.minY + dy, width: 600, height: 400)
         if r.maxX <= V.maxX, r.maxY <= V.maxY, !overlays.contains(where: { $0.intersects(r.insetBy(dx: -4, dy: -4)) }) { return r }
     }
@@ -545,8 +546,9 @@ func phaseDrag() {
     before = placedCount()
     let c = CGPoint(x: S.midX, y: S.midY)
     if onMyWindow(c) {
-        ctl(["down", "\(Int(c.x))", "\(Int(c.y))", mv])
-        ctl(["up", "\(Int(c.x + 300))", "\(Int(c.y + 100))", mv])
+        // One process for press and release: a release posted by a second process can be dropped by
+        // the window server (real hardware never splits a click across processes).
+        ctl(["throw", "\(Int(c.x))", "\(Int(c.y))", "\(Int(c.x + 300))", "\(Int(c.y + 100))", mv])
         expectFrame("⌘⌥ throw: down/up with no drag events still moves", S.offsetBy(dx: 300, dy: 100), since: before)
     }
     modDrag("⌘⌥ drag to the right screen edge snaps (right half)", from: c, by: CGPoint(x: F.maxX - 1 - c.x, y: 0), mods: mv, want: cell(2, 1, 1, 0))
