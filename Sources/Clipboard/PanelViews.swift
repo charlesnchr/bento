@@ -250,8 +250,9 @@ struct RowIcon: View {
     var body: some View {
         switch row.kind {
         case .image:
-            CachedImage(key: "thumb:\(row.thumbFile ?? "")", load: { [thumb = row.thumbFile] in
-                ImageCache.loadThumb(thumb)
+            // Resolve the URL here (main thread); only the decode runs detached.
+            CachedImage(key: "thumb:\(row.thumbFile ?? "")", load: { [url = ImageCache.storeRef?.thumbURL(row.thumbFile)] in
+                url.flatMap { NSImage(contentsOf: $0) }
             }) { img in
                 Image(nsImage: img)
                     .resizable()
@@ -419,11 +420,6 @@ final class ImageCache {
         set(key, icon)
         return icon
     }
-
-    static func loadThumb(_ name: String?) -> NSImage? {
-        guard let url = storeRef?.thumbURL(name) else { return nil }
-        return NSImage(contentsOf: url)
-    }
 }
 
 /// Loads an image off the main thread once, through `ImageCache`.
@@ -460,6 +456,7 @@ enum RelativeTime {
     static func short(_ date: Date, now: Date = Date()) -> String {
         let s = now.timeIntervalSince(date)
         let cal = Calendar.current
+        guard s.isFinite else { return "" }
         if s < 60 { return "Just now" }
         if s < 3600 { return "\(Int(s / 60))m ago" }
         if cal.isDateInToday(date) { return "\(Int(s / 3600))h ago" }

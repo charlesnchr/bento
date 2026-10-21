@@ -89,7 +89,10 @@ final class PanelModel: ObservableObject {
             limit += pageSize
             reload()
         }
-        select(rows[i].id, scroll: true)
+        // The reload may have returned fewer rows (deleted meanwhile, or a
+        // failed query returns none).
+        guard !rows.isEmpty else { return }
+        select(rows[min(i, rows.count - 1)].id, scroll: true)
     }
 
     func moveToEnd(_ last: Bool) {

@@ -35,7 +35,9 @@ enum ImageProcessor {
         var outType = type
         var ext = UTType(type)?.preferredFilenameExtension ?? "img"
         // TIFF is uncompressed: keep PNG instead (lossless and much smaller).
-        if type == UTType.tiff.identifier || CGImageSourceGetCount(src) > 1 {
+        // Other multi-image formats (animated GIF/PNG, HEIC sequences) are
+        // kept as they are.
+        if type == UTType.tiff.identifier || type == "NSTIFFPboardType" {
             guard let cg = CGImageSourceCreateImageAtIndex(src, index, nil), let png = encode(cg, as: .png) else { return nil }
             outData = png
             outType = UTType.png.identifier

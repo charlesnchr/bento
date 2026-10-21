@@ -10,18 +10,17 @@ final class ClipStore {
     let directory: URL
     let imagesDir: URL
     let thumbsDir: URL
-    private let db: SQLiteDB
+    let databaseURL: URL
+    private var db: SQLiteDB
     private let log = BentoLog.make("clipboard")
+    /// Set when a corrupt database was moved aside and a new one created.
+    private(set) var recoveredFromCorruption = false
+    /// Bumped by every rebuild, so a stale error cannot trigger a second one.
+    private var generation = 0
+    /// Failed list queries schedule `recoverIfCorrupt` on the main queue (tests turn this off).
+    var recoversAutomatically = true
 
-    init(directory: URL) throws {
-        self.directory = directory
-        imagesDir = directory.appendingPathComponent("images", isDirectory: true)
-        thumbsDir = directory.appendingPathComponent("thumbs", isDirectory: true)
-        for d in [directory, imagesDir, thumbsDir] {
-            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-        }
-        db = try SQLiteDB(path: directory.appendingPathComponent("history.sqlite").path)
-        try db.exec("""
+    static let schema = """
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             kind TEXT NOT NULL,
@@ -50,8 +49,139 @@ final class ClipStore {
         );
         CREATE INDEX IF NOT EXISTS items_order ON items(pinned, last_copied);
         CREATE INDEX IF NOT EXISTS items_ocr ON items(kind, ocr_done);
-        """)
+        """
+
+    init(directory: URL) throws {
+        self.directory = directory
+        imagesDir = directory.appendingPathComponent("images", isDirectory: true)
+        thumbsDir = directory.appendingPathComponent("thumbs", isDirectory: true)
+        databaseURL = directory.appendingPathComponent("history.sqlite")
+        for d in [directory, imagesDir, thumbsDir] {
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+        do {
+            db = try Self.open(databaseURL)
+        } catch where Self.isCorruption(error) {
+            // A history that cannot be read must not disable the clipboard
+            // for good: keep what is readable, set the broken file aside.
+            var damaged = try? SQLiteDB(path: databaseURL.path)
+            let salvaged: Int
+            (db, salvaged) = try Self.rebuild(databaseURL, damaged: &damaged)
+            recoveredFromCorruption = true
+            log.error("clipboard history was corrupt (\(String(describing: error), privacy: .public)); kept \(salvaged) readable items")
+        }
     }
+
+    private static func open(_ url: URL) throws -> SQLiteDB {
+        let db = try SQLiteDB(path: url.path)
+        try db.exec(schema)
+        // Touches the index pages, so a badly damaged file fails here rather
+        // than on the first copy. (Damage elsewhere surfaces in later queries:
+        // see `recoverIfCorrupt`.)
+        _ = try db.query("SELECT COUNT(*) AS n FROM items")
+        return db
+    }
+
+    /// SQLITE_CORRUPT / SQLITE_NOTADB (the wrapper only exposes messages).
+    static func isCorruption(_ error: Error) -> Bool {
+        let m = String(describing: error).lowercased()
+        return m.contains("malformed") || m.contains("not a database") || m.contains("database corrupt")
+    }
+
+    /// Call with errors from database operations. A database found to be
+    /// corrupt is replaced by a new one holding every row that could still
+    /// be read; the damaged file is kept as `history.corrupt-<time>.sqlite`.
+    /// Returns true if it recovered.
+    @discardableResult
+    func recoverIfCorrupt(_ error: Error, generation errorGeneration: Int? = nil) -> Bool {
+        guard Self.isCorruption(error), errorGeneration.map({ $0 == generation }) ?? true else { return false }
+        generation += 1
+        var damaged: SQLiteDB? = db
+        do {
+            db = try SQLiteDB(path: ":memory:") // drop our reference to the damaged connection
+            let salvaged: Int
+            (db, salvaged) = try Self.rebuild(databaseURL, damaged: &damaged)
+            log.error("clipboard history became corrupt (\(String(describing: error), privacy: .public)); kept \(salvaged) readable items")
+        } catch {
+            log.error("cannot rebuild clipboard history: \(String(describing: error), privacy: .public)")
+            // Keep working: whatever is at the path now, else a history that
+            // lasts until quit.
+            if let reopened = try? Self.open(databaseURL) {
+                db = reopened
+            } else if let memory = try? SQLiteDB(path: ":memory:"), (try? memory.exec(Self.schema)) != nil {
+                db = memory
+            }
+            return false
+        }
+        recoveredFromCorruption = true
+        removeOrphanFiles()
+        notify()
+        return true
+    }
+
+    static let columns = ["id", "kind", "hash", "title", "text", "rtf", "html", "extras", "link_title", "image_file",
+                          "thumb_file", "image_type", "width", "height", "byte_size", "ocr_text", "ocr_done", "source_app",
+                          "source_bundle", "first_copied", "last_copied", "copy_count", "pinned", "pinned_at"]
+
+    /// Copies the readable rows of `damaged` (if it could be opened at all)
+    /// into a new database, closes `damaged`, moves the old files aside and
+    /// the new database into place.
+    private static func rebuild(_ url: URL, damaged: inout SQLiteDB?) throws -> (SQLiteDB, Int) {
+        let fm = FileManager.default
+        let tmp = URL(fileURLWithPath: url.path + ".rebuild")
+        for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: tmp.path + suffix) }
+        var salvaged = 0
+        do {
+            let fresh = try SQLiteDB(path: tmp.path)
+            try fresh.exec(schema)
+            if let damaged { salvaged = copyReadableRows(from: damaged, to: fresh) }
+        } // `fresh` closes here, which checkpoints its WAL into the file
+        damaged = nil // closes the damaged connection before its files move
+
+        let stamp = Int(Date().timeIntervalSince1970)
+        let dir = url.deletingLastPathComponent()
+        for old in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where old.hasPrefix("history.corrupt-") {
+            try? fm.removeItem(at: dir.appendingPathComponent(old))
+        }
+        for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: url.path + suffix) {
+            try fm.moveItem(atPath: url.path + suffix, toPath: dir.appendingPathComponent("history.corrupt-\(stamp).sqlite\(suffix)").path)
+        }
+        try? fm.removeItem(atPath: tmp.path + "-shm")
+        for suffix in ["", "-wal"] where fm.fileExists(atPath: tmp.path + suffix) {
+            try fm.moveItem(atPath: tmp.path + suffix, toPath: url.path + suffix)
+        }
+        return (try open(url), salvaged)
+    }
+
+    /// Reads rows by id range so one damaged page only loses the rows on it.
+    static func copyReadableRows(from old: SQLiteDB, to new: SQLiteDB) -> Int {
+        let maxID = ((try? old.query("SELECT MAX(id) AS m FROM items"))?.first?["m"] as? Int64)
+            ?? ((try? old.query("SELECT seq FROM sqlite_sequence WHERE name = 'items'"))?.first?["seq"] as? Int64) ?? 0
+        guard maxID > 0 else { return 0 }
+        let cols = columns.joined(separator: ", ")
+        let insert = "INSERT OR IGNORE INTO items (\(cols)) VALUES (\(Array(repeating: "?", count: columns.count).joined(separator: ", ")))"
+        let deadline = Date().addingTimeInterval(10) // garbage ids must not hang the app
+        var copied = 0
+        func copy(_ rows: [SQLiteDB.Row]) {
+            for r in rows where (try? new.run(insert, columns.map { r[$0] ?? nil })) == 1 { copied += 1 }
+        }
+        _ = try? new.transaction {
+            var lo: Int64 = 1
+            while lo <= maxID, Date() < deadline {
+                let hi = min(lo + 255, maxID)
+                if let rows = try? old.query("SELECT \(cols) FROM items WHERE id BETWEEN ? AND ?", [lo, hi]) {
+                    copy(rows)
+                } else {
+                    for id in lo...hi {
+                        if let rows = try? old.query("SELECT \(cols) FROM items WHERE id = ?", [id]) { copy(rows) }
+                    }
+                }
+                lo = hi + 1
+            }
+        }
+        return copied
+    }
+
 
     func imageURL(_ name: String?) -> URL? { name.map { imagesDir.appendingPathComponent($0) } }
     func thumbURL(_ name: String?) -> URL? { name.map { thumbsDir.appendingPathComponent($0) } }
@@ -186,7 +316,15 @@ final class ClipStore {
     /// Deletes image/thumbnail files that no entry references (after a crash
     /// between writing the file and inserting the row).
     func removeOrphanFiles() {
-        let rows = (try? db.query("SELECT image_file, thumb_file FROM items WHERE image_file IS NOT NULL OR thumb_file IS NOT NULL")) ?? []
+        // If the query fails we know nothing about what is referenced; never
+        // treat that as "nothing is" (it would delete every image).
+        let rows: [SQLiteDB.Row]
+        do {
+            rows = try db.query("SELECT image_file, thumb_file FROM items WHERE image_file IS NOT NULL OR thumb_file IS NOT NULL")
+        } catch {
+            log.error("orphan scan skipped: \(String(describing: error), privacy: .public)")
+            return
+        }
         var keep = Set<String>()
         for r in rows {
             if let f = r["image_file"] as? String { keep.insert(f) }
@@ -218,11 +356,17 @@ final class ClipStore {
             params.append(k.rawValue)
         }
         for term in Self.searchTerms(query) {
-            clauses.append("""
-                (title LIKE ?1 ESCAPE '\\' OR text LIKE ?1 ESCAPE '\\' OR ocr_text LIKE ?1 ESCAPE '\\'
-                 OR link_title LIKE ?1 ESCAPE '\\' OR source_app LIKE ?1 ESCAPE '\\')
-                """.replacingOccurrences(of: "?1", with: "?\(params.count + 1)"))
-            params.append("%" + Self.escapeLike(term) + "%")
+            // LIKE folds ASCII case only: also try the other cases of
+            // non-ASCII terms so "ÆBLE" finds "æble".
+            var alternatives: [String] = []
+            for variant in Self.caseVariants(term) {
+                params.append("%" + Self.escapeLike(variant) + "%")
+                alternatives.append("""
+                    title LIKE ?1 ESCAPE '\\' OR text LIKE ?1 ESCAPE '\\' OR ocr_text LIKE ?1 ESCAPE '\\'
+                    OR link_title LIKE ?1 ESCAPE '\\' OR source_app LIKE ?1 ESCAPE '\\'
+                    """.replacingOccurrences(of: "?1", with: "?\(params.count)"))
+            }
+            clauses.append("(" + alternatives.joined(separator: " OR ") + ")")
         }
         let whereSQL = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
         let sql = """
@@ -234,6 +378,11 @@ final class ClipStore {
             return try db.query(sql, params).compactMap(Self.row)
         } catch {
             log.error("query failed: \(String(describing: error), privacy: .public)")
+            // The recovery posts didChange, which reloads the panel.
+            if recoversAutomatically {
+                let gen = generation
+                DispatchQueue.main.async { [weak self] in self?.recoverIfCorrupt(error, generation: gen) }
+            }
             return []
         }
     }
@@ -280,6 +429,14 @@ final class ClipStore {
 
     static func searchTerms(_ q: String) -> [String] {
         q.split(whereSeparator: \.isWhitespace).map(String.init).filter { !$0.isEmpty }.prefix(8).map { $0 }
+    }
+
+    /// The term plus its lower/upper/capitalised forms when it has non-ASCII letters.
+    static func caseVariants(_ term: String) -> [String] {
+        guard term.unicodeScalars.contains(where: { !$0.isASCII }) else { return [term] }
+        var out: [String] = []
+        for v in [term, term.lowercased(), term.uppercased(), term.capitalized] where !out.contains(v) { out.append(v) }
+        return out
     }
 
     static func escapeLike(_ s: String) -> String {

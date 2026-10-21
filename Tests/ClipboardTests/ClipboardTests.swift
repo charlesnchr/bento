@@ -6,15 +6,15 @@ import UniformTypeIdentifiers
 
 // MARK: - Helpers
 
-private func tempDir() -> URL {
+func tempDir() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("bento-clip-tests-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-private func makeStore() throws -> ClipStore { try ClipStore(directory: tempDir()) }
+func makeStore() throws -> ClipStore { try ClipStore(directory: tempDir()) }
 
-private func textDraft(_ text: String, app: String? = "TextEdit", bundle: String? = "com.apple.TextEdit") -> ClipDraft {
+func textDraft(_ text: String, app: String? = "TextEdit", bundle: String? = "com.apple.TextEdit") -> ClipDraft {
     var d = ClipDraft(kind: ContentDetection.kind(forText: text), text: text, hash: ClipClassifier.hash("text", text))
     d.byteSize = text.utf8.count
     d.sourceApp = app
@@ -23,11 +23,11 @@ private func textDraft(_ text: String, app: String? = "TextEdit", bundle: String
 }
 
 /// A private, uniquely named pasteboard so tests never touch the user's clipboard.
-private func privatePasteboard() -> NSPasteboard {
+func privatePasteboard() -> NSPasteboard {
     NSPasteboard(name: NSPasteboard.Name("com.charles.bento.tests.\(UUID().uuidString)"))
 }
 
-private func pngData(width: Int, height: Int) -> Data {
+func pngData(width: Int, height: Int) -> Data {
     let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.setFillColor(CGColor(red: 1, green: 0.4, blue: 0, alpha: 1))

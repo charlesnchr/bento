@@ -90,6 +90,7 @@ struct ImagePreview: View {
     let url: URL
     let pixelSize: CGSize
     @State private var image: NSImage?
+    @State private var failed = false
 
     /// Scrolling captures and other very tall images scroll at a readable width.
     private var isTall: Bool { pixelSize.width > 0 && pixelSize.height / pixelSize.width > 2.5 }
@@ -111,6 +112,16 @@ struct ImagePreview: View {
                                    maxHeight: min(geo.size.height - 32, max(pixelSize.height, 1)))
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
+                } else if failed {
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 28, weight: .light))
+                            .foregroundStyle(.tertiary)
+                        Text(FileManager.default.fileExists(atPath: url.path) ? "Cannot read this image" : "Image file is missing")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height)
                 } else {
                     ProgressView().controlSize(.small)
                         .frame(width: geo.size.width, height: geo.size.height)
@@ -122,7 +133,7 @@ struct ImagePreview: View {
             // Tall images: decode by width (~1000 px), bounded at 6000 px tall.
             let maxPixels = isTall ? Int(min(6000, 1000 * pixelSize.height / max(pixelSize.width, 1))) : 1400
             let cg = await Task.detached(priority: .userInitiated) { ImageProcessor.downsampled(u, maxPixels: maxPixels) }.value
-            if let cg { image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)) }
+            if let cg { image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)) } else { failed = true }
         }
     }
 
@@ -311,6 +322,10 @@ struct Checkerboard: View {
 struct InfoView: View {
     let detail: ClipDetail
     let store: ClipStore
+    /// Counting words in megabytes of text takes ~0.5 s: big texts are
+    /// counted off the main thread.
+    @State private var largeStats: ContentDetection.TextStats?
+    static let syncStatsLimit = 100_000
 
     struct Item: Identifiable {
         let id = UUID()
@@ -345,7 +360,14 @@ struct InfoView: View {
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        .task(id: detail.id) {
+            guard detail.kind == .text, let text = detail.text, !Self.isSmall(text) else { return }
+            let s = await Task.detached(priority: .userInitiated) { ContentDetection.stats(text) }.value
+            if !Task.isCancelled { largeStats = s }
+        }
     }
+
+    private static func isSmall(_ text: String) -> Bool { text.utf8.count <= syncStatsLimit }
 
     private var items: [Item] {
         var out: [Item] = []
@@ -354,11 +376,12 @@ struct InfoView: View {
                         icon: ImageCache.shared.appIcon(d.row.sourceBundleID)))
         switch d.kind {
         case .text:
-            let s = ContentDetection.stats(d.text ?? "")
-            let type = d.rtf != nil || d.html != nil ? "Rich Text" : (ContentDetection.looksLikeCode(d.text ?? "") ? "Code" : "Text")
+            let text = d.text ?? ""
+            let s = Self.isSmall(text) ? ContentDetection.stats(text) : largeStats
+            let type = d.rtf != nil || d.html != nil ? "Rich Text" : (ContentDetection.looksLikeCode(text) ? "Code" : "Text")
             out.append(Item(label: "Content type", value: type))
-            out.append(Item(label: "Characters", value: s.characters.formatted()))
-            out.append(Item(label: "Words · Lines", value: "\(s.words.formatted()) · \(s.lines.formatted())"))
+            out.append(Item(label: "Characters", value: s?.characters.formatted() ?? "Counting…"))
+            out.append(Item(label: "Words · Lines", value: s.map { "\($0.words.formatted()) · \($0.lines.formatted())" } ?? "Counting…"))
         case .image:
             out.append(Item(label: "Content type", value: "Image (\(Self.format(d.imageType)))"))
             out.append(Item(label: "Dimensions", value: "\(d.row.width) × \(d.row.height) px"))

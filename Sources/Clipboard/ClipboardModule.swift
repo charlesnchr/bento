@@ -29,6 +29,13 @@ public final class ClipboardModule: BentoModule {
     private let imageQueue = DispatchQueue(label: "com.charles.bento.clipboard.images", qos: .utility)
     /// Read lazily: dev harnesses set BENTO_DEV after modules are created.
     private var devMode: Bool { ProcessInfo.processInfo.environment["BENTO_DEV"] != nil }
+    /// Dev only: `BENTO_CLIPBOARD_PASTEBOARD=<name>` records a private named
+    /// pasteboard instead of the general one, so capture stress tests never
+    /// touch the user's clipboard (scripts/e2e/clipboard-stress.sh).
+    private var monitoredPasteboard: NSPasteboard {
+        guard devMode, let name = ProcessInfo.processInfo.environment["BENTO_CLIPBOARD_PASTEBOARD"], !name.isEmpty else { return .general }
+        return NSPasteboard(name: NSPasteboard.Name(name))
+    }
     private let log = BentoLog.make("clipboard")
     /// True while a modal alert is up (the panel must not auto-close then).
     private(set) var presentingAlert = false
@@ -59,7 +66,7 @@ public final class ClipboardModule: BentoModule {
         store?.removeOrphanFiles()
         prune()
 
-        let m = PasteboardMonitor()
+        let m = PasteboardMonitor(pasteboard: monitoredPasteboard)
         m.onChange = { [weak self] pb in self?.capture(pb) }
         monitor = m
         if !state.paused { m.start() }
@@ -159,6 +166,7 @@ public final class ClipboardModule: BentoModule {
             if r.inserted { enforceLimits() }
         } catch {
             log.error("insert failed: \(String(describing: error), privacy: .public)")
+            store.recoverIfCorrupt(error)
         }
     }
 
@@ -222,9 +230,16 @@ public final class ClipboardModule: BentoModule {
             HUD.show("No previous item", symbol: "doc.on.clipboard")
             return
         }
-        let front = NSWorkspace.shared.frontmostApplication
         paste(row.id, plain: isTextual(row.kind) && settings.pastePlainTextByDefault, copyOnly: false,
-              target: front?.processIdentifier == getpid() ? AppActivation.previousApp : front)
+              target: Self.pasteTarget())
+    }
+
+    /// The app ⌘V should go to: the frontmost app, or Bento itself when one
+    /// of its own windows (notes, screenshot editor, settings) has focus.
+    static func pasteTarget() -> NSRunningApplication? {
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front?.processIdentifier == getpid() else { return front }
+        return NSApp.keyWindow != nil ? NSRunningApplication.current : AppActivation.previousApp
     }
 
     func pasteCurrentAsPlainText() {
@@ -242,7 +257,7 @@ public final class ClipboardModule: BentoModule {
         let pb = NSPasteboard.general
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
-        item.setData(Data(), forType: PasteboardTypes.own)
+        PasteboardWriter.mark(item)
         pb.clearContents()
         pb.writeObjects([item])
         monitor?.skipCurrentChange()

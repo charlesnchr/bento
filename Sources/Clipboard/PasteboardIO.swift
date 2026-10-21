@@ -25,6 +25,7 @@ enum PasteboardTypes {
     /// Dev only: lets test writes carry TransientType (so other clipboard
     /// managers skip them) while the dev harness still records them.
     static let devTest = "com.charles.bento.dev-test"
+    static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
     static let urlName = NSPasteboard.PasteboardType("public.url-name")
     static let flatRTFD = NSPasteboard.PasteboardType("com.apple.flat-rtfd")
 
@@ -40,11 +41,19 @@ enum PasteboardTypes {
         "net.antelle.keeweb",
     ]
 
-    /// Image representations we store, in order of preference.
+    /// Image representations we store, in order of preference. TIFF comes
+    /// last: next to a compressed format it is the derived copy (an animated
+    /// GIF's original bytes come with a one-frame TIFF).
     static let images: [NSPasteboard.PasteboardType] = [
-        .png, .tiff, NSPasteboard.PasteboardType(UTType.jpeg.identifier), NSPasteboard.PasteboardType(UTType.heic.identifier),
-        NSPasteboard.PasteboardType(UTType.gif.identifier), NSPasteboard.PasteboardType(UTType.webP.identifier),
+        .png, NSPasteboard.PasteboardType(UTType.gif.identifier), NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+        NSPasteboard.PasteboardType(UTType.heic.identifier), NSPasteboard.PasteboardType(UTType.webP.identifier), .tiff,
     ]
+
+    /// Types added to everything Bento writes. Dev instances also mark their
+    /// writes transient so other clipboard managers skip test data.
+    static var writeMarkers: [NSPasteboard.PasteboardType] {
+        ProcessInfo.processInfo.environment["BENTO_DEV"] != nil ? [own, transient] : [own]
+    }
 
     /// Types handled explicitly (not archived as extras).
     static let standard: Set<String> = {
@@ -93,7 +102,7 @@ enum PasteboardReader {
             s.rtf = pb.data(forType: .rtf).flatMap { $0.count <= maxRichBytes ? $0 : nil }
             s.html = pb.data(forType: .html).flatMap { $0.count <= maxRichBytes ? $0 : nil }
         }
-        if s.string == nil, let rtf = s.rtf ?? pb.data(forType: .rtf) {
+        if s.string == nil, let rtf = s.rtf ?? pb.data(forType: .rtf), rtf.count <= maxRichBytes {
             s.string = NSAttributedString(rtf: rtf, documentAttributes: nil)?.string
         }
         s.urlName = pb.string(forType: PasteboardTypes.urlName)
@@ -143,9 +152,11 @@ enum ClipClassifier {
             guard data.count <= settings.maxImageMB * 1024 * 1024 else { return nil }
             return .image(data: data, type: type, hash: hash(data))
         }
-        guard settings.captureText, let text = s.string,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text.utf8.count <= PasteboardReader.maxTextBytes else { return nil }
+        guard settings.captureText, var text = s.string,
+              text.utf8.count <= PasteboardReader.maxTextBytes,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        // The database stores C strings: everything after a NUL would be lost.
+        if text.utf8.contains(0) { text = text.replacingOccurrences(of: "\u{0}", with: "") }
         let kind = ContentDetection.kind(forText: text)
         var d = ClipDraft(kind: kind, text: text, hash: hash("text", text))
         if settings.captureRichText {
@@ -218,15 +229,22 @@ enum PasteboardWriter {
             } else {
                 // Write NSURLs like Finder: raw `public.file-url` strings on the
                 // general pasteboard are dropped for every item but the first.
-                // No marker here (it would need an extra item); the monitor's
-                // change-count skip already ignores this write.
+                // The markers are added to the first item afterwards.
                 pb.clearContents()
-                return pb.writeObjects(urls.map { $0 as NSURL })
+                guard pb.writeObjects(urls.map { $0 as NSURL }) else { return false }
+                let markers = PasteboardTypes.writeMarkers
+                pb.addTypes(markers, owner: nil)
+                for m in markers { pb.setData(Data(), forType: m) }
+                return true
             }
         }
-        for item in items { item.setData(Data(), forType: PasteboardTypes.own) }
+        for item in items { mark(item) }
         pb.clearContents()
         return pb.writeObjects(items)
+    }
+
+    static func mark(_ item: NSPasteboardItem) {
+        for m in PasteboardTypes.writeMarkers { item.setData(Data(), forType: m) }
     }
 
     /// Replaces the pasteboard with its plain-text content (for "Paste as Plain Text").
@@ -235,7 +253,7 @@ enum PasteboardWriter {
         guard let s = pb.string(forType: .string) else { return false }
         let item = NSPasteboardItem()
         item.setString(s, forType: .string)
-        item.setData(Data(), forType: PasteboardTypes.own)
+        mark(item)
         pb.clearContents()
         return pb.writeObjects([item])
     }

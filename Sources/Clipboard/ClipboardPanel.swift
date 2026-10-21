@@ -13,6 +13,8 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
     private var storeObserver: NSObjectProtocol?
     private var menuOpen = false
     private(set) var targetApp: NSRunningApplication?
+    /// Bento's own window that had focus when the panel opened.
+    private weak var returnWindow: NSWindow?
 
     static let size = NSSize(width: 820, height: 500)
 
@@ -30,8 +32,11 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let front = NSWorkspace.shared.frontmostApplication
-        targetApp = front?.processIdentifier != getpid() ? front : AppActivation.previousApp
+        // Opened over one of Bento's own windows (notes, editor): paste there
+        // and give it focus back on close.
+        let ownKey = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() ? NSApp.keyWindow : nil
+        returnWindow = ownKey
+        targetApp = ClipboardModule.pasteTarget()
 
         ImageCache.storeRef = store
         let model = PanelModel(store: store, settings: module.settings, targetApp: targetApp, state: module.state)
@@ -96,7 +101,9 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         }
     }
 
-    func close() {
+    /// `restoreFocus`: give keyboard focus back to the Bento window the panel
+    /// was opened over (not when the user clicked somewhere else).
+    func close(restoreFocus: Bool = true) {
         guard let w = window else { return }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
@@ -108,6 +115,8 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         w.orderOut(nil)
         w.contentView = nil
         ImageCache.shared.purge()
+        if restoreFocus, let r = returnWindow, r.isVisible, !r.isKeyWindow { r.makeKey() }
+        returnWindow = nil
     }
 
     private func focusSearch() {
@@ -126,7 +135,7 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         guard !menuOpen, !module.presentingAlert else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let w = self.window, !w.isKeyWindow, !self.menuOpen else { return }
-            self.close()
+            self.close(restoreFocus: false)
         }
     }
 
@@ -147,8 +156,8 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         case (126, [.command]), (115, []): model.moveToEnd(false)
         case (36, _), (76, _): handleReturn(mods)
         case (53, []): close()
-        case (51, [.command]): perform(.delete)
-        case (51, [.command, .shift]): perform(.clearAll)
+        case (51, [.command]), (7, [.control]): perform(.delete)                       // ⌘⌫, ⌃X (Raycast)
+        case (51, [.command, .shift]), (7, [.control, .shift]): perform(.clearAll)     // ⇧⌘⌫, ⌃⇧X
         case (35, [.command, .shift]): perform(.togglePin)
         case (35, [.command]): model.cycleFilter()
         case (40, [.command]): perform(.actionsMenu)
