@@ -1,4 +1,4 @@
 import BentoShell
 import Clipboard
 
-BentoApp.run(modules: [ClipboardModule()])
+BentoApp.runDev("clipboard", modules: [ClipboardModule()])

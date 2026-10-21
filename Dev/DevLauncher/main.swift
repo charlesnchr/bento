@@ -1,4 +1,4 @@
 import BentoShell
 import Launcher
 
-BentoApp.run(modules: [LauncherModule()])
+BentoApp.runDev("launcher", modules: [LauncherModule()])

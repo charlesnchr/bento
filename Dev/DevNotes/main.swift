@@ -1,4 +1,4 @@
 import BentoShell
 import Notes
 
-BentoApp.run(modules: [NotesModule()])
+BentoApp.runDev("notes", modules: [NotesModule()])

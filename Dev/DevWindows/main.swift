@@ -1,4 +1,4 @@
 import BentoShell
 import Windows
 
-BentoApp.run(modules: [WindowsModule()])
+BentoApp.runDev("windows", modules: [WindowsModule()])

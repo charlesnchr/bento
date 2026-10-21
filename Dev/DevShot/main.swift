@@ -1,4 +1,4 @@
 import BentoShell
 import Shot
 
-BentoApp.run(modules: [ShotModule()])
+BentoApp.runDev("shot", modules: [ShotModule()])

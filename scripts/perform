@@ -1,0 +1,4 @@
+#!/bin/bash
+# Trigger a Bento action in a running dev harness: scripts/perform shot.area
+# (The installed app uses URLs instead: open "bento://action/shot.area")
+exec swift -e "import Foundation; DistributedNotificationCenter.default().postNotificationName(Notification.Name(\"com.charles.bento.dev.perform\"), object: \"$1\", userInfo: nil, deliverImmediately: true)"

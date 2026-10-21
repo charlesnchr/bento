@@ -1,0 +1,26 @@
+#!/bin/bash
+# Serialises GUI testing between parallel agents (screen, mouse, keyboard,
+# focus are shared). Hold the lock only while driving the UI / taking
+# screenshots, never while building.
+#   scripts/gui-lock acquire <who>   # blocks until free (stale after 8 min)
+#   scripts/gui-lock release <who>
+LOCK=/tmp/bento-gui.lock
+case "$1" in
+  acquire)
+    while ! mkdir "$LOCK" 2>/dev/null; do
+      if [ -f "$LOCK/owner" ] && [ $(( $(date +%s) - $(stat -f %m "$LOCK/owner") )) -gt 480 ]; then
+        echo "breaking stale lock held by $(cat "$LOCK/owner")" >&2
+        rm -rf "$LOCK"; continue
+      fi
+      sleep 3
+    done
+    echo "${2:-unknown}" > "$LOCK/owner"
+    echo "gui lock acquired by ${2:-unknown}" ;;
+  release)
+    if [ -f "$LOCK/owner" ] && [ "$(cat "$LOCK/owner")" != "${2:-unknown}" ]; then
+      echo "lock is held by $(cat "$LOCK/owner"), not releasing" >&2; exit 1
+    fi
+    rm -rf "$LOCK"; echo "gui lock released" ;;
+  status) [ -d "$LOCK" ] && echo "held by $(cat "$LOCK/owner" 2>/dev/null)" || echo "free" ;;
+  *) echo "usage: $0 acquire|release|status <who>" >&2; exit 2 ;;
+esac

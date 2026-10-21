@@ -12,6 +12,16 @@ public struct GeneralSettings: Codable, Equatable {
 
 /// Entry point shared by the real app and the single-module dev harnesses.
 public enum BentoApp {
+    /// Dev harness entry: isolates config/data under /tmp/bento-dev/<name>
+    /// (override with BENTO_HOME) and accepts `scripts/perform <action-id>`.
+    public static func runDev(_ name: String, modules: [BentoModule]) -> Never {
+        if ProcessInfo.processInfo.environment["BENTO_HOME"] == nil {
+            setenv("BENTO_HOME", "/tmp/bento-dev/\(name)", 1)
+        }
+        setenv("BENTO_DEV", "1", 1)
+        run(modules: modules)
+    }
+
     public static func run(modules: [BentoModule]) -> Never {
         let app = NSApplication.shared
         let delegate = AppDelegate(modules: modules)
@@ -60,6 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         })
         AppActivation.previousApp = NSWorkspace.shared.frontmostApplication
+
+        if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil {
+            // Dev only: `scripts/perform <action-id>` triggers actions without
+            // hotkeys (which may be owned by other running apps).
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.charles.bento.dev.perform"),
+                                                                object: nil, queue: .main) { note in
+                guard let id = note.object as? String else { return }
+                if !ActionRegistry.shared.perform(id) { BentoLog.core.error("dev perform: unknown action \(id, privacy: .public)") }
+            }
+        }
 
         updateStatusItem()
         if !Permissions.accessibility || ProcessInfo.processInfo.environment["BENTO_SHOW_SETTINGS"] != nil {
@@ -227,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         AppActivation.activateSelf()
         settingsWindow?.makeKeyAndOrderFront(nil)
+        settingsWindow?.orderFrontRegardless()
     }
 }
 

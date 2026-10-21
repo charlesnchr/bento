@@ -5,9 +5,14 @@ import os
 // MARK: - Paths
 
 public enum AppPaths {
+    /// Set `BENTO_HOME=/some/dir` to keep config and data out of the real
+    /// locations (dev harnesses default to `/tmp/bento-dev/<module>`).
+    static let home: URL? = ProcessInfo.processInfo.environment["BENTO_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+
     /// `~/.config/bento` — the human-editable config lives here.
     public static let configDir: URL = {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/bento", isDirectory: true)
+        let url = home?.appendingPathComponent("config", isDirectory: true)
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/bento", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
@@ -15,7 +20,7 @@ public enum AppPaths {
     /// `~/Library/Application Support/Bento` — databases, screenshots, caches.
     public static let supportDir: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let url = base.appendingPathComponent("Bento", isDirectory: true)
+        let url = home?.appendingPathComponent("support", isDirectory: true) ?? base.appendingPathComponent("Bento", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
@@ -104,12 +109,11 @@ open class KeyablePanel: NSPanel {
 
 public enum AppActivation {
     /// Activates Bento itself (needed before showing windows from an accessory app).
+    /// Accessory apps launched in the background are not allowed to take focus
+    /// cooperatively, so this uses the forceful variant; callers should also
+    /// `orderFrontRegardless()` the window they show.
     public static func activateSelf() {
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// The app that was frontmost before Bento took focus. Updated by the shell.
