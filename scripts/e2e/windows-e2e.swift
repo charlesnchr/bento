@@ -233,7 +233,22 @@ func band(_ f: CGFloat) -> CGRect {
     return CGRect(x: V.minX + ((V.width - w) / 2).rounded(), y: V.minY, width: w, height: V.height)
 }
 
-let S = CGRect(x: V.minX + 300, y: V.minY + 167, width: 600, height: 400) // a free-floating start frame
+/// A free-floating start frame, away from other apps' floating / modal windows (system alerts…),
+/// which would sit above our document and block the test points.
+var S: CGRect = {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let overlays: [CGRect] = list.compactMap { d in
+        let layer = d[kCGWindowLayer as String] as? Int ?? 0
+        guard layer > 0, layer < 20, (d[kCGWindowOwnerPID as String] as? Int).map(pid_t.init) != bentoPID,
+              let b = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
+        return r
+    }
+    for (dx, dy) in [(300.0, 167.0), (10.0, 167.0), (900.0, 167.0), (300.0, 470.0), (10.0, 470.0), (900.0, 470.0)] {
+        let r = CGRect(x: V.minX + dx, y: V.minY + dy, width: 600, height: 400)
+        if r.maxX <= V.maxX, r.maxY <= V.maxY, !overlays.contains(where: { $0.intersects(r.insetBy(dx: -4, dy: -4)) }) { return r }
+    }
+    return CGRect(x: V.minX + 300, y: V.minY + 167, width: 600, height: 400)
+}()
 
 // MARK: Phases
 

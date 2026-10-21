@@ -4,8 +4,11 @@
 # edges (title-bar drags), modifier drags and clicks, layouts and stash, all on
 # our own TextEdit document (/tmp/windows-qa.txt), against the worktree's Bento.
 #
-#   scripts/e2e/windows.sh [phase…]     phases: keys snap drag misc (default) and spaces (moves our
-#                                        window to the next Space and back: switches the visible Space)
+#   scripts/e2e/windows.sh               everything, in two sessions of ≤ 3 min:
+#                                        "keys snap", then "drag misc panels import"
+#   scripts/e2e/windows.sh <phase…>      one session; phases: keys snap drag misc panels import, and
+#                                        spaces (moves our window to the next Space and back: switches
+#                                        the visible Space, so it is never run by default)
 #
 # Takes its own GUI session (scripts/e2e/session start/end windows); set
 # WINDOWS_E2E_IN_SESSION=1 if you already hold one. SKIP_BUILD=1 skips the build.
@@ -16,10 +19,20 @@ WHO=windows
 HOME_DIR=/tmp/bento-e2e-windows
 LOG="$HOME_DIR/bento.log"
 DOC=/tmp/windows-qa.txt
-PHASES="${*:-keys snap drag misc}"
+PHASES="$*"
 
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
-  (cd "$ROOT" && swift build --product Bento 2>&1 | grep -E "error|Compiling|Build complete" | tail -3) || exit 1
+  (cd "$ROOT" && swift build --product Bento 2>&1 | grep -E "error|Build of product" | tail -3) || exit 1
+fi
+if [ $# -eq 0 ]; then
+  overall=0
+  for group in "keys snap" "drag misc panels import"; do
+    # shellcheck disable=SC2086
+    SKIP_BUILD=1 "$0" $group; st=$?
+    [ "$st" = 75 ] && exit 75
+    [ "$st" != 0 ] && overall=1
+  done
+  exit $overall
 fi
 [ -x "$ROOT/.build/debug/Bento" ] || { echo "no $ROOT/.build/debug/Bento" >&2; exit 1; }
 for t in windows-e2e windows-click; do
