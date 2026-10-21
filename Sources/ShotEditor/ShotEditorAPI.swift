@@ -84,6 +84,12 @@ public final class ShotEditor {
         add(capture, async: false).imageURL
     }
 
+    /// Stores the capture in history, writing the PNG on a background queue
+    /// (no main-thread stall for huge captures). The original appears shortly.
+    public func recordInBackground(_ capture: CapturedImage) {
+        _ = add(capture, async: true)
+    }
+
     /// Re-opens the most recent capture, with its annotations still editable.
     public func reopenLast() {
         // Skip captures whose original is gone (deleted by hand, or a write

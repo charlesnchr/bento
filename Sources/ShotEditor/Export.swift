@@ -151,17 +151,41 @@ enum Clipboard {
 
     /// Puts PNG on the pasteboard and promises TIFF lazily: an uncompressed
     /// TIFF of a Retina fullscreen capture is ~24 MB, and most apps take PNG.
+    /// Images above this many pixels are PNG-encoded off the main thread (a
+    /// 14k-px scrolling capture takes seconds); smaller ones are copied at once.
+    static let backgroundEncodeThreshold = 8_000_000
+    private static var copyGeneration = 0
+
     static func copy(_ image: CGImage, scale: CGFloat, to pb: NSPasteboard = Clipboard.pasteboard) {
         let pointSize = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        copyGeneration += 1
+        guard image.width * image.height > backgroundEncodeThreshold else {
+            if let png = encodePNG(image, scale: scale, pointSize: pointSize) { write(png, pointSize: pointSize, to: pb) }
+            return
+        }
+        // A newer copy supersedes this one if it finishes first.
+        let generation = copyGeneration
+        DispatchQueue.global(qos: .userInitiated).async {
+            let png = encodePNG(image, scale: scale, pointSize: pointSize)
+            DispatchQueue.main.async {
+                guard generation == copyGeneration, let png else { return }
+                write(png, pointSize: pointSize, to: pb)
+            }
+        }
+    }
+
+    private static func encodePNG(_ image: CGImage, scale: CGFloat, pointSize: NSSize) -> Data? {
         // The PNG encoder's buffers are big for large captures; free them right away.
-        let encoded: Data? = autoreleasepool {
+        autoreleasepool {
             ImageCodec.data(image, scale: scale, format: .png) ?? {
                 let rep = NSBitmapImageRep(cgImage: image)
                 rep.size = pointSize
                 return rep.representation(using: .png, properties: [:])
             }()
         }
-        guard let png = encoded else { return }
+    }
+
+    private static func write(_ png: Data, pointSize: NSSize, to pb: NSPasteboard) {
         pb.clearContents()
         let item = NSPasteboardItem()
         item.setData(png, forType: .png)

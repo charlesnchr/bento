@@ -20,10 +20,9 @@ enum CaptureOutput {
         case .copy:
             editor.copyToClipboard(capture.image, scale: capture.scale)
             HUD.show("Copied", symbol: "doc.on.doc")
-            // History encodes a PNG on the main thread: after the clipboard.
-            DispatchQueue.main.async { editor.record(capture) }
+            editor.recordInBackground(capture)
         case .save:
-            editor.record(capture)
+            editor.recordInBackground(capture)
             saveInBackground(capture, settings: s) { result in
                 switch result {
                 case let .success(url): HUD.show("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down")
@@ -32,7 +31,7 @@ enum CaptureOutput {
             }
         case .copyAndSave:
             editor.copyToClipboard(capture.image, scale: capture.scale)
-            DispatchQueue.main.async { editor.record(capture) }
+            editor.recordInBackground(capture)
             saveInBackground(capture, settings: s) { result in
                 switch result {
                 case .success: HUD.show("Copied and saved", symbol: "doc.on.doc")
@@ -41,7 +40,7 @@ enum CaptureOutput {
                 }
             }
         case .pin:
-            editor.record(capture)
+            editor.recordInBackground(capture)
             editor.pin(capture)
         }
     }
