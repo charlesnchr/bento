@@ -66,6 +66,8 @@ struct Annotation: Codable, Equatable, Identifiable {
         let limit: CGFloat = 1_000_000
         func ok(_ p: CGPoint) -> Bool { p.x.isFinite && p.y.isFinite && abs(p.x) < limit && abs(p.y) < limit }
         guard ok(p1), ok(p2) else { return nil }
+        // An empty label autosaved mid-typing (the editor deletes these when editing ends).
+        if kind == .text, (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
         var a = self
         if let path {
             let good = path.filter(ok)

@@ -107,7 +107,7 @@ private func docJSON(id: String, created: String = "2026-10-01T10:00:00Z", scale
     for kind in Annotation.Kind.allCases {
         var a = Annotation(kind: kind, p1: CGPoint(x: 5, y: 5), p2: CGPoint(x: 5, y: 5), color: "zz", size: 0)
         a.path = []
-        a.text = kind == .text ? "" : nil
+        a.text = kind == .text ? "x" : nil
         _ = Renderer.hitTest(a, CGPoint(x: 5, y: 5), tolerance: 0)
         _ = Renderer.bounds(of: a)
         #expect(a.sanitized() != nil)
@@ -115,6 +115,9 @@ private func docJSON(id: String, created: String = "2026-10-01T10:00:00Z", scale
         nan.p2 = CGPoint(x: CGFloat.nan, y: 1)
         #expect(nan.sanitized() == nil)
     }
+    var emptyText = Annotation(kind: .text, p1: .zero, p2: .zero, color: "#000", size: 4)
+    emptyText.text = " \n"
+    #expect(emptyText.sanitized() == nil, "empty labels autosaved mid-typing are dropped")
     #expect(Renderer.rulerLabel(Annotation(kind: .ruler, p1: CGPoint(x: -1e308, y: 0), p2: CGPoint(x: 1e308, y: 0), color: "#000", size: 1)) == "–")
     // A crop entirely outside the image falls back to the whole image.
     var doc = ShotDocument(id: "x", created: Date(), modified: Date(), kind: "area", scale: 2, pixelWidth: 100, pixelHeight: 50)
