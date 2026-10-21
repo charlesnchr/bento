@@ -86,7 +86,7 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 |---|---|
 | Shot | `cmd+shift+…` digits/letters, following Shottr's defaults, but **not** ⌘⇧3/⌘⇧4/⌘⇧5 (macOS) |
 | Windows | Rectangle defaults: `ctrl+opt+…` (arrows, U/I/J/K, D/F/G/E/T, return, C, delete, minus/equal, shift+up), `ctrl+opt+cmd+left/right` for displays |
-| Tiling | `ctrl+opt+cmd+…` letters: h/j/k/l focus, `hyper+h/j/k/l` move, t toggle manager, space cycle layout, f float, minus/equal resize, 0 balance |
+| Tiling | `ctrl+opt+cmd+…` letters: h/j/k/l focus, `hyper+h/j/k/l` move, t toggle manager, space cycle layout, f float, minus/equal resize, b balance (0 is emitted by the user's Karabiner layer) |
 | Clipboard | `cmd+shift+v` open history |
 | Notes | `ctrl+opt+n` toggle notes window, other notes shortcuts are local to its window |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |

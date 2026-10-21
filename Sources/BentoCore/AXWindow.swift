@@ -154,6 +154,9 @@ public struct AXWindow: Hashable {
     public func focus() {
         AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
         raise()
+        // NSRunningApplication.activate is cooperative on macOS 14+ and is often
+        // ignored for a background caller; the AX frontmost attribute is not.
+        AXUIElementSetAttributeValue(AXWindow.appElement(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
         app?.activate()
     }
 
