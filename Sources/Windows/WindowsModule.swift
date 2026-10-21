@@ -127,6 +127,7 @@ public final class WindowsModule: BentoModule {
         cfg.resize = s.dragResize ? WindowsSettings.flags(s.dragResizeModifiers) : []
         cfg.focus = s.dragFocusesWindow
         cfg.hover = s.dragHover
+        cfg.liveResize = s.dragResizeStyle == "live"
         cfg.snap = s.dragSnaps && s.snapping
         drag.update(cfg)
         let wantDrag = !cfg.move.isEmpty || !cfg.resize.isEmpty

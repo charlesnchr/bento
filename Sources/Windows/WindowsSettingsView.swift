@@ -153,10 +153,15 @@ struct WindowsSettingsView: View {
                 ModifierPicker(selection: $model.value.dragMoveModifiers).disabled(!model.value.dragMove)
             }
             HStack {
-                Toggle("Resize from the nearest edge or corner", isOn: $model.value.dragResize)
+                Toggle("Resize by dragging anywhere in a window", isOn: $model.value.dragResize)
                 Spacer()
                 ModifierPicker(selection: $model.value.dragResizeModifiers).disabled(!model.value.dragResize)
             }
+            Picker("Resize from", selection: $model.value.dragResizeStyle) {
+                Text("Bottom-right corner (Rectangle Pro)").tag("classic")
+                Text("Nearest edges, following the pointer").tag("live")
+            }
+            .disabled(!model.value.dragResize)
             if model.value.dragMove && model.value.dragResize
                 && Set(model.value.dragMoveModifiers) == Set(model.value.dragResizeModifiers) {
                 Text("Move and resize use the same modifiers; resize wins.")

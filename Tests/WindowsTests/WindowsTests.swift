@@ -846,3 +846,20 @@ private let mbp = ScreenRect(frame: R(0, 0, 1512, 982), visible: R(0, 33, 1512, 
     cfg.resize = []
     #expect(DragController.mode(for: [.maskCommand, .maskAlternate, .maskShift], cfg) == nil)
 }
+
+@Test func classicResizeAlwaysMovesTheBottomRightCorner() {
+    let f = R(100, 100, 300, 300)
+    func classic(_ q: CGPoint, _ p: CGPoint) -> CGRect {
+        Geometry.liveResizeStep(f, from: q, to: p, sides: Geometry.classicHandle, live: false).0
+    }
+    // Pointer in the top-left quarter: left/up still shrinks from the bottom-right.
+    #expect(classic(CGPoint(x: 120, y: 120), CGPoint(x: 70, y: 90)) == R(100, 100, 250, 270))
+    // Right/down grows, wherever the pointer is.
+    #expect(classic(CGPoint(x: 250, y: 250), CGPoint(x: 300, y: 280)) == R(100, 100, 350, 330))
+    // The top-left corner never moves; the minimum size holds.
+    #expect(classic(CGPoint(x: 300, y: 300), CGPoint(x: -500, y: -500)) == R(100, 100, 120, 60))
+    // Crossing the middle doesn't flip anything in classic mode.
+    let (_, sides) = Geometry.liveResizeStep(f, from: CGPoint(x: 390, y: 390), to: CGPoint(x: 110, y: 110),
+                                             sides: Geometry.classicHandle, live: false)
+    #expect(sides == Geometry.classicHandle)
+}

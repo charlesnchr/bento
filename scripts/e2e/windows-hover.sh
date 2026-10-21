@@ -43,7 +43,7 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "$HOME_DIR"; mkdir -p "$HOME_DIR/config"
-# Hover on (the default), snapping off so frames are exact.
+# Hover on and classic resize (the defaults), snapping off so frames are exact.
 echo '{"windows":{"snapping":false,"dragHover":true}}' > "$HOME_DIR/config/config.json"
 BENTO_HOME=$HOME_DIR BENTO_DEV=1 .build/debug/Bento > /tmp/bento-e2e-hover.log 2>&1 &
 APP=$!
@@ -87,19 +87,38 @@ $CTL --expect $B hover 830 680 830 730 cmd+opt          # down 50 -> origin (200
 sleep 0.3; $CTL modifiers none; sleep 0.5
 expect "move → ⇧ resize → release ⇧ move in one gesture" "200 300 650 450"
 
-# 4. Live nearest edges: starting at the window's centre and moving left, the
-#    right edge follows for the first few points, then the pointer is past the
-#    (moving) middle and the left edge takes over: the window grows leftwards.
+# 4. Classic (default): from the top-left quarter, moving left/up still shrinks
+#    from the bottom-right corner (the top-left corner stays put).
+reset; active
+$CTL modifiers cmd+opt+shift
+$CTL --expect $B hover 350 300 300 270 cmd+opt+shift
+sleep 0.3; $CTL modifiers none; sleep 0.5
+expect "classic resize: top-left stays, bottom-right shrinks (-50,-30)" "300 250 550 370"
+
+# 4b. Live nearest edges (setting): starting at the centre and moving left, the
+#     right edge follows for a few points, then the left edge takes over.
+python3 - "$HOME_DIR/config/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d.setdefault("windows", {})["dragResizeStyle"] = "live"
+json.dump(d, open(p, "w"), indent=2)
+PY
+sleep 1.5   # the app reloads the config file live
 reset; active
 $CTL modifiers cmd+opt+shift
 $CTL --expect $B hover 600 450 450 450 cmd+opt+shift
 sleep 0.3; $CTL modifiers none; sleep 0.5
 got=$($CTL frame $B $T)
 if python3 -c "import sys; x,y,w,h=map(int,'$got'.split()); sys.exit(0 if abs(x-158)<=4 and abs(x+w-892)<=4 and y==250 and h==400 else 1)"; then
-  ok "resize edge flips as the pointer crosses the middle ($got)"
+  ok "live resize: edge flips as the pointer crosses the middle ($got)"
 else
-  bad "resize edge flip: got ($got), want ~(158 250 734 400)"
+  bad "live resize edge flip: got ($got), want ~(158 250 734 400)"
 fi
+python3 - "$HOME_DIR/config/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["windows"]["dragResizeStyle"] = "classic"
+json.dump(d, open(p, "w"), indent=2)
+PY
+sleep 1.5
 
 # 5. Holding ⌘⌥ and releasing without moving changes nothing.
 reset; active

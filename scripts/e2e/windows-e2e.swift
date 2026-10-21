@@ -517,20 +517,19 @@ func phaseDrag() {
         CGRect(x: S.minX + dx0, y: S.minY + dy0, width: S.width + dw, height: S.height + dh)
     }
     let inset: CGFloat = 25
+    // Rectangle Pro classic (the default): wherever the drag starts, the bottom-right corner moves.
     let regions: [(String, CGPoint, CGPoint, CGRect)] = [
         ("bottom-right corner", CGPoint(x: S.maxX - inset, y: S.maxY - inset), CGPoint(x: 50, y: 30), r(0, 0, 50, 30)),
-        ("top-left corner", CGPoint(x: S.minX + inset, y: S.minY + inset), CGPoint(x: -40, y: -20), r(-40, -20, 40, 20)),
-        ("top-right corner", CGPoint(x: S.maxX - inset, y: S.minY + inset), CGPoint(x: 40, y: -20), r(0, -20, 40, 20)),
-        ("bottom-left corner", CGPoint(x: S.minX + inset, y: S.maxY - inset), CGPoint(x: -40, y: 20), r(-40, 0, 40, 20)),
-        // Live nearest edges: always a corner; right at the middle the dead band picks right / bottom.
-        ("right-edge middle → right + bottom", CGPoint(x: S.maxX - inset, y: S.midY), CGPoint(x: 50, y: 30), r(0, 0, 50, 30)),
-        ("left-edge middle → left + bottom", CGPoint(x: S.minX + inset, y: S.midY), CGPoint(x: -50, y: 30), r(-50, 0, 50, 30)),
-        ("top-edge middle → top + right", CGPoint(x: S.midX, y: S.minY + 60), CGPoint(x: 30, y: -30), r(0, -30, 30, 30)),
-        ("bottom-edge middle → bottom + right", CGPoint(x: S.midX, y: S.maxY - inset), CGPoint(x: 30, y: 30), r(0, 0, 30, 30)),
-        ("centre → nearest corner (top-left)", CGPoint(x: S.midX - 10, y: S.midY - 10), CGPoint(x: -20, y: -20), r(-20, -20, 20, 20)),
+        ("top-left corner (shrinks from bottom-right)", CGPoint(x: S.minX + inset, y: S.minY + inset), CGPoint(x: -40, y: -20), r(0, 0, -40, -20)),
+        ("top-right corner", CGPoint(x: S.maxX - inset, y: S.minY + inset), CGPoint(x: 40, y: -20), r(0, 0, 40, -20)),
+        ("bottom-left corner", CGPoint(x: S.minX + inset, y: S.maxY - inset), CGPoint(x: -40, y: 20), r(0, 0, -40, 20)),
+        ("right-edge middle", CGPoint(x: S.maxX - inset, y: S.midY), CGPoint(x: 50, y: 30), r(0, 0, 50, 30)),
+        ("left-edge middle", CGPoint(x: S.minX + inset, y: S.midY), CGPoint(x: -50, y: 30), r(0, 0, -50, 30)),
+        ("top-edge middle", CGPoint(x: S.midX, y: S.minY + 60), CGPoint(x: 30, y: -30), r(0, 0, 30, -30)),
+        ("centre", CGPoint(x: S.midX - 10, y: S.midY - 10), CGPoint(x: -20, y: -20), r(0, 0, -20, -20)),
     ]
     for (n, p, d, want) in regions { modDrag("⌘⌥⇧ resize from \(n)", from: p, by: d, mods: rs, want: want) }
-    // Shrinking from the top-left keeps the bottom-right edges put (pointer stays in its quarter).
+    // Classic: a drag starting at the top-left grows the window at the bottom-right.
     setFrame(S); ensureFront()
     var before = placedCount()
     let tl = CGPoint(x: S.minX + inset, y: S.minY + inset)
@@ -538,8 +537,8 @@ func phaseDrag() {
         ctl(["drag", "\(Int(tl.x))", "\(Int(tl.y))", "\(Int(tl.x + 100))", "\(Int(tl.y + 60))", rs])
         pause(0.5)
         let g = frame()
-        let ok = g.map { abs($0.maxX - S.maxX) <= 1 && abs($0.maxY - S.maxY) <= 1 && abs($0.width - (S.width - 100)) <= 2 && abs($0.height - (S.height - 60)) <= 2 } ?? false
-        record(ok && placedCount() - before == 1, "⌘⌥⇧ shrink from top-left keeps the bottom-right edges", "got \(fmt(g))")
+        let ok = g.map { abs($0.minX - S.minX) <= 1 && abs($0.minY - S.minY) <= 1 && abs($0.width - (S.width + 100)) <= 2 && abs($0.height - (S.height + 60)) <= 2 } ?? false
+        record(ok && placedCount() - before == 1, "⌘⌥⇧ from the top-left still moves the bottom-right corner", "got \(fmt(g))")
     }
 
     // Very fast: down and up far away with no drag events in between.

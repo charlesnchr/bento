@@ -30,6 +30,9 @@ final class DragController: NSObject {
         var snap = true
         /// Move/resize by just holding the modifiers and moving the pointer.
         var hover = true
+        /// Resize from the bottom-right corner (Rectangle Pro classic) or from
+        /// the live nearest edges.
+        var liveResize = false
     }
 
     enum Mode: Equatable { case move, resize }
@@ -72,7 +75,7 @@ final class DragController: NSObject {
             self.hover = hover
             self.mode = mode
             self.requested = mode
-            self.handle = mode == .resize ? Geometry.liveHandle(at: mouse, in: frame) : nil
+            self.handle = mode == .resize ? Geometry.classicHandle : nil
             self.startMouse = mouse
             self.startFrame = frame
             self.pressEvent = press
@@ -399,8 +402,8 @@ final class DragController: NSObject {
         if s.hover, let f = s.window.frame {
             // A hover gesture may have waited for the pointer to move: start from now.
             s.startFrame = f
-            if s.mode == .resize { s.handle = Geometry.liveHandle(at: s.startMouse, in: f) }
         }
+        if s.mode == .resize { s.handle = resizeHandle(at: s.startMouse, in: s.startFrame) }
         let restoreSize = s.mode == .move ? engine.beginDrag(wid: s.wid, initialFrame: s.startFrame) : nil
         if s.mode == .move {
             if let size = restoreSize {
@@ -447,6 +450,12 @@ final class DragController: NSObject {
         apply(s, p)
     }
 
+    /// Where a resize segment starts: always bottom-right (classic) or the
+    /// pointer's quarter of the window (live nearest edges).
+    private func resizeHandle(at p: CGPoint, in f: CGRect) -> Geometry.ResizeHandle {
+        config.liveResize ? Geometry.liveHandle(at: p, in: f) : Geometry.classicHandle
+    }
+
     /// ⇧ pressed or released mid-gesture: continue in the other mode from the
     /// current pointer and frame.
     private func switchMode(_ s: Session, to mode: Mode, at p: CGPoint) {
@@ -455,7 +464,7 @@ final class DragController: NSObject {
         s.startMouse = p
         s.applied = p
         s.mode = mode
-        s.handle = mode == .resize ? Geometry.liveHandle(at: p, in: s.startFrame) : nil
+        s.handle = mode == .resize ? resizeHandle(at: p, in: s.startFrame) : nil
         s.liveFrame = nil
         s.lastPointer = nil
         if mode == .move && config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
@@ -471,7 +480,8 @@ final class DragController: NSObject {
             // Incremental: each step decides again which edges follow the pointer.
             let q = s.lastPointer ?? s.startMouse
             let model = s.liveFrame ?? s.startFrame
-            let (step, sides) = Geometry.liveResizeStep(model, from: q, to: p, sides: s.handle ?? .init(x: 0, y: 0))
+            let (step, sides) = Geometry.liveResizeStep(model, from: q, to: p, sides: s.handle ?? resizeHandle(at: q, in: model),
+                                                        live: config.liveResize)
             var next = step
             s.handle = sides
             s.lastPointer = p

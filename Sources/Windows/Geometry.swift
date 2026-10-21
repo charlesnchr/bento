@@ -716,12 +716,16 @@ enum Geometry {
         ResizeHandle(x: liveSide(p.x, mid: f.midX, current: 0), y: liveSide(p.y, mid: f.midY, current: 0))
     }
 
+    /// Rectangle Pro classic: resizing always moves the bottom-right corner.
+    static let classicHandle = ResizeHandle(x: 1, y: 1)
+
     /// One resize step for a pointer move q → p (AX coordinates, y down).
-    /// Returns the new (unrounded) frame and the sides used.
-    static func liveResizeStep(_ f: CGRect, from q: CGPoint, to p: CGPoint, sides: ResizeHandle,
+    /// Returns the new (unrounded) frame and the sides used. `live` re-decides
+    /// the sides from the pointer's position; otherwise `sides` are kept.
+    static func liveResizeStep(_ f: CGRect, from q: CGPoint, to p: CGPoint, sides: ResizeHandle, live: Bool = true,
                                minSize: CGSize = CGSize(width: 120, height: 60)) -> (CGRect, ResizeHandle) {
-        let sx = liveSide(q.x, mid: f.midX, current: sides.x)
-        let sy = liveSide(q.y, mid: f.midY, current: sides.y)
+        let sx = live ? liveSide(q.x, mid: f.midX, current: sides.x) : sides.x
+        let sy = live ? liveSide(q.y, mid: f.midY, current: sides.y) : sides.y
         let dx = p.x - q.x, dy = p.y - q.y
         var minX = f.minX, maxX = f.maxX, minY = f.minY, maxY = f.maxY
         if sx > 0 { maxX = max(maxX + dx, minX + minSize.width) } else { minX = min(minX + dx, maxX - minSize.width) }

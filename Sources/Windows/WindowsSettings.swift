@@ -38,6 +38,9 @@ struct WindowsSettings: Codable, Equatable {
     /// Rectangle Pro style: holding the modifiers and moving the pointer is
     /// enough (no click); pressing and dragging works too.
     var dragHover = true
+    /// "classic": resize from the bottom-right corner (Rectangle Pro);
+    /// "live": the edges on the pointer's side, re-decided as it moves.
+    var dragResizeStyle = "classic"
 
     // Layouts and per-app launch positions
     var layouts: [SavedLayout] = []
