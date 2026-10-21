@@ -59,9 +59,9 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 2. Build only your target, with your own scratch dir so parallel builds don't fight over locks:
    `swift build --scratch-path .build-<module> --target <Module>` and run your dev harness with
    `swift build --scratch-path .build-<module> --product Dev<Module> && .build-<module>/debug/Dev<Module>`.
-   Tests: `swift test --scratch-path .build-<module> --filter <Module>Tests` (builds all test
-   targets; if another module's test target is broken at that moment, retry later or build yours
-   with `--target <Module>Tests`).
+   Tests: `scripts/test <Module>Tests` (Command Line Tools only: plain `swift test` can't find
+   Swift Testing; the wrapper adds the flag and uses its own scratch dir `.build-test-*`). It
+   builds every test target, so if another module is broken at that moment, retry later.
 3. Processes started from this shell inherit Accessibility + Screen Recording permission, so the
    dev harness can be exercised for real: launch it in the background, drive it with CGEvents
    (`osascript`/a tiny swift script posting key events), take screenshots with

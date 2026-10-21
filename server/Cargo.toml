@@ -1,0 +1,23 @@
+[package]
+name = "bento-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny realtime sync server for Bento floating notes"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio", "ws"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "signal", "sync", "time"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

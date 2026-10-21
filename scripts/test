@@ -1,0 +1,12 @@
+#!/bin/bash
+# Run one test target with Swift Testing on a Command Line Tools-only machine.
+#   scripts/test LauncherTests [extra swift test args]
+# SwiftPM only enables Swift Testing when the CLT frameworks dir is passed on
+# the command line (Package.swift adds the rest). Uses its own scratch dir so
+# the extra flag doesn't force rebuilds of your normal `swift build` dir.
+set -e
+cd "$(dirname "$0")/.."
+target="${1:?usage: scripts/test <Module>Tests}"; shift
+lower="$(echo "$target" | tr '[:upper:]' '[:lower:]')"
+FW=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+exec swift test --scratch-path ".build-test-$lower" --filter "$target" -Xswiftc -F"$FW" "$@" 2>&1 | grep -v "duplicate -rpath"

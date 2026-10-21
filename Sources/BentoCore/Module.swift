@@ -13,14 +13,20 @@ public struct BentoAction: Identifiable {
     /// Hidden from the menu bar menu (still bindable and listed in settings).
     public let hiddenFromMenu: Bool
     public let handler: () -> Void
+    /// When set, the action stores its own binding (e.g. launcher entries keep
+    /// shortcuts in their config section): `defaultShortcut` is the current
+    /// binding and edits are passed here instead of the global overrides map.
+    public let bindingWriter: ((Shortcut?) -> Void)?
 
     public init(_ id: String, _ title: String, group: String? = nil, shortcut: String? = nil,
-                hiddenFromMenu: Bool = false, handler: @escaping () -> Void) {
+                hiddenFromMenu: Bool = false, bindingWriter: ((Shortcut?) -> Void)? = nil,
+                handler: @escaping () -> Void) {
         self.id = id
         self.title = title
         self.group = group
         self.defaultShortcut = shortcut.flatMap(Shortcut.init)
         self.hiddenFromMenu = hiddenFromMenu
+        self.bindingWriter = bindingWriter
         self.handler = handler
     }
 }
@@ -128,6 +134,7 @@ public final class ActionRegistry {
 
     /// The effective shortcut: user override, else the action's default.
     public func shortcut(for id: String) -> Shortcut? {
+        if let a = actionsByID[id], a.bindingWriter != nil { return a.defaultShortcut }
         if let override = ConfigStore.shared.shortcutOverrides[id] {
             return override.isEmpty || override == "none" ? nil : Shortcut(override)
         }
@@ -136,6 +143,10 @@ public final class ActionRegistry {
 
     /// Stores a user override (nil = unbound). Passing the default clears the override.
     public func setShortcut(_ shortcut: Shortcut?, for id: String) {
+        if let writer = actionsByID[id]?.bindingWriter {
+            writer(shortcut)
+            return
+        }
         var overrides = ConfigStore.shared.shortcutOverrides
         let def = actionsByID[id]?.defaultShortcut
         if shortcut == def {
