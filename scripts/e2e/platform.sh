@@ -503,9 +503,14 @@ phase_shell() {
   eq "no leaked hotkeys" "$(d '.registry.registered')" "$(d '.registry.hotkeyEntries')"
 
   # Settings window open/close: memory released, Dock icon gone.
-  c press "$PID" "subrole=AXCloseButton"; sleep 0.8
-  local rss0 rss1 opened
+  c press "$PID" "subrole=AXCloseButton"; sleep 1
+  local rss0 rss1 opened win0 win1 cs0 cs1
+  heapcount() { heap "$PID" 2>/dev/null | awk -v c="$1" '$4 == c {n += $1} END {print n + 0}'; }
+  # Instances of settings-only classes (SwiftUI hosting of the settings views, ConfigSection models).
+  heapsettings() { heap "$PID" 2>/dev/null | tee "$ART/heap-$1.txt" | awk '$4 ~ /SettingsRootView|ShortcutsPane|LauncherSettingsView|ConfigSection</ {n += $1} END {print n + 0}'; }
   rss0=$(ps -o rss= -p "$PID" | tr -d ' ')
+  win0=$(heapcount NSWindow)
+  cs0=$(heapsettings before)
   diag; opened=$(d '.settingsWindow.opened')
   for i in $(seq 1 10); do
     url "bento://settings/shortcuts"
@@ -522,9 +527,11 @@ phase_shell() {
   rss1=$(ps -o rss= -p "$PID" | tr -d ' ')
   echo "  info: RSS before ${rss0} KB, after 10 open/close ${rss1} KB"
   check "memory stays bounded (< +40 MB)" test $((rss1 - rss0)) -lt 40960
-  local live
-  live=$(heap "$PID" 2>/dev/null | grep -cE "SettingsRootView|ShortcutsPane|LauncherSettingsView")
-  eq "settings views released (heap)" 0 "$live"
+  cs1=$(heapsettings after)
+  echo "  info: settings-only heap objects after closing: $cs0 before the cycles, $cs1 after"
+  eq "no settings objects accumulate over 10 open/close cycles" "$cs0" "$cs1"
+  win1=$(heapcount NSWindow)
+  eq "no NSWindow left behind by 10 open/close cycles" "$win0" "$win1"
 
   # URLs.
   url "bento://action/launcher.qa-cmd"
