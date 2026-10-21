@@ -204,3 +204,11 @@ public final class ClosureMenuItem: NSMenuItem {
 
     @objc private func run() { handler() }
 }
+
+/// Cross-module notifications (modules never import each other).
+public enum BentoEvents {
+    /// Posted by the Windows module after a command or snap placed a window
+    /// (not during live drags). userInfo["window"] is the `AXWindow`.
+    /// Tiling uses it to float a window the user placed explicitly.
+    public static let windowPlaced = Notification.Name("BentoWindowPlaced")
+}

@@ -40,6 +40,7 @@ public struct AXWindow: Hashable {
     /// The window under a point in AX coordinates (e.g. under the mouse).
     public static func at(_ point: CGPoint) -> AXWindow? {
         let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.5)
         var el: AXUIElement?
         guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &el) == .success, var cur = el else { return nil }
         var pid: pid_t = 0
