@@ -1,0 +1,176 @@
+import Foundation
+
+/// Minimal JSON value used for the protocol's opaque `meta` object, so unknown keys
+/// written by other clients survive a round trip.
+enum JSONValue: Equatable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(any: Any?) {
+        switch any {
+        case nil, is NSNull: self = .null
+        case let n as NSNumber:
+            // NSNumber bridges Bool too; CFBoolean has its own type id.
+            if CFGetTypeID(n) == CFBooleanGetTypeID() { self = .bool(n.boolValue) } else { self = .number(n.doubleValue) }
+        case let s as String: self = .string(s)
+        case let a as [Any]: self = .array(a.map { JSONValue(any: $0) })
+        case let d as [String: Any]: self = .object(d.mapValues { JSONValue(any: $0) })
+        default: self = .null
+        }
+    }
+
+    var any: Any {
+        switch self {
+        case .null: return NSNull()
+        case .bool(let b): return b
+        case .number(let n): return n.rounded() == n && abs(n) < 1e15 ? NSNumber(value: Int64(n)) : NSNumber(value: n)
+        case .string(let s): return s
+        case .array(let a): return a.map(\.any)
+        case .object(let o): return o.mapValues(\.any)
+        }
+    }
+
+    var double: Double? { if case .number(let n) = self { return n }; return nil }
+    var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
+}
+
+/// One note, mirroring the sync protocol's note object plus local bookkeeping.
+struct Note: Equatable {
+    var id: String
+    var body: String
+    var createdAt: Int64
+    var updatedAt: Int64
+    /// Protocol tombstone (permanently deleted; body is "").
+    var deleted = false
+    /// Server seq of the version we last saw (nil: never synced).
+    var seq: Int64?
+    var device = ""
+    var meta: [String: JSONValue] = [:]
+    // Local only
+    var dirty = false
+    var openedAt: Int64 = 0
+
+    init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
+        self.id = id
+        self.body = body
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+    }
+
+    static func now() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
+
+    // MARK: Meta helpers (synced client extras)
+
+    var pinned: Bool {
+        get { meta["pinned"]?.bool ?? false }
+        set { if newValue { meta["pinned"] = .bool(true) } else { meta.removeValue(forKey: "pinned"); meta.removeValue(forKey: "pinOrder") } }
+    }
+
+    /// Sort key among pinned notes (ascending).
+    var pinOrder: Double {
+        get { meta["pinOrder"]?.double ?? Double(createdAt) }
+        set { meta["pinOrder"] = .number(newValue) }
+    }
+
+    /// When the note was moved to Recently Deleted (ms), nil when live.
+    var trashedAt: Int64? {
+        get { meta["trashedAt"]?.double.map { Int64($0) } }
+        set { if let v = newValue { meta["trashedAt"] = .number(Double(v)) } else { meta.removeValue(forKey: "trashedAt") } }
+    }
+
+    var isTrashed: Bool { trashedAt != nil }
+    /// Visible in the normal notes list.
+    var isLive: Bool { !deleted && trashedAt == nil }
+
+    // MARK: Derived text
+
+    var title: String { NoteText.title(of: body) }
+}
+
+/// Pure helpers deriving titles, plain text and counts from markdown bodies.
+enum NoteText {
+    /// First non-empty line with markdown stripped; "" when the note is empty.
+    static func title(of body: String) -> String {
+        var result = ""
+        body.enumerateLines { line, stop in
+            let t = plainLine(line).trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty, !isFenceOrRule(line) { result = t; stop = true }
+        }
+        return result
+    }
+
+    static func displayTitle(of body: String) -> String {
+        let t = title(of: body)
+        return t.isEmpty ? "Untitled" : t
+    }
+
+    private static func isFenceOrRule(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("```") || t.hasPrefix("~~~") || MarkdownParser.isRule(t)
+    }
+
+    /// One line without block markers and inline syntax.
+    static func plainLine(_ line: String) -> String {
+        let parsed = MarkdownParser.parseLine(line, inCode: false)
+        let ns = line as NSString
+        if case .rule = parsed.kind { return "" }
+        if case .fence = parsed.kind { return "" }
+        let content = ns.substring(with: parsed.contentRange)
+        return MarkdownParser.stripInline(content)
+    }
+
+    /// Whole note as plain text (no markdown syntax), used for counts.
+    static func plainText(of body: String) -> String {
+        var lines: [String] = []
+        var inCode = false
+        body.enumerateLines { line, _ in
+            let p = MarkdownParser.parseLine(line, inCode: inCode)
+            switch p.kind {
+            case .fence(let opening, _):
+                inCode = opening
+            case .code:
+                lines.append(line)
+            case .rule:
+                break
+            default:
+                lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func characterCount(of body: String) -> Int {
+        plainText(of: body).reduce(0) { $1 == "\n" ? $0 : $0 + 1 }
+    }
+
+    static func wordCount(of body: String) -> Int {
+        var n = 0
+        let text = plainText(of: body)
+        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in n += 1 }
+        return n
+    }
+
+    /// Lowercased haystack for search.
+    static func searchText(of body: String) -> String { plainText(of: body).lowercased() }
+}
+
+/// "4m ago", "3w ago" style relative dates like Raycast's notes list.
+enum RelativeDate {
+    static func short(_ ms: Int64, now: Int64 = Note.now()) -> String {
+        let s = max(0, (now - ms) / 1000)
+        if s < 60 { return "just now" }
+        let m = s / 60
+        if m < 60 { return "\(m)m ago" }
+        let h = m / 60
+        if h < 24 { return "\(h)h ago" }
+        let d = h / 24
+        if d < 7 { return "\(d)d ago" }
+        if d < 30 { return "\(d / 7)w ago" }
+        if d < 365 { return "\(d / 30)mo ago" }
+        return "\(d / 365)y ago"
+    }
+}
