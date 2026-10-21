@@ -394,13 +394,16 @@ private let isolatedHome: Bool = {
         let b = RecorderView(frame: NSRect(x: 0, y: 0, width: 150, height: 24))
         w.contentView?.addSubview(b)
         _ = a.accessibilityPerformPress()
-        _ = b.accessibilityPerformPress()
-        #expect(HotkeyCenter.shared.isSuspended)
-        a.isEnabled = false                       // disabling cancels recording
+        _ = b.accessibilityPerformPress()         // starting b ends a: one recorder at a time
         #expect(!a.isRecording)
-        #expect(HotkeyCenter.shared.isSuspended)  // b still recording
-        #expect(!a.accessibilityPerformPress())   // disabled recorders don't start
-        _ = b.accessibilityPerformPress()          // toggles off
+        #expect(b.isRecording)
+        #expect(HotkeyCenter.shared.isSuspended)
+        b.isEnabled = false                       // disabling cancels recording
+        #expect(!b.isRecording)
+        #expect(!HotkeyCenter.shared.isSuspended)
+        #expect(!b.accessibilityPerformPress())   // disabled recorders don't start
+        _ = a.accessibilityPerformPress()
+        _ = a.accessibilityPerformPress()          // toggles off
         #expect(!HotkeyCenter.shared.isSuspended)
         w.close()
     }

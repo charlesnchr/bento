@@ -92,6 +92,7 @@ struct GeneralPane: View {
                     )) {
                         Label(m.title, systemImage: m.symbol)
                     }
+                    .accessibilityIdentifier("module-toggle:\(m.id)")
                 }
             }
 
@@ -105,6 +106,7 @@ struct GeneralPane: View {
                     }
                 ))
                 .disabled(!LaunchAtLogin.isAvailable)
+                .accessibilityIdentifier("launch-at-login")
                 if !LaunchAtLogin.isAvailable {
                     Text("Only available in the installed app.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -113,6 +115,7 @@ struct GeneralPane: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("Show menu bar icon", isOn: $general.value.showMenuBarIcon)
+                    .accessibilityIdentifier("show-menu-bar-icon")
                 if !general.value.showMenuBarIcon {
                     Text("Open settings again by launching Bento from Finder or `open bento://settings`.")
                         .font(.caption).foregroundStyle(.secondary)

@@ -161,8 +161,13 @@ final class RecorderView: NSView {
         onChange?(nil)
     }
 
+    /// The recorder currently recording (only one at a time: keys go to one place).
+    private static weak var active: RecorderView?
+
     private func start() {
         guard isEnabled, !isRecording, let window else { return }
+        if let other = RecorderView.active, other !== self { other.cancelRecording() }
+        RecorderView.active = self
         if !window.isKeyWindow, NSApplication.shared.activationPolicy() != .prohibited {
             // Keys only reach the local monitor while our window is key.
             AppActivation.activateSelf()
@@ -256,6 +261,7 @@ final class RecorderView: NSView {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
         liveModifiers = []
+        if RecorderView.active === self { RecorderView.active = nil }
         if isRecording { isRecording = false }
         if holdsSuspension {
             holdsSuspension = false
