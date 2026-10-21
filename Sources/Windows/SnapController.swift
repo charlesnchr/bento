@@ -90,6 +90,11 @@ final class SnapController {
             update(cursor: p)
         case .leftMouseUp:
             guard windowID != 0 else { return }
+            if !moving, !isSuspended(), let now = WindowList.info(windowID)?.frame,
+               now.size == initialFrame.size, now.origin != initialFrame.origin {
+                // A quick throw: the window moved but no drag event saw it yet.
+                beginMove(current: now, cursor: p)
+            }
             if moving, !isSuspended() {
                 update(cursor: p)
                 commit()
@@ -130,13 +135,17 @@ final class SnapController {
     }
 
     /// Snaps the window if the cursor is in a snap area. Returns true if it will.
+    /// `placedByBento`: Bento moved the window itself (modifier drag), so it
+    /// counts as placed even if the snap then fails.
     @discardableResult
-    private func commit() -> Bool {
+    private func commit(placedByBento: Bool = false) -> Bool {
         footprint.hide()
         guard let area, let w = axWindow else { return false }
         // Let the app finish its own drag handling before moving the window.
         DispatchQueue.main.async { [engine] in
-            engine.perform(area.command, on: w, screenIndex: area.screenIndex, source: .snap)
+            if !engine.perform(area.command, on: w, screenIndex: area.screenIndex, source: .snap), placedByBento {
+                engine.didPlace(w)
+            }
         }
         return true
     }
@@ -154,7 +163,7 @@ final class SnapController {
     /// Returns true if the window is being snapped (the engine then reports the placement).
     @discardableResult
     func endExternalMove(commit doCommit: Bool) -> Bool {
-        let snapped = doCommit && commit()
+        let snapped = doCommit && commit(placedByBento: true)
         reset()
         return snapped
     }

@@ -679,7 +679,7 @@ enum Geometry {
             }
             guard o.bottomThirds else { return nil }
             if p.x <= f.minX + third { return .firstThird }
-            if p.x >= f.maxX - third { return .lastThird }
+            if p.x > f.maxX - third { return .lastThird } // the middle band is inclusive in Rectangle
             return middleThird(prior)
         }
     }
