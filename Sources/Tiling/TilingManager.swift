@@ -58,6 +58,14 @@ final class TilingManager {
 
     private static let layoutDefaultsKey = "BentoTilingDisplayLayouts"
 
+    /// Dev/e2e only (`BENTO_DEV` + `BENTO_TILING_TITLE_FILTER`): tile only windows whose
+    /// title contains this, so tests never touch other windows of the same app.
+    private static let titleFilter: String? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["BENTO_DEV"] != nil, let f = env["BENTO_TILING_TITLE_FILTER"], !f.isEmpty else { return nil }
+        return f
+    }()
+
     /// Apps whose windows have no (enabled) fullscreen button but should still tile.
     private static let fullscreenButtonExempt: Set<String> = [
         "com.google.Chrome", "com.apple.ActivityMonitor", "org.alacritty", "io.alacritty",
@@ -368,6 +376,7 @@ final class TilingManager {
                 }
                 // Classify only on-screen windows (minimized/hidden ones report odd subroles).
                 guard onScreen.contains(wid) else { continue }
+                if let f = TilingManager.titleFilter, !w.title.contains(f) { continue }
                 let bid = app.bundleIdentifier
                 let auto = shouldFloat(w, bundleID: bid)
                 windows[wid] = TrackedWindow(ax: w, bundleID: bid, autoFloat: auto, userFloat: nil,
@@ -722,6 +731,7 @@ final class TilingManager {
                 HUD.show("\(app.localizedName ?? "App") is not tiled", symbol: "macwindow")
                 return
             }
+            if let f = TilingManager.titleFilter, !w.title.contains(f) { return }
             forcedPIDs.insert(w.pid)
             guard let obs = ensureObserver(w.pid) else { return }
             windows[wid] = TrackedWindow(ax: w, bundleID: app.bundleIdentifier, autoFloat: true, userFloat: false,
@@ -858,7 +868,24 @@ final class TilingManager {
         let floating = windows.filter { $0.value.floating }.map { "\($0.key) \($0.value.ax.title)" }
         lines.append("floating: \(floating)")
         lines.append("observers: \(observers.count) apps, tracked windows: \(windows.count), visible: \(visible.count)")
+        lines.append("dragging: \(dragging.count), mouse monitor: \(mouseMonitor != nil), pending refresh: \(refreshWork != nil), "
+                     + "pending external: \(externalWork != nil), live app observers: \(AppObserver.live)")
         return lines.joined(separator: "\n")
+    }
+
+    /// Runtime state for `bento://debug/state`.
+    var diagnostics: [String: Any] {
+        [
+            "running": running,
+            "observedApps": observers.count,
+            "trackedWindows": windows.count,
+            "tiled": visible.count,
+            "floating": windows.values.filter(\.floating).count,
+            "dragging": dragging.count,
+            "mouseMonitor": mouseMonitor != nil,
+            "pendingRefresh": refreshWork != nil,
+            "layouts": Dictionary(uniqueKeysWithValues: displays.map { ("\($0.key)", $0.value.kind.rawValue) }),
+        ]
     }
 
     private static func describe(_ n: TileNode) -> String {

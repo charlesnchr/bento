@@ -11,6 +11,8 @@ final class AppObserver {
     private let observer: AXObserver
     private let refcon: UnsafeMutableRawPointer
     private var windows: Set<AXWindow> = []
+    /// Number of live observers (main thread; diagnostics and tests).
+    private(set) static var live = 0
 
     static let appNotifications = [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification]
     static let windowNotifications = [
@@ -34,7 +36,10 @@ final class AppObserver {
         self.observer = created
         self.refcon = refcon
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
+        AppObserver.live += 1
     }
+
+    deinit { AppObserver.live -= 1 }
 
     func observe(_ w: AXWindow) {
         guard !windows.contains(w) else { return }
