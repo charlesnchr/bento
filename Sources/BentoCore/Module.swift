@@ -53,8 +53,10 @@ public protocol BentoModule: AnyObject {
     /// Settings pane shown in the settings window (nil = no pane).
     func makeSettingsView() -> AnyView?
     /// Items for the menu bar menu. Default: a submenu with all visible actions.
+    /// Return fresh items on every call (an item can only be in one menu).
     func menuItems() -> [NSMenuItem]
     /// Runtime state for `bento://debug/state` (event taps, observers, …).
+    /// Values must be JSON types: strings, numbers, bools, arrays, dictionaries.
     func diagnostics() -> [String: Any]
 }
 
@@ -66,6 +68,7 @@ public extension BentoModule {
 }
 
 /// Owns the mapping from actions to global hotkeys.
+/// All calls must happen on the main thread.
 public final class ActionRegistry {
     public static let shared = ActionRegistry()
 
@@ -74,14 +77,32 @@ public final class ActionRegistry {
     public private(set) var modules: [BentoModule] = []
     private var actionsByID: [String: BentoAction] = [:]
     private var orderedIDs: [String] = []
-    private var tokens: [HotkeyCenter.Token] = []
-    /// Shortcuts that failed to register (taken by another app), by action id.
+    /// Live hotkey registrations by action id.
+    private var registered: [String: (shortcut: Shortcut, token: HotkeyCenter.Token)] = [:]
+    /// Shortcuts that failed to register (taken by another app or another action), by action id.
     public private(set) var failed: Set<String> = []
-    private var configObserver: NSObjectProtocol?
-    public var isModuleEnabled: (String) -> Bool = { _ in true }
+    /// Failed ids that lost a conflict inside Bento -> the id that owns the shortcut.
+    private var conflicts: [String: String] = [:]
+    /// Ids declared more than once (the first declaration wins).
+    public private(set) var duplicateIDs: Set<String> = []
+    private var batchDepth = 0
+    private var reloadDeferred = false
+    /// Number of reloads performed (diagnostics / tests).
+    public private(set) var reloadCount = 0
+    /// Actions of disabled modules (for settings rows), rebuilt lazily.
+    private var inactiveActions: [String: BentoAction]?
+    private var observers: [NSObjectProtocol] = []
+    public var isModuleEnabled: (String) -> Bool = { _ in true } { didSet { inactiveActions = nil } }
 
     private init() {
-        configObserver = ConfigStore.shared.observe("shortcuts") { [weak self] in self?.reload() }
+        observers.append(ConfigStore.shared.observe("shortcuts") { [weak self] in self?.reload() })
+        // Disabled modules may compute actions from config (launcher entries).
+        observers.append(NotificationCenter.default.addObserver(forName: ConfigStore.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.inactiveActions = nil
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: HotkeyCenter.didResume, object: nil, queue: .main) { [weak self] _ in
+            self?.dropDeadRegistrations()
+        })
     }
 
     public func setModules(_ modules: [BentoModule]) {
@@ -89,34 +110,100 @@ public final class ActionRegistry {
         reload()
     }
 
-    /// Re-collects actions from enabled modules and re-registers every hotkey.
-    /// Modules call this when their dynamic action list changes.
-    public func reload() {
-        HotkeyCenter.shared.unregister(tokens)
-        tokens = []
-        actionsByID = [:]
-        orderedIDs = []
-        failed = []
-        for m in modules where isModuleEnabled(m.id) {
-            for a in m.actions {
-                if actionsByID[a.id] == nil { orderedIDs.append(a.id) }
-                actionsByID[a.id] = a
+    /// Runs `body` with reloads coalesced into one at the end. Use it when
+    /// changing many shortcuts at once (e.g. importing another app's settings):
+    ///
+    ///     ActionRegistry.shared.performBatch { for (id, sc) in map { reg.setShortcut(sc, for: id) } }
+    public func performBatch(_ body: () -> Void) {
+        batchDepth += 1
+        defer {
+            batchDepth -= 1
+            if batchDepth == 0, reloadDeferred {
+                reloadDeferred = false
+                reload()
             }
         }
+        body()
+    }
+
+    /// Sets several bindings with a single reload (nil = unbound).
+    public func setShortcuts(_ shortcuts: [String: Shortcut?]) {
+        performBatch {
+            for id in shortcuts.keys.sorted() { setShortcut(shortcuts[id] ?? nil, for: id) }
+        }
+    }
+
+    /// Re-collects actions from enabled modules and re-registers hotkeys.
+    /// Modules call this when their dynamic action list changes. Bindings that
+    /// didn't change keep their system registration (only handlers are swapped).
+    public func reload() {
+        if batchDepth > 0 { reloadDeferred = true; return }
+        reloadCount += 1
+        inactiveActions = nil
+        var byID: [String: BentoAction] = [:]
+        var order: [String] = []
+        var duplicates = Set<String>()
+        for m in modules where isModuleEnabled(m.id) {
+            for a in m.actions {
+                if byID[a.id] != nil { duplicates.insert(a.id); continue }
+                order.append(a.id)
+                byID[a.id] = a
+            }
+        }
+        if !duplicates.isEmpty, duplicates != duplicateIDs {
+            BentoLog.core.error("Duplicate action ids (first one wins): \(duplicates.sorted().joined(separator: ", "), privacy: .public)")
+        }
+        actionsByID = byID
+        orderedIDs = order
+        duplicateIDs = duplicates
+
+        // Who gets which shortcut: the first action in order claims it.
+        var wanted: [String: Shortcut] = [:]
         var claimed: [Shortcut: String] = [:]
-        for id in orderedIDs {
-            guard let action = actionsByID[id], let sc = shortcut(for: id) else { continue }
+        var newFailed = Set<String>()
+        var newConflicts: [String: String] = [:]
+        for id in order {
+            guard let sc = shortcut(for: id) else { continue }
             if let other = claimed[sc] {
                 BentoLog.core.error("Shortcut \(sc.configString, privacy: .public) of \(id, privacy: .public) already used by \(other, privacy: .public)")
-                failed.insert(id)
+                newFailed.insert(id)
+                newConflicts[id] = other
                 continue
             }
-            if let t = HotkeyCenter.shared.register(sc, onPress: action.handler) {
-                tokens.append(t)
-                claimed[sc] = id
+            claimed[sc] = id
+            wanted[id] = sc
+        }
+
+        // Release everything that changed first, so a shortcut moving between
+        // two actions is free when its new owner registers it.
+        for (id, reg) in registered where wanted[id] != reg.shortcut || !HotkeyCenter.shared.isActive(reg.token) {
+            HotkeyCenter.shared.unregister(reg.token)
+            registered.removeValue(forKey: id)
+        }
+        for id in order {
+            guard let sc = wanted[id], let action = byID[id] else { continue }
+            if let reg = registered[id] {
+                HotkeyCenter.shared.setHandlers(reg.token, onPress: action.handler)
+            } else if let t = HotkeyCenter.shared.register(sc, onPress: action.handler) {
+                registered[id] = (sc, t)
             } else {
-                failed.insert(id)
+                newFailed.insert(id)
             }
+        }
+        failed = newFailed
+        conflicts = newConflicts
+        NotificationCenter.default.post(name: ActionRegistry.didReload, object: self)
+    }
+
+    /// After a suspension ends, keys another app grabbed meanwhile can't be
+    /// restored: report them as failed (the next reload retries them).
+    private func dropDeadRegistrations() {
+        let dead = registered.filter { !HotkeyCenter.shared.isActive($0.value.token) }
+        guard !dead.isEmpty else { return }
+        for (id, reg) in dead {
+            HotkeyCenter.shared.unregister(reg.token)
+            registered.removeValue(forKey: id)
+            failed.insert(id)
         }
         NotificationCenter.default.post(name: ActionRegistry.didReload, object: self)
     }
@@ -126,6 +213,19 @@ public final class ActionRegistry {
     public var allActions: [BentoAction] { orderedIDs.compactMap { actionsByID[$0] } }
 
     public func action(_ id: String) -> BentoAction? { actionsByID[id] }
+
+    /// An action of any module, enabled or not.
+    private func anyAction(_ id: String) -> BentoAction? {
+        if let a = actionsByID[id] { return a }
+        if inactiveActions == nil {
+            var all: [String: BentoAction] = [:]
+            for m in modules where !isModuleEnabled(m.id) {
+                for a in m.actions where all[a.id] == nil { all[a.id] = a }
+            }
+            inactiveActions = all
+        }
+        return inactiveActions?[id]
+    }
 
     /// Runs an action by id. Returns false if unknown or its module is disabled.
     @discardableResult
@@ -137,22 +237,31 @@ public final class ActionRegistry {
 
     /// The effective shortcut: user override, else the action's default.
     public func shortcut(for id: String) -> Shortcut? {
-        if let a = actionsByID[id], a.bindingWriter != nil { return a.defaultShortcut }
+        let action = anyAction(id)
+        if let action, action.bindingWriter != nil { return action.defaultShortcut }
         if let override = ConfigStore.shared.shortcutOverrides[id] {
             return override.isEmpty || override == "none" ? nil : Shortcut(override)
         }
-        return actionsByID[id]?.defaultShortcut ?? modules.lazy.flatMap(\.actions).first { $0.id == id }?.defaultShortcut
+        return action?.defaultShortcut
     }
 
-    /// Stores a user override (nil = unbound). Passing the default clears the override.
+    /// Why an action's shortcut isn't active (nil when it is, or is unbound).
+    public func failureReason(for id: String) -> String? {
+        guard failed.contains(id) else { return nil }
+        if let other = conflicts[id] { return "Also assigned to “\(actionsByID[other]?.title ?? other)”" }
+        return "Used by another app or the system"
+    }
+
+    /// Stores a user override (nil = unbound). Passing the default clears the
+    /// override. Works for actions of disabled modules too.
     public func setShortcut(_ shortcut: Shortcut?, for id: String) {
-        if let writer = actionsByID[id]?.bindingWriter {
+        let action = anyAction(id)
+        if let writer = action?.bindingWriter {
             writer(shortcut)
             return
         }
         var overrides = ConfigStore.shared.shortcutOverrides
-        let def = actionsByID[id]?.defaultShortcut
-        if shortcut == def {
+        if shortcut == action?.defaultShortcut {
             overrides.removeValue(forKey: id)
         } else {
             overrides[id] = shortcut?.configString ?? ""
@@ -163,16 +272,25 @@ public final class ActionRegistry {
     /// Binds `shortcut` to `id`, first unbinding any other action that uses it
     /// (with a HUD saying so), so a recorded combination never ends up dead.
     public func assign(_ shortcut: Shortcut?, to id: String) {
-        if let shortcut, let other = actionUsing(shortcut), other.id != id {
-            setShortcut(nil, for: other.id)
-            HUD.show("Removed from “\(other.title)”", symbol: "arrow.triangle.swap", duration: 1.6)
+        performBatch {
+            if let shortcut, let other = actionUsing(shortcut), other.id != id {
+                setShortcut(nil, for: other.id)
+                HUD.show("Removed from “\(other.title)”", symbol: "arrow.triangle.swap", duration: 1.6)
+            }
+            setShortcut(shortcut, for: id)
         }
-        setShortcut(shortcut, for: id)
     }
 
     /// Which action (if any) already uses a shortcut.
     public func actionUsing(_ shortcut: Shortcut) -> BentoAction? {
         allActions.first { self.shortcut(for: $0.id) == shortcut }
+    }
+
+    /// Runtime state for `bento://debug/state`.
+    public func diagnostics() -> [String: Any] {
+        ["registered": registered.count, "failed": failed.sorted(), "duplicates": duplicateIDs.sorted(),
+         "reloads": reloadCount, "hotkeyEntries": HotkeyCenter.shared.registrationCount,
+         "hotkeysSuspended": HotkeyCenter.shared.isSuspended]
     }
 
     // MARK: Menu helpers
