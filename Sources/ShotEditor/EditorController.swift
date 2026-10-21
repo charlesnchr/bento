@@ -41,6 +41,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     private var thumbDirty = false
     private var autosave: DispatchWorkItem?
     private var closed = false
+    var isClosed: Bool { closed }
     private var counterTyping: (id: UUID, time: Date, text: String)?
 
     var state: EditState {
@@ -197,7 +198,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         closed = true
-        if editingTextID != nil { endTextEditing() }
+        settleForUndo()
         persist(final: true)
         NotificationCenter.default.removeObserver(self)
         undo.removeAllActions()
@@ -271,6 +272,7 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     /// Applies a change to the document and records it for undo.
     func mutate(_ name: String, _ change: (inout EditState) -> Void) {
+        finishStyleEdit()
         let before = state
         var s = before
         change(&s)
@@ -293,12 +295,22 @@ final class EditorController: NSObject, NSWindowDelegate {
     }
 
     func performUndo() {
-        if editingTextID != nil { endTextEditing() }
-        if undo.canUndo { undo.undo() } else { NSSound.beep() }
+        settleForUndo()
+        if undo.canUndo { undo.undo() } else { Feedback.beep() }
     }
 
     func performRedo() {
-        if undo.canRedo { undo.redo() } else { NSSound.beep() }
+        settleForUndo()
+        if undo.canRedo { undo.redo() } else { Feedback.beep() }
+    }
+
+    /// Finishes whatever is in progress (text editing, a size-slider drag, a
+    /// mouse drag) so undo/redo acts on a committed state; a drag still running
+    /// would otherwise write its stale snapshot back over the undone state.
+    private func settleForUndo() {
+        _ = canvas.annotationView.cancelDrag()
+        if editingTextID != nil { endTextEditing() }
+        finishStyleEdit()
     }
 
     // MARK: Tools & style
@@ -330,25 +342,39 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     func setSize(_ v: Double, final: Bool) {
         if let kind = styleKind { ToolMemory.setSize(v, for: kind) }
-        if let id = selectedID {
-            if styleEditBase == nil { styleEditBase = state }
+        guard let id = selectedID else { return }
+        if editingTextID == id {
+            // Part of the text edit: committed with it when editing ends.
             updateAnnotation(id) { $0.size = v }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
-            if final, let base = styleEditBase {
-                styleEditBase = nil
-                commit("Size", from: base)
-            }
+            canvas.annotationView.syncTextEditor()
+            return
         }
+        if styleEditBase == nil { styleEditBase = state }
+        updateAnnotation(id) { $0.size = v }
+        if final { finishStyleEdit() }
+    }
+
+    /// Commits a size change made with the slider (one undo step per drag).
+    /// Also called before any other edit, selection change or undo, so a drag
+    /// whose final event never arrived can't leave a stale base behind.
+    private func finishStyleEdit() {
+        guard let base = styleEditBase else { return }
+        styleEditBase = nil
+        commit("Size", from: base)
     }
 
     func setStyle(_ s: Int) {
         guard let kind = styleKind else { return }
         ToolMemory.setStyle(s, for: kind)
         if let id = selectedID {
-            mutate("Style") { st in
-                if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].style = s }
+            if editingTextID == id {
+                updateAnnotation(id) { $0.style = s }
+                canvas.annotationView.syncTextEditor()
+            } else {
+                mutate("Style") { st in
+                    if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].style = s }
+                }
             }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
         }
         toolbar.update()
     }
@@ -356,15 +382,20 @@ final class EditorController: NSObject, NSWindowDelegate {
     func setColor(_ hex: String) {
         color = hex
         if let id = selectedID {
-            mutate("Colour") { st in
-                if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].color = hex }
+            if editingTextID == id {
+                updateAnnotation(id) { $0.color = hex }
+                canvas.annotationView.syncTextEditor()
+            } else {
+                mutate("Colour") { st in
+                    if let i = st.annotations.firstIndex(where: { $0.id == id }) { st.annotations[i].color = hex }
+                }
             }
-            if editingTextID == id { canvas.annotationView.syncTextEditor() }
         }
         toolbar.update()
     }
 
     private func selectionChanged() {
+        finishStyleEdit()
         if let sel = selected { color = sel.color }
         toolbar?.update()
         canvas.annotationView.needsDisplay = true
@@ -689,6 +720,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     }
 
     func setZoom(_ z: CGFloat, centeredAt p: NSPoint? = nil) {
+        guard z.isFinite, z > 0 else { return }
         let clip = scrollView.contentView
         let center = p ?? NSPoint(x: clip.bounds.midX, y: clip.bounds.midY)
         scrollView.setMagnification(z.clamped(scrollView.minMagnification...scrollView.maxMagnification), centeredAt: center)

@@ -588,8 +588,9 @@ final class AnnotationView: NSView {
             editor.typeDigit(d)
             return
         }
-        if c == "[" || c == "]" {
-            editor.growRegion((c == "]" ? 1 : -1) * step)
+        // By key code: with ⇧ the characters are "{" / "}" (and differ per layout).
+        if e.keyCode == 33 || e.keyCode == 30 {
+            editor.growRegion((e.keyCode == 30 ? 1 : -1) * step)
             return
         }
         if c == "z" { zoomClickArmed = true; NSCursor(image: NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: nil) ?? NSImage(), hotSpot: NSPoint(x: 8, y: 8)).set(); return }
