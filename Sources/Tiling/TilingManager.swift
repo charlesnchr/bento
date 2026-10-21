@@ -45,6 +45,8 @@ final class TilingManager {
     private var observerFailures: [pid_t: Int] = [:]
     /// Apps observed although not eligible by default (user tiled a window of a floating app).
     private var forcedPIDs: Set<pid_t> = []
+    /// Windows the Windows module placed before Tiling tracked them (newest last).
+    private var placedUntracked: [WindowID] = []
     /// Tiled windows currently on screen (current Space, not minimized/hidden/fullscreen).
     private(set) var visible: Set<WindowID> = []
     /// Last frame we set (as read back), to tell our own moves from the user's.
@@ -159,7 +161,7 @@ final class TilingManager {
         displays = [:]; screenAreas = [:]; windows = [:]; idByElement = [:]; visible = []
         expected = [:]; lastSet = [:]; lastApplied = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]
         externallyMoved = []
-        forcedPIDs = []; observerFailures = [:]
+        forcedPIDs = []; observerFailures = [:]; placedUntracked = []
     }
 
     /// Applies changed settings without rebuilding the trees when possible.
@@ -451,7 +453,9 @@ final class TilingManager {
                 if let f = TilingManager.titleFilter, !w.title.contains(f) { continue }
                 let bid = app.bundleIdentifier
                 let auto = shouldFloat(w, bundleID: bid)
-                windows[wid] = TrackedWindow(ax: w, bundleID: bid, autoFloat: auto, userFloat: nil,
+                let placed = placedUntracked.contains(wid)
+                if placed { placedUntracked.removeAll { $0 == wid } }
+                windows[wid] = TrackedWindow(ax: w, bundleID: bid, autoFloat: auto, userFloat: placed ? true : nil,
                                              originalFrame: w.frame, detected: Date())
                 idByElement[w] = wid
                 obs.observe(w)
@@ -870,7 +874,15 @@ final class TilingManager {
     /// being tiled and keeps the frame they chose (posted before the AX move
     /// notifications arrive, so it is never snapped back).
     private func floatPlaced(_ w: AXWindow) {
-        guard let wid = idByElement[w] ?? w.windowID, var t = windows[wid], !t.floating else { return }
+        guard let wid = idByElement[w] ?? w.windowID else { return }
+        guard var t = windows[wid] else {
+            // Placed before we saw it (a Windows launch rule on a new window): it starts floating.
+            placedUntracked.removeAll { $0 == wid }
+            placedUntracked.append(wid)
+            if placedUntracked.count > 16 { placedUntracked.removeFirst() }
+            return
+        }
+        guard !t.floating else { return }
         t.userFloat = true
         windows[wid] = t
         if let did = display(of: wid) { displays[did]?.remove(wid) }
