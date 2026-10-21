@@ -108,4 +108,11 @@ Delete All Notes ⌃⇧X. **done**
 ## Sync (Bento-specific, replaces Raycast Cloud Sync)
 See docs/SYNC_PROTOCOL.md. Pinned state, pin order and Recently Deleted live in `meta`
 (`pinned`, `pinOrder`, `trashedAt`), so they sync; "Delete Permanently" sends a tombstone.
+
+No edit is ever silently lost: the client remembers the hash of the server version each
+local version is based on (`base_hash`, local only). When last-writer-wins would overwrite
+text that changed on both sides since then, the losing text becomes its own note,
+"<title> (conflicted copy, <device>)" with `meta.conflictOf = <original id>`, synced like any
+note (one copy per note and device is updated during a burst). Meta-only changes on one
+side (pin, trash) merge with text changes on the other instead.
 */

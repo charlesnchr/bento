@@ -18,7 +18,7 @@ extension NSAttributedString.Key {
 /// Per-line decoration drawn by the layout manager, also used to detect when restyling
 /// can stop (a following line whose decoration didn't change).
 final class BlockDecoration: NSObject {
-    enum Kind: Equatable {
+    enum Kind: Hashable {
         case paragraph(empty: Bool)
         case heading(level: Int, spaced: Bool)
         case bullet(level: Int)
@@ -46,7 +46,8 @@ final class BlockDecoration: NSObject {
         return o.kind == kind && o.inCodeAfter == inCodeAfter && o.first == first
     }
 
-    override var hash: Int { inCodeAfter ? 1 : 0 }
+    // NSTextStorage uniques attribute dictionaries by hash: a constant hash made that slow
+    override var hash: Int { var h = Hasher(); h.combine(kind); h.combine(inCodeAfter); h.combine(first); return h.finalize() }
 
     var listLevel: Int? {
         switch kind {

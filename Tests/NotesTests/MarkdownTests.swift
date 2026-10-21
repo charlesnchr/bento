@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 @testable import Notes
 
@@ -278,5 +278,94 @@ import Testing
     @Test func links() {
         #expect(run("[site]") { MarkdownCommands.insertLink($0, selection: $1, url: "https://a.b") } == "[site](https://a.b)|")
         #expect(run("[site]") { MarkdownCommands.insertLink($0, selection: $1, url: nil) } == "[site](|)")
+    }
+
+    @Test func emptyCodeBlockToggleDoesNotOverlap() {
+        // used to produce two overlapping edits -> NSRangeException in the text view
+        #expect(run("```|\n```\nnext") { MarkdownCommands.setBlock($0, selection: $1, format: .codeBlock) } == "|next")
+        #expect(run("```|\n```") { MarkdownCommands.setBlock($0, selection: $1, format: .codeBlock) } == "|")
+    }
+
+    @Test func movingTheEmptyLastLineIsANoOp() {
+        #expect(run("a\n|") { MarkdownCommands.moveLines($0, selection: $1, up: true) } == nil)
+    }
+}
+
+/// Every command on random text (emoji, CJK, RTL, lists, fences) and random selections must
+/// produce in-bounds, non-overlapping edits and a valid selection: the editor applies them to
+/// NSTextStorage, where anything else raises.
+@Suite struct CommandFuzz {
+    struct RNG: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return state
+        }
+    }
+
+    static let pieces = ["# ", "## ", "- ", "    - ", "1. ", "2) ", "- [ ] ", "- [x] ", "> ", "> > ", "```", "```swift", "~~~", "---", "___",
+                         "**b**", "*i*", "_u_", "~~s~~", "`c`", "<u>u</u>", "[l](https://x.y)", "https://a.b/c", "😀", "👩‍👩‍👧", "🇩🇰",
+                         "日本語", "مرحبا", "שלום", "text", " ", "\t", "\n", "\n", "\n", "[]", "[x]", "*", "**", "`", "|"]
+
+    func check(_ r: EditResult?, _ text: NSString, _ label: String) {
+        guard let r else { return }
+        var prevEnd = 0
+        for e in r.edits.sorted(by: { $0.range.location < $1.range.location }) {
+            #expect(e.range.location >= prevEnd, "\(label): overlapping edits in \(text.debugDescription)")
+            #expect(NSMaxRange(e.range) <= text.length, "\(label): edit out of bounds in \(text.debugDescription)")
+            prevEnd = NSMaxRange(e.range)
+        }
+        guard r.edits.allSatisfy({ NSMaxRange($0.range) <= text.length }) else { return }
+        let out = r.apply(to: text as String) as NSString
+        #expect(NSMaxRange(r.selection) <= out.length, "\(label): selection out of bounds in \(text.debugDescription)")
+    }
+
+    @Test func commandsNeverProduceInvalidEdits() {
+        var rng = RNG(state: 42)
+        for _ in 0..<1500 {
+            let n = Int.random(in: 0...12, using: &rng)
+            let text = (0..<n).map { _ in Self.pieces.randomElement(using: &rng)! }.joined() as NSString
+            let a = Int.random(in: 0...text.length, using: &rng)
+            let b = Int.random(in: a...text.length, using: &rng)
+            let sel = Bool.random(using: &rng) ? NSRange(location: a, length: 0) : NSRange(location: a, length: b - a)
+            check(MarkdownCommands.newline(text, selection: sel), text, "newline")
+            check(MarkdownCommands.indent(text, selection: sel, outdent: false), text, "indent")
+            check(MarkdownCommands.indent(text, selection: sel, outdent: true), text, "outdent")
+            check(MarkdownCommands.backspace(text, selection: sel), text, "backspace")
+            check(MarkdownCommands.deleteForward(text, selection: sel), text, "deleteForward")
+            check(MarkdownCommands.toggleTasks(text, selection: sel, cascade: true), text, "toggleTasks")
+            check(MarkdownCommands.moveLines(text, selection: sel, up: true), text, "moveUp")
+            check(MarkdownCommands.moveLines(text, selection: sel, up: false), text, "moveDown")
+            check(MarkdownCommands.insertLink(text, selection: sel, url: "https://a.b"), text, "link")
+            for typed in [" ", "-"] { check(MarkdownCommands.inputRule(text, selection: sel, typed: typed), text, "inputRule") }
+            for f in InlineFormat.allCases { check(MarkdownCommands.toggleInline(text, selection: sel, format: f), text, "inline \(f)") }
+            for f in [BlockFormat.paragraph, .heading(1), .heading(3), .bullet, .ordered, .task, .quote, .codeBlock] {
+                check(MarkdownCommands.setBlock(text, selection: sel, format: f), text, "block \(f)")
+            }
+        }
+    }
+
+    @Test func stylerHandlesRandomEdits() {
+        var rng = RNG(state: 7)
+        let s = NSTextStorage(string: "")
+        let st = MarkdownStyler()
+        for _ in 0..<800 {
+            let len = s.length
+            let a = Int.random(in: 0...len, using: &rng)
+            let b = Int.random(in: a...min(len, a + 6), using: &rng)
+            let rep = Bool.random(using: &rng) ? Self.pieces.randomElement(using: &rng)! : ""
+            s.replaceCharacters(in: NSRange(location: a, length: b - a), with: rep)
+            st.didEdit(s, editedRange: NSRange(location: a, length: (rep as NSString).length))
+            let c = Int.random(in: 0...s.length, using: &rng)
+            st.selectionChanged(s, to: NSRange(location: c, length: Int.random(in: 0...(s.length - c), using: &rng)))
+            // prefix lengths must stay inside their line
+            if s.length > 0 {
+                let loc = Int.random(in: 0..<s.length, using: &rng)
+                let line = (s.string as NSString).lineRange(for: NSRange(location: loc, length: 0))
+                if let pl = s.attribute(.notesPrefixLen, at: line.location, effectiveRange: nil) as? Int {
+                    #expect(line.location + pl <= NSMaxRange(line))
+                }
+            }
+        }
     }
 }

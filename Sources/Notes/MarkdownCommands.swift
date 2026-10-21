@@ -392,9 +392,15 @@ enum MarkdownCommands {
             let openFull = text.lineRange(for: NSRange(location: all[o].range.location, length: 0))
             var edits = [TextEdit(range: openFull, replacement: "")]
             if let c = closeIdx {
-                // remove the closing line including the newline before it
                 let cr = all[c].range
-                edits.append(TextEdit(range: NSRange(location: cr.location - 1, length: cr.length + 1), replacement: ""))
+                if cr.location <= NSMaxRange(openFull) {
+                    // empty block: the fences are adjacent, remove both lines in one edit
+                    let closeFull = text.lineRange(for: NSRange(location: cr.location, length: 0))
+                    edits = [TextEdit(range: NSRange(location: openFull.location, length: NSMaxRange(closeFull) - openFull.location), replacement: "")]
+                } else {
+                    // remove the closing line including the newline before it
+                    edits.append(TextEdit(range: NSRange(location: cr.location - 1, length: cr.length + 1), replacement: ""))
+                }
             }
             return EditResult(edits: edits, selection: map(sel, through: edits))
         }
@@ -481,6 +487,8 @@ enum MarkdownCommands {
     static func moveLines(_ text: NSString, selection sel: NSRange, up: Bool) -> EditResult? {
         let ls = lines(in: sel, of: text)
         guard let first = ls.first, let last = ls.last else { return nil }
+        // the empty line after a final newline isn't a line that can move
+        if ls.count == 1, first.full.length == 0 { return nil }
         let blockStart = first.full.location
         let blockEnd = NSMaxRange(last.full)
         let other: NSRange
@@ -501,8 +509,11 @@ enum MarkdownCommands {
         let parts = up ? [strip(blockText), strip(otherText)] : [strip(otherText), strip(blockText)]
         let rep = parts.joined(separator: "\n") + (trailingNewline ? "\n" : "")
         let shift = up ? -((strip(otherText) as NSString).length + 1) : (strip(otherText) as NSString).length + 1
+        // a selection that included the block's newline can't extend past the moved text
+        let newEnd = combined.location + (rep as NSString).length
+        let start = min(sel.location + shift, newEnd)
         return EditResult(edits: [TextEdit(range: combined, replacement: rep)],
-                          selection: NSRange(location: sel.location + shift, length: sel.length))
+                          selection: NSRange(location: start, length: max(0, min(sel.length, newEnd - start))))
     }
 
     // MARK: Deletion

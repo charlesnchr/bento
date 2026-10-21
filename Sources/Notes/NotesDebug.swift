@@ -12,6 +12,8 @@ import BentoCore
 ///     dump                       (writes $BENTO_HOME/dump.json)
 enum NotesDebug {
     static var home: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["BENTO_HOME"] ?? "/tmp/bento-dev/notes") }
+    /// Result of the last bench-* command (included in the dump).
+    static var bench: [String: Any] = [:]
 
     static func run(_ c: NotesController) {
         guard let script = try? String(contentsOf: home.appendingPathComponent("debug.txt"), encoding: .utf8) else { return }
@@ -59,7 +61,10 @@ enum NotesDebug {
                                 selection: NSRange(location: (text as NSString).length, length: 0)))
         case "select":
             let n = arg.split(separator: " ").compactMap { Int($0) }
-            if n.count == 2 { w?.textView.setSelectedRange(NSRange(location: n[0], length: n[1])) }
+            if n.count == 2, let tv = w?.textView {
+                tv.setSelectedRange(NSRange(location: n[0], length: n[1]))
+                tv.scrollRangeToVisible(tv.selectedRange()) // like typing: the caret is on screen
+            }
         case "caret":
             if let tv = w?.textView {
                 tv.setSelectedRange(NSRange(location: arg == "start" ? 0 : (tv.string as NSString).length, length: 0))
@@ -105,6 +110,63 @@ enum NotesDebug {
             }
         case "open-title":
             if let n = c.store.liveNotes.first(where: { $0.title == arg }) { c.openWindow(); c.open(n.id) }
+        case "put":
+            // put <id>|<body>: local edit of a note by id, created if missing (no window needed)
+            let kv = arg.components(separatedBy: "|")
+            if kv.count >= 2 { c.debugPut(id: kv[0], body: unescape(kv.dropFirst().joined(separator: "|"))) }
+        case "put-file":
+            // put-file <id> <path>: same with the body read from a file (large notes)
+            let p = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            if p.count == 2, let body = try? String(contentsOfFile: p[1], encoding: .utf8) { c.debugPut(id: p[0], body: body) }
+        case "append":
+            // append <id>|<text>: rapid edits without a window
+            let kv = arg.components(separatedBy: "|")
+            if kv.count >= 2, let n = c.store.note(kv[0]) { c.debugPut(id: n.id, body: n.body + unescape(kv.dropFirst().joined(separator: "|"))) }
+        case "trash": c.debugMutate(arg) { $0.trashedAt = Note.now() }
+        case "restore": c.debugMutate(arg) { $0.trashedAt = nil }
+        case "purge": c.debugMutate(arg) { $0.deleted = true; $0.body = "" }
+        case "pin": c.debugMutate(arg) { $0.pinned.toggle() }
+        case "undo": w?.textView.undoManager?.undo()
+        case "redo": w?.textView.undoManager?.redo()
+        case "paste-file":
+            // paste-file <path> <uti>: pastes through a private pasteboard (never the user's)
+            let p = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            if let tv = w?.textView, p.count == 2, let data = FileManager.default.contents(atPath: p[0]) {
+                let pb = NSPasteboard(name: NSPasteboard.Name("com.charles.bento.notes.debug"))
+                pb.clearContents()
+                pb.setData(data, forType: NSPasteboard.PasteboardType(p[1]))
+                tv.pastePlain(from: pb)
+            }
+        case "quit": NSApp.terminate(nil)
+        case "status-text": c.toggleStatusText()
+        case "bench-type":
+            // bench-type <n>: n single-character insertions at the caret, each laid out and
+            // drawn like a keystroke; records the mean and worst time per keystroke
+            guard let w, let tv = w.textView as NoteTextView? else { break }
+            var times: [Double] = []
+            for i in 0..<(Int(arg) ?? 20) {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                tv.insertText(i % 7 == 6 ? " " : "x", replacementRange: NSRange(location: NSNotFound, length: 0))
+                if let lm = tv.layoutManager, let tc = tv.textContainer { lm.ensureLayout(forBoundingRect: tv.visibleRect, in: tc) }
+                tv.displayIfNeeded()
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            bench = ["meanMs": times.reduce(0, +) / Double(max(1, times.count)), "maxMs": times.max() ?? 0, "count": times.count]
+        case "bench-browse":
+            // bench-browse <query>: opens Browse Notes and times filtering with the query
+            let t0 = CFAbsoluteTimeGetCurrent()
+            c.showBrowse()
+            let t1 = CFAbsoluteTimeGetCurrent()
+            w?.palette.debugSetQuery(arg)
+            let t2 = CFAbsoluteTimeGetCurrent()
+            bench = ["openMs": (t1 - t0) * 1000, "filterMs": (t2 - t1) * 1000, "rows": w?.palette.debugRowCount ?? -1]
+        case "bench-open":
+            // bench-open <id>: time to load a note into the editor and lay out the visible part
+            let t0 = CFAbsoluteTimeGetCurrent()
+            c.open(arg)
+            if let tv = w?.textView, let lm = tv.layoutManager, let tc = tv.textContainer { lm.ensureLayout(forBoundingRect: tv.visibleRect, in: tc) }
+            w?.textView.displayIfNeeded()
+            bench = ["openMs": (CFAbsoluteTimeGetCurrent() - t0) * 1000]
         case "frame":
             let n = arg.split(separator: " ").compactMap { Double($0) }
             if n.count == 4 { w?.panel.setFrame(NSRect(x: n[0], y: n[1], width: n[2], height: n[3]), display: true) }
@@ -183,6 +245,17 @@ enum NotesDebug {
         }
         d["lastSeq"] = c.store.lastSeq
         d["sync"] = c.sync.status.summary
+        d["syncState"] = "\(c.sync.status.state)"
+        d["bench"] = bench
+        d["pending"] = c.sync.status.pending
+        d["blocked"] = c.sync.status.blocked
+        d["lastError"] = c.sync.status.lastError ?? ""
+        if let w = c.debugWindow {
+            d["footer"] = w.debugFooter
+            d["header"] = w.debugHeader
+            d["level"] = w.panel.level.rawValue
+            d["autoResize"] = c.settings.autoResize
+        }
         d["settings"] = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(c.settings))) ?? [:]
         if let data = try? JSONSerialization.data(withJSONObject: d, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: home.appendingPathComponent("dump.json"))

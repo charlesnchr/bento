@@ -23,6 +23,7 @@ final class NotesController {
     private var observers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem?
     private var running = false
+    private var paletteRefreshQueued = false
 
     init(store: NoteStore = NoteStore()) {
         self.store = store
@@ -36,6 +37,11 @@ final class NotesController {
             if id == self?.currentID { self?.flushPendingSave() }
         }
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
+        engine.onConflictCopy = { [weak self] copy, _ in
+            self?.countCache.removeValue(forKey: copy.id)
+            // only tell someone who is looking at notes; the copy tops the list either way
+            if self?.windowController?.isVisible == true { HUD.show("Conflicting Edit Kept as a Copy", symbol: "doc.on.doc") }
+        }
     }
 
     // MARK: Lifecycle
@@ -47,7 +53,13 @@ final class NotesController {
         settings = ConfigStore.shared.section("notes", default: NotesSettings())
         observers.append(ConfigStore.shared.observe("notes") { [weak self] in self?.reloadSettings() })
         observers.append(NotificationCenter.default.addObserver(forName: NoteStore.didChange, object: store, queue: .main) { [weak self] _ in
-            self?.windowController?.palette.refresh()
+            // a snapshot applies hundreds of notes in one go: rebuild the open list once
+            guard let self, self.windowController?.palette.isOpen == true, !self.paletteRefreshQueued else { return }
+            self.paletteRefreshQueued = true
+            DispatchQueue.main.async {
+                self.paletteRefreshQueued = false
+                self.windowController?.palette.refresh()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             self?.flushPendingSave()
@@ -127,6 +139,22 @@ final class NotesController {
             if let id { open(id, recordHistory: false) } else { createNote(body: "") }
         }
         w.show(focus: true)
+        warnIfNotPersistent()
+    }
+
+    private var warnedNotPersistent = false
+
+    /// The database couldn't be opened (permissions, disk, corruption): say so instead of
+    /// letting the user type into notes that vanish on quit.
+    private func warnIfNotPersistent() {
+        guard !store.isPersistent, !warnedNotPersistent, let w = windowController else { return }
+        warnedNotPersistent = true
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Notes Can't Be Saved"
+        alert.informativeText = "The notes database at \(NoteStore.defaultURL?.path ?? "?") couldn't be opened. "
+            + "Changes are kept in memory\(settings.sync.enabled ? " and synced" : "") until Bento quits. See Console (category notes) for details."
+        alert.beginSheetModal(for: w.panel) { _ in }
     }
 
     func hideWindow() {
@@ -258,7 +286,13 @@ final class NotesController {
     private func discardIfEmpty(_ id: String) {
         guard let n = store.note(id), n.seq == nil, !n.dirty || n.body.isEmpty,
               n.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, store.liveNotes.count > 1 else { return }
-        store.remove(id)
+        if n.dirty {
+            // It had text that may already be on the server (ack not seen yet): delete it
+            // there too instead of forgetting it locally.
+            mutate(id) { $0.deleted = true; $0.body = "" }
+        } else {
+            store.remove(id)
+        }
         window.forgetUndo(id)
         backStack.removeAll { $0 == id }
         forwardStack.removeAll { $0 == id }
@@ -296,7 +330,7 @@ final class NotesController {
     func editorChanged(_ body: String) {
         guard let id = currentID, var n = store.note(id) else { return }
         n.body = body
-        n.updatedAt = max(Note.now(), n.updatedAt + 1)
+        n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true
         // keep in memory immediately (sync reads the store), write to disk debounced
         pendingNote = n
@@ -321,14 +355,29 @@ final class NotesController {
         guard hasPending, let n = pendingNote else { return }
         hasPending = false
         pendingNote = nil
-        // the note may have been replaced remotely in between
-        if let stored = store.note(n.id), stored.updatedAt > n.updatedAt, !stored.dirty { return }
-        var toSave = n
-        if let stored = store.note(n.id) {
-            toSave.meta = stored.meta
-            toSave.seq = stored.seq
-            toSave.openedAt = stored.openedAt
+        guard let stored = store.note(n.id) else {
+            // removed underneath (shouldn't happen): never drop typed text
+            var lost = n
+            lost.id = UUID().uuidString
+            lost.seq = nil
+            lost.baseHash = nil
+            store.save(lost)
+            sync.localChange()
+            return
         }
+        if stored.deleted || (stored.updatedAt > n.updatedAt && !stored.dirty) {
+            // Replaced remotely before this edit reached the store (sync flushes first, so
+            // this is a safety net): keep the text as a conflicted copy instead of dropping it.
+            if n.body != stored.body { engine.preserve(body: n.body, of: stored) }
+            sync.localChange()
+            return
+        }
+        var toSave = n
+        toSave.meta = stored.meta
+        toSave.seq = stored.seq
+        toSave.openedAt = stored.openedAt
+        toSave.baseHash = stored.baseHash
+        if stored.updatedAt >= n.updatedAt, stored.body != n.body { toSave.updatedAt = Note.nextUpdate(after: stored.updatedAt) }
         store.save(toSave)
         sync.localChange()
     }
@@ -341,7 +390,7 @@ final class NotesController {
         flushPendingSave()
         guard var n = store.note(id) else { return }
         change(&n)
-        n.updatedAt = max(Note.now(), n.updatedAt + 1)
+        n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true
         store.save(n)
         sync.localChange()
@@ -349,6 +398,9 @@ final class NotesController {
 
     private func remoteChanged(_ note: Note) {
         countCache.removeValue(forKey: note.id)
+        // A kept undo history refers to ranges of the old text: undoing it on the new text
+        // would corrupt it or raise. (The open note's history is cleared by applyExternalBody.)
+        if note.id != windowController?.noteID { windowController?.forgetUndo(note.id) }
         guard note.id == currentID, let w = windowController else { return }
         if !note.isLive {
             // deleted or trashed elsewhere: move on
@@ -610,7 +662,7 @@ final class NotesController {
         return PaletteItem(
             id: n.id,
             title: NoteText.displayTitle(of: n.body),
-            subtitle: "\(when)  •  \(countText(n))",
+            lazySubtitle: { [weak self] in "\(when)  •  \(self?.countText(n) ?? "")" },
             subtitleDot: isCurrent ? styledAccent : nil,
             buttons: [
                 PaletteButton(symbol: n.pinned ? "pin.slash" : "pin", help: n.pinned ? "Unpin Note  ⌘." : "Pin Note  ⌘.") { [weak self] in self?.togglePin(id) },
@@ -643,7 +695,7 @@ final class NotesController {
                 let items = self.store.trashedNotes.filter { FuzzyMatch.noteScore(q, title: NoteText.displayTitle(of: $0.body), body: $0.body) != nil }.map { n -> PaletteItem in
                     let id = n.id
                     return PaletteItem(id: id, title: NoteText.displayTitle(of: n.body),
-                                       subtitle: "Deleted \(RelativeDate.short(n.trashedAt ?? n.updatedAt))  •  \(self.countText(n))",
+                                       lazySubtitle: { [weak self] in "Deleted \(RelativeDate.short(n.trashedAt ?? n.updatedAt))  •  \(self?.countText(n) ?? "")" },
                                        buttons: [
                                            PaletteButton(symbol: "arrow.uturn.backward", help: "Restore Note  ↩") { [weak self] in self?.window.palette.close(); self?.restore(id) },
                                            PaletteButton(symbol: "trash", help: "Delete Permanently  ⌃X") { [weak self] in self?.deletePermanently(id) },
@@ -781,4 +833,29 @@ final class NotesController {
     // MARK: Debug hooks (dev harness only)
 
     var debugWindow: NotesWindowController? { windowController }
+
+    /// A local edit by id, like typing (the editor is updated if the note is open).
+    func debugPut(id: String, body: String) {
+        if let w = windowController, w.noteID == id, currentID == id {
+            let len = (w.textView.string as NSString).length
+            w.textView.apply(EditResult(edits: [TextEdit(range: NSRange(location: 0, length: len), replacement: body)],
+                                        selection: NSRange(location: (body as NSString).length, length: 0)))
+            return
+        }
+        if store.note(id) != nil {
+            mutate(id) { $0.body = body; $0.deleted = false }
+            return
+        }
+        var n = Note(id: id, body: body)
+        n.device = sync.device
+        n.dirty = true
+        store.save(n)
+        sync.localChange()
+    }
+
+    func debugMutate(_ id: String, _ change: (inout Note) -> Void) {
+        guard store.note(id) != nil else { return }
+        mutate(id, change)
+        if let n = store.note(id), id == currentID, !n.isLive { remoteChanged(n) }
+    }
 }

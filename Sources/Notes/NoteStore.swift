@@ -21,7 +21,9 @@ final class NoteStore: NoteRepository {
     private var kvCache: [String: String] = [:]
     private let log = BentoLog.make("notes")
 
-    init(url: URL? = AppPaths.support("Notes").appendingPathComponent("notes.sqlite")) {
+    static var defaultURL: URL? { AppPaths.support("Notes").appendingPathComponent("notes.sqlite") }
+
+    init(url: URL? = NoteStore.defaultURL) {
         var db: SQLiteDB?
         if let url {
             do {
@@ -53,10 +55,17 @@ final class NoteStore: NoteRepository {
             );
             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """)
+            let columns = try db.query("PRAGMA table_info(notes)").compactMap { $0["name"] as? String }
+            if !columns.contains("base_hash") {
+                try db.exec("ALTER TABLE notes ADD COLUMN base_hash INTEGER")
+            }
         } catch {
             log.error("Notes DB migration failed: \(String(describing: error), privacy: .public)")
         }
     }
+
+    /// False when the database couldn't be opened: notes then only live in memory.
+    var isPersistent: Bool { db != nil }
 
     private func load() {
         guard let db else { return }
@@ -71,6 +80,7 @@ final class NoteStore: NoteRepository {
                 n.meta = NoteStore.decodeMeta(row["meta"] as? String ?? "{}")
                 n.dirty = (row["dirty"] as? Int64 ?? 0) != 0
                 n.openedAt = row["opened_at"] as? Int64 ?? 0
+                n.baseHash = (row["base_hash"] as? Int64).map { UInt64(bitPattern: $0) }
                 cache[id] = n
             }
             for row in try db.query("SELECT key, value FROM kv") {
@@ -100,6 +110,9 @@ final class NoteStore: NoteRepository {
     }
 
     func save(_ note: Note, notify: Bool, remote: Bool) {
+        var note = note
+        // The SQLite layer passes text as C strings: a NUL would truncate the body on disk.
+        if note.body.utf8.contains(0) { note.body = note.body.replacingOccurrences(of: "\u{0}", with: "") }
         if cache[note.id] == note { return }
         cache[note.id] = note
         write(note)
@@ -179,12 +192,14 @@ final class NoteStore: NoteRepository {
     private func write(_ n: Note) {
         do {
             try db?.run("""
-            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at,
               updated_at = excluded.updated_at, deleted = excluded.deleted, seq = excluded.seq,
-              device = excluded.device, meta = excluded.meta, dirty = excluded.dirty, opened_at = excluded.opened_at
-            """, [n.id, n.body, n.createdAt, n.updatedAt, n.deleted, n.seq, n.device, NoteStore.encodeMeta(n.meta), n.dirty, n.openedAt])
+              device = excluded.device, meta = excluded.meta, dirty = excluded.dirty, opened_at = excluded.opened_at,
+              base_hash = excluded.base_hash
+            """, [n.id, n.body, n.createdAt, n.updatedAt, n.deleted, n.seq, n.device, NoteStore.encodeMeta(n.meta), n.dirty, n.openedAt,
+                  n.baseHash.map { Int64(bitPattern: $0) }])
         } catch {
             log.error("Saving note failed: \(String(describing: error), privacy: .public)")
         }

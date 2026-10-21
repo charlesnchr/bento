@@ -18,6 +18,16 @@ final class NoteTextView: NSTextView {
             return
         }
         let sorted = r.edits.sorted { $0.range.location < $1.range.location }
+        // An out-of-bounds or overlapping edit would raise inside NSTextStorage: refuse it.
+        var prevEnd = 0
+        for e in sorted {
+            guard e.range.location != NSNotFound, e.range.location >= prevEnd, NSMaxRange(e.range) <= ts.length else {
+                NSSound.beep()
+                return
+            }
+            prevEnd = NSMaxRange(e.range)
+        }
+        if hasMarkedText() { unmarkText() }
         breakUndoCoalescing()
         guard shouldChangeText(inRanges: sorted.map { NSValue(range: $0.range) }, replacementStrings: sorted.map(\.replacement)) else { return }
         ts.beginEditing()
@@ -100,7 +110,76 @@ final class NoteTextView: NSTextView {
 
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
 
-    override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
+    override func paste(_ sender: Any?) { pastePlain(from: .general) }
+    override func pasteAsPlainText(_ sender: Any?) { pastePlain(from: .general) }
+    override func pasteAsRichText(_ sender: Any?) { pastePlain(from: .general) }
+
+    /// Pastes the text of whatever is on the pasteboard (rich text loses its styling,
+    /// line endings become "\n"); beeps for content without text (e.g. an image).
+    func pastePlain(from pb: NSPasteboard) {
+        guard let s = NoteTextView.plainText(from: pb), !s.isEmpty else { NSSound.beep(); return }
+        // Pasting a URL over selected text links it, like Raycast's editor.
+        let sel = selectedRange()
+        if sel.length > 0, let url = NoteTextView.singleURL(s),
+           !(string as NSString).substring(with: sel).contains("\n") {
+            apply(MarkdownCommands.insertLink(string as NSString, selection: sel, url: url))
+            return
+        }
+        breakUndoCoalescing()
+        insertText(s, replacementRange: selectedRange())
+        breakUndoCoalescing()
+        scrollRangeToVisible(selectedRange())
+    }
+
+    static func plainText(from pb: NSPasteboard) -> String? {
+        var s = pb.string(forType: .string)
+        if s == nil, let data = pb.data(forType: .rtf) ?? pb.data(forType: .rtfd) {
+            s = NSAttributedString(rtf: data, documentAttributes: nil)?.string ?? NSAttributedString(rtfd: data, documentAttributes: nil)?.string
+        }
+        if s == nil, let data = pb.data(forType: .html) {
+            s = NSAttributedString(html: data, documentAttributes: nil)?.string
+        }
+        if s == nil, let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
+            s = urls.map { $0.isFileURL ? $0.path : $0.absoluteString }.joined(separator: "\n")
+        }
+        guard var text = s else { return nil }
+        // one line terminator everywhere: the parser and the sync format work on "\n"
+        if text.utf16.contains(13) { text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n") }
+        if text.utf16.contains(where: { $0 == 0x2028 || $0 == 0x2029 || $0 == 0x85 }) {
+            text = text.replacingOccurrences(of: "\u{2028}", with: "\n").replacingOccurrences(of: "\u{2029}", with: "\n")
+                .replacingOccurrences(of: "\u{85}", with: "\n")
+        }
+        if text.utf8.contains(0) { text = text.replacingOccurrences(of: "\u{0}", with: "") }
+        if text.utf16.contains(9) { text = markdownLists(text) }
+        return text
+    }
+
+    /// The text when it is exactly one http(s)/mailto URL.
+    static func singleURL(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !t.contains(where: { $0.isWhitespace }), let u = URL(string: t), let scheme = u.scheme?.lowercased(),
+              ["http", "https", "mailto"].contains(scheme), scheme == "mailto" || u.host != nil else { return nil }
+        return t
+    }
+
+    private static let richListRE = try? NSRegularExpression(pattern: #"^(\t*)([•◦▪▫‣⁃∙●○■□-]|\d{1,3}[.)])\t"#)
+
+    /// Lists copied as rich text (Notes, TextEdit, web pages) arrive as "\t•\titem" /
+    /// "\t1.\titem" lines: turn them into markdown list items.
+    static func markdownLists(_ text: String) -> String {
+        guard let re = richListRE else { return text }
+        var changed = false
+        let lines = text.components(separatedBy: "\n").map { line -> String in
+            let ns = line as NSString
+            guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return line }
+            changed = true
+            let marker = ns.substring(with: m.range(at: 2))
+            let indent = String(repeating: MarkdownParser.indentUnit, count: max(0, m.range(at: 1).length - 1))
+            let prefix = marker.first?.isNumber == true ? marker.dropLast() + ". " : "- "
+            return indent + prefix + ns.substring(from: NSMaxRange(m.range))
+        }
+        return changed ? lines.joined(separator: "\n") : text
+    }
 
     // MARK: Drawing
 
