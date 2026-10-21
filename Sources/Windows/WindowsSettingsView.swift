@@ -162,13 +162,14 @@ struct WindowsSettingsView: View {
                 Text("Move and resize use the same modifiers; resize wins.")
                     .font(.caption).foregroundStyle(.orange)
             }
+            Toggle("Move and resize without clicking (hold the modifiers and move the pointer)", isOn: $model.value.dragHover)
             Toggle("Bring the window to the front", isOn: $model.value.dragFocusesWindow)
             Toggle("Snap when released at a screen edge", isOn: $model.value.dragSnaps)
                 .disabled(!model.value.snapping)
         } header: {
             Text("Modifier Drag")
         } footer: {
-            Text("Hold the modifiers, then press and drag anywhere in a window. The click doesn't reach the app.")
+            Text("Hold the modifiers and move the pointer (or press and drag) anywhere in a window. Add or release the extra resize modifier mid-gesture to switch between moving and resizing. A modifier-click without movement still reaches the app.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

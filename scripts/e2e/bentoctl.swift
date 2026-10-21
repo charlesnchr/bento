@@ -8,6 +8,8 @@
 //   bentoctl drag x1 y1 x2 y2 [mods]      mouse drag (mods like cmd+opt held during the drag)
 //   bentoctl click x y [mods]
 //   bentoctl throw x1 y1 x2 y2 [mods]     press at 1, release at 2, no drag events (one process)
+//   bentoctl modifiers <mods|none>        post a modifier change (flagsChanged), e.g. cmd+opt+shift
+//   bentoctl hover x1 y1 x2 y2 <mods>     pointer moves without a button, modifiers held
 //   bentoctl screens                      print screens' AX frames and visible frames
 //   bentoctl windows <owner>              print on-screen CG windows of an owner: id layer x y w h title
 //   add --expect <bundleid> (or --expect-pid <pid>) to key/drag/click/down to refuse input unless it goes to that app.
@@ -113,14 +115,14 @@ if let i = argv.firstIndex(of: "--expect"), i + 1 < argv.count { expectBID = arg
 // --expect-pid <pid>: same checks by process id (raw debug binaries have no bundle id).
 var expectPID: pid_t?
 if let i = argv.firstIndex(of: "--expect-pid"), i + 1 < argv.count, let p = pid_t(argv[i + 1]) { expectPID = p; argv.removeSubrange(i...(i + 1)) }
-let inputCommands: Set<String> = ["key", "drag", "click", "down", "move", "up", "throw"]
+let inputCommands: Set<String> = ["key", "drag", "click", "down", "move", "up", "throw", "hover", "modifiers"]
 if let c = argv.first, inputCommands.contains(c) {
     if FileManager.default.fileExists(atPath: "/tmp/bento-user-active") { FileHandle.standardError.write("user is active; refusing to post input\n".data(using: .utf8)!); exit(75) }
     if let pid = expectPID {
         if c == "key", NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
             fail("frontmost pid is \(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1), expected \(pid); not typing")
         }
-        if c == "drag" || c == "click" || c == "down" || c == "throw" {
+        if c == "drag" || c == "click" || c == "down" || c == "throw" || c == "hover" {
             let p = CGPoint(x: Double(argv[1])!, y: Double(argv[2])!)
             var el: AXUIElement?
             var owner: pid_t = 0
@@ -132,7 +134,7 @@ if let c = argv.first, inputCommands.contains(c) {
         if c == "key", NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bid {
             fail("frontmost is \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"), expected \(bid); not typing")
         }
-        if c == "drag" || c == "click" || c == "down" || c == "throw" {
+        if c == "drag" || c == "click" || c == "down" || c == "throw" || c == "hover" {
             let p = CGPoint(x: Double(argv[1])!, y: Double(argv[2])!)
             var el: AXUIElement?
             var pid: pid_t = 0
@@ -202,6 +204,27 @@ case "down", "move", "up":
             mouse(.leftMouseDragged, CGPoint(x: start.x + (p.x - start.x) * t, y: start.y + (p.y - start.y) * t), flags)
             usleep(16000)
         }
+    }
+case "modifiers":
+    // Post a modifier change (flagsChanged) with exactly these modifiers held; "none" releases all.
+    let spec = args2.count > 1 ? args2[1] : "none"
+    let flags = spec == "none" ? CGEventFlags() : parseFlags(spec.split(separator: "+", omittingEmptySubsequences: false))
+    let key = flags.contains(.maskShift) ? kVK_Shift : flags.contains(.maskAlternate) ? kVK_Option : kVK_Command
+    let e = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: CGKeyCode(key), keyDown: !flags.isEmpty)!
+    e.type = .flagsChanged
+    e.flags = flags
+    e.post(tap: .cghidEventTap)
+    usleep(30000)
+case "hover":
+    // Pointer moves with no button (mouseMoved) from 1 to 2 with modifiers held.
+    let a = args2[1...4].map { Double($0)! }
+    let flags = args2.count > 5 ? parseFlags(args2[5].split(separator: "+", omittingEmptySubsequences: false)) : []
+    let p1 = CGPoint(x: a[0], y: a[1]), p2 = CGPoint(x: a[2], y: a[3])
+    let steps = 30
+    for i in 0...steps {
+        let t = Double(i) / Double(steps)
+        mouse(.mouseMoved, CGPoint(x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t), flags)
+        usleep(16000)
     }
 case "throw":
     // Press and release far apart with no drag events in between (one process).

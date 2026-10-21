@@ -35,6 +35,9 @@ struct WindowsSettings: Codable, Equatable {
     var dragResizeModifiers: [String] = ["cmd", "opt", "shift"]
     var dragFocusesWindow = true
     var dragSnaps = true
+    /// Rectangle Pro style: holding the modifiers and moving the pointer is
+    /// enough (no click); pressing and dragging works too.
+    var dragHover = true
 
     // Layouts and per-app launch positions
     var layouts: [SavedLayout] = []

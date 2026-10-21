@@ -5,41 +5,70 @@ import BentoCore
 /// Modifier-drag anywhere in a window: move (default ⌘⌥) or resize from the
 /// nearest corner / edge (default ⌘⌥⇧), like Rectangle Pro / easy-move-resize.
 ///
-/// An active CGEventTap on left-mouse down/drag/up only, running on its own
-/// thread so a busy main thread never delays clicks. The tap exists only while
-/// the feature is enabled. A modifier press on a window is held back until the
-/// pointer travels a few points: then it is a drag and the app never sees the
-/// click; released before that, the click is re-posted unchanged so modifier
-/// clicks (⌘⌥-click, double-clicks) keep working in apps. AX writes happen on
-/// the main thread, coalesced to the display refresh by a CADisplayLink that
-/// runs only during a drag.
+/// Two ways in, as in Rectangle Pro:
+/// - **Hover** (no click): hold the modifiers and move the pointer; the window
+///   under it follows until the modifiers are released.
+/// - **Press**: hold the modifiers, press and drag.
+/// Either way the mode follows the modifiers live: adding ⇧ mid-gesture
+/// switches to resize, releasing it switches back to move (re-anchored at the
+/// current pointer and frame).
+///
+/// An active CGEventTap (mouse buttons, mouse moves, modifier changes) runs on
+/// its own thread so a busy main thread never delays input; it exists only
+/// while the feature is enabled, and non-matching events cost one flags check.
+/// A modifier press on a window is held back until the pointer travels a few
+/// points: then it is a drag and the app never sees the click; released before
+/// that, the click is re-posted unchanged so modifier clicks (⌘⌥-click,
+/// double-clicks) keep working. Hover never swallows pointer moves. AX writes
+/// happen on the main thread, coalesced to the display refresh by a
+/// CADisplayLink that runs only during a gesture.
 final class DragController: NSObject {
     struct Config: Equatable {
         var move: CGEventFlags = []
         var resize: CGEventFlags = []
         var focus = true
         var snap = true
+        /// Move/resize by just holding the modifiers and moving the pointer.
+        var hover = true
+    }
+
+    enum Mode: Equatable { case move, resize }
+
+    /// The gesture mode for a set of modifiers (exact match; resize wins a tie).
+    static func mode(for flags: CGEventFlags, _ cfg: Config) -> Mode? {
+        let f = flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+        if !cfg.resize.isEmpty && f == cfg.resize { return .resize }
+        if !cfg.move.isEmpty && f == cfg.move { return .move }
+        return nil
     }
 
     private final class Session {
         let window: AXWindow
+        let hover: Bool
         var wid: CGWindowID = 0 // main thread (an AX round trip: not in the tap)
-        let handle: Geometry.ResizeHandle? // nil = move
-        let startMouse: CGPoint
         // Tap thread only.
         let pressEvent: CGEvent?
         // Guarded by `lock`.
         var gesture: DragGesture
+        var requested: Mode
         var lastEvent = CFAbsoluteTimeGetCurrent()
-        // Main thread only.
+        // Main thread only: the current segment (re-anchored when the mode changes).
+        var mode: Mode
+        var handle: Geometry.ResizeHandle? // nil = move
+        var startMouse: CGPoint
         var startFrame: CGRect
         var begun = false
         var applied: CGPoint?
+        /// The window moved or resized at some point in the gesture (any segment).
+        var changed = false
         var finished = false
 
-        init(window: AXWindow, frame: CGRect, handle: Geometry.ResizeHandle?, mouse: CGPoint, press: CGEvent?) {
+        init(window: AXWindow, frame: CGRect, mode: Mode, mouse: CGPoint, press: CGEvent?, hover: Bool) {
             self.window = window
-            self.handle = handle
+            self.hover = hover
+            self.mode = mode
+            self.requested = mode
+            self.handle = mode == .resize ? Geometry.resizeHandle(at: mouse, in: frame) : nil
             self.startMouse = mouse
             self.startFrame = frame
             self.pressEvent = press
@@ -62,6 +91,10 @@ final class DragController: NSObject {
     private var running = false
     private var displayLink: CADisplayLink?
     private var enhancedUIApp: AXUIElement?
+    /// Tap thread: where a hover lookup found nothing to drag (window id +
+    /// flags), so holding the modifiers over the desktop doesn't hit-test on
+    /// every pointer move.
+    private var hoverMiss: (CGWindowID, UInt64)?
 
     init(engine: WindowEngine, snapper: SnapController) {
         self.engine = engine
@@ -113,7 +146,7 @@ final class DragController: NSObject {
     }
 
     private func runTap() {
-        let types: [CGEventType] = [.leftMouseDown, .leftMouseUp, .leftMouseDragged]
+        let types: [CGEventType] = [.leftMouseDown, .leftMouseUp, .leftMouseDragged, .mouseMoved, .flagsChanged]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let refcon = Unmanaged.passRetained(self).toOpaque()
         defer { Unmanaged<DragController>.fromOpaque(refcon).release() }
@@ -149,6 +182,12 @@ final class DragController: NSObject {
             // Events may have been lost while disabled, the mouse-up among them.
             if !CGEventSource.buttonState(.combinedSessionState, button: .left) { endStale() }
             return pass
+        case .flagsChanged:
+            modifiersChanged(event.flags)
+            return pass
+        case .mouseMoved:
+            hoverMoved(event)
+            return pass
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             break
         default:
@@ -159,29 +198,30 @@ final class DragController: NSObject {
 
         switch type {
         case .leftMouseDown:
-            // A new press means the previous one ended, whether or not we saw
-            // its mouse-up: never keep swallowing the user's clicks for it.
+            // A new press means the previous gesture ended, whether or not we saw
+            // its mouse-up (or, for hover, the modifiers' release): never keep
+            // swallowing the user's clicks for it.
             endStale()
-            let flags = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
             let cfg = locked { tapConfig }
-            let resize = !cfg.resize.isEmpty && flags == cfg.resize
-            let move = !resize && !cfg.move.isEmpty && flags == cfg.move
-            guard resize || move else { return pass }
+            guard let mode = DragController.mode(for: event.flags, cfg) else { return pass }
             let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
             guard DragController.isDraggableLayer(windowID: cgID) else { DragController.trace("pass: layer of \(cgID)"); return pass }
             let t0 = CFAbsoluteTimeGetCurrent()
             guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
             guard let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else { DragController.trace("pass: no frame / full screen"); return pass }
-            let s = Session(window: w, frame: f, handle: resize ? Geometry.resizeHandle(at: p, in: f) : nil, mouse: p,
-                            press: event.copy())
+            let s = Session(window: w, frame: f, mode: mode, mouse: p, press: event.copy(), hover: false)
             locked { session = s }
-            DragController.trace("press \(resize ? "resize" : "move") at \(p) frame \(f) lookup \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)) ms")
+            DragController.trace("press \(mode == .resize ? "resize" : "move") at \(p) frame \(f) lookup \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)) ms")
             return nil
 
         case .leftMouseDragged:
+            let cfg = locked { tapConfig }
+            let mode = DragController.mode(for: event.flags, cfg)
             let (s, started): (Session?, Bool) = locked {
-                guard let s = session, !s.gesture.ended else { return (nil, false) }
+                guard let s = session, !s.gesture.ended, !s.hover else { return (nil, false) }
                 s.lastEvent = CFAbsoluteTimeGetCurrent()
+                // Modifiers released while the button is still down: keep the last mode.
+                if let mode { s.requested = mode }
                 return (s, s.gesture.drag(to: p))
             }
             guard let s else { return pass }
@@ -190,7 +230,7 @@ final class DragController: NSObject {
 
         default: // .leftMouseUp
             let (s, release): (Session?, DragGesture.Release?) = locked {
-                guard let s = session, !s.gesture.ended else { return (nil, nil) }
+                guard let s = session, !s.gesture.ended, !s.hover else { return (nil, nil) }
                 let r = s.gesture.release(at: p)
                 if r == .replayClick { session = nil }
                 return (s, r)
@@ -217,12 +257,69 @@ final class DragController: NSObject {
         }
     }
 
+    /// Modifier changes switch a gesture between move and resize, and end a
+    /// hover gesture when the modifiers no longer match.
+    private func modifiersChanged(_ flags: CGEventFlags) {
+        hoverMiss = nil
+        let cfg = locked { tapConfig }
+        let mode = DragController.mode(for: flags, cfg)
+        let ended: Session? = locked {
+            guard let s = session, !s.gesture.ended else { return nil }
+            if let mode {
+                s.requested = mode
+                return nil
+            }
+            guard s.hover else { return nil } // a press keeps going until the button is released
+            s.gesture.ended = true
+            return s
+        }
+        if let ended { DispatchQueue.main.async { self.finish(ended) } }
+    }
+
+    /// Pointer moves with no button pressed: hover gestures.
+    private func hoverMoved(_ event: CGEvent) {
+        let cfg = locked { tapConfig }
+        guard cfg.hover, let mode = DragController.mode(for: event.flags, cfg) else {
+            // Modifiers no longer match (their release may have been missed).
+            let ended: Session? = locked {
+                guard let s = session, s.hover, !s.gesture.ended else { return nil }
+                s.gesture.ended = true
+                return s
+            }
+            if let ended { DispatchQueue.main.async { self.finish(ended) } }
+            return
+        }
+        let p = event.location
+        let (current, started): (Session?, Bool) = locked {
+            guard let s = session, !s.gesture.ended else { return (nil, false) }
+            guard s.hover else { return (s, false) }
+            s.lastEvent = CFAbsoluteTimeGetCurrent()
+            s.requested = mode
+            return (s, s.gesture.drag(to: p))
+        }
+        if let current {
+            if started { DispatchQueue.main.async { self.begin(current) } }
+            return
+        }
+        // Start a hover gesture on the window under the pointer.
+        let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
+        if let miss = hoverMiss, miss.0 == cgID, miss.1 == event.flags.rawValue { return }
+        guard DragController.isDraggableLayer(windowID: cgID), let w = DragController.window(at: p),
+              let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else {
+            hoverMiss = (cgID, event.flags.rawValue)
+            return
+        }
+        let s = Session(window: w, frame: f, mode: mode, mouse: p, press: nil, hover: true)
+        locked { session = s }
+        DragController.trace("hover \(mode == .resize ? "resize" : "move") at \(p) frame \(f)")
+    }
+
     /// Ends the current gesture if its mouse-up never arrived.
     private func endStale() {
         let stale: Session? = locked {
             guard let s = session, !s.gesture.ended else { return nil }
             s.gesture.ended = true
-            if !s.gesture.moving { session = nil; return nil } // a press that never became a drag: drop it
+            if !s.gesture.moving { session = nil; return nil } // never became a drag: drop it
             return s
         }
         if let stale { DispatchQueue.main.async { self.finish(stale) } }
@@ -295,13 +392,19 @@ final class DragController: NSObject {
             enhancedUIApp = appEl
         }
         s.wid = s.window.windowID ?? 0
-        let restoreSize = engine.beginDrag(wid: s.wid, initialFrame: s.startFrame)
-        if s.handle == nil {
+        if s.hover, let f = s.window.frame {
+            // A hover gesture may have waited for the pointer to move: start from now.
+            s.startFrame = f
+            if s.mode == .resize { s.handle = Geometry.resizeHandle(at: s.startMouse, in: f) }
+        }
+        let restoreSize = s.mode == .move ? engine.beginDrag(wid: s.wid, initialFrame: s.startFrame) : nil
+        if s.mode == .move {
             if let size = restoreSize {
                 let r = Geometry.unsnapped(s.startFrame, restoreSize: size, grab: s.startMouse, keepVertical: false)
                 s.window.setSize(r.size)
                 s.window.setPosition(r.origin)
                 s.startFrame = s.window.frame ?? r
+                s.changed = true
             }
             if config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
         }
@@ -321,22 +424,42 @@ final class DragController: NSObject {
     }
 
     @objc private func tick() {
-        let (s, p, idle): (Session?, CGPoint, Double) = locked {
-            (session, session?.gesture.latest ?? .zero, CFAbsoluteTimeGetCurrent() - (session?.lastEvent ?? 0))
+        let (s, p, idle, requested): (Session?, CGPoint, Double, Mode) = locked {
+            (session, session?.gesture.latest ?? .zero, CFAbsoluteTimeGetCurrent() - (session?.lastEvent ?? 0),
+             session?.requested ?? .move)
         }
         guard let s, s.begun, !s.finished else { stopDisplayLink(); return }
-        if idle > 0.5, !CGEventSource.buttonState(.combinedSessionState, button: .left) {
+        let lost = s.hover
+            // The modifiers' release never reached the tap.
+            ? idle > 0.3 && DragController.mode(for: CGEventSource.flagsState(.combinedSessionState), config) == nil
             // The mouse-up never reached the tap (e.g. it was briefly disabled).
+            : idle > 0.5 && !CGEventSource.buttonState(.combinedSessionState, button: .left)
+        if lost {
             locked { s.gesture.ended = true }
             finish(s)
             return
         }
+        if requested != s.mode { switchMode(s, to: requested, at: p) }
         apply(s, p)
+    }
+
+    /// ⇧ pressed or released mid-gesture: continue in the other mode from the
+    /// current pointer and frame.
+    private func switchMode(_ s: Session, to mode: Mode, at p: CGPoint) {
+        if s.mode == .move && config.snap { _ = snapper.endExternalMove(commit: false) }
+        s.startFrame = s.window.frame ?? s.startFrame
+        s.startMouse = p
+        s.applied = p
+        s.mode = mode
+        s.handle = mode == .resize ? Geometry.resizeHandle(at: p, in: s.startFrame) : nil
+        if mode == .move && config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
+        DragController.trace("mode \(mode == .resize ? "resize" : "move") at \(p)")
     }
 
     private func apply(_ s: Session, _ p: CGPoint) {
         guard s.applied != p else { return }
         s.applied = p
+        s.changed = true
         let d = CGPoint(x: p.x - s.startMouse.x, y: p.y - s.startMouse.y)
         if let h = s.handle {
             let r = Geometry.resized(s.startFrame, handle: h, delta: d)
@@ -364,8 +487,8 @@ final class DragController: NSObject {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             enhancedUIApp = nil
         }
-        let snapped = s.handle == nil && config.snap && snapper.endExternalMove(commit: true)
-        if !snapped, let a = s.applied, a != s.startMouse { engine.didPlace(s.window) }
+        let snapped = s.mode == .move && config.snap && snapper.endExternalMove(commit: true)
+        if !snapped, s.changed { engine.didPlace(s.window) }
     }
 
     @discardableResult

@@ -787,3 +787,22 @@ private let mbp = ScreenRect(frame: R(0, 0, 1512, 982), visible: R(0, 33, 1512, 
     #expect(RectangleImport.source(forFile: URL(fileURLWithPath: "/tmp/backup.plist"), prefs: proPrefs).isPro)
     #expect(RectangleImport.parse(Data("not a plist".utf8)) == nil)
 }
+
+@Test func dragModeFollowsModifiersExactly() {
+    var cfg = DragController.Config()
+    cfg.move = [.maskCommand, .maskAlternate]
+    cfg.resize = [.maskCommand, .maskAlternate, .maskShift]
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate], cfg) == .move)
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate, .maskShift], cfg) == .resize)
+    // Caps Lock / fn / numeric-pad bits don't matter; other combinations don't match.
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate, .maskAlphaShift, .maskSecondaryFn], cfg) == .move)
+    #expect(DragController.mode(for: [.maskCommand], cfg) == nil)
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate, .maskControl], cfg) == nil)
+    #expect(DragController.mode(for: [], cfg) == nil)
+    // Same modifiers for both: resize wins.
+    cfg.resize = cfg.move
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate], cfg) == .resize)
+    // A disabled mode never matches.
+    cfg.resize = []
+    #expect(DragController.mode(for: [.maskCommand, .maskAlternate, .maskShift], cfg) == nil)
+}
