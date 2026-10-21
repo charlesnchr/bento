@@ -353,8 +353,10 @@ final class CaptureOverlay {
             return
         }
         lastDragPoint = ShotGeometry.snap(local)
+        // In a keyboard selection Shift means 10-pt arrow steps, not "square".
         selection = ShotGeometry.selection(anchor: a, current: ShotGeometry.snap(local),
-                                           square: modifiers.contains(.shift), fromCenter: modifiers.contains(.option), bounds: bounds)
+                                           square: modifiers.contains(.shift) && !keyboardSelecting,
+                                           fromCenter: modifiers.contains(.option), bounds: bounds)
     }
 
     private func completeSelection() {
