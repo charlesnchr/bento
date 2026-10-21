@@ -29,9 +29,6 @@ public enum HUD {
         effect.material = .hudWindow
         effect.state = .active
         effect.blendingMode = .behindWindow
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 12
-        effect.layer?.masksToBounds = true
         effect.addSubview(stack)
         stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -41,13 +38,17 @@ public enum HUD {
             stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
         ])
         let size = stack.fittingSize
+        // A mask image (not a layer corner radius) clips the blur itself, so
+        // the corners stay clean on any background.
+        effect.maskImage = HUD.roundedMask(radius: 12)
 
         let p = panel ?? {
             let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
             p.isOpaque = false
             p.backgroundColor = .clear
             p.hasShadow = true
-            p.level = .statusBar
+            // Above capture overlays (screen-saver level) so confirmations stay visible.
+            p.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
             p.ignoresMouseEvents = true
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
             p.isReleasedWhenClosed = false
@@ -69,5 +70,17 @@ public enum HUD {
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        img.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        img.resizingMode = .stretch
+        return img
     }
 }

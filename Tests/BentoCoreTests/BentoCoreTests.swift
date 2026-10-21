@@ -73,3 +73,16 @@ import Testing
     #expect(rows[0]["n"] as? Double == 1.5)
     #expect((rows[1]["name"] ?? nil) == nil)
 }
+
+@Test func jsonWriterFormatsNumbersAndEscapes() throws {
+    let obj: [String: Any] = ["b": 0.9, "a": ["x": true, "n": 3, "d": 2.0], "s": "q\"\n/", "e": [Any](), "z": NSNull()]
+    let text = String(decoding: JSONWriter.data(obj), as: UTF8.self)
+    #expect(text.contains("\"b\": 0.9"))
+    #expect(text.contains("\"d\": 2"))
+    #expect(text.contains("\"x\": true"))
+    #expect(text.contains(#""s": "q\"\n/""#))
+    #expect(text.contains("\"e\": []"))
+    let back = try JSONSerialization.jsonObject(with: JSONWriter.data(obj)) as! [String: Any]
+    #expect((back["b"] as? Double) == 0.9)
+    #expect(text.firstRange(of: "\"a\"")!.lowerBound < text.firstRange(of: "\"b\"")!.lowerBound)
+}

@@ -95,7 +95,7 @@ public final class ConfigStore {
     private func write() {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            let data = JSONWriter.data(root)
             if data == lastWrittenData, FileManager.default.fileExists(atPath: url.path) { return }
             lastWrittenData = data
             try data.write(to: url, options: .atomic)
