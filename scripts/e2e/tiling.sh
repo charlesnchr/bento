@@ -223,7 +223,7 @@ phase_live() {
   # A user resize (drag the right edge) moves the split.
   focus tiling-qa-1
   read -r x y w h <<<"$(frame tiling-qa-1)"
-  local ex=$((x + w - 1)) ey=$((y + h / 2))
+  local ex=$((x + w - 1)) ey=$((y + h * 7 / 8))
   drag $ex $ey $((ex + 120)) $ey || fail "resize drag refused"
   sleep 1; check 4 && ok "user resize keeps the tiling"
   local nw; nw=$(frame tiling-qa-1 | awk '{print $3}')
