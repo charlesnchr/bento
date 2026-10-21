@@ -306,7 +306,8 @@ public final class ClipboardModule: BentoModule {
         guard let store else { return }
         let stats = store.stats()
         panel.close()
-        let previous = AppActivation.previousApp
+        // From Bento's own settings window, focus stays there afterwards.
+        let previous = NSApp.isActive ? nil : AppActivation.previousApp
         presentingAlert = true
         defer { presentingAlert = false }
         AppActivation.activateSelf()

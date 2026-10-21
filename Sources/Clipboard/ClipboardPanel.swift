@@ -153,8 +153,11 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
     /// Returns true when the key was handled (otherwise it goes to the search field).
     private func handleKey(_ e: NSEvent) -> Bool {
         guard let model else { return false }
+        // While an input method composes (dead keys, CJK), ↵ and the arrows are its keys.
+        if let editor = model.searchField?.currentEditor() as? NSTextView, editor.hasMarkedText() { return false }
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
         switch (e.keyCode, mods) {
+        case (51, [.command]) where !model.query.isEmpty: return false                 // ⌘⌫ edits the search text
         case (125, []), (45, [.control]), (38, [.control]): model.move(1)              // ↓ ⌃N ⌃J
         case (126, []), (35, [.control]), (40, [.control]): model.move(-1)             // ↑ ⌃P ⌃K
         case (121, []): model.move(8)                                                  // page down
@@ -162,7 +165,7 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         case (125, [.command]), (119, []): model.moveToEnd(true)
         case (126, [.command]), (115, []): model.moveToEnd(false)
         case (36, _), (76, _): handleReturn(mods)
-        case (53, []): close()
+        case (53, []): if model.query.isEmpty { close() } else { model.query = "" }   // Esc clears, then closes (Spotlight)
         case (51, [.command]), (7, [.control]): perform(.delete)                       // ⌘⌫, ⌃X (Raycast)
         case (51, [.command, .shift]), (7, [.control, .shift]): perform(.clearAll)     // ⇧⌘⌫, ⌃⇧X
         case (35, [.command, .shift]): perform(.togglePin)

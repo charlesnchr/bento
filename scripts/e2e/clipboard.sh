@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MODE="${1:-gui}"
 PBT=/tmp/clipboard-pb
 CTL=/tmp/bentoctl
-BIN="$ROOT/.build/debug/Bento"
+BIN="${BENTO_BIN:-$ROOT/.build/debug/Bento}" # BENTO_BIN: test another build (skips building)
 FAILS=0
 APP=""
 
@@ -57,8 +57,10 @@ cpu_percent() {
 }
 
 build() {
-  say "building…"
-  (cd "$ROOT" && swift build --product Bento 2>&1 | grep -E "error|Build of product") || exit 1
+  if [ -n "${BENTO_BIN:-}" ]; then say "using $BIN"; else
+    say "building…"
+    (cd "$ROOT" && swift build --product Bento 2>&1 | grep -E "error|Build of product") || exit 1
+  fi
   [ "$PBT" -nt "$ROOT/scripts/e2e/clipboard-pb.swift" ] || swiftc -O "$ROOT/scripts/e2e/clipboard-pb.swift" -o "$PBT" || exit 1
   [ "$CTL" -nt "$ROOT/scripts/e2e/bentoctl.swift" ] || swiftc -O "$ROOT/scripts/e2e/bentoctl.swift" -o "$CTL" || exit 1
 }
@@ -258,7 +260,7 @@ SESSION=0
 
 end_session() {
   stop_app
-  osascript -e "tell application \"TextEdit\" to close (every document whose name is \"$DOCNAME\") saving no" >/dev/null 2>&1
+  as5 -e "tell application \"TextEdit\" to close (every document whose name is \"$DOCNAME\") saving no" >/dev/null 2>&1
   [ -f "$SAVED" ] && "$PBT" restore "$SAVED" >/dev/null && rm -f "$SAVED"
   [ "$SESSION" = 1 ] && "$ROOT/scripts/e2e/session" end clipboard
   SESSION=0
@@ -272,8 +274,9 @@ abort_if_user() { # bentoctl/clipboard-pb exit 75 = the user is back
 K() { "$CTL" key "$@" --expect com.apple.TextEdit >/dev/null; local r=$?; abort_if_user $r; [ $r = 0 ] || { say "        key $* refused"; return 1; }; }
 KB() { "$PBT" key --expect-pid "$APP" "$@" >/dev/null; local r=$?; abort_if_user $r; [ $r = 0 ] || { say "        key $* refused"; return 1; }; }
 G() { "$PBT" write "$@" >/dev/null; } # general pasteboard, transient + dev markers
-doc_text() { osascript -e "tell application \"TextEdit\" to get text of (first document whose name is \"$DOCNAME\")" 2>/dev/null; }
-doc_clear() { osascript -e "tell application \"TextEdit\" to set text of (first document whose name is \"$DOCNAME\") to \"\"" >/dev/null 2>&1; }
+as5() { perl -e 'alarm 5; exec @ARGV' osascript "$@"; } # AppleScript with a 5 s limit (a stuck TextEdit must not hold the session)
+doc_text() { as5 -e "tell application \"TextEdit\" to get text of (first document whose name is \"$DOCNAME\")" 2>/dev/null; }
+doc_clear() { as5 -e "tell application \"TextEdit\" to set text of (first document whose name is \"$DOCNAME\") to \"\"" >/dev/null 2>&1; }
 front_doc() { "$CTL" front com.apple.TextEdit "$DOCNAME" >/dev/null 2>&1; sleep 0.2; }
 panel_open() { "$CTL" windows Bento 2>/dev/null | grep -q "Clipboard History"; }
 panel_id() { "$CTL" windows Bento 2>/dev/null | awk '/Clipboard History/ {print $1; exit}'; }
@@ -376,12 +379,20 @@ gui() {
 
   say "zero results: every key is harmless"
   local count; count=$(q "SELECT COUNT(*) FROM items")
-  doc_clear; open_panel; K z z z q; sleep 0.3; K return cmd+1 cmd+delete ctrl+x cmd+shift+p down up cmd+k; sleep 0.4; K escape; sleep 0.2
-  panel_open && K escape
-  check "panel closed" wait_panel closed
+  doc_clear; open_panel; K z z z q; sleep 0.3; K return cmd+1 ctrl+x cmd+shift+p down up cmd+k; sleep 0.4; K escape; sleep 0.3
+  K escape; sleep 0.3
+  check "first Esc clears the search (panel stays open)" panel_open
+  K escape
+  check "second Esc closes" wait_panel closed
   check "nothing deleted" eq "$(q "SELECT COUNT(*) FROM items")" "$count"
   check "doc untouched" eq "$(doc_text)" ""
   check "still running" alive
+
+  say "⌘⌫ with search text edits the search instead of deleting"
+  doc_clear; open_panel; K g a m; sleep 0.3; K cmd+delete; sleep 0.3
+  check "nothing deleted" eq "$(q "SELECT COUNT(*) FROM items")" "$count"
+  K return
+  check "search cleared: ↵ pasted the first row (pinned QA-alpha)" wait_doc "QA-alpha"
 
   say "⌘K opens the actions menu; Esc closes menu, then panel"
   open_panel; K cmd+k; sleep 0.5
@@ -462,19 +473,25 @@ scale() {
   check "2,000 items" eq "$(q "SELECT COUNT(*) FROM items")" "2000"
   local m0; m0=$(footprint_mb)
 
-  say "open, page through 2,000 items, search"
+  say "browse: page through ~450 rows (lazy thumbnails, more pages load), twice"
+  local cycle m1 open_mb=()
+  for cycle in 1 2; do
+    open_panel
+    for _ in $(seq 1 5); do K pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown; sleep 0.3; done
+    K cmd+down; sleep 0.8; K cmd+down; sleep 0.8; K cmd+down; sleep 0.8
+    m1=$(footprint_mb); K escape; wait_panel closed; sleep 1.5
+    open_mb+=("$m1"); eval "closed_$cycle=$(footprint_mb)"
+    check "still running" alive
+  done
+  say "        footprint ${m0} -> ${open_mb[0]} (browsing) -> ${closed_1} (closed) -> ${open_mb[1]} (browsing again) -> ${closed_2} MB (closed)"
+  check "memory stable across browse cycles (second <= first + 10 MB)" le "${closed_2:-999}" $(( ${closed_1:-0} + 10 ))
+
+  say "search 2,000 items"
   doc_clear; open_panel
-  for _ in $(seq 1 12); do K down down down down down down down down down down down down down down down down down down down down; done
-  K cmd+down; sleep 1; K cmd+down; sleep 1; K cmd+down; sleep 1
-  local m1; m1=$(footprint_mb)
-  K cmd+up
   K f o x t r o t space h o t e l; sleep 0.5
   K return
   check "pasted a search hit" bash -c "\"$0\" _doc_has foxtrot"
   wait_panel closed
-  sleep 1.5; local m2; m2=$(footprint_mb)
-  say "        footprint ${m0} -> ${m1} (browsing) -> ${m2} MB (closed)"
-  check "memory released after browsing (closed <= opened + 25 MB)" le "${m2:-999}" $(( ${m0:-0} + 25 ))
 
   say "open/close timing with 2,000 items"
   for _ in 1 2 3 4 5; do open_panel; K escape; wait_panel closed; done

@@ -207,10 +207,10 @@ struct ClipboardSettingsView: View {
                 keyRow("⇧↵", config.value.pastePlainTextByDefault ? "Paste with formatting" : "Paste as plain text")
                 keyRow("⌘1 … ⌘9", "Paste item 1–9")
                 keyRow("⌘⇧P", "Pin / unpin")
-                keyRow("⌘⌫", "Delete item")
+                keyRow("⌃X  ⌘⌫", "Delete item (⌘⌫ edits the search while it has text)")
                 keyRow("⌘P", "Cycle type filter")
                 keyRow("⌘K", "More actions (open, reveal, copy text from image…)")
-                keyRow("Esc", "Close")
+                keyRow("Esc", "Clear the search, then close")
             }
             .font(.callout)
         }
