@@ -74,9 +74,11 @@ enum ShotGeometry {
     /// Integral pixel rect of a local rect in an image with the given scale,
     /// clamped to the image. Edges are rounded (not floored/ceiled) so a
     /// whole-point selection maps to exactly `size × scale` pixels.
+    /// A null or non-finite rect (e.g. an empty intersection) gives `.zero`.
     static func pixelRect(local r: CGRect, scale: CGFloat, imageWidth: Int, imageHeight: Int) -> CGRect {
-        let x0 = Int((r.minX * scale).rounded()), y0 = Int((r.minY * scale).rounded())
-        let x1 = Int((r.maxX * scale).rounded()), y1 = Int((r.maxY * scale).rounded())
+        guard !r.isNull, scale.isFinite, scale > 0 else { return .zero }
+        let x0 = int((r.minX * scale).rounded()), y0 = int((r.minY * scale).rounded())
+        let x1 = int((r.maxX * scale).rounded()), y1 = int((r.maxY * scale).rounded())
         let cx0 = min(max(x0, 0), imageWidth), cy0 = min(max(y0, 0), imageHeight)
         let cx1 = min(max(x1, 0), imageWidth), cy1 = min(max(y1, 0), imageHeight)
         return CGRect(x: cx0, y: cy0, width: max(0, cx1 - cx0), height: max(0, cy1 - cy0))
@@ -84,7 +86,14 @@ enum ShotGeometry {
 
     /// The image pixel under a local point (the pixel whose square contains it).
     static func pixel(at p: CGPoint, scale: CGFloat) -> (x: Int, y: Int) {
-        (Int((p.x * scale).rounded(.down)), Int((p.y * scale).rounded(.down)))
+        (int((p.x * scale).rounded(.down)), int((p.y * scale).rounded(.down)))
+    }
+
+    /// `Int(v)` that never traps: NaN gives 0, infinities and huge values clamp.
+    static func int(_ v: CGFloat) -> Int {
+        guard !v.isNaN else { return 0 }
+        let limit = CGFloat(1 << 40)
+        return Int(min(max(v, -limit), limit))
     }
 
     /// Places a floating box (loupe) near the cursor: below-right by default,

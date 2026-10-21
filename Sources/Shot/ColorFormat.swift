@@ -25,7 +25,8 @@ enum ColorFormat: String, Codable, CaseIterable {
 
     var next: ColorFormat {
         let all = ColorFormat.allCases
-        return all[(all.firstIndex(of: self)! + 1) % all.count]
+        guard let i = all.firstIndex(of: self) else { return .hex }
+        return all[(i + 1) % all.count]
     }
 
     func string(_ c: RGB8) -> String {
