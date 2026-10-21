@@ -41,6 +41,18 @@ key() { # key <combo> [sleep]
   sleep "${2:-0.6}"
 }
 focus() { guard_check; $CTL focus "$1"; sleep 0.3; }
+drag() { # drag x1 y1 x2 y2 [mods]: bentoctl drag on our own window; one retry when something
+         # else (a notification banner) covers the start point
+  guard_check
+  local rc
+  for attempt in 1 2; do
+    $BCTL drag "$@" --expect $TE >/dev/null 2>/tmp/tiling-e2e-drag; rc=$?
+    [ $rc -eq 75 ] && { cleanup; exit 75; }
+    [ $rc -eq 0 ] && return 0
+    [ $attempt = 1 ] && { log "drag refused ($(cat /tmp/tiling-e2e-drag)), retrying"; sleep 5; guard_check; }
+  done
+  return 1
+}
 frame() { $CTL frames | awk -v t="$1" 'index($1, t) == 1 { print $2, $3, $4, $5; exit }'; }
 check() { $CTL settle 3 >/dev/null; $CTL check "$@" >/dev/null 2>/tmp/tiling-e2e-check || { fail "check $* -> $(cat /tmp/tiling-e2e-check)"; return 1; }; }
 near() { # near "x y w h" "x y w h" [tolerance]: frames equal within a few points (apps round sizes)
@@ -212,8 +224,7 @@ phase_live() {
   focus tiling-qa-1
   read -r x y w h <<<"$(frame tiling-qa-1)"
   local ex=$((x + w - 1)) ey=$((y + h / 2))
-  guard_check
-  $BCTL drag $ex $ey $((ex + 120)) $ey --expect $TE >/dev/null || fail "resize drag refused"
+  drag $ex $ey $((ex + 120)) $ey || fail "resize drag refused"
   sleep 1; check 4 && ok "user resize keeps the tiling"
   local nw; nw=$(frame tiling-qa-1 | awk '{print $3}')
   [ "$nw" -gt $((w + 60)) ] && ok "user resize updated the ratio ($w -> $nw)" || fail "user resize not kept ($w -> $nw)"
@@ -222,14 +233,12 @@ phase_live() {
   read -r x y w h <<<"$(frame tiling-qa-1)"
   local t1 t3; t1="$x $y $w $h"; t3=$(frame tiling-qa-3)
   read -r x3 y3 w3 h3 <<<"$t3"
-  guard_check
-  $BCTL drag $((x + w * 3 / 4)) $((y + 12)) $((x3 + w3 / 2)) $((y3 + h3 / 2)) --expect $TE >/dev/null || fail "move drag refused"
+  drag $((x + 100)) $((y + 12)) $((x3 + w3 / 2)) $((y3 + h3 / 2)) || fail "move drag refused"
   sleep 1.2
   [ "$(frame tiling-qa-1)" = "$t3" ] && [ "$(frame tiling-qa-3)" = "$t1" ] && ok "drop onto a window swaps" || fail "drop swap: 1=$(frame tiling-qa-1) 3=$(frame tiling-qa-3)"
   read -r x y w h <<<"$(frame tiling-qa-1)"
   local home="$x $y $w $h"
-  guard_check
-  $BCTL drag $((x + w * 3 / 4)) $((y + 12)) $((x + w * 3 / 4 + 40)) $((y + 52)) --expect $TE >/dev/null
+  drag $((x + 100)) $((y + 12)) $((x + 140)) $((y + 52)) || fail "small drag refused"
   sleep 1.2
   [ "$(frame tiling-qa-1)" = "$home" ] && ok "small drag snaps back" || fail "snap back: $(frame tiling-qa-1) vs $home"
 
@@ -273,8 +282,7 @@ phase_windows() {
   # the Windows tap can get lost, which leaves the drag open.)
   read -r x y w h <<<"$(frame tiling-qa-3)"
   local cx=$((x + w / 2)) cy=$((y + h / 2))
-  guard_check
-  $BCTL drag $cx $cy $((cx - 150)) $((cy + 60)) cmd+opt --expect $TE >/dev/null || fail "cmd+opt drag refused"
+  drag $cx $cy $((cx - 150)) $((cy + 60)) cmd+opt || fail "cmd+opt drag refused"
   sleep 1.2
   local f3; f3=$(frame tiling-qa-3)
   near "$f3" "$((x - 150)) $((y + 60)) $w $h" && ok "modifier-drag kept ($f3)" || fail "modifier-drag not kept: $f3 (from $x $y $w $h)"
@@ -284,8 +292,7 @@ phase_windows() {
 
   # Title-bar drag into the left snap area: Windows snaps it, tiling floats it.
   read -r x y w h <<<"$(frame tiling-qa-4)"
-  guard_check
-  $BCTL drag $((x + w * 3 / 4)) $((y + 12)) 2 400 --expect $TE >/dev/null || fail "snap drag refused"
+  drag $((x + 100)) $((y + 12)) 2 400 || fail "snap drag refused"
   sleep 1.5
   local f4; f4=$(frame tiling-qa-4)
   near "$f4" "$ax $ay $((aw / 2)) $ah" && ok "snap to left half kept ($f4)" || fail "snap: $f4"
