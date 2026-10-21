@@ -18,6 +18,10 @@ Single user, single shared bearer token. All timestamps are Unix **milliseconds*
 }
 ```
 
+`meta` keys used by the Notes client: `pinned` (bool), `pinOrder` (number, order within
+pinned notes), `trashedAt` (ms; set when moved to Recently Deleted, purged after 60 days by
+turning the note into a tombstone). Unknown keys must be preserved.
+
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 
 ## Auth

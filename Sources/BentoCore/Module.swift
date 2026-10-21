@@ -212,3 +212,13 @@ public enum BentoEvents {
     /// Tiling uses it to float a window the user placed explicitly.
     public static let windowPlaced = Notification.Name("BentoWindowPlaced")
 }
+
+/// Opens the settings window, optionally on a module's page.
+public enum SettingsRouter {
+    public static let openRequest = Notification.Name("BentoOpenSettings")
+
+    /// `moduleID` nil = General, "shortcuts" = the Shortcuts page.
+    public static func open(_ moduleID: String? = nil) {
+        NotificationCenter.default.post(name: openRequest, object: moduleID)
+    }
+}

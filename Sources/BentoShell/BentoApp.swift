@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     fileprivate(set) var settingsWindow: NSWindow?
     private var running: Set<String> = []
     private var observers: [NSObjectProtocol] = []
+    private let navigator = SettingsNavigator()
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
 
     init(modules: [BentoModule]) {
@@ -59,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         ActionRegistry.shared.setModules(modules)
         syncModules()
 
+        observers.append(NotificationCenter.default.addObserver(forName: SettingsRouter.openRequest, object: nil, queue: .main) { [weak self] note in
+            self?.showSettings(page: note.object as? String)
+        })
         observers.append(ConfigStore.shared.observe("general") { [weak self] in
             self?.syncModules()
             self?.updateStatusItem()
@@ -146,7 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if !ActionRegistry.shared.perform(id) { HUD.show("Unknown action \(id)", symbol: "questionmark.circle") }
         case "settings":
-            showSettings(nil)
+            let page = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            showSettings(page: page.isEmpty ? nil : page)
         default:
             break
         }
@@ -229,9 +234,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     // MARK: Settings window
 
+    func showSettings(page: String?) {
+        navigator.select(page)
+        showSettings(nil)
+    }
+
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
-            let root = SettingsRootView(delegate: self)
+            let root = SettingsRootView(delegate: self, navigator: navigator)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 600),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                              backing: .buffered, defer: false)

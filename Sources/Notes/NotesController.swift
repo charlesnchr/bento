@@ -208,7 +208,7 @@ final class NotesController {
 
     private func openSettings() {
         windowController?.hide() // without handing focus back: the settings window takes it
-        NSApp.sendAction(Selector(("showSettings:")), to: nil, from: nil)
+        SettingsRouter.open("notes")
     }
 
     // MARK: Notes

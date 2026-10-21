@@ -6,14 +6,28 @@ enum SettingsPage: Hashable {
     case general, shortcuts, module(String)
 }
 
+/// Selected settings page, shared so deep links can switch it while open.
+final class SettingsNavigator: ObservableObject {
+    @Published var page: SettingsPage? = .general
+
+    func select(_ id: String?) {
+        switch id {
+        case nil, "", "general": page = .general
+        case "shortcuts": page = .shortcuts
+        case let id?: page = .module(id)
+        }
+    }
+}
+
 struct SettingsRootView: View {
     let delegate: AppDelegate
-    @State private var page: SettingsPage? = .general
+    @ObservedObject var navigator: SettingsNavigator
+    private var page: Binding<SettingsPage?> { $navigator.page }
     @StateObject private var general = ConfigSection("general", default: GeneralSettings())
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $page) {
+            List(selection: page) {
                 Section {
                     Label("General", systemImage: "gearshape").tag(SettingsPage.general)
                     Label("Shortcuts", systemImage: "command").tag(SettingsPage.shortcuts)
@@ -30,7 +44,7 @@ struct SettingsRootView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 200, max: 240)
         } detail: {
             Group {
-                switch page ?? .general {
+                switch navigator.page ?? .general {
                 case .general:
                     GeneralPane(delegate: delegate, general: general)
                 case .shortcuts:
