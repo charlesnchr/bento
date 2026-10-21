@@ -109,6 +109,10 @@ final class TilingManager {
         on(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { [weak self] _ in
             self?.scheduleRefresh(after: 0.3)
         }
+        on(NotificationCenter.default, BentoEvents.windowPlaced) { [weak self] note in
+            guard let w = note.userInfo?["window"] as? AXWindow else { return }
+            self?.floatPlaced(w)
+        }
         refresh(initial: true)
     }
 
@@ -761,6 +765,19 @@ final class TilingManager {
             refresh()
             HUD.show("Tiled", symbol: "rectangle.split.2x2")
         }
+    }
+
+    /// A window the user placed with a Windows-module command or snap stops
+    /// being tiled and keeps the frame they chose (posted before the AX move
+    /// notifications arrive, so it is never snapped back).
+    private func floatPlaced(_ w: AXWindow) {
+        guard let wid = idByElement[w] ?? w.windowID, var t = windows[wid], !t.floating else { return }
+        t.userFloat = true
+        windows[wid] = t
+        if let did = display(of: wid) { displays[did]?.remove(wid) }
+        visible.remove(wid)
+        expected[wid] = nil
+        applyLayout()
     }
 
     func moveToNextDisplay() {
