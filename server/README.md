@@ -1,0 +1,167 @@
+# bento-sync
+
+Tiny realtime sync server for Bento's floating notes. Rust (tokio + axum + rusqlite),
+one static ~2 MB binary, SQLite in WAL mode, ~3 MB RSS idle.
+The wire contract is **[docs/SYNC_PROTOCOL.md](../docs/SYNC_PROTOCOL.md)**.
+
+Live: `https://bento.radian.dk` (nginx → `127.0.0.1:8787` on the Hetzner box).
+
+```
+server/
+  src/store.rs        SQLite schema, validation, LWW + seq logic (unit tests)
+  src/lib.rs          axum router, auth, REST handlers, serve()/graceful shutdown
+  src/ws.rs           /v1/sync WebSocket connection loop
+  src/main.rs         CLI: serve | backup | purge
+  tests/integration.rs  real server on an ephemeral port: REST + 3 WebSocket clients
+  scripts/syncctl.py  stdlib-only CLI client (REST + WebSocket, TLS, proxies)
+  deploy/             systemd units, nginx site, remote install script
+../scripts/deploy-server.sh   build + deploy (idempotent)
+```
+
+## Build & test
+
+```sh
+cd server
+cargo test                       # unit + integration tests
+BENTO_SYNC_TOKEN=devtoken-0123456789 BENTO_SYNC_DB=/tmp/notes.db cargo run   # 127.0.0.1:8787
+```
+
+Config (env):
+
+| Var | Default | |
+|---|---|---|
+| `BENTO_SYNC_TOKEN` | – | bearer token (≥16 printable chars) |
+| `BENTO_SYNC_TOKEN_FILE` | – | read the token from a file instead; falls back to `$CREDENTIALS_DIRECTORY/token` (systemd `LoadCredential=`) |
+| `BENTO_SYNC_DB` | `./bento-sync.db` | SQLite path (WAL; `-wal`/`-shm` files live next to it) |
+| `BENTO_SYNC_ADDR` | `127.0.0.1:8787` | listen address |
+
+Release binary for the server (static aarch64 musl):
+
+```sh
+brew install zig && cargo install --locked cargo-zigbuild
+rustup target add aarch64-unknown-linux-musl
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+# -> target/aarch64-unknown-linux-musl/release/bento-sync (statically linked)
+```
+
+## Poking the server: `scripts/syncctl.py`
+
+Python 3 stdlib only. Reads `~/.config/bento/sync-token` (or `$BENTO_SYNC_TOKEN`);
+server from `--server` / `$BENTO_SYNC_SERVER` (default `https://bento.radian.dk`).
+
+```sh
+scripts/syncctl.py health
+scripts/syncctl.py list --since 0 [--json]
+scripts/syncctl.py put [ID] --body '# Title\n\ntext' [--meta '{"pinned":true}'] [--updated-at MS]
+scripts/syncctl.py delete ID [--updated-at MS]
+scripts/syncctl.py ws-put [ID] --body '…'      # put over WebSocket, prints ack (+ stored note)
+scripts/syncctl.py watch --since 0 -v          # stream every WebSocket message
+scripts/syncctl.py roundtrip                   # 2 sockets: put→ack+note, stale put, tombstone
+scripts/syncctl.py --server http://127.0.0.1:8787 --no-proxy health
+```
+
+`roundtrip` leaves a `synctest-…` tombstone; remove test rows with `bento-sync purge` (below).
+
+## Deploy
+
+```sh
+scripts/deploy-server.sh                 # cargo test, cross-build, upload, install, verify
+scripts/deploy-server.sh --skip-tests
+scripts/deploy-server.sh --only-token --token-to local --token-to gskm4   # copy token to clients
+```
+
+It builds with cargo-zigbuild (falls back to Docker `rust:alpine` if zigbuild is
+missing), uploads to a temp dir on `hetzner` (removed afterwards), and runs
+`deploy/remote-install.sh` as root, which idempotently:
+
+* checks port 8787 is free or already bento-sync's;
+* creates the system user `bento-sync`, `/opt/bento-sync/`, `/etc/bento-sync/`;
+* generates `/etc/bento-sync/token` (`openssl rand -hex 32`, root 0600) **only if missing**;
+* atomically replaces `/opt/bento-sync/bento-sync`, installs the units, restarts, waits for `/v1/health`;
+* on first run, gets the certificate (`certbot certonly --nginx`, existing account,
+  `--deploy-hook "systemctl reload nginx"`), then writes
+  `/etc/nginx/sites-available/bento.radian.dk` (+ `sites-enabled` symlink), runs
+  `nginx -t` and reloads (restores the previous site file if the test fails);
+* checks `https://bento.radian.dk/v1/health` through nginx.
+
+On the server:
+
+| What | Where |
+|---|---|
+| binary | `/opt/bento-sync/bento-sync` |
+| data | `/var/lib/bento-sync/notes.db` (owned by `bento-sync`, 0700 dir) |
+| backups | `/var/lib/bento-sync/backups/notes-YYYYMMDD-HHMMSS.db` (newest 14) |
+| token | `/etc/bento-sync/token` (root 0600, passed via `LoadCredential=`) |
+| units | `bento-sync.service`, `bento-sync-backup.service` + `.timer` (daily ~03:30 UTC) |
+| nginx | `/etc/nginx/sites-available/bento.radian.dk`, log `/var/log/nginx/bento.access.log` (no query strings) |
+
+The service runs with `NoNewPrivileges`, `ProtectSystem=strict`,
+`ReadWritePaths=/var/lib/bento-sync`, no capabilities, syscall filter,
+`MemoryMax=64M`, `Restart=always` (`systemd-analyze security`: 1.4 "OK").
+
+Ops: `systemctl status bento-sync`, `journalctl -u bento-sync -f` (one line per
+WebSocket connect/hello/disconnect), `curl https://bento.radian.dk/v1/health`.
+
+## Rotate the token
+
+```sh
+ssh hetzner '(umask 077; openssl rand -hex 32 > /etc/bento-sync/token) && systemctl restart bento-sync'
+scripts/deploy-server.sh --only-token --token-to local --token-to gskm4
+```
+
+Clients with the old token get 401 until their token file is updated (the app
+should re-read the file on 401).
+
+## Backup & restore
+
+Backups are `VACUUM INTO` snapshots (consistent while the server runs). Manual backup:
+
+```sh
+ssh hetzner systemctl start bento-sync-backup.service
+ssh hetzner ls -la /var/lib/bento-sync/backups
+```
+
+Restore:
+
+```sh
+ssh hetzner 'set -e; systemctl stop bento-sync
+  cd /var/lib/bento-sync && mv notes.db notes.db.broken && rm -f notes.db-wal notes.db-shm
+  install -o bento-sync -g bento-sync -m 600 backups/notes-YYYYMMDD-HHMMSS.db notes.db
+  systemctl start bento-sync'
+```
+
+After a restore `seq` may go backwards. Clients whose `last_seq` is above the
+restored seq should do a full resync (`hello` with `since: 0`). The server doesn't
+detect this itself.
+
+Remove specific notes (e.g. test data) without touching seq:
+
+```sh
+ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \
+  /opt/bento-sync/bento-sync purge synctest-abc123 …'
+```
+
+## Behaviour details (within the protocol)
+
+* **Ordering.** Changes are broadcast while the DB lock is held, so each WebSocket
+  sees notes and acks in strictly increasing `seq` order. Before acking a put with
+  seq N, queued broadcasts with seq < N are sent first. A client that keeps
+  `last_seq = max(seen seq)` therefore never skips a change.
+* **Before `hello`** a connection gets no `note` broadcasts: the snapshot already
+  contains them, and events with `seq <= snapshot.seq` are skipped after it. Puts
+  before `hello` are allowed.
+* **Rejected put:** `ack` carries the *stored* note's seq and `accepted:false`,
+  followed by `{"type":"note","note":<stored>}` to the sender only.
+* **Validation:** `id` 1–128 chars `[A-Za-z0-9-_.:]` (UUIDs), `updated_at` required,
+  `created_at` defaults to `updated_at`, `body` ≤ 1 MiB (413), `meta` must be an
+  object ≤ 4 KiB serialized (413; `null`/absent → `{}`), `device` defaults to the
+  hello device (WS) or `"rest"`. `deleted:true` forces `body:""`. Request/WS message
+  cap 3 MiB to allow for JSON escaping. Unknown fields (incl. `seq`) are ignored.
+  WS errors are `{"type":"error","message":…}`, plus `"id"` when the failing put had one.
+* **DELETE** `updated_at` is optional (defaults to server time); `?device=` optional;
+  the tombstone keeps the stored `meta`.
+* **Liveness:** WebSocket ping every 30 s; a connection with no inbound traffic for
+  95 s is dropped. If a connection falls >256 events behind, it gets an `error` and
+  close code 1013 and should reconnect with `hello`. On shutdown, sockets get close
+  code 1001.
+* **REST errors** are JSON `{"error": "..."}` with 400/401/404/413/500.

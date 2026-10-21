@@ -91,9 +91,7 @@ impl From<rusqlite::Error> for Error {
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_BYTES
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
 impl NoteIn {
@@ -109,13 +107,10 @@ impl NoteIn {
             (None, None) => return Err(Error::BadRequest("note.id is required".into())),
         };
         if !valid_id(&id) {
-            return Err(Error::BadRequest(
-                "invalid id (1-128 chars of A-Z a-z 0-9 - _ . :)".into(),
-            ));
+            return Err(Error::BadRequest("invalid id (1-128 chars of A-Z a-z 0-9 - _ . :)".into()));
         }
-        let updated_at = self
-            .updated_at
-            .ok_or_else(|| Error::BadRequest("note.updated_at is required".into()))?;
+        let updated_at =
+            self.updated_at.ok_or_else(|| Error::BadRequest("note.updated_at is required".into()))?;
         if updated_at < 0 || self.created_at.is_some_and(|c| c < 0) {
             return Err(Error::BadRequest("timestamps must be >= 0 (unix ms)".into()));
         }
@@ -192,8 +187,7 @@ fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
 }
 
 fn get_note(tx: &Transaction<'_>, id: &str) -> rusqlite::Result<Option<Note>> {
-    tx.query_row(&format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1"), [id], row_to_note)
-        .optional()
+    tx.query_row(&format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1"), [id], row_to_note).optional()
 }
 
 fn global_seq(conn: &Connection) -> rusqlite::Result<i64> {
@@ -230,9 +224,8 @@ impl Store {
     pub fn changes_since(&mut self, since: i64) -> Result<(Vec<Note>, i64), Error> {
         let tx = self.conn.transaction()?;
         let notes = {
-            let mut st = tx.prepare_cached(&format!(
-                "SELECT {NOTE_COLS} FROM notes WHERE seq > ?1 ORDER BY seq ASC"
-            ))?;
+            let mut st =
+                tx.prepare_cached(&format!("SELECT {NOTE_COLS} FROM notes WHERE seq > ?1 ORDER BY seq ASC"))?;
             let rows = st.query_map([since], row_to_note)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -310,9 +303,8 @@ impl Store {
 
     /// Write a consistent, compacted copy of the database to `dest` (must not exist).
     pub fn backup_to(&self, dest: &Path) -> Result<(), Error> {
-        let dest = dest
-            .to_str()
-            .ok_or_else(|| Error::BadRequest("backup path must be valid UTF-8".into()))?;
+        let dest =
+            dest.to_str().ok_or_else(|| Error::BadRequest("backup path must be valid UTF-8".into()))?;
         self.conn.execute("VACUUM INTO ?1", [dest])?;
         Ok(())
     }

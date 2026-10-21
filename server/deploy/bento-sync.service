@@ -1,0 +1,56 @@
+[Unit]
+Description=Bento notes sync server (bento-sync)
+Documentation=https://bento.radian.dk/v1/health
+After=network.target
+
+[Service]
+Type=simple
+User=bento-sync
+Group=bento-sync
+ExecStart=/opt/bento-sync/bento-sync serve
+Environment=BENTO_SYNC_DB=/var/lib/bento-sync/notes.db
+Environment=BENTO_SYNC_ADDR=127.0.0.1:8787
+# Token file stays root-only (0600); systemd hands the service a private copy
+# at $CREDENTIALS_DIRECTORY/token, which bento-sync reads.
+LoadCredential=token:/etc/bento-sync/token
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+StateDirectory=bento-sync
+StateDirectoryMode=0700
+UMask=0077
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bento-sync
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Resources
+MemoryMax=64M
+TasksMax=32
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily backup of the bento-sync database
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

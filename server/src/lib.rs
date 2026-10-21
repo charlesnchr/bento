@@ -69,9 +69,7 @@ impl AppState {
     async fn with_store<T, F>(&self, f: F) -> Result<T, store::Error>
     where
         T: Send + 'static,
-        F: FnOnce(&mut Store, &broadcast::Sender<Arc<Event>>) -> Result<T, store::Error>
-            + Send
-            + 'static,
+        F: FnOnce(&mut Store, &broadcast::Sender<Arc<Event>>) -> Result<T, store::Error> + Send + 'static,
     {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
@@ -163,11 +161,7 @@ fn request_token(req: &Request) -> Option<&[u8]> {
         }
         return None;
     }
-    req.uri()
-        .query()?
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("token="))
-        .map(str::as_bytes)
+    req.uri().query()?.split('&').find_map(|kv| kv.strip_prefix("token=")).map(str::as_bytes)
 }
 
 async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response {

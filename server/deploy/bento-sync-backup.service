@@ -1,0 +1,32 @@
+[Unit]
+Description=Backup of the bento-sync database (keeps 14)
+
+[Service]
+Type=oneshot
+User=bento-sync
+Group=bento-sync
+Environment=BENTO_SYNC_DB=/var/lib/bento-sync/notes.db
+ExecStart=/opt/bento-sync/bento-sync backup /var/lib/bento-sync/backups --keep 14
+StateDirectory=bento-sync
+StateDirectoryMode=0700
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bento-sync
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+MemoryMax=128M
