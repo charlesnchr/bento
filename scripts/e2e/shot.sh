@@ -8,6 +8,8 @@
 # that process, our TextEdit document or our Finder window) and asserts on the
 # clipboard, saved files, history, windows and the process staying alive. The
 # user's clipboard is saved and restored around each phase.
+# SHOT_E2E_CLIPBOARD=false runs without the clipboard module (to tell Shot's
+# memory from clipboard history's).
 # Exit status: 0 all passed, 1 failures, 75 the user came back (run again later).
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -64,6 +66,7 @@ write_config() {
   cat > "$H/config/config.json" <<EOF
 {
   "notes": { "sync": { "enabled": false, "server": "http://127.0.0.1:9", "tokenFile": "$H/no-token" } },
+  "general": { "enabledModules": { "clipboard": ${SHOT_E2E_CLIPBOARD:-true} } },
   "shot": { "afterCapture": "copy", "playSound": false, "saveFolder": "$OUT", "adjustSelectionBeforeCapture": false,
             "scrollMode": "auto", "scrollMaxHeight": 20000, "delaySeconds": 3, "delayedTarget": "area", "windowShadow": true,
             "windowBackground": "transparent", "windowPadding": 0, "colorFormat": "hex", "showMagnifier": true },
@@ -157,6 +160,8 @@ phase_overlay() {
   setup overlay
   local n0; n0=$(history_count)
   check "drag 200x120 pt -> 400x240 px" [ "$(area 300 300 500 420)" = "image 400x240" ]
+  # (History is written right after the clipboard, on the next run-loop turn.)
+  for _ in $(seq 1 30); do [ "$(history_count)" = $((n0 + 1)) ] && break; sleep 0.1; done
   check "history recorded" [ "$(history_count)" = $((n0 + 1)) ]
 
   marker; key cmd+shift+2; overlay_up; key escape
@@ -372,66 +377,97 @@ phase_windows() {
 }
 
 # Scrolling capture: down, up, manual, max height, nothing to scroll, memory peak.
+# Long captures keep Bento's main thread busy for a few seconds afterwards
+# (ShotEditor encodes PNGs for the clipboard and history), hence the long waits.
+# stitched_lines FILE -> "<lines found> <first> <last> <missing>" for the
+# "Line NNN" document, OCR'd in overlapping 900 px strips (Vision can't read
+# a 14,000 px tall image in one go).
+stitched_lines() {
+  local hgt y=0; hgt=$("$CTL" imgsize "$1" | cut -dx -f2)
+  : > "$H/ocr-lines.txt"
+  while [ "$y" -lt "$hgt" ]; do
+    "$CTL" crop "$1" "$y" 900 "$H/ocr-strip.png" && "$CTL" ocr "$H/ocr-strip.png" >> "$H/ocr-lines.txt"
+    y=$((y + 800))
+  done
+  grep -oE 'Line [0-9]{3}' "$H/ocr-lines.txt" | awk '{print $2 + 0}' | sort -n -u > "$H/ocr-nums.txt"
+  local first last count
+  first=$(head -1 "$H/ocr-nums.txt"); last=$(tail -1 "$H/ocr-nums.txt"); count=$(wc -l < "$H/ocr-nums.txt" | tr -d ' ')
+  echo "$count ${first:-0} ${last:-0} $(( ${last:-0} - ${first:-0} + 1 - count ))"
+}
+settle() { sleep "${1:-4}"; } # let Bento finish encoding before the next hotkey
+
 phase_scroll() {
   setup scroll 300
-  local rss0 peak=0 c
+  local rss0 peak=0 c first last missing
   rss0=$(ps -o rss= -p "$PID" | tr -d ' ')
   ( while kill -0 "$PID" 2>/dev/null; do ps -o rss= -p "$PID"; sleep 0.1; done ) > "$H/rss.txt" &
-  local sampler=$!
-  marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
-  scroll_done 60
-  c=$(clip_wait 80); "$CTL" clip-png "$H/scroll-down.png"; snap_doc scroll-1
-  check "scrolling capture down ($c)" [ "${c%% *}" = image ]
-  local text; text=$("$CTL" ocr "$H/scroll-down.png" | tr '\n' ' ')
-  checkc "stitched image has the first and last lines" '[[ "$text" == *"Line 00"* && "$text" == *"Line 300"* ]]' 
+  local sampler=$!; disown $sampler
 
-  marker; key ctrl+opt+cmd+f18; overlay_up; ctl drag 125 190 860 712
+  marker; key ctrl+opt+cmd+f17; overlay_up 10; ctl drag 125 190 860 712
   scroll_done 60
-  c=$(clip_wait 80); "$CTL" clip-png "$H/scroll-up.png"; snap_doc scroll-2
-  text=$("$CTL" ocr "$H/scroll-up.png" | tr '\n' ' ')
-  checkc "scrolling capture up ($c)" '[ "${c%% *}" = image ] && [[ "$text" == *"Line 001"* && "$text" == *"Line 300"* ]]' 
+  c=$(clip_wait 300); "$CTL" clip-png "$H/scroll-down.png"; snap_doc scroll-1
+  local n; read -r n first last missing < <(stitched_lines "$H/scroll-down.png")
+  checkc "scrolling capture down: lines $first-$last, $missing missing ($c)" \
+    '[ "${c%% *}" = image ] && [ "$first" -le 2 ] && [ "$last" = 300 ] && [ "$missing" -le 2 ]'
+  settle
 
-  setting .shot.scrollMaxHeight 1000
-  marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
+  marker; key ctrl+opt+cmd+f18; overlay_up 10; ctl drag 125 190 860 712
+  scroll_done 60
+  c=$(clip_wait 300); "$CTL" clip-png "$H/scroll-up.png"; snap_doc scroll-2
+  read -r n first last missing < <(stitched_lines "$H/scroll-up.png")
+  checkc "scrolling capture up: lines $first-$last, $missing missing ($c)" \
+    '[ "${c%% *}" = image ] && [ "$first" -le 2 ] && [ "$last" = 300 ] && [ "$missing" -le 2 ]'
+  settle
+
+  setting .shot.scrollMaxHeight 3000
+  marker; key ctrl+opt+cmd+f17; overlay_up 10; ctl drag 125 190 860 712
   scroll_done 30
-  c=$(clip_wait 80)
-  check "max height stops at 1000 px ($c)" [ "$c" = "image 1470x1000" ]
+  c=$(clip_wait 100)
+  check "max height stops at 3000 px ($c)" [ "$c" = "image 1470x3000" ]
   setting .shot.scrollMaxHeight 20000
 
   # Nothing to scroll: the document's title bar.
-  marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 300 84 700 108
+  marker; key ctrl+opt+cmd+f17; overlay_up 10; ctl drag 300 84 700 108
   scroll_done 20
-  c=$(clip_wait 80)
+  c=$(clip_wait 100)
   check "content that doesn't scroll gives the visible area ($c)" [ "$c" = "image 800x48" ]
 
   # Manual: we scroll, Return finishes.
   setting .shot.scrollMode '"manual"'
-  marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
+  marker; key ctrl+opt+cmd+f17; overlay_up 10; ctl drag 125 190 860 712
   "$CTL" wait "$PID" 25 3 360 64
   for _ in 1 2 3 4 5 6; do "$CTL" scroll 500 400 -150 --doc "$DOCNAME" --pid "$PID"; [ $? = 75 ] && abort; sleep 0.35; done
   key return
   "$CTL" gone "$PID" 25 10 360 64
-  c=$(clip_wait 80)
-  checkc "manual scrolling capture ($c)" '[ "${c%% *}" = image ] && [ "${c##*x}" -gt 1100 ]' 
+  c=$(clip_wait 200)
+  checkc "manual scrolling capture ($c)" '[ "${c%% *}" = image ] && [ "${c##*x}" -gt 1100 ]'
   kill $sampler 2>/dev/null
   peak=$(sort -n "$H/rss.txt" | tail -1)
-  echo "  info  RSS start ${rss0} KB, peak ${peak} KB during scrolling captures"
+  footprint "$PID" 2>/dev/null | awk '/^ *[0-9.]+ [KMG]B/ && NR > 3' | head -5 | sed 's/^/        /'
+  echo "  info  RSS start ${rss0} KB, peak ${peak} KB; phys_footprint now $(footprint "$PID" 2>/dev/null | awk '/phys_footprint:/ {print $2 $3}'), peak $(footprint "$PID" 2>/dev/null | awk '/phys_footprint_peak:/ {print $2 $3}')"
   check "Bento alive after scroll phase" alive
 }
 
-# 20 captures, then memory and idle CPU.
+# 40 captures (footprint after 0/20/40: growth that stops is caches, steady
+# growth a leak), then idle CPU. Drags stay in the left half: a system prompt
+# may sit above everything on the right.
 phase_memory() {
   setup memory
-  marker; area 300 300 500 420 >/dev/null; sleep 1
-  local f0 f1 cpu i
-  f0=$(footprint "$PID" 2>/dev/null | awk '/phys_footprint:/ {print $2, $3; exit}')
-  for i in $(seq 1 20); do
-    marker; key cmd+shift+2; overlay_up || break; ctl drag $((200 + i * 10)) 250 $((500 + i * 10)) 500; clip_wait >/dev/null
+  marker; area 300 300 500 420 >/dev/null; sleep 2
+  fp() { footprint "$PID" 2>/dev/null | awk '/phys_footprint:/ {print $2 $3; exit}'; }
+  local f0 f20 f40 cpu i n=0
+  f0=$(fp)
+  for i in $(seq 1 40); do
+    marker; key cmd+shift+2; overlay_up || break; ctl drag $((150 + i % 20 * 5)) 250 $((400 + i % 20 * 5)) 500 || break
+    [ "$(clip_wait)" != unchanged ] && n=$((n + 1))
+    [ "$i" = 20 ] && { sleep 3; f20=$(fp); }
   done
+  check "40 captures in a row ($n)" [ "$n" = 40 ]
   sleep 3
-  f1=$(footprint "$PID" 2>/dev/null | awk '/phys_footprint:/ {print $2, $3; exit}')
-  echo "  info  footprint after 1 capture: $f0; after 21: $f1; windows: $("$CTL" windows "$PID" | wc -l | tr -d ' ')"
   check "no overlay windows left behind" [ "$(win_count 1000)" = 0 ]
+  f40=$(fp)
+  echo "  info  footprint after 1 capture: $f0, 21: $f20, 41: $f40; windows: $("$CTL" windows "$PID" | wc -l | tr -d ' ')"
+  footprint "$PID" 2>/dev/null | awk '/^ *[0-9.]+ [KMG]B/ && NR > 3' | head -8 | sed 's/^/        /'
   sleep 5
   cpu=$(ps -o %cpu= -p "$PID" | tr -d ' ')
   echo "  info  idle CPU ${cpu}%"

@@ -304,6 +304,15 @@ case "opaque":
         minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
     } }
     print(maxX >= minX ? "\(maxX - minX + 1)x\(maxY - minY + 1)" : "0x0")
+case "crop":
+    // crop FILE Y H OUT: rows Y..<Y+H (clamped) of an image, full width.
+    guard argv.count > 4, let y = Int(argv[2]), let hh = Int(argv[3]) else { fail("crop FILE Y H OUT") }
+    let img = loadImage(argv[1])
+    let y0 = max(0, min(y, img.height - 1)), h = max(1, min(hh, img.height - y0))
+    guard let part = img.cropping(to: CGRect(x: 0, y: y0, width: img.width, height: h)),
+          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: argv[4]) as CFURL, "public.png" as CFString, 1, nil) else { fail("crop failed") }
+    CGImageDestinationAddImage(dest, part, nil)
+    exit(CGImageDestinationFinalize(dest) ? 0 : 1)
 case "imgsize":
     guard argv.count > 1 else { fail("imgsize FILE") }
     let img = loadImage(argv[1])
