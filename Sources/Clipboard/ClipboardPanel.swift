@@ -40,8 +40,7 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         }
         // Opened over one of Bento's own windows (notes, editor): paste there
         // and give it focus back on close.
-        let ownKey = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() ? NSApp.keyWindow : nil
-        returnWindow = ownKey
+        returnWindow = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() ? NSApp.keyWindow : nil
         targetApp = ClipboardModule.pasteTarget()
 
         ImageCache.storeRef = store

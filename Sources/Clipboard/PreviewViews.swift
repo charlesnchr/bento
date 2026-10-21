@@ -29,7 +29,8 @@ struct PreviewPane: View {
             TextPreview(detail: d)
         case .image:
             if let url = model.store.imageURL(d.imageFile) {
-                ImagePreview(url: url, pixelSize: CGSize(width: d.row.width, height: d.row.height))
+                ImagePreview(url: url, pixelSize: CGSize(width: d.row.width, height: d.row.height),
+                             placeholder: ImageCache.shared.get("thumb:\(d.row.thumbFile ?? "")"))
             }
         case .file:
             FilePreview(urls: d.fileURLs)
@@ -89,6 +90,8 @@ struct TextPreview: NSViewRepresentable {
 struct ImagePreview: View {
     let url: URL
     let pixelSize: CGSize
+    /// Shown until the preview is decoded (the row's thumbnail).
+    var placeholder: NSImage?
     @State private var image: NSImage?
     @State private var failed = false
 
@@ -97,21 +100,19 @@ struct ImagePreview: View {
 
     var body: some View {
         GeometryReader { geo in
+            let width = max(geo.size.width - 32, 1), height = max(geo.size.height - 32, 1)
             Group {
-                if let image {
-                    if isTall {
-                        ScrollView(.vertical) {
-                            styled(image)
-                                .frame(width: min(geo.size.width - 32, pixelSize.width / 2))
-                                .padding(16)
-                                .frame(maxWidth: .infinity)
-                        }
-                    } else {
+                if let image, isTall {
+                    ScrollView(.vertical) {
                         styled(image)
-                            .frame(maxWidth: min(geo.size.width - 32, max(pixelSize.width, 1)),
-                                   maxHeight: min(geo.size.height - 32, max(pixelSize.height, 1)))
-                            .frame(width: geo.size.width, height: geo.size.height)
+                            .frame(width: min(width, max(pixelSize.width / 2, 1)))
+                            .padding(16)
+                            .frame(maxWidth: .infinity)
                     }
+                } else if let shown = image ?? (failed ? nil : placeholder) {
+                    styled(shown)
+                        .frame(maxWidth: min(width, max(pixelSize.width, 1)), maxHeight: min(height, max(pixelSize.height, 1)))
+                        .frame(width: geo.size.width, height: geo.size.height)
                 } else if failed {
                     VStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle")
@@ -129,10 +130,15 @@ struct ImagePreview: View {
             }
         }
         .task(id: url) {
+            // While the selection races past (arrow key held), previews that
+            // are replaced within this moment are never decoded.
+            try? await Task.sleep(nanoseconds: 90_000_000)
+            guard !Task.isCancelled else { return }
             let u = url
             // Tall images: decode by width (~1000 px), bounded at 6000 px tall.
             let maxPixels = isTall ? Int(min(6000, 1000 * pixelSize.height / max(pixelSize.width, 1))) : 1400
             let cg = await Task.detached(priority: .userInitiated) { ImageProcessor.downsampled(u, maxPixels: maxPixels) }.value
+            guard !Task.isCancelled else { return }
             if let cg { image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)) } else { failed = true }
         }
     }

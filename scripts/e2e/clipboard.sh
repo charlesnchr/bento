@@ -442,7 +442,11 @@ gui() {
     KB cmd+a delete; sleep 0.3   # empty the note we just opened (our own instance)
     KB cmd+shift+v; wait_panel open; sleep 0.3
     KB return; sleep 1.5
-    check "pasted into the note" bash -c "sqlite3 -readonly '$HOMEDIR/support/Notes/notes.sqlite' \"SELECT body FROM notes WHERE deleted = 0\" | grep -q 'QA-alpha'"
+    if [ -n "${BENTO_BIN:-}" ] || grep -q "func pastePlain" "$ROOT/Sources/Notes/NoteTextView.swift"; then
+      check "pasted into the note" bash -c "sqlite3 -readonly '$HOMEDIR/support/Notes/notes.sqlite' \"SELECT body FROM notes WHERE deleted = 0\" | grep -q 'QA-alpha'"
+    else
+      say "  skip  pasted into the note (Notes' own ⌘V does nothing before the Notes fix 814eb7f)"
+    fi
     check "not into TextEdit" eq "$(doc_text)" ""
     check "Bento still frontmost" eq "$("$PBT" frontpid)" "$APP"
     KB escape 2>/dev/null; sleep 0.3
@@ -479,7 +483,12 @@ scale() {
     open_panel
     for _ in $(seq 1 5); do K pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown pagedown; sleep 0.3; done
     K cmd+down; sleep 0.8; K cmd+down; sleep 0.8; K cmd+down; sleep 0.8
-    m1=$(footprint_mb); K escape; wait_panel closed; sleep 1.5
+    m1=$(footprint_mb)
+    if [ "$cycle" = 1 ]; then # where the memory goes while browsing (our instance only)
+      footprint "$APP" > "$HOMEDIR/footprint-browsing.txt" 2>&1
+      heap -s -H "$APP" 2>/dev/null | head -60 > "$HOMEDIR/heap-browsing.txt"
+    fi
+    K escape; wait_panel closed; sleep 1.5
     open_mb+=("$m1"); eval "closed_$cycle=$(footprint_mb)"
     check "still running" alive
   done

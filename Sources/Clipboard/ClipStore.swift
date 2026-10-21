@@ -182,7 +182,6 @@ final class ClipStore {
         return copied
     }
 
-
     func imageURL(_ name: String?) -> URL? { name.map { imagesDir.appendingPathComponent($0) } }
     func thumbURL(_ name: String?) -> URL? { name.map { thumbsDir.appendingPathComponent($0) } }
 
