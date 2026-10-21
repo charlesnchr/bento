@@ -50,6 +50,8 @@ final class TilingManager {
     /// Last frame we set (as read back), to tell our own moves from the user's.
     private var expected: [WindowID: CGRect] = [:]
     private var lastSet: [WindowID: Date] = [:]
+    /// Last frame sent per window and the frame the app actually took.
+    private var lastApplied: [WindowID: (target: CGRect, result: CGRect)] = [:]
     private var corrections: [WindowID: (count: Int, since: Date)] = [:]
     private var mru: [WindowID] = []
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
@@ -155,7 +157,8 @@ final class TilingManager {
         externalWork?.cancel(); externalWork = nil
         removeMouseMonitor()
         displays = [:]; screenAreas = [:]; windows = [:]; idByElement = [:]; visible = []
-        expected = [:]; lastSet = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]; externallyMoved = []
+        expected = [:]; lastSet = [:]; lastApplied = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]
+        externallyMoved = []
         forcedPIDs = []; observerFailures = [:]
     }
 
@@ -246,6 +249,7 @@ final class TilingManager {
         if let set = lastSet[wid], Date().timeIntervalSince(set) < 0.5 {
             // The app is still settling after our resize (async apps, size clamping).
             expected[wid] = cur
+            lastApplied[wid]?.result = cur
             return
         }
         externallyMoved.insert(wid)
@@ -414,7 +418,7 @@ final class TilingManager {
             if !TilingManager.leftButtonDown { endDrag() }
             return
         }
-        if force { expected = [:] }
+        if force { expected = [:]; lastApplied = [:] }
 
         syncDisplays()
         syncObservers()
@@ -561,6 +565,7 @@ final class TilingManager {
         visible.remove(wid)
         expected[wid] = nil
         lastSet[wid] = nil
+        lastApplied[wid] = nil
         corrections[wid] = nil
         dragging.remove(wid)
         dragOrigin[wid] = nil
@@ -606,20 +611,35 @@ final class TilingManager {
 
     func applyLayout() {
         guard running, dragging.isEmpty else { return }
-        for (_, frames) in allFrames() {
-            for (wid, r) in frames { setFrame(wid, r) }
+        for (did, frames) in allFrames() {
+            guard let area = layoutArea(did) else { continue }
+            for (wid, r) in frames { setFrame(wid, r, area: area) }
         }
     }
 
-    private func setFrame(_ wid: WindowID, _ r: CGRect) {
+    private func setFrame(_ wid: WindowID, _ r: CGRect, area: CGRect) {
         guard let t = windows[wid] else { return }
-        if let e = expected[wid], e.approxEqual(r, tolerance: 1) { return }
-        if expected[wid] == nil, let cur = t.ax.frame, cur.approxEqual(r, tolerance: 1) {
+        if let e = expected[wid] {
+            if e.approxEqual(r, tolerance: 1) { return }
+            // The app keeps this window at another size (minimum size) and nothing
+            // moved it since: sending the same frame again changes nothing.
+            if let last = lastApplied[wid], last.target.approxEqual(r, tolerance: 1), last.result.approxEqual(e, tolerance: 1) { return }
+        } else if let cur = t.ax.frame, cur.approxEqual(r, tolerance: 1) {
             expected[wid] = cur
             return
         }
         t.ax.setFrame(r)
-        expected[wid] = t.ax.frame ?? r
+        var actual = t.ax.frame ?? r
+        if actual.maxX > area.maxX + 1 || actual.maxY > area.maxY + 1 {
+            // Bigger than its tile (minimum size): overlap the neighbour rather
+            // than hang off the screen edge.
+            let p = CGPoint(x: actual.maxX > area.maxX + 1 ? max(area.minX, area.maxX - actual.width) : actual.minX,
+                            y: actual.maxY > area.maxY + 1 ? max(area.minY, area.maxY - actual.height) : actual.minY)
+            t.ax.setPosition(p)
+            actual = t.ax.frame ?? CGRect(origin: p, size: actual.size)
+        }
+        expected[wid] = actual
+        lastApplied[wid] = (r, actual)
         lastSet[wid] = Date()
     }
 

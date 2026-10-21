@@ -407,3 +407,23 @@ private func state(_ kind: LayoutKind, _ ids: [WindowID], placement: Placement =
     #expect(Neighbor.cycle([WindowID](), from: 1, forward: true) == nil)
     #expect(Neighbor.cycle([1, 2], from: 9, forward: true) == nil)
 }
+
+@Test func manyWindowsSplitTheRoomiestTile() {
+    // Dwindling 8 windows would leave the last two 86 pt wide on this screen.
+    let screen = CGRect(x: 8, y: 41, width: 1496, height: 872)
+    let ids = Array(WindowID(1)...8)
+    for placement in [Placement.end, .afterFocused] {
+        var s = LayoutState(kind: .tiles)
+        for id in ids {
+            s.insert(id, focused: 1, placement: placement, area: screen, gap: 8, visible: Set(ids))
+        }
+        let f = s.frames(area: screen, gap: 8, visible: Set(ids))
+        #expect(f.count == 8)
+        #expect(f.values.allSatisfy { $0.width >= LayoutState.minTile.width && $0.height >= LayoutState.minTile.height })
+        #expect(f.values.allSatisfy { screen.contains($0) })
+    }
+    // Small tiles are still split when there is room nowhere else; other layouts keep the order.
+    var c = LayoutState(kind: .columns)
+    for id in ids { c.insert(id, focused: 1, placement: .afterFocused, area: screen, gap: 8, visible: Set(ids)) }
+    #expect(c.windows == [1, 8, 7, 6, 5, 4, 3, 2])
+}

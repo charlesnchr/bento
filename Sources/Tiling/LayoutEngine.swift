@@ -375,20 +375,36 @@ struct LayoutState: Equatable {
         var vis = visible
         vis.remove(id)
         let order = tree.visibleLeaves(vis)
-        let target: WindowID?
+        var target: WindowID?
         var newFirst = false
         switch placement {
         case .afterFocused: target = focused.flatMap { order.contains($0) ? $0 : nil } ?? order.last
         case .end: target = order.last
         case .first: target = order.first; newFirst = true
         }
-        guard let target else {
+        guard let chosen = target else {
             // Nothing visible on this display (only windows of other Spaces).
             self.tree = .split(.horizontal, 0.5, tree, .leaf(id))
             return
         }
-        let r = tree.frames(in: area, gap: gap, visible: vis)[target] ?? area
-        self.tree = tree.splitting(target, with: id, axis: r.width >= r.height ? .horizontal : .vertical, newFirst: newFirst)
+        let frames = tree.frames(in: area, gap: gap, visible: vis)
+        if kind == .tiles, placement != .first, let r = frames[chosen], !LayoutState.canSplit(r, gap: gap) {
+            // Halving a small tile again (dwindle) makes windows no app can be
+            // that small: split the roomiest tile instead.
+            func size(_ id: WindowID) -> CGFloat { frames[id].map { $0.width * $0.height } ?? 0 }
+            target = order.max { size($0) < size($1) } ?? chosen
+        }
+        let t = target ?? chosen
+        let r = frames[t] ?? area
+        self.tree = tree.splitting(t, with: id, axis: r.width >= r.height ? .horizontal : .vertical, newFirst: newFirst)
+    }
+
+    /// Smallest tile a split may create when there is a choice (points).
+    static let minTile = CGSize(width: 240, height: 160)
+
+    /// Whether halving `r` along its longer side leaves tiles of at least `minTile`.
+    static func canSplit(_ r: CGRect, gap: CGFloat) -> Bool {
+        r.width >= r.height ? (r.width - gap) / 2 >= minTile.width : (r.height - gap) / 2 >= minTile.height
     }
 
     mutating func remove(_ id: WindowID) {
