@@ -352,11 +352,17 @@ phase_windows() {
     "$CTL" clip-png "$H/notes-picked.png"
     local no; no=$("$CTL" opaque "$H/notes-picked.png")
     check "window picker: Bento notes window $((nwid * 2))x$((nh * 2)) px ($c, opaque $no)" [ "$no" = "$((nwid * 2))x$((nh * 2))" ]
-    # Area = the window's frame; compare with the window's own pixels.
-    marker; key cmd+shift+2; overlay_up; ctl drag "$nx" "$ny" $((nx + nwid)) $((ny + nh)); clip_wait >/dev/null
-    "$CTL" clip-png "$H/notes-area.png"
-    screencapture -x -o -l "$nid" "$H/notes-window.png"
-    local d; d=$("$CTL" imgdiff "$H/notes-area.png" "$H/notes-window.png")
+    # Area = the window's frame; compare with the window's own pixels. A
+    # system notification banner over it spoils the comparison: try twice.
+    local d attempt
+    for attempt in 1 2; do
+      [ "$attempt" = 2 ] && sleep 6
+      marker; key cmd+shift+2; overlay_up; ctl drag "$nx" "$ny" $((nx + nwid)) $((ny + nh)); clip_wait >/dev/null
+      "$CTL" clip-png "$H/notes-area.png"
+      screencapture -x -o -l "$nid" "$H/notes-window.png"
+      d=$("$CTL" imgdiff "$H/notes-area.png" "$H/notes-window.png")
+      awk -v d="$d" 'BEGIN { exit !(d < 6) }' && break
+    done
     check "area capture shows the notes window, not what's behind it (diff $d)" awk -v d="$d" 'BEGIN { exit !(d < 6) }'
     front_doc; key ctrl+opt+n; sleep 0.5
   else
