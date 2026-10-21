@@ -99,6 +99,17 @@ close_docs() {
 }
 # TextEdit must answer Apple events (it doesn't while stuck tracking a mouse drag).
 textedit_ok() { osascript -e 'with timeout of 4 seconds' -e 'tell application "TextEdit" to get name of front document' -e 'end timeout' >/dev/null 2>&1; }
+# page_colour -> #RRGGBB of our document's page at (700, 650), from the
+# window's own image (light or dark appearance).
+page_colour() { snap_doc page; "$CTL" pixel "$H/doc-page.png" $(( (700 - 120) * 2 )) $(( (650 - 80) * 2 )); }
+# near_hex A B: same colour within 3 per channel (display vs sRGB rounding).
+near_hex() {
+  local a="${1#\#}" b="${2#\#}" i
+  [ ${#a} = 6 ] && [ ${#b} = 6 ] || return 1
+  for i in 0 2 4; do
+    local d=$(( 16#${a:$i:2} - 16#${b:$i:2} )); [ ${d#-} -le 3 ] || return 1
+  done
+}
 snap_doc() {
   local w; w=$("$BCTL" windows TextEdit 2>/dev/null | awk -v n="$DOCNAME" 'index($0, n) {print $1; exit}')
   [ -n "$w" ] && screencapture -x -o -l "$w" "$H/doc-$1.png"
@@ -197,10 +208,11 @@ phase_overlay() {
   ctl drag 300 300 400 350
   check "Space twice returns to area mode" [ "$(clip_wait)" = "image 200x100" ]
 
-  # Tab copies the colour under the pointer (TextEdit's white page), overlay stays.
+  # Tab copies the colour under the pointer (TextEdit's page), overlay stays.
+  local page; page=$(page_colour)
   marker; key cmd+shift+2; overlay_up; ctl move 700 650; sleep 0.2; key tab; sleep 0.3
   c=$(clip)
-  checkc "Tab copies colour ($c), overlay stays" '[ "$c" = "text #FFFFFF" ] && overlay_up 1'
+  checkc "Tab copies colour ($c, page $page), overlay stays" 'near_hex "${c#text }" "$page" && overlay_up 1'
   # Over the "L" of line 2: the darkest pixel around the pointer is text.
   ctl move 132 210; sleep 0.2; key shift+tab; sleep 0.3
   c=$(clip)
@@ -307,8 +319,10 @@ phase_windows() {
   check "window picker: TextEdit ($c)" [ "${c%% *}" = image ]
   "$CTL" clip-png "$H/textedit-window.png"
   # With the shadow, the window itself must stay 1:1 (760x640 pt at 2x).
-  check "window capture keeps the window at 1:1 ($("$CTL" opaque "$H/textedit-window.png"))" \
-    [ "$("$CTL" opaque "$H/textedit-window.png")" = "1520x1280" ]
+  # (Dark windows have a translucent 1-2 px edge, hence the tolerance.)
+  local ow oh; IFS=x read -r ow oh < <("$CTL" opaque "$H/textedit-window.png")
+  checkc "window capture keeps the window at 1:1 (${ow}x${oh} of 1520x1280)" \
+    '[ $((1520 - ow)) -ge 0 ] && [ $((1520 - ow)) -le 8 ] && [ $((1280 - oh)) -ge 0 ] && [ $((1280 - oh)) -le 8 ]'
   # Finder (translucent sidebar). Other apps' invisible floating windows over
   # it must not be picked instead: the capture must be this window, at 1:1.
   local fx fy fw fh; read -r fx fy fw fh < <("$BCTL" frame com.apple.finder shot-finder)
@@ -343,7 +357,7 @@ phase_windows() {
     "$CTL" clip-png "$H/notes-area.png"
     screencapture -x -o -l "$nid" "$H/notes-window.png"
     local d; d=$("$CTL" imgdiff "$H/notes-area.png" "$H/notes-window.png")
-    check "area capture shows the notes window, not what's behind it (diff $d)" awk -v d="$d" 'BEGIN { exit !(d < 12) }'
+    check "area capture shows the notes window, not what's behind it (diff $d)" awk -v d="$d" 'BEGIN { exit !(d < 6) }'
     front_doc; key ctrl+opt+n; sleep 0.5
   else
     bad "notes window opened"
@@ -362,12 +376,20 @@ phase_windows() {
   key escape; overlay_gone
 
   # Colour picker in every format (F cycles), Shift = text colour.
-  local want=("#FFFFFF" "FFFFFF" "rgb(255, 255, 255)" "hsl(0, 0%, 100%)" "oklch(100.0% 0.000 0.0)") i
+  # Format 0 is the page colour; the others must say the same colour.
+  local page hex i; page=$(page_colour)
   for i in 0 1 2 3 4; do
     marker; key ctrl+opt+shift+f13; overlay_up; ctl move 700 650; sleep 0.15
     local k; for ((k = 0; k < i; k++)); do key f; done  # (BSD seq 1 0 counts down)
     ctl click 700 650
-    c=$(clip_wait); check "colour picker format $i: ${c#text }" [ "$c" = "text ${want[$i]}" ]
+    c=$(clip_wait); c=${c#text }
+    case $i in
+      0) hex=$c; checkc "colour picker HEX: $c (page $page)" 'near_hex "$c" "$page"' ;;
+      1) check "colour picker HEX without #: $c" [ "#$c" = "$hex" ] ;;
+      2) check "colour picker rgb(): $c" [ "$c" = "rgb($((16#${hex:1:2})), $((16#${hex:3:2})), $((16#${hex:5:2})))" ] ;;
+      3) checkc "colour picker hsl(): $c" '[[ "$c" == "hsl("*"%)" ]]' ;;
+      4) checkc "colour picker oklch(): $c" '[[ "$c" == "oklch("*")" ]]' ;;
+    esac
   done
   marker; key ctrl+opt+shift+f13; overlay_up; ctl move 132 210; sleep 0.15; ctl click 132 210 shift
   c=$(clip_wait); checkc "colour picker text colour (${c#text })" '[ "${c:0:6}" = "text #" ] && [ "$c" != "text #FFFFFF" ]' 

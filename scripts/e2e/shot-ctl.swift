@@ -22,6 +22,8 @@
 //   shot-ctl imgsize FILE | ocr FILE | imgdiff A B (mean abs channel difference 0…255)
 //   shot-ctl axclose BUNDLEID TITLE                close a window WE opened in another app (exact title)
 //   shot-ctl opaque FILE                           WxH of the opaque (alpha >= 250) bounding box
+//   shot-ctl pixel FILE X Y                        #RRGGBB of an image pixel
+//   shot-ctl crop FILE Y H OUT                     rows Y..<Y+H of an image
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
@@ -324,13 +326,23 @@ case "ocr":
     try? VNImageRequestHandler(cgImage: loadImage(argv[1])).perform([req])
     for o in req.results ?? [] { if let s = o.topCandidates(1).first?.string { print(s) } }
 case "imgdiff":
+    // Mean channel difference of the central 80 % (corners and window edges
+    // differ between an area capture and a window's own image), full detail.
     guard argv.count > 2 else { fail("imgdiff A B") }
     let a = loadImage(argv[1]), b = loadImage(argv[2])
-    let w = min(a.width, b.width, 400), h = max(1, Int(Double(w) * Double(a.height) / Double(a.width)))
+    let w = min(a.width, b.width), h = min(a.height, b.height)
     let pa = rgba(a, w, h), pb = rgba(b, w, h)
-    var sum = 0
-    for i in 0..<pa.count where i % 4 != 3 { sum += abs(Int(pa[i]) - Int(pb[i])) }
-    print(String(format: "%.2f", Double(sum) / Double(w * h * 3)))
+    let x0 = w / 10, x1 = w - w / 10, y0 = h / 10, y1 = h - h / 10
+    var sum = 0, n = 0
+    for y in y0..<y1 { for x in x0..<x1 { let i = (y * w + x) * 4; for c in 0..<3 { sum += abs(Int(pa[i + c]) - Int(pb[i + c])) }; n += 3 } }
+    print(String(format: "%.2f", Double(sum) / Double(max(1, n))))
+case "pixel":
+    // pixel FILE X Y -> #RRGGBB (image pixels, sRGB)
+    guard argv.count > 3, let x = Int(argv[2]), let y = Int(argv[3]) else { fail("pixel FILE X Y") }
+    let img = loadImage(argv[1])
+    guard x >= 0, y >= 0, x < img.width, y < img.height, let one = img.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)) else { fail("outside") }
+    let p = rgba(one, 1, 1)
+    print(String(format: "#%02X%02X%02X", p[0], p[1], p[2]))
 default:
     fail("unknown command \(cmd)", 2)
 }
