@@ -54,6 +54,8 @@ final class StashManager {
         items[id] = item
         order.removeAll { $0 == id }
         order.append(id)
+        // Before moving it, so Tiling floats the window instead of fighting the stash.
+        NotificationCenter.default.post(name: BentoEvents.windowPlaced, object: nil, userInfo: ["window": w])
         hide(item, id: id)
         observeScreens()
     }
