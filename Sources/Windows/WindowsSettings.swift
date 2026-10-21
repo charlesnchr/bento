@@ -54,16 +54,27 @@ struct WindowsSettings: Codable, Equatable {
 
     var geometry: GeometryOptions {
         var o = GeometryOptions()
-        o.windowGap = CGFloat(max(0, windowGap))
-        o.screenMargin = CGFloat(max(0, screenMargin))
+        o.windowGap = CGFloat(WindowsSettings.finite(windowGap, in: 0...200, else: 0))
+        o.screenMargin = CGFloat(WindowsSettings.finite(screenMargin, in: 0...200, else: 0))
         o.gapsOnMaximize = gapsOnMaximize
         o.cycleOnRepeat = cycleOnRepeat
         o.cycleFractions = Geometry.cycleOrder(cycleSizes.compactMap(WindowsSettings.fraction))
         if o.cycleFractions.isEmpty { o.cycleFractions = [0.5] }
         o.traverseDisplays = moveToAdjacentDisplayOnRepeat
-        o.almostMaximize = CGSize(width: almostMaximizeWidth.clamped(0.3...1), height: almostMaximizeHeight.clamped(0.3...1))
-        o.sizeStep = CGFloat(max(1, sizeStep))
+        o.almostMaximize = CGSize(width: WindowsSettings.finite(almostMaximizeWidth, in: 0.3...1, else: 0.9),
+                                  height: WindowsSettings.finite(almostMaximizeHeight, in: 0.3...1, else: 0.9))
+        o.sizeStep = CGFloat(WindowsSettings.finite(sizeStep, in: 1...1000, else: 30))
         return o
+    }
+
+    /// Clamps a hand-edited number; NaN / infinity fall back to `fallback`.
+    static func finite(_ v: Double, in range: ClosedRange<Double>, else fallback: Double) -> Double {
+        v.isFinite ? v.clamped(range) : fallback
+    }
+
+    /// Whole points for labels (never traps on odd config values).
+    static func points(_ v: Double) -> Int {
+        v.isFinite ? Int(v.clamped(-1e6...1e6).rounded()) : 0
     }
 
     var snap: Geometry.SnapOptions {
@@ -81,7 +92,7 @@ struct WindowsSettings: Codable, Equatable {
 
     static func fraction(_ s: String) -> CGFloat? {
         let parts = s.split(separator: "/")
-        guard parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]), b > 0, a > 0, a < b else { return nil }
+        guard parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]), a.isFinite, b.isFinite, b > 0, a > 0, a < b else { return nil }
         return CGFloat(a / b)
     }
 

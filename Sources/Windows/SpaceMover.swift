@@ -141,8 +141,9 @@ final class SpaceMover {
     static func shortcut(fromSymbolicHotKey entry: [String: Any]) -> (CGKeyCode, CGEventFlags)? {
         guard (entry["enabled"] as? NSNumber)?.boolValue ?? true,
               let value = entry["value"] as? [String: Any],
-              let params = value["parameters"] as? [NSNumber], params.count >= 3 else { return nil }
-        return (CGKeyCode(params[1].intValue), CGEventFlags(rawValue: params[2].uint64Value))
+              let params = value["parameters"] as? [NSNumber], params.count >= 3,
+              let code = CGKeyCode(exactly: params[1].intValue), code != 0xFFFF else { return nil }
+        return (code, CGEventFlags(rawValue: params[2].uint64Value))
     }
 
     static func spaces(on screen: NSScreen?) -> SpaceList? {
@@ -151,9 +152,11 @@ final class SpaceMover {
         let display = displays.first { ($0["Display Identifier"] as? String)?.lowercased() == uuid } ?? (displays.count == 1 ? displays[0] : nil)
         guard let d = display, let list = d["Spaces"] as? [[String: Any]],
               let current = ((d["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? NSNumber)?.intValue else { return nil }
-        return SpaceList(ids: list.compactMap { ($0["ManagedSpaceID"] as? NSNumber)?.intValue },
-                         types: list.map { ($0["type"] as? NSNumber)?.intValue ?? 0 },
-                         current: current)
+        let spaces = list.compactMap { s -> (Int, Int)? in
+            guard let id = (s["ManagedSpaceID"] as? NSNumber)?.intValue else { return nil }
+            return (id, (s["type"] as? NSNumber)?.intValue ?? 0)
+        }
+        return SpaceList(ids: spaces.map(\.0), types: spaces.map(\.1), current: current)
     }
 
     static func spaces(ofWindow wid: CGWindowID) -> [Int] {
@@ -199,7 +202,7 @@ final class SpaceMover {
             let layer = d[kCGWindowLayer as String] as? Int ?? 0
             guard layer >= 0, layer < 20, (d[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
                   let b = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b), r.contains(p) else { continue }
-            return (d[kCGWindowNumber as String] as? Int).map { CGWindowID($0) }
+            return (d[kCGWindowNumber as String] as? Int).map { CGWindowID(truncatingIfNeeded: $0) }
         }
         return nil
     }

@@ -679,7 +679,7 @@ enum Geometry {
             }
             guard o.bottomThirds else { return nil }
             if p.x <= f.minX + third { return .firstThird }
-            if p.x >= f.maxX - third { return .lastThird }
+            if p.x > f.maxX - third { return .lastThird } // the middle band is inclusive in Rectangle
             return middleThird(prior)
         }
     }
@@ -723,6 +723,15 @@ enum Geometry {
         if handle.y < 0 { minY = min(start.minY + d.y, maxY - minSize.height) }
         if handle.y > 0 { maxY = max(start.maxY + d.y, minY + minSize.height) }
         return CGRect(x: minX.rounded(), y: minY.rounded(), width: (maxX - minX).rounded(), height: (maxY - minY).rounded())
+    }
+
+    /// Rectangle's restore while the system drags a window by its title bar:
+    /// keep the window where it is and shift it right only as far as needed
+    /// for the grab point (`grabX`, screen x) to stay on the narrower window.
+    static func titleBarUnsnapShift(current: CGRect, size: CGSize, grabX: CGFloat) -> CGFloat {
+        let inset = min(32, size.width / 2)
+        let needed = grabX - current.minX - (size.width - inset)
+        return min(max(0, needed), max(0, current.width - size.width)).rounded()
     }
 
     /// Frame for a snapped window being dragged away: back to its old size,

@@ -90,6 +90,11 @@ final class SnapController {
             update(cursor: p)
         case .leftMouseUp:
             guard windowID != 0 else { return }
+            if !moving, !isSuspended(), let now = WindowList.info(windowID)?.frame,
+               now.size == initialFrame.size, now.origin != initialFrame.origin {
+                // A quick throw: the window moved but no drag event saw it yet.
+                beginMove(current: now, cursor: p)
+            }
             if moving, !isSuspended() {
                 update(cursor: p)
                 commit()
@@ -106,10 +111,15 @@ final class SnapController {
         axWindow = SnapController.axWindow(id: windowID, pid: pid, near: cursor)
         guard let w = axWindow else { return }
         if let size = engine.beginDrag(wid: windowID, initialFrame: initialFrame) {
-            // Dragged out of a snapped slot: back to the old size under the cursor.
-            let r = Geometry.unsnapped(current, restoreSize: size, grab: CGPoint(x: downPoint.x + current.minX - initialFrame.minX, y: cursor.y), keepVertical: true)
-            w.setSize(r.size)
-            w.setPosition(r.origin)
+            // Dragged out of a snapped slot: back to the old size. The system is
+            // moving the window, so (like Rectangle) leave its position alone and
+            // only shift it as far as the grab point needs to stay on it; a
+            // position computed from the lagging window list would make the
+            // window jump away from the cursor.
+            let grabX = downPoint.x + current.minX - initialFrame.minX
+            let shift = Geometry.titleBarUnsnapShift(current: current, size: size, grabX: grabX)
+            if shift > 0, let p = w.position { w.setPosition(CGPoint(x: p.x + shift, y: p.y)) }
+            w.setSize(size)
         }
     }
 
@@ -130,13 +140,17 @@ final class SnapController {
     }
 
     /// Snaps the window if the cursor is in a snap area. Returns true if it will.
+    /// `placedByBento`: Bento moved the window itself (modifier drag), so it
+    /// counts as placed even if the snap then fails.
     @discardableResult
-    private func commit() -> Bool {
+    private func commit(placedByBento: Bool = false) -> Bool {
         footprint.hide()
         guard let area, let w = axWindow else { return false }
         // Let the app finish its own drag handling before moving the window.
         DispatchQueue.main.async { [engine] in
-            engine.perform(area.command, on: w, screenIndex: area.screenIndex, source: .snap)
+            if !engine.perform(area.command, on: w, screenIndex: area.screenIndex, source: .snap), placedByBento {
+                engine.didPlace(w)
+            }
         }
         return true
     }
@@ -154,7 +168,7 @@ final class SnapController {
     /// Returns true if the window is being snapped (the engine then reports the placement).
     @discardableResult
     func endExternalMove(commit doCommit: Bool) -> Bool {
-        let snapped = doCommit && commit()
+        let snapped = doCommit && commit(placedByBento: true)
         reset()
         return snapped
     }

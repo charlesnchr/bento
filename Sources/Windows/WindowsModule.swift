@@ -140,7 +140,7 @@ public final class WindowsModule: BentoModule {
         }
 
         layouts.rules = s.launchRules
-        stash.sliver = CGFloat(max(4, s.stashSliver))
+        stash.sliver = CGFloat(WindowsSettings.finite(s.stashSliver, in: 4...200, else: 12))
         stash.revealOnHover = s.stashRevealOnHover
     }
 
@@ -162,6 +162,24 @@ public final class WindowsModule: BentoModule {
 
     var rectangleSource: RectangleImport.Source? { RectangleImport.locate() }
 
+    /// Imports a Rectangle / Rectangle Pro preferences plist or exported JSON the user picks.
+    func importFromFile() {
+        guard started else { return }
+        AppActivation.activateSelf()
+        let panel = NSOpenPanel()
+        panel.title = "Import Rectangle Settings"
+        panel.message = "Choose a Rectangle or Rectangle Pro preferences file (.plist) or a JSON file exported from Rectangle."
+        panel.allowedContentTypes = [.propertyList, .json]
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Preferences", isDirectory: true)
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let prefs = RectangleImport.read(url) else {
+            showAlert("Not a Rectangle settings file", "\(url.lastPathComponent) isn't a preferences plist or a Rectangle export.")
+            return
+        }
+        importPrefs(prefs, from: RectangleImport.source(forFile: url, prefs: prefs), interactive: true)
+    }
+
     func importFromRectangle(interactive: Bool) {
         guard started else { return }
         guard let src = RectangleImport.locate(), let prefs = RectangleImport.read(src.url) else {
@@ -175,6 +193,10 @@ public final class WindowsModule: BentoModule {
             }
             return
         }
+        importPrefs(prefs, from: src, interactive: interactive)
+    }
+
+    private func importPrefs(_ prefs: [String: Any], from src: RectangleImport.Source, interactive: Bool) {
         let reg = ActionRegistry.shared
         var current: [String: Shortcut] = [:]
         for a in actions { if let sc = reg.shortcut(for: a.id) { current[a.id] = sc } }

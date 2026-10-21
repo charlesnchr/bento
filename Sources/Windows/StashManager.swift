@@ -43,6 +43,7 @@ final class StashManager {
         guard let w = AXWindow.focused(), let id = w.windowID, let frame = w.frame, !w.isFullscreen else { NSSound.beep(); return }
         if items[id] != nil { unstash(id, focus: true); return }
         let snap = ScreenSnapshot.current()
+        guard !snap.rects.isEmpty else { NSSound.beep(); return }
         let si = snap.index(containing: frame)
         guard let hidden = StashManager.hiddenFrame(frame, edge: edge, screen: si, screens: snap.rects, sliver: sliver) else {
             NSSound.beep()
@@ -86,6 +87,7 @@ final class StashManager {
     /// Off-screen frame leaving `sliver` points visible, or nil if another
     /// display touches that edge (the window would just land on it).
     static func hiddenFrame(_ f: CGRect, edge: Edge, screen i: Int, screens: [ScreenRect], sliver: CGFloat) -> CGRect? {
+        guard screens.indices.contains(i) else { return nil }
         let s = screens[i].frame
         let others = screens.enumerated().filter { $0.offset != i }.map(\.element.frame)
         var r = f
@@ -116,6 +118,7 @@ final class StashManager {
         // Where the window really ended up (apps may clamp off-screen frames).
         let actual = item.window.frame ?? item.hidden
         let snap = ScreenSnapshot.current()
+        guard !snap.rects.isEmpty else { updateMouseMonitor(); return }
         let screen = snap.rects[snap.index(containing: item.shown)].frame
         let strip = StashManager.sliverRect(actual, edge: item.edge, screen: screen, sliver: sliver)
         if revealOnHover, !strip.isNull, strip.width > 0, strip.height > 0 {
