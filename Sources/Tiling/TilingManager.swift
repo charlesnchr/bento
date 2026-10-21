@@ -4,10 +4,18 @@ import BentoCore
 
 private let log = BentoLog.make("tiling")
 
+/// What AX callbacks point at: kept alive by every `AppObserver`, cleared on
+/// `stop()`, so a callback delivered after the manager stopped (or was freed)
+/// finds nil instead of a dangling pointer.
+final class TilingCallbackTarget {
+    weak var manager: TilingManager?
+    init(_ manager: TilingManager) { self.manager = manager }
+}
+
 private func tilingAXCallback(_ observer: AXObserver, _ element: AXUIElement, _ notification: CFString,
                               _ refcon: UnsafeMutableRawPointer?) {
     guard let refcon else { return }
-    Unmanaged<TilingManager>.fromOpaque(refcon).takeUnretainedValue().handle(notification as String, element)
+    Unmanaged<TilingCallbackTarget>.fromOpaque(refcon).takeUnretainedValue().manager?.handle(notification as String, element)
 }
 
 /// The running tiling manager. Exists only while tiling is on; `stop()` removes
@@ -57,6 +65,8 @@ final class TilingManager {
     private var generation = 0
 
     private static let layoutDefaultsKey = "BentoTilingDisplayLayouts"
+    /// AX messaging timeout for tracked windows (seconds).
+    static let axTimeout: Float = 0.5
 
     /// Dev/e2e only (`BENTO_DEV` + `BENTO_TILING_TITLE_FILTER`): tile only windows whose
     /// title contains this, so tests never touch other windows of the same app.
@@ -78,14 +88,17 @@ final class TilingManager {
         self.settings = settings
     }
 
-    private var refcon: UnsafeMutableRawPointer { Unmanaged.passUnretained(self).toOpaque() }
+    private var callbackTarget: TilingCallbackTarget?
     private var innerGap: CGFloat { settings.clampedInnerGap }
 
     // MARK: - Lifecycle
 
+    deinit { stop() }
+
     func start() {
         guard !running else { return }
         running = true
+        callbackTarget = TilingCallbackTarget(self)
         let ws = NSWorkspace.shared.notificationCenter
         func on(_ center: NotificationCenter, _ name: Notification.Name, _ body: @escaping (Notification) -> Void) {
             tokens.append((center, center.addObserver(forName: name, object: nil, queue: .main) { body($0) }))
@@ -101,9 +114,13 @@ final class TilingManager {
             self.dropApp(app.processIdentifier)
             self.scheduleRefresh(after: 0.05)
         }
-        for name in [NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification,
-                     NSWorkspace.activeSpaceDidChangeNotification] {
+        for name in [NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
             on(ws, name) { [weak self] _ in self?.scheduleRefresh(after: 0.1) }
+        }
+        on(ws, NSWorkspace.activeSpaceDidChangeNotification) { [weak self] _ in
+            // The window list can lag the Space switch animation: look again once it is over.
+            self?.scheduleRefresh(after: 0.1)
+            self?.later(0.8) { $0.scheduleRefresh(after: 0) }
         }
         on(ws, NSWorkspace.didActivateApplicationNotification) { [weak self] note in
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -130,6 +147,8 @@ final class TilingManager {
         generation += 1
         for (center, token) in tokens { center.removeObserver(token) }
         tokens = []
+        callbackTarget?.manager = nil
+        callbackTarget = nil
         observers.values.forEach { $0.invalidate() }
         observers = [:]
         refreshWork?.cancel(); refreshWork = nil; refreshDeadline = nil
@@ -408,6 +427,11 @@ final class TilingManager {
             guard let list: [AXUIElement] = obs.appElement.ax(kAXWindowsAttribute) else { continue }
             for el in list {
                 let w = AXWindow(element: el, pid: pid)
+                if idByElement[w] == nil {
+                    // Window elements don't inherit the app element's timeout: without
+                    // this, a hung app could block the main thread for 6 s per call.
+                    AXUIElementSetMessagingTimeout(el, TilingManager.axTimeout)
+                }
                 guard let wid = idByElement[w] ?? w.windowID else { continue }
                 listed.insert(wid)
                 if var t = windows[wid] {
@@ -512,7 +536,7 @@ final class TilingManager {
         if let obs = observers[pid] { return obs }
         // Apps that never answer AX are not retried forever (each try can block briefly).
         guard observerFailures[pid, default: 0] < 3 else { return nil }
-        guard let obs = AppObserver(pid: pid, refcon: refcon, callback: tilingAXCallback) else {
+        guard let target = callbackTarget, let obs = AppObserver(pid: pid, target: target, callback: tilingAXCallback) else {
             observerFailures[pid, default: 0] += 1
             return nil
         }
@@ -778,6 +802,7 @@ final class TilingManager {
             if let f = TilingManager.titleFilter, !w.title.contains(f) { return }
             forcedPIDs.insert(w.pid)
             guard let obs = ensureObserver(w.pid) else { return }
+            AXUIElementSetMessagingTimeout(w.element, TilingManager.axTimeout)
             windows[wid] = TrackedWindow(ax: w, bundleID: app.bundleIdentifier, autoFloat: true, userFloat: false,
                                          originalFrame: w.frame, detected: Date())
             idByElement[w] = wid
