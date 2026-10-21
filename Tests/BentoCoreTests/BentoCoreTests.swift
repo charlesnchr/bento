@@ -100,3 +100,16 @@ import Testing
     #expect(RecorderView.shortcut(keyCode: 90, modifiers: [.shift]) == Shortcut("shift+f20"))
     #expect(RecorderView.shortcut(keyCode: 55, modifiers: [.command]) == nil)        // bare modifier key
 }
+
+@Test func sqlitePreservesNULAndEmptyText() throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("bento-\(UUID().uuidString).db").path
+    let db = try SQLiteDB(path: path)
+    try db.exec("CREATE TABLE t (s TEXT)")
+    try db.run("INSERT INTO t (s) VALUES (?)", ["a\u{0}b"])
+    try db.run("INSERT INTO t (s) VALUES (?)", [""])
+    try db.run("INSERT INTO t (s) VALUES (?)", ["æøå 🍱"])
+    let rows = try db.query("SELECT s FROM t ORDER BY rowid")
+    #expect(rows[0]["s"] as? String == "a\u{0}b")
+    #expect(rows[1]["s"] as? String == "")
+    #expect(rows[2]["s"] as? String == "æøå 🍱")
+}

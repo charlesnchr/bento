@@ -65,7 +65,14 @@ public final class SQLiteDB {
                 switch sqlite3_column_type(stmt, i) {
                 case SQLITE_INTEGER: row[name] = sqlite3_column_int64(stmt, i)
                 case SQLITE_FLOAT: row[name] = sqlite3_column_double(stmt, i)
-                case SQLITE_TEXT: row[name] = String(cString: sqlite3_column_text(stmt, i))
+                case SQLITE_TEXT:
+                    // Explicit length: text may contain NUL characters.
+                    let n = Int(sqlite3_column_bytes(stmt, i))
+                    if let p = sqlite3_column_text(stmt, i) {
+                        row[name] = String(decoding: UnsafeBufferPointer(start: p, count: n), as: UTF8.self)
+                    } else {
+                        row[name] = ""
+                    }
                 case SQLITE_BLOB:
                     let n = Int(sqlite3_column_bytes(stmt, i))
                     row[name] = n > 0 ? Data(bytes: sqlite3_column_blob(stmt, i), count: n) : Data()
@@ -98,7 +105,16 @@ public final class SQLiteDB {
             let idx = Int32(i + 1)
             switch p {
             case nil, is NSNull: sqlite3_bind_null(stmt, idx)
-            case let v as String: sqlite3_bind_text(stmt, idx, v, -1, SQLiteDB.transient)
+            case let v as String:
+                // Explicit byte length so embedded NULs don't truncate the text.
+                let bytes = Array(v.utf8)
+                if bytes.isEmpty {
+                    sqlite3_bind_text(stmt, idx, "", 0, SQLiteDB.transient)
+                } else {
+                    _ = bytes.withUnsafeBytes {
+                        sqlite3_bind_text(stmt, idx, $0.baseAddress!.assumingMemoryBound(to: CChar.self), Int32($0.count), SQLiteDB.transient)
+                    }
+                }
             case let v as Int: sqlite3_bind_int64(stmt, idx, Int64(v))
             case let v as Int64: sqlite3_bind_int64(stmt, idx, v)
             case let v as Int32: sqlite3_bind_int64(stmt, idx, Int64(v))
