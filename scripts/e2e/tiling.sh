@@ -200,8 +200,8 @@ phase_live() {
   # Rapid open/close.
   open_docs 4 6
   $CTL wait 6 6 >/dev/null || true
-  $CTL close tiling-qa-5; sleep 0.1; $CTL close tiling-qa-2; open_docs 5 5; sleep 0.1; $CTL close tiling-qa-6
-  $CTL wait 4 6 >/dev/null || true; sleep 0.3; $CTL close tiling-qa-5
+  { $CTL close tiling-qa-5; sleep 0.1; $CTL close tiling-qa-2; open_docs 5 5; sleep 0.1; $CTL close tiling-qa-6
+    $CTL wait 4 6 >/dev/null || true; sleep 0.3; $CTL close tiling-qa-5; } 2>/dev/null
   $CTL wait 4 6 >/dev/null; check 4 && ok "rapid open/close settles with 4 tiled"
 
   # Minimize / unminimize.
