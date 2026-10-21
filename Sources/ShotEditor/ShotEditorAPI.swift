@@ -55,6 +55,16 @@ public final class ShotEditor {
     private init() {
         ConfigStore.shared.materialize(EditorSettings.section, default: EditorSettings())
         DispatchQueue.main.async { [weak self] in self?.pruneIfNeeded(force: true) }
+        // Quitting doesn't close windows: save open editors and let queued
+        // PNG writes finish, or the newest captures lose their original.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.prepareForTermination()
+        }
+    }
+
+    func prepareForTermination() {
+        for ed in editors { ed.persist(final: true) }
+        store.waitForWrites()
     }
 
     /// Stores the capture in history and opens it in an editor window.
@@ -73,8 +83,10 @@ public final class ShotEditor {
 
     /// Re-opens the most recent capture, with its annotations still editable.
     public func reopenLast() {
-        guard let e = store.entries().first else {
-            HUD.show("No captures yet", symbol: "photo.on.rectangle")
+        // Skip captures whose original is gone (deleted by hand, or a write
+        // that never finished) instead of failing on the newest one.
+        guard let e = store.entries().first(where: { store.hasImage($0) }) else {
+            Feedback.hud("No captures yet", symbol: "photo.on.rectangle")
             return
         }
         reopen(entryID: e.id)
@@ -168,10 +180,11 @@ public final class ShotEditor {
             return true
         }
         guard let e = store.entry(id: entryID), let image = store.loadImage(e) else {
-            HUD.show("Capture not found", symbol: "exclamationmark.triangle")
+            Feedback.hud("Capture not found", symbol: "exclamationmark.triangle")
             return false
         }
-        presentEditor(doc: e.doc, image: image, near: e.doc.captureRect)
+        let doc = e.doc.sanitized(imageWidth: image.width, imageHeight: image.height)
+        presentEditor(doc: doc, image: image, near: doc.captureRect)
         return true
     }
 

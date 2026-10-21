@@ -97,20 +97,32 @@ final class HistoryStore {
         guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
         var out: [Entry] = []
         for name in names where !name.hasPrefix(".") {
-            let dir = root.appendingPathComponent(name, isDirectory: true)
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent(HistoryStore.docName)),
-                  let doc = try? ShotDocument.decode(data) else { continue }
-            out.append(Entry(id: name, dir: dir, doc: doc))
+            if let e = entry(id: name) { out.append(e) }
         }
         return out.sorted { ($0.doc.created, $0.id) > ($1.doc.created, $1.id) }
     }
 
+    /// Reads one capture. Missing or unreadable documents (damaged, partly
+    /// written by something else) give nil; readable ones are sanitized and
+    /// re-keyed to their folder so later saves go to the right place.
     func entry(id: String) -> Entry? {
+        guard !id.isEmpty, !id.contains("/"), id != "..", id != "." else { return nil }
         let dir = root.appendingPathComponent(id, isDirectory: true)
         guard let data = try? Data(contentsOf: dir.appendingPathComponent(HistoryStore.docName)),
-              let doc = try? ShotDocument.decode(data) else { return nil }
+              var doc = try? ShotDocument.decode(data) else { return nil }
+        doc = doc.sanitized()
+        doc.id = id
         return Entry(id: id, dir: dir, doc: doc)
     }
+
+    /// Whether the capture's original image is on disk (after pending writes).
+    func hasImage(_ entry: Entry) -> Bool {
+        waitForWrites()
+        return FileManager.default.fileExists(atPath: entry.imageURL.path)
+    }
+
+    /// Blocks until queued image / thumbnail writes are done (quit, reopen).
+    func waitForWrites() { io.sync {} }
 
     /// The entry an image file belongs to, if it is a history original.
     func entry(forImageAt url: URL) -> Entry? {
@@ -121,7 +133,7 @@ final class HistoryStore {
     }
 
     func loadImage(_ entry: Entry) -> CGImage? {
-        io.sync {} // wait for a pending write of this capture
+        waitForWrites() // a pending write of this capture
         return ImageCodec.load(entry.imageURL)?.0
     }
 

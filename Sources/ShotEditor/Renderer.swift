@@ -339,6 +339,7 @@ enum Renderer {
 
     static func rulerLabel(_ a: Annotation) -> String {
         let d = a.p1.distance(to: a.p2)
+        guard d.isFinite, d < 1e9 else { return "–" }
         return d.rounded() == d || abs(d - d.rounded()) < 0.05 ? "\(Int(d.rounded()))" : String(format: "%.1f", d)
     }
 
@@ -433,7 +434,8 @@ enum Renderer {
         case .freehand, .highlight:
             let pts = a.path ?? [a.p1, a.p2]
             let w = (a.kind == .highlight ? Metrics.highlightWidth(a.size) : Metrics.stroke(a.size)) / 2 + t
-            if pts.count == 1 { return p.distance(to: pts[0]) <= w }
+            guard let first = pts.first else { return false }
+            if pts.count == 1 { return p.distance(to: first) <= w }
             for i in 1..<pts.count where p.distance(toSegment: pts[i - 1], pts[i]) <= w { return true }
             return false
         }
