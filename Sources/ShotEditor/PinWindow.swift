@@ -20,21 +20,26 @@ final class PinController: NSObject, NSWindowDelegate {
         self.scale = scale
         self.entryID = entryID
         let size = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        // Tiny captures (a 1×1 px pick) would make an invisible, unclickable
+        // pin: enlarge so the shorter side is at least `minSide`.
+        let up = max(1, PinController.minSide / max(0.5, min(size.width, size.height)))
+        let shown = CGSize(width: size.width * up, height: size.height * up)
         var frame: CGRect
         if rect != .zero {
-            frame = NSScreen.cocoaRect(fromAX: CGRect(origin: rect.origin, size: size))
+            frame = NSScreen.cocoaRect(fromAX: CGRect(origin: rect.origin, size: shown))
         } else {
             let vf = (NSScreen.underMouse ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
-            frame = CGRect(x: vf.midX - size.width / 2, y: vf.midY - size.height / 2, width: size.width, height: size.height)
+            frame = CGRect(x: vf.midX - shown.width / 2, y: vf.midY - shown.height / 2, width: shown.width, height: shown.height)
         }
+        zoom = up
         // Keep it on a screen and not larger than it.
         if let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }) ?? NSScreen.main {
             let vf = screen.visibleFrame
             let s = min(1, vf.width / frame.width, vf.height / frame.height)
-            frame.size = CGSize(width: frame.width * s, height: frame.height * s)
+            frame.size = CGSize(width: max(1, frame.width * s), height: max(1, frame.height * s))
             frame.origin.x = frame.origin.x.clamped(vf.minX...max(vf.minX, vf.maxX - frame.width))
             frame.origin.y = frame.origin.y.clamped(vf.minY...max(vf.minY, vf.maxY - frame.height))
-            zoom = s
+            zoom = up * s
         }
         panel = PinPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
         view = PinView(frame: CGRect(origin: .zero, size: frame.size))
@@ -70,15 +75,19 @@ final class PinController: NSObject, NSWindowDelegate {
 
     // MARK: Actions
 
+    static let minSide: CGFloat = 32
+
     func scale(by factor: CGFloat, around screenPoint: NSPoint? = nil) {
-        zoom = panel.frame.width / max(1, pointSize.width) // the user may have resized by the edges
-        let newZoom = (zoom * factor).clamped(0.1...5)
+        guard factor.isFinite, factor > 0 else { return }
+        zoom = panel.frame.width / max(0.5, pointSize.width) // the user may have resized by the edges
+        let minZoom = max(0.1, PinController.minSide / max(0.5, min(pointSize.width, pointSize.height)))
+        let newZoom = (zoom * factor).clamped(minZoom...max(5, minZoom))
         guard newZoom != zoom else { return }
         zoom = newZoom
         let f = panel.frame
         let anchor = screenPoint ?? NSPoint(x: f.midX, y: f.midY)
-        let rx = (anchor.x - f.minX) / f.width, ry = (anchor.y - f.minY) / f.height
-        let size = CGSize(width: max(24, pointSize.width * zoom), height: max(24, pointSize.height * zoom))
+        let rx = (anchor.x - f.minX) / max(1, f.width), ry = (anchor.y - f.minY) / max(1, f.height)
+        let size = CGSize(width: pointSize.width * zoom, height: pointSize.height * zoom)
         panel.setFrame(CGRect(x: anchor.x - rx * size.width, y: anchor.y - ry * size.height, width: size.width, height: size.height), display: true)
     }
 
