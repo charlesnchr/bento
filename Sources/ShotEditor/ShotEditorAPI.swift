@@ -63,7 +63,7 @@ public final class ShotEditor {
     }
 
     func prepareForTermination() {
-        for ed in editors { ed.persist(final: true) }
+        for ed in editors { ed.saveNow() }
         store.waitForWrites()
     }
 

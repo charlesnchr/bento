@@ -234,6 +234,13 @@ final class EditorController: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
+    /// Saves everything now (the app is quitting): ends text editing and
+    /// slider drags first, so typed text and the last edits are kept.
+    func saveNow() {
+        settleForUndo()
+        persist(final: true)
+    }
+
     /// Writes the document (and on close a fresh thumbnail) to history.
     func persist(final: Bool) {
         autosave?.cancel()
@@ -439,6 +446,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     func textChanged(_ text: String) {
         guard let id = editingTextID else { return }
         updateAnnotation(id) { $0.text = text }
+        markDirty() // autosaved while typing, not only when editing ends
     }
 
     func endTextEditing() {

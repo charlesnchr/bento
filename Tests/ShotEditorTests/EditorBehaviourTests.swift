@@ -350,6 +350,19 @@ struct EditorBehaviourTests {
         HistoryStore.shared.delete(docID)
     }
 
+    @Test func quittingMidEditSavesTheText() throws {
+        let ed = makeEditor(inHistory: true)
+        let docID = ed.doc.id
+        tool(ed, "t")
+        click(ed, CGPoint(x: 60, y: 60))
+        ed.textChanged("typed before quitting")
+        ed.saveNow() // what ShotEditor does on willTerminate (windows aren't closed)
+        let entry = try #require(HistoryStore.shared.entry(id: docID))
+        #expect(entry.doc.annotations.map(\.text) == ["typed before quitting"])
+        ed.close()
+        HistoryStore.shared.delete(docID)
+    }
+
     // MARK: Keyboard
 
     @Test func selectionKeysIncludingShiftedBrackets() {
