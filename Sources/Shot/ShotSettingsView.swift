@@ -52,6 +52,7 @@ struct ShotSettingsView: View {
                 Toggle("Show magnifier", isOn: s.showMagnifier)
                 Toggle("Adjust selection before capturing (Return captures)", isOn: s.adjustSelectionBeforeCapture)
                 Toggle("Fullscreen captures all displays", isOn: s.fullscreenAllDisplays)
+                Toggle("Include the pointer", isOn: s.includeCursor)
             }
 
             Section("Window Capture") {
@@ -95,12 +96,18 @@ struct ShotSettingsView: View {
             } header: {
                 Text("Scrolling Capture")
             } footer: {
-                Text("Select the scrollable area, then don't touch anything while it scrolls. Manual mode works with apps that scroll in a non-native way (Terminal, VS Code). Reverse direction helps with Mos, Scroll Reverser and similar tools.")
+                Text("Select the scrollable area, then don't touch anything while it scrolls. Manual mode works with apps that scroll in a non-native way (Terminal, VS Code). Reverse direction helps with Mos, Scroll Reverser and similar tools. Wide regions stop earlier: one capture is limited to about 80 megapixels.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Text & Colour") {
                 Toggle("Keep line breaks in recognized text", isOn: s.ocrKeepLineBreaks)
+                Picker("Text language", selection: s.ocrLanguage) {
+                    Text("Automatic").tag("")
+                    ForEach(ocrLanguages, id: \.self) { code in
+                        Text(Locale.current.localizedString(forIdentifier: code) ?? code).tag(code)
+                    }
+                }
                 Picker("Colour format", selection: s.colorFormat) {
                     ForEach(ColorFormat.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
@@ -135,8 +142,13 @@ struct ShotSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
     }
 
+    @State private var ocrLanguages: [String] = {
+        let list = OCRText.supportedLanguages
+        return list
+    }()
+
     private var maxHeights: [Int] {
-        var list = [10_000, 20_000, 50_000, 100_000, 200_000]
+        var list = [10_000, 20_000, 50_000, ScrollStitcher.heightLimit]
         if !list.contains(model.value.scrollMaxHeight) { list.append(model.value.scrollMaxHeight); list.sort() }
         return list
     }

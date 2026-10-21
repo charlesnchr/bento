@@ -31,6 +31,7 @@ struct WindowInfo {
     let frame: CGRect // AX
     let appName: String
     let title: String
+    var layer = 0
 }
 
 /// ScreenCaptureKit wrappers. All captures exclude Bento's own windows and
@@ -62,15 +63,37 @@ enum ScreenGrabber {
         try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
     }
 
-    static func ownApp(_ content: SCShareableContent) -> [SCRunningApplication] {
-        content.applications.filter { $0.processID == getpid() }
+    /// Bento's own transient chrome: capture overlays, HUD, countdown, the
+    /// scrolling-capture frame and panel, open menus (everything at status-bar
+    /// level or above except the menu-bar icon). It is never part of a capture.
+    /// Bento's normal windows (editor, notes, clipboard history, settings,
+    /// pins) are captured like any other app's, exactly as the user sees them.
+    @MainActor
+    static func chromeWindowIDs() -> Set<CGWindowID> {
+        var ids = Set<CGWindowID>()
+        for w in NSApp.windows where w.windowNumber > 0 && w.level.rawValue >= NSWindow.Level.statusBar.rawValue {
+            if String(describing: type(of: w)).contains("StatusBar") { continue }
+            ids.insert(CGWindowID(w.windowNumber))
+        }
+        return ids
     }
 
-    static func configuration(width: Int, height: Int) -> SCStreamConfiguration {
+    static func filter(display: SCDisplay, content: SCShareableContent, excluding ids: Set<CGWindowID>) -> SCContentFilter {
+        SCContentFilter(display: display, excludingWindows: content.windows.filter { ids.contains($0.windowID) })
+    }
+
+    /// ScreenCaptureKit's points-to-pixels factor, never 0/NaN (point sizes
+    /// are computed by dividing by it).
+    static func safeScale(_ s: Float, fallback: CGFloat = 2) -> CGFloat {
+        let v = CGFloat(s)
+        return v.isFinite && v >= 0.5 ? v : max(1, fallback)
+    }
+
+    static func configuration(width: Int, height: Int, cursor: Bool = false) -> SCStreamConfiguration {
         let c = SCStreamConfiguration()
         c.width = max(1, width)
         c.height = max(1, height)
-        c.showsCursor = false
+        c.showsCursor = cursor
         c.captureResolution = .best
         c.colorSpaceName = CGColorSpace.sRGB
         c.pixelFormat = kCVPixelFormatType_32BGRA
@@ -78,61 +101,83 @@ enum ScreenGrabber {
     }
 
     /// Captures a display, or a display-local rect of it (points).
-    static func capture(display: SCDisplay, content: SCShareableContent, localRect: CGRect? = nil) async throws -> (CGImage, CGFloat) {
-        let filter = SCContentFilter(display: display, excludingApplications: ownApp(content), exceptingWindows: [])
-        let scale = CGFloat(filter.pointPixelScale)
+    static func capture(display: SCDisplay, content: SCShareableContent, localRect: CGRect? = nil,
+                        excluding ids: Set<CGWindowID>, fallbackScale: CGFloat, cursor: Bool = false) async throws -> (CGImage, CGFloat) {
+        let filter = filter(display: display, content: content, excluding: ids)
+        let scale = safeScale(filter.pointPixelScale, fallback: fallbackScale)
         let rect = localRect ?? CGRect(x: 0, y: 0, width: CGFloat(display.width), height: CGFloat(display.height))
-        let cfg = configuration(width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()))
+        let cfg = configuration(width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()), cursor: cursor)
         if localRect != nil { cfg.sourceRect = rect }
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
         return (image, scale)
     }
 
-    /// Freezes the given screens (all by default), concurrently.
-    static func snapshot(screens: [NSScreen] = NSScreen.screens) async throws -> [DisplaySnapshot] {
+    /// Freezes the given screens (all by default), concurrently. Screen
+    /// geometry is read on the main thread; the captures run in parallel.
+    @MainActor
+    static func snapshot(screens: [NSScreen] = NSScreen.screens, cursor: Bool = false) async throws -> [DisplaySnapshot] {
+        let targets = screens.map { (screen: $0, id: $0.displayID, axFrame: $0.axFrame, scale: $0.backingScaleFactor) }
+        let chrome = chromeWindowIDs()
         let content = try await content()
         let start = Date()
-        var result: [DisplaySnapshot] = []
-        try await withThrowingTaskGroup(of: DisplaySnapshot?.self) { group in
-            for screen in screens {
-                guard let display = content.displays.first(where: { $0.displayID == screen.displayID }) else { continue }
-                let axFrame = screen.axFrame
+        var shots: [CGDirectDisplayID: (image: CGImage, scale: CGFloat)] = [:]
+        try await withThrowingTaskGroup(of: (CGDirectDisplayID, CGImage, CGFloat).self) { group in
+            for t in targets {
+                guard let display = content.displays.first(where: { $0.displayID == t.id }) else { continue }
+                let fallback = t.scale
                 group.addTask {
-                    let (image, scale) = try await capture(display: display, content: content)
-                    return DisplaySnapshot(screen: screen, displayID: display.displayID, axFrame: axFrame, scale: scale, image: image)
+                    let (image, scale) = try await capture(display: display, content: content, excluding: chrome,
+                                                           fallbackScale: fallback, cursor: cursor)
+                    return (display.displayID, image, scale)
                 }
             }
-            for try await s in group { if let s { result.append(s) } }
+            for try await (id, image, scale) in group { shots[id] = (image, scale) }
+        }
+        // Keep NSScreen order (primary first).
+        let result = targets.compactMap { t in
+            shots[t.id].map { DisplaySnapshot(screen: t.screen, displayID: t.id, axFrame: t.axFrame, scale: $0.scale, image: $0.image) }
         }
         guard !result.isEmpty else { throw GrabError.noDisplay }
         log.debug("snapshot of \(result.count) display(s) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
-        // Keep NSScreen order (primary first).
-        return screens.compactMap { s in result.first { $0.displayID == s.displayID } }
+        return result
+    }
+
+    /// Whether at least 1×1 pt of a global AX rect is on some display. Main thread.
+    static func isOnScreen(axRect r: CGRect) -> Bool {
+        NSScreen.screens.contains { s in
+            let i = s.axFrame.intersection(r)
+            return !i.isNull && i.width >= 1 && i.height >= 1
+        }
     }
 
     /// Captures a global AX rect live (repeat-area, scrolling frames).
-    static func capture(axRect: CGRect, content: SCShareableContent? = nil) async throws -> (CGImage, CGFloat) {
-        guard let screen = NSScreen.containing(axRect: axRect) else { throw GrabError.noDisplay }
+    @MainActor
+    static func capture(axRect: CGRect, content: SCShareableContent? = nil, excluding: Set<CGWindowID>? = nil,
+                        cursor: Bool = false) async throws -> (CGImage, CGFloat) {
+        guard isOnScreen(axRect: axRect), let screen = NSScreen.containing(axRect: axRect) else { throw GrabError.noDisplay }
+        let displayID = screen.displayID, fallback = screen.backingScaleFactor
+        let local = ShotGeometry.localRect(axRect, in: screen.axFrame).intersection(CGRect(origin: .zero, size: screen.frame.size))
+        guard !local.isNull, local.width >= 1, local.height >= 1 else { throw GrabError.noDisplay }
+        let chrome = excluding ?? chromeWindowIDs()
         let content: SCShareableContent = try await {
             if let content { return content }
             return try await Self.content()
         }()
-        guard let display = content.displays.first(where: { $0.displayID == screen.displayID }) else { throw GrabError.noDisplay }
-        let local = ShotGeometry.localRect(axRect, in: screen.axFrame).intersection(CGRect(origin: .zero, size: screen.frame.size))
-        guard !local.isNull, local.width >= 1, local.height >= 1 else { throw GrabError.noDisplay }
-        return try await capture(display: display, content: content, localRect: local)
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw GrabError.noDisplay }
+        return try await capture(display: display, content: content, localRect: local, excluding: chrome, fallbackScale: fallback, cursor: cursor)
     }
 
     /// Captures one window on its own (even if covered), with or without the
     /// system shadow. With the shadow, ScreenCaptureKit scales the window to
     /// fit the requested size, so a half-resolution probe measures the shadow
     /// margins first and the real capture is sized to keep the window at 1:1.
-    static func captureWindow(id: CGWindowID, shadow: Bool) async throws -> (CGImage, CGFloat) {
+    static func captureWindow(id: CGWindowID, shadow: Bool, fallbackScale: CGFloat = 2) async throws -> (CGImage, CGFloat) {
         let content = try await content()
         guard let window = content.windows.first(where: { $0.windowID == id }) else { throw GrabError.noWindow }
         let filter = SCContentFilter(desktopIndependentWindow: window)
-        let scale = CGFloat(filter.pointPixelScale)
-        let contentPx = CGSize(width: (filter.contentRect.width * scale).rounded(), height: (filter.contentRect.height * scale).rounded())
+        let scale = safeScale(filter.pointPixelScale, fallback: fallbackScale)
+        let contentPx = CGSize(width: max(1, (filter.contentRect.width * scale).rounded()),
+                               height: max(1, (filter.contentRect.height * scale).rounded()))
         let cfg = configuration(width: Int(contentPx.width), height: Int(contentPx.height))
         cfg.ignoreShadowsSingleWindow = !shadow
         cfg.shouldBeOpaque = false
@@ -142,22 +187,58 @@ enum ScreenGrabber {
         cfg.width = max(1, Int(contentPx.width / 2))
         cfg.height = max(1, Int(contentPx.height / 2))
         let probe = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
-        if let bb = opaqueBounds(probe), bb.width > 4, bb.height > 4 {
-            let kx = bb.width / CGFloat(probe.width), ky = bb.height / CGFloat(probe.height)
-            cfg.width = Int((contentPx.width / kx).rounded())
-            cfg.height = Int((contentPx.height / ky).rounded())
-        } else {
-            cfg.width = Int(contentPx.width)
-            cfg.height = Int(contentPx.height)
+        let size = shadowCanvas(content: contentPx, probe: CGSize(width: probe.width, height: probe.height),
+                                opaque: opaqueBounds(probe), scale: scale)
+        cfg.width = Int(size.width)
+        cfg.height = Int(size.height)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+        log.debug("window \(id): content \(Int(contentPx.width))x\(Int(contentPx.height)) probe \(probe.width)x\(probe.height) -> \(image.width)x\(image.height)")
+        return (image, scale)
+    }
+
+    /// Output size (pixels) that keeps a window at 1:1 when ScreenCaptureKit
+    /// fits window + shadow into it, from a half-size probe and the probe's
+    /// opaque (window body) bounds. The shadow is symmetric left/right, so the
+    /// smaller side margin is used for both (a translucent sidebar must not
+    /// count as shadow). Margins are capped so odd, mostly transparent windows
+    /// can't ask for huge images.
+    static func shadowCanvas(content: CGSize, probe: CGSize, opaque bb: CGRect?, scale: CGFloat) -> CGSize {
+        guard let bb, bb.width > 4, bb.height > 4, probe.width > 0, probe.height > 0 else { return content }
+        let marginX = max(0, min(bb.minX, probe.width - bb.maxX))
+        let windowW = max(1, probe.width - 2 * marginX)
+        let kx = windowW / probe.width, ky = bb.height / probe.height
+        let maxMargin = 160 * max(1, scale)
+        func fit(_ c: CGFloat, _ k: CGFloat) -> CGFloat {
+            guard k.isFinite, k > 0 else { return c }
+            return min(max(c, (c / min(1, k)).rounded()), c + 2 * maxMargin)
         }
-        return (try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg), scale)
+        return CGSize(width: fit(content.width, kx), height: fit(content.height, ky))
+    }
+
+    /// Low-resolution image of one window on its own (no shadow, at most
+    /// 256 px on the long side). Its alpha tells visible parts from
+    /// transparent ones: apps keep invisible, click-through windows on screen
+    /// (e.g. a floating chat bar's full-height container) that must not win
+    /// window picking over the window the user actually points at.
+    static func alphaProbe(windowID: CGWindowID, content: SCShareableContent) async throws -> PixelFrame? {
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else { return nil }
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let rect = filter.contentRect
+        guard rect.width >= 1, rect.height >= 1 else { return nil }
+        let k = min(1, 256 / max(rect.width, rect.height))
+        let cfg = configuration(width: Int((rect.width * k).rounded(.up)), height: Int((rect.height * k).rounded(.up)))
+        cfg.ignoreShadowsSingleWindow = true
+        cfg.shouldBeOpaque = false
+        return PixelFrame(try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg))
     }
 
     /// The wallpaper behind a global AX rect (for "window over wallpaper").
+    @MainActor
     static func wallpaper(axRect: CGRect) async throws -> CGImage? {
         guard let screen = NSScreen.containing(axRect: axRect) else { return nil }
+        let displayID = screen.displayID, screenAX = screen.axFrame, fallback = screen.backingScaleFactor
         let content = try await content()
-        guard let display = content.displays.first(where: { $0.displayID == screen.displayID }) else { return nil }
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else { return nil }
         let desktopLevel = Int(CGWindowLevelForKey(.desktopWindow))
         let walls = content.windows.filter {
             ($0.owningApplication?.bundleIdentifier == "com.apple.dock" && ($0.title ?? "").hasPrefix("Wallpaper"))
@@ -165,36 +246,43 @@ enum ScreenGrabber {
         }
         guard !walls.isEmpty else { return nil }
         let filter = SCContentFilter(display: display, including: walls)
-        let scale = CGFloat(filter.pointPixelScale)
-        let local = ShotGeometry.localRect(axRect, in: screen.axFrame)
+        let scale = safeScale(filter.pointPixelScale, fallback: fallback)
+        let local = ShotGeometry.localRect(axRect, in: screenAX)
         let cfg = configuration(width: Int((local.width * scale).rounded()), height: Int((local.height * scale).rounded()))
         cfg.sourceRect = local
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
     }
 
-    /// On-screen windows of other apps, front to back.
+    /// On-screen windows, front to back, including Bento's own normal windows
+    /// (editor, notes, clipboard history, settings, pins). Overlays, HUDs and
+    /// menus sit at higher levels and are left out.
     static func windowList() -> [WindowInfo] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
-        let me = getpid()
         return list.compactMap { d in
             guard let id = d[kCGWindowNumber as String] as? CGWindowID,
                   let layer = d[kCGWindowLayer as String] as? Int, (0..<20).contains(layer),
-                  let pid = d[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                  let pid = d[kCGWindowOwnerPID as String] as? pid_t,
                   let b = d[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: b),
                   frame.width >= 24, frame.height >= 24 else { return nil }
             if let alpha = d[kCGWindowAlpha as String] as? Double, alpha < 0.05 { return nil }
             let owner = d[kCGWindowOwnerName as String] as? String ?? ""
             if owner == "Window Server" || owner == "Dock" { return nil }
-            return WindowInfo(id: id, pid: pid, frame: frame, appName: owner, title: d[kCGWindowName as String] as? String ?? "")
+            return WindowInfo(id: id, pid: pid, frame: frame, appName: owner, title: d[kCGWindowName as String] as? String ?? "", layer: layer)
         }
     }
 
     /// The focused window of the frontmost app (AX), else its frontmost on-screen window.
+    /// Bento's own windows are looked up directly (no AX round trip to ourselves).
     static func activeWindow() -> WindowInfo? {
         let list = windowList()
-        if let ax = AXWindow.focused(), let id = ax.windowID, let w = list.first(where: { $0.id == id }) { return w }
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
+        if pid == getpid() {
+            let mine = [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 }.map { CGWindowID($0.windowNumber) }
+            if let w = mine.lazy.compactMap({ id in list.first { $0.id == id } }).first { return w }
+        } else if let ax = AXWindow.focused(), let id = ax.windowID, let w = list.first(where: { $0.id == id }) {
+            return w
+        }
         return list.first { $0.pid == pid }
     }
 

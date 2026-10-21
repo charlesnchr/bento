@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import ScreenCaptureKit
 import BentoCore
 
 /// What the frozen-screen overlay is used for.
@@ -64,6 +65,18 @@ final class CaptureOverlay {
     private var flashWork: DispatchWorkItem?
     private var finished = false
     private var pixelCache: [Int: PixelFrame] = [:]
+    private var screenObserver: NSObjectProtocol?
+    /// A click that picks (window, colour, double-click confirm) or a
+    /// right-click that cancels completes on mouse-up, so the release isn't
+    /// delivered to the app under the closed overlay (a stray mouseup in a
+    /// web page, or a right-mouse-up opening a context menu).
+    private var clickStarted = false
+    private var rightClickStarted = false
+    private var confirmOnUp = false
+    /// Alpha probes of windows under the pointer (window mode), by window id.
+    private var probes: [CGWindowID: PixelFrame] = [:]
+    private var probing: Set<CGWindowID> = []
+    private var probeContent: SCShareableContent?
 
     enum AdjustDrag { case move(start: CGPoint, original: CGRect), resize(edges: Edges, original: CGRect) }
     struct Edges: OptionSet { let rawValue: Int; static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), top = Edges(rawValue: 4), bottom = Edges(rawValue: 8) }
@@ -102,6 +115,7 @@ final class CaptureOverlay {
             panels.append(panel)
             views.append(view)
         }
+        if mode == .window { prefetchProbes() }
         updateHover()
         for v in views { v.refresh() }
         for p in panels { p.orderFrontRegardless() }
@@ -109,12 +123,29 @@ final class CaptureOverlay {
         keyPanel.makeKeyAndOrderFront(nil)
         keyPanel.makeFirstResponder(keyPanel.contentView)
         currentCursor.set()
+        // A display added, removed or rearranged invalidates the frozen
+        // frames and panel positions: cancel rather than capture wrong pixels.
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            guard let self, !CaptureOverlay.layoutMatches(self.snapshots) else { return }
+            ScreenGrabber.log.debug("overlay cancelled: display configuration changed")
+            self.finish(.cancelled)
+        }
         ScreenGrabber.log.debug("overlay shown on \(self.panels.count) display(s), key=\(keyPanel.isKeyWindow), mode=\(String(describing: self.mode), privacy: .public)")
+    }
+
+    /// Whether every frozen display still exists with the same frame (a
+    /// resolution or scale change changes the point frame too).
+    static func layoutMatches(_ snaps: [DisplaySnapshot]) -> Bool {
+        let now = Dictionary(NSScreen.screens.map { ($0.displayID, $0.axFrame) }, uniquingKeysWith: { a, _ in a })
+        return snaps.allSatisfy { now[$0.displayID] == $0.axFrame }
     }
 
     func finish(_ outcome: OverlayOutcome) {
         guard !finished else { return }
         finished = true
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         ScreenGrabber.log.debug("overlay finished: \(String(describing: outcome).prefix(80), privacy: .public)")
         for p in panels { p.orderOut(nil) }
         for v in views { v.teardown() }
@@ -122,6 +153,8 @@ final class CaptureOverlay {
         panels = []
         views = []
         pixelCache = [:]
+        probes = [:]
+        probeContent = nil
         flashWork?.cancel()
         flashWork = nil
         CaptureOverlay.current = nil
@@ -255,15 +288,13 @@ final class CaptureOverlay {
         cursor = p
         cursorDisplay = displayIndex(at: p) ?? cursorDisplay
         switch mode {
-        case .color:
-            pickColor(text: event.modifierFlags.contains(.shift))
-        case .window:
-            updateHover()
-            if let w = hoveredWindowInfo { finish(.window(w, snapshotFor(w))) }
+        case .color, .window:
+            clickStarted = true // picks on mouse-up
+            if mode == .window { updateHover() }
         case .area:
             if adjusting, let sel = selection, let d = selectionDisplay {
                 let local = ShotGeometry.local(p, in: snapshots[d].axFrame)
-                if event.clickCount >= 2 && sel.contains(local) { confirm(); return }
+                if event.clickCount >= 2 && sel.contains(local) { confirmOnUp = true; return }
                 let edges = hitEdges(local, sel)
                 if !edges.isEmpty {
                     adjustDrag = .resize(edges: edges, original: sel)
@@ -297,7 +328,27 @@ final class CaptureOverlay {
         refresh(displays: [oldDisplay, cursorDisplay, selectionDisplay ?? cursorDisplay])
     }
 
-    func mouseUp(at p: CGPoint) {
+    func mouseUp(at p: CGPoint, event: NSEvent) {
+        if confirmOnUp {
+            confirmOnUp = false
+            confirm()
+            return
+        }
+        if clickStarted {
+            clickStarted = false
+            cursor = p
+            cursorDisplay = displayIndex(at: p) ?? cursorDisplay
+            switch mode {
+            case .color:
+                pickColor(text: event.modifierFlags.contains(.shift))
+            case .window:
+                updateHover()
+                if let w = hoveredWindowInfo { finish(.window(w, snapshotFor(w))) }
+            case .area:
+                break
+            }
+            return
+        }
         if adjustDrag != nil {
             adjustDrag = nil
             refreshAll()
@@ -307,6 +358,14 @@ final class CaptureOverlay {
         dragging = false
         lastDragPoint = nil
         completeSelection()
+    }
+
+    func rightMouseDown() { rightClickStarted = true }
+
+    /// Right-click cancels (on release, see `clickStarted`).
+    func rightMouseUp() {
+        guard rightClickStarted else { return }
+        finish(.cancelled)
     }
 
     // MARK: Selection
@@ -335,8 +394,10 @@ final class CaptureOverlay {
             return
         }
         lastDragPoint = ShotGeometry.snap(local)
+        // In a keyboard selection Shift means 10-pt arrow steps, not "square".
         selection = ShotGeometry.selection(anchor: a, current: ShotGeometry.snap(local),
-                                           square: modifiers.contains(.shift), fromCenter: modifiers.contains(.option), bounds: bounds)
+                                           square: modifiers.contains(.shift) && !keyboardSelecting,
+                                           fromCenter: modifiers.contains(.option), bounds: bounds)
     }
 
     private func completeSelection() {
@@ -406,6 +467,7 @@ final class CaptureOverlay {
             } else if options.allowWindowMode && !adjusting && mode != .color {
                 mode = mode == .window ? .area : .window
                 showHint = true
+                if mode == .window { prefetchProbes() }
                 updateHover()
                 currentCursor.set()
                 refreshAll()
@@ -544,9 +606,43 @@ final class CaptureOverlay {
 
     // MARK: Hover / refresh
 
+    /// The frontmost window under the pointer that has visible pixels there.
+    /// Windows without a probe yet count as opaque (and get probed).
     private func updateHover() {
         guard mode == .window else { hoveredWindow = nil; return }
-        hoveredWindow = ShotGeometry.frontmost(at: cursor, in: windows.map(\.frame))
+        var pick: Int?
+        for (i, w) in windows.enumerated() where w.frame.contains(cursor) {
+            if probes[w.id] == nil { requestProbe(w.id) }
+            if let f = probes[w.id], ShotGeometry.isTransparent(f, frame: w.frame, at: cursor) { continue }
+            pick = i
+            break
+        }
+        hoveredWindow = pick
+    }
+
+    /// Floating windows (above normal level) are the usual invisible
+    /// overlays; probe them as soon as window mode starts.
+    private func prefetchProbes() {
+        for w in windows where w.layer > 0 { requestProbe(w.id) }
+    }
+
+    private func requestProbe(_ id: CGWindowID) {
+        guard probes[id] == nil, !probing.contains(id) else { return }
+        probing.insert(id)
+        Task { @MainActor [weak self] in
+            if self?.probeContent == nil { self?.probeContent = try? await ScreenGrabber.content() }
+            guard let self, !self.finished, let content = self.probeContent else { return }
+            let frame = try? await ScreenGrabber.alphaProbe(windowID: id, content: content)
+            guard !self.finished else { return }
+            // No probe (window gone, capture failed): treat as opaque.
+            self.probes[id] = frame ?? PixelFrame(width: 1, height: 1, pixels: [0xFF00_0000])
+            self.probing.remove(id)
+            if self.mode == .window {
+                let before = self.hoveredWindow
+                self.updateHover()
+                if self.hoveredWindow != before { self.refreshAll() }
+            }
+        }
     }
 
     private func refresh(displays: Set<Int>) {
@@ -687,8 +783,9 @@ final class OverlayView: NSView {
     override func mouseEntered(with e: NSEvent) { overlay?.mouseMoved(to: global(e)) }
     override func mouseDown(with e: NSEvent) { overlay?.mouseDown(at: global(e), event: e) }
     override func mouseDragged(with e: NSEvent) { overlay?.mouseDragged(to: global(e)) }
-    override func mouseUp(with e: NSEvent) { overlay?.mouseUp(at: global(e)) }
-    override func rightMouseDown(with e: NSEvent) { overlay?.finish(.cancelled) }
+    override func mouseUp(with e: NSEvent) { overlay?.mouseUp(at: global(e), event: e) }
+    override func rightMouseDown(with e: NSEvent) { overlay?.rightMouseDown() }
+    override func rightMouseUp(with e: NSEvent) { overlay?.rightMouseUp() }
     override func keyDown(with e: NSEvent) { overlay?.keyDown(e) }
     override func keyUp(with e: NSEvent) { overlay?.keyUp(e) }
     override func flagsChanged(with e: NSEvent) { overlay?.flagsChanged(e) }

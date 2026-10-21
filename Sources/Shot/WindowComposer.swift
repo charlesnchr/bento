@@ -3,9 +3,13 @@ import AppKit
 /// Adds padding and a background (solid colour or the wallpaper) behind a
 /// captured window, like Shottr's window-capture modes.
 enum WindowComposer {
+    /// Padding in points, limited to 0…500 (a hand-edited huge value would
+    /// otherwise ask for a gigantic canvas).
+    static func clampedPadding(_ padding: Int) -> Int { min(max(0, padding), 500) }
+
     /// Canvas size in pixels for a window image plus padding (points) on each side.
     static func canvasSize(window: CGSize, padding: Int, scale: CGFloat) -> CGSize {
-        let p = CGFloat(max(0, padding)) * scale
+        let p = CGFloat(clampedPadding(padding)) * scale
         return CGSize(width: window.width + 2 * p, height: window.height + 2 * p)
     }
 
@@ -32,7 +36,7 @@ enum WindowComposer {
                 ctx.fill(canvas)
             }
         }
-        let p = CGFloat(max(0, padding)) * scale
+        let p = CGFloat(clampedPadding(padding)) * scale
         ctx.draw(window, in: CGRect(x: p.rounded(), y: p.rounded(), width: CGFloat(window.width), height: CGFloat(window.height)))
         return ctx.makeImage()
     }

@@ -43,15 +43,16 @@ struct PixelFrame {
         return PixelFrame(width: width, height: height, pixels: out)
     }
 
-    /// Builds a CGImage from raw rows without copying them again.
+    /// Builds a CGImage from raw rows without copying them again. The pixels
+    /// live in their own mapping (see `MappedPixels`), unmapped when the
+    /// image is released.
     static func makeImage(width: Int, height: Int, fill: (UnsafeMutablePointer<UInt32>) -> Void) -> CGImage? {
-        guard width > 0, height > 0 else { return nil }
-        let count = width * height
-        let ptr = UnsafeMutablePointer<UInt32>.allocate(capacity: count)
-        fill(ptr)
-        guard let provider = CGDataProvider(dataInfo: nil, data: ptr, size: count * 4, releaseData: { _, data, _ in
-            data.assumingMemoryBound(to: UInt32.self).deallocate()
-        }) else { ptr.deallocate(); return nil }
+        guard width > 0, height > 0, let buffer = MappedPixels(count: width * height) else { return nil }
+        fill(buffer.base)
+        let (ptr, bytes) = buffer.detach()
+        guard let provider = CGDataProvider(dataInfo: nil, data: ptr, size: bytes, releaseData: { _, data, size in
+            MappedPixels.release(UnsafeMutableRawPointer(mutating: data), bytes: size)
+        }) else { MappedPixels.release(ptr, bytes: bytes); return nil }
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
                        space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo), provider: provider,
                        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
@@ -62,6 +63,48 @@ struct PixelFrame {
             pixels.withUnsafeBufferPointer { dst.update(from: $0.baseAddress!, count: pixels.count) }
         }
     }
+}
+
+/// Pixel memory that goes straight back to the system when freed. On macOS
+/// 26, malloc keeps freed large blocks in the process footprint (a few long
+/// scrolling captures left 250+ MB that `malloc_zone_pressure_relief` won't
+/// return), so the big, long-lived buffers (stitched strips, finished images)
+/// are anonymous mappings instead. Small buffers (< 1 MB) still use malloc.
+final class MappedPixels {
+    let count: Int
+    private(set) var base: UnsafeMutablePointer<UInt32>
+    private var raw: UnsafeMutableRawPointer?
+    private let bytes: Int
+
+    static let threshold = 1 << 20
+
+    init?(count: Int) {
+        guard count > 0 else { return nil }
+        self.count = count
+        bytes = count * 4
+        if bytes >= MappedPixels.threshold {
+            let p = mmap(nil, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+            guard let p, p != MAP_FAILED else { return nil }
+            raw = p
+        } else {
+            raw = malloc(bytes)
+            guard raw != nil else { return nil }
+        }
+        base = raw!.bindMemory(to: UInt32.self, capacity: count)
+    }
+
+    /// Hands ownership of the memory to the caller (free with `release`).
+    func detach() -> (UnsafeMutableRawPointer, Int) {
+        let p = raw!
+        raw = nil
+        return (p, bytes)
+    }
+
+    static func release(_ p: UnsafeMutableRawPointer, bytes: Int) {
+        if bytes >= threshold { munmap(p, bytes) } else { free(p) }
+    }
+
+    deinit { if let raw { MappedPixels.release(raw, bytes: bytes) } }
 }
 
 /// Finds how far content moved between two consecutive frames of a
@@ -95,17 +138,20 @@ enum OverlapFinder {
     /// Row hashes, ignoring `ignoreRight` columns on the right (overlay
     /// scroll bars move while scrolling). Low bits of each channel are masked
     /// so tiny rendering noise doesn't break matches.
-    static func signature(_ f: PixelFrame, ignoreRight: Int = 0) -> Signature {
+    /// `columns`: only hash the columns marked true (see `staticColumns`).
+    static func signature(_ f: PixelFrame, ignoreRight: Int = 0, columns: [Bool]? = nil) -> Signature {
         let w = max(1, f.width - max(0, min(ignoreRight, f.width - 1)))
+        let xs: [Int] = columns.map { cols in (0..<w).filter { $0 < cols.count && cols[$0] } } ?? Array(0..<w)
         var hashes = [UInt64](repeating: 0, count: f.height)
         var flat = [Bool](repeating: true, count: f.height)
+        guard let x0 = xs.first else { return Signature(hashes: hashes, flat: flat) }
         f.pixels.withUnsafeBufferPointer { px in
             for y in 0..<f.height {
                 let base = px.baseAddress! + y * f.width
-                let first = base[0] & 0xFCFC_FCFC
+                let first = base[x0] & 0xFCFC_FCFC
                 var h: UInt64 = 0xcbf2_9ce4_8422_2325
                 var isFlat = true
-                for x in 0..<w {
+                for x in xs {
                     let v = base[x] & 0xFCFC_FCFC
                     if v != first { isFlat = false }
                     h = (h ^ UInt64(v)) &* 0x0000_0100_0000_01B3
@@ -115,6 +161,28 @@ enum OverlapFinder {
             }
         }
         return Signature(hashes: hashes, flat: flat)
+    }
+
+    /// Columns that are (nearly) the same in both frames at the same
+    /// position: fixed sidebars, floating panels or banners over part of the
+    /// region, plain margins. They carry no motion, and a fixed element in a
+    /// row would otherwise keep that row from matching at any shift (a
+    /// window with a sidebar never stitched). Nil when no column is static.
+    static func staticColumns(_ a: PixelFrame, _ b: PixelFrame) -> [Bool]? {
+        guard a.width == b.width, a.height == b.height, a.width > 0, a.height > 0 else { return nil }
+        let w = a.width, h = a.height
+        let allowed = max(2, h / 50) // differing rows still counted as static
+        var diffs = [Int](repeating: 0, count: w)
+        a.pixels.withUnsafeBufferPointer { pa in
+            b.pixels.withUnsafeBufferPointer { pb in
+                for y in 0..<h {
+                    let ra = pa.baseAddress! + y * w, rb = pb.baseAddress! + y * w
+                    for x in 0..<w where (ra[x] ^ rb[x]) & 0xFCFC_FCFC != 0 { diffs[x] += 1 }
+                }
+            }
+        }
+        let cols = diffs.map { $0 <= allowed }
+        return cols.contains(true) && cols.contains(false) ? cols : nil
     }
 
     static func match(_ a: Signature, _ b: Signature, expected: Int? = nil, minRatio: Double = 0.5) -> Match {
@@ -140,28 +208,43 @@ enum OverlapFinder {
             for j in js where j != i { votes[j - i + h] += 1 }
         }
 
-        var best = 0, bestVotes = 0
-        for k in 0..<(2 * h) where votes[k] > 0 {
+        // Pick by match ratio (votes / rows that could match at that shift),
+        // not raw votes: text repeats most pixel rows from line to line, so a
+        // shift off by a few line pitches matches many rows too, and a smaller
+        // one has a bigger overlap — it used to outvote the true shift.
+        let maxVotes = votes.max() ?? 0
+        guard maxVotes > 0 else { return .none }
+        let floor = max(3, maxVotes / 10)
+        let target = expected ?? 0
+        var best: (d: Int, votes: Int, ratio: Double)?
+        for k in 0..<(2 * h) where votes[k] >= floor {
             let d = k - h
-            let v = votes[k]
-            if v > bestVotes {
-                best = d; bestVotes = v
-            } else if v == bestVotes {
-                let target = expected ?? 0
-                if abs(d - target) < abs(best - target) { best = d }
+            let comparable = comparableRows(a, b, shift: d, lo: lo, hi: hi)
+            guard comparable >= 3 else { continue }
+            let ratio = Double(votes[k]) / Double(comparable)
+            if let cur = best {
+                if ratio > cur.ratio + 0.02 { best = (d, votes[k], ratio) }
+                else if ratio >= cur.ratio - 0.02 {
+                    // About as good: prefer the expected step, then more evidence.
+                    let closer = abs(d - target) < abs(cur.d - target)
+                    if closer || (abs(d - target) == abs(cur.d - target) && votes[k] > cur.votes) { best = (d, votes[k], ratio) }
+                }
+            } else {
+                best = (d, votes[k], ratio)
             }
         }
-        guard bestVotes > 0 else { return .none }
+        guard let best, best.ratio >= minRatio else { return .none }
+        return best.d > 0 ? .shift(best.d, top: top, bottom: bottom) : .backward(-best.d)
+    }
 
-        // How many rows should have matched for this shift?
-        var expectedRows = 0
-        if best > 0 {
-            for i in lo..<max(lo, hi - best) where !b.flat[i] && !a.flat[i + best] { expectedRows += 1 }
-        } else {
-            for i in (lo - best)..<hi where i >= lo && !b.flat[i] && !a.flat[i + best] { expectedRows += 1 }
-        }
-        guard expectedRows >= 3, Double(bestVotes) >= minRatio * Double(expectedRows) else { return .none }
-        return best > 0 ? .shift(best, top: top, bottom: bottom) : .backward(-best)
+    /// Rows of `b` in lo..<hi that can be compared with `a` at a shift
+    /// (both rows inside the band and not flat).
+    static func comparableRows(_ a: Signature, _ b: Signature, shift d: Int, lo: Int, hi: Int) -> Int {
+        let start = max(lo, lo - d), end = min(hi, hi - d)
+        guard start < end else { return 0 }
+        var n = 0
+        for i in start..<end where !b.flat[i] && !a.flat[i + d] { n += 1 }
+        return n
     }
 }
 
@@ -179,7 +262,7 @@ final class ScrollStitcher {
     let ignoreRight: Int
     private var reference: PixelFrame
     private var refSig: OverlapFinder.Signature
-    private var strips: [[UInt32]] = []
+    private var strips: [MappedPixels] = []
     private var committedRows = 0
     /// Row of `reference` up to which content is committed (nil until the first shift).
     private var committedEnd: Int?
@@ -194,6 +277,21 @@ final class ScrollStitcher {
         refSig = OverlapFinder.signature(first, ignoreRight: ignoreRight)
     }
 
+    /// Pixel budget of a stitched image (~320 MB at 4 bytes per pixel). The
+    /// user's maximum height is lowered for wide regions so a long capture
+    /// can't exhaust memory (the image is also copied once when finished).
+    static let pixelBudget = 80_000_000
+
+    /// Upper bound of the max-height setting (a hand-edited 200,000 px used
+    /// to mean a 2+ GB image).
+    static let heightLimit = 100_000
+
+    /// The maximum height (pixels) for frames of `width` pixels: the user's
+    /// setting (1,000…100,000 px), capped by `pixelBudget`.
+    static func cappedMaxHeight(_ requested: Int, width: Int) -> Int {
+        min(requested.clamped(1000...heightLimit), max(1000, pixelBudget / max(1, width)))
+    }
+
     /// Height of the image `makeImage()` would produce now.
     var height: Int { min(maxHeight, committedRows + (frameHeight - (committedEnd ?? 0))) }
 
@@ -201,7 +299,15 @@ final class ScrollStitcher {
     func add(_ frame: PixelFrame, expectedShift: Int? = nil) -> Result {
         guard frame.width == width, frame.height == frameHeight else { return .noMatch }
         let sig = OverlapFinder.signature(frame, ignoreRight: ignoreRight)
-        switch OverlapFinder.match(refSig, sig, expected: expectedShift) {
+        var refMatch = refSig, newMatch = sig
+        if refSig.hashes != sig.hashes, let fixed = OverlapFinder.staticColumns(reference, frame) {
+            let moving = fixed.map { !$0 }
+            // Only a sliver changed (a blinking caret): nothing scrolled.
+            if moving.filter({ $0 }).count <= max(2, width / 100) { return .unchanged }
+            refMatch = OverlapFinder.signature(reference, ignoreRight: ignoreRight, columns: moving)
+            newMatch = OverlapFinder.signature(frame, ignoreRight: ignoreRight, columns: moving)
+        }
+        switch OverlapFinder.match(refMatch, newMatch, expected: expectedShift) {
         case .identical: return .unchanged
         case .none: return .noMatch
         case .backward: return .backward
@@ -229,18 +335,22 @@ final class ScrollStitcher {
     }
 
     private func commit(_ f: PixelFrame, from: Int, to: Int) {
-        guard to > from else { return }
-        strips.append(Array(f.pixels[(from * width)..<(to * width)]))
+        guard to > from, let strip = MappedPixels(count: (to - from) * width) else { return }
+        f.pixels.withUnsafeBufferPointer { strip.base.update(from: $0.baseAddress! + from * width, count: strip.count) }
+        strips.append(strip)
         committedRows += to - from
     }
 
-    /// Assembles the stitched image (rows reversed when `flipped`).
-    func makeImage(flipped: Bool = false) -> CGImage? {
+    /// Assembles the stitched image (rows reversed when `flipped`). With
+    /// `consume`, each strip is released as soon as it is copied, so the peak
+    /// is about one image instead of two; the stitcher is spent afterwards.
+    func makeImage(flipped: Bool = false, consume: Bool = false) -> CGImage? {
         let tailStart = committedEnd ?? 0
         let total = height
         let w = width
         let ref = reference
-        let strips = self.strips
+        var strips = self.strips
+        if consume { self.strips = [] }
         return PixelFrame.makeImage(width: w, height: total) { dst in
             var row = 0
             func put(_ src: UnsafeBufferPointer<UInt32>, rows: Int) {
@@ -250,7 +360,8 @@ final class ScrollStitcher {
                     row += 1
                 }
             }
-            for s in strips { s.withUnsafeBufferPointer { put($0, rows: s.count / w) } }
+            strips.reverse()
+            while let s = strips.popLast() { put(UnsafeBufferPointer(start: s.base, count: s.count), rows: s.count / w) }
             ref.pixels.withUnsafeBufferPointer { buf in
                 let tail = UnsafeBufferPointer(rebasing: buf[(tailStart * w)...])
                 put(tail, rows: ref.height - tailStart)
