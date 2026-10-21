@@ -20,7 +20,11 @@ Single user, single shared bearer token. All timestamps are Unix **milliseconds*
 
 `meta` keys used by the Notes client: `pinned` (bool), `pinOrder` (number, order within
 pinned notes), `trashedAt` (ms; set when moved to Recently Deleted, purged after 60 days by
-turning the note into a tombstone). Unknown keys must be preserved.
+turning the note into a tombstone), `conflictOf` (id of the note this one is a
+"conflicted copy" of: when a client's unsynced edit loses last-writer-wins to a
+different text from another device, the client keeps its losing text as a new note
+titled "‹title› (conflicted copy, ‹device›)" instead of discarding it). Unknown
+keys must be preserved.
 
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 

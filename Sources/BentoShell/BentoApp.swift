@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var running: Set<String> = []
     private var observers: [NSObjectProtocol] = []
     private let navigator = SettingsNavigator()
+    private var signalSources: [DispatchSourceSignal] = []
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
 
     init(modules: [BentoModule]) {
@@ -53,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if exitIfAlreadyRunning() { return }
+        // `kill`/logout/`pkill` send SIGTERM: quit through AppKit so modules stop
+        // and pending saves (notes, config) are flushed instead of lost.
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { NSApp.terminate(nil) }
+            src.resume()
+            signalSources.append(src)
+        }
         installMainMenu()
         ConfigStore.shared.materialize("general", default: GeneralSettings())
 
