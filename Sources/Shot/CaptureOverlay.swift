@@ -66,6 +66,13 @@ final class CaptureOverlay {
     private var finished = false
     private var pixelCache: [Int: PixelFrame] = [:]
     private var screenObserver: NSObjectProtocol?
+    /// A click that picks (window, colour, double-click confirm) or a
+    /// right-click that cancels completes on mouse-up, so the release isn't
+    /// delivered to the app under the closed overlay (a stray mouseup in a
+    /// web page, or a right-mouse-up opening a context menu).
+    private var clickStarted = false
+    private var rightClickStarted = false
+    private var confirmOnUp = false
     /// Alpha probes of windows under the pointer (window mode), by window id.
     private var probes: [CGWindowID: PixelFrame] = [:]
     private var probing: Set<CGWindowID> = []
@@ -281,15 +288,13 @@ final class CaptureOverlay {
         cursor = p
         cursorDisplay = displayIndex(at: p) ?? cursorDisplay
         switch mode {
-        case .color:
-            pickColor(text: event.modifierFlags.contains(.shift))
-        case .window:
-            updateHover()
-            if let w = hoveredWindowInfo { finish(.window(w, snapshotFor(w))) }
+        case .color, .window:
+            clickStarted = true // picks on mouse-up
+            if mode == .window { updateHover() }
         case .area:
             if adjusting, let sel = selection, let d = selectionDisplay {
                 let local = ShotGeometry.local(p, in: snapshots[d].axFrame)
-                if event.clickCount >= 2 && sel.contains(local) { confirm(); return }
+                if event.clickCount >= 2 && sel.contains(local) { confirmOnUp = true; return }
                 let edges = hitEdges(local, sel)
                 if !edges.isEmpty {
                     adjustDrag = .resize(edges: edges, original: sel)
@@ -323,7 +328,27 @@ final class CaptureOverlay {
         refresh(displays: [oldDisplay, cursorDisplay, selectionDisplay ?? cursorDisplay])
     }
 
-    func mouseUp(at p: CGPoint) {
+    func mouseUp(at p: CGPoint, event: NSEvent) {
+        if confirmOnUp {
+            confirmOnUp = false
+            confirm()
+            return
+        }
+        if clickStarted {
+            clickStarted = false
+            cursor = p
+            cursorDisplay = displayIndex(at: p) ?? cursorDisplay
+            switch mode {
+            case .color:
+                pickColor(text: event.modifierFlags.contains(.shift))
+            case .window:
+                updateHover()
+                if let w = hoveredWindowInfo { finish(.window(w, snapshotFor(w))) }
+            case .area:
+                break
+            }
+            return
+        }
         if adjustDrag != nil {
             adjustDrag = nil
             refreshAll()
@@ -333,6 +358,14 @@ final class CaptureOverlay {
         dragging = false
         lastDragPoint = nil
         completeSelection()
+    }
+
+    func rightMouseDown() { rightClickStarted = true }
+
+    /// Right-click cancels (on release, see `clickStarted`).
+    func rightMouseUp() {
+        guard rightClickStarted else { return }
+        finish(.cancelled)
     }
 
     // MARK: Selection
@@ -750,8 +783,9 @@ final class OverlayView: NSView {
     override func mouseEntered(with e: NSEvent) { overlay?.mouseMoved(to: global(e)) }
     override func mouseDown(with e: NSEvent) { overlay?.mouseDown(at: global(e), event: e) }
     override func mouseDragged(with e: NSEvent) { overlay?.mouseDragged(to: global(e)) }
-    override func mouseUp(with e: NSEvent) { overlay?.mouseUp(at: global(e)) }
-    override func rightMouseDown(with e: NSEvent) { overlay?.finish(.cancelled) }
+    override func mouseUp(with e: NSEvent) { overlay?.mouseUp(at: global(e), event: e) }
+    override func rightMouseDown(with e: NSEvent) { overlay?.rightMouseDown() }
+    override func rightMouseUp(with e: NSEvent) { overlay?.rightMouseUp() }
     override func keyDown(with e: NSEvent) { overlay?.keyDown(e) }
     override func keyUp(with e: NSEvent) { overlay?.keyUp(e) }
     override func flagsChanged(with e: NSEvent) { overlay?.flagsChanged(e) }
