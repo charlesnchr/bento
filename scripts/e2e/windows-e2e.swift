@@ -193,7 +193,12 @@ func near(_ a: CGRect, _ b: CGRect, _ t: CGFloat) -> Bool {
 func fmt(_ r: CGRect?) -> String { r.map { "(\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height)))" } ?? "nil" }
 
 func record(_ ok: Bool, _ name: String, _ detail: String) {
-    if ok { passed += 1; print("ok   \(name)") } else { failed.append("\(name): \(detail)"); print("FAIL \(name): \(detail)") }
+    if ok { passed += 1; print("ok   \(name)"); return }
+    failed.append("\(name): \(detail)")
+    print("FAIL \(name): \(detail)")
+    // Bento's modifier-drag decisions (BENTO_LOG_EVENTS) around the failure.
+    let log = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+    for line in log.split(separator: "\n").filter({ $0.hasPrefix("drag ") }).suffix(3) { print("     \(line)") }
 }
 
 /// Waits (≤ 1.2 s) for the frame to match; checks the windowPlaced count too.
@@ -766,10 +771,12 @@ func phaseImport() {
     let root = FileManager.default.contents(atPath: configPath).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
     let sc = root?["shortcuts"] as? [String: String] ?? [:]
     let w = root?["windows"] as? [String: Any] ?? [:]
-    let expected = ["windows.left-half": "opt+comma", "windows.move-left": "ctrl+opt+left", "windows.next-display": "ctrl+opt+rightbracket"]
+    // Overrides only (an imported key equal to Bento's default, like ⌃⌥] for Next Display, stores none).
+    let expected = ["windows.left-half": "opt+comma", "windows.move-left": "ctrl+opt+left", "windows.top-half": "opt+shift+comma"]
     for (id, want) in expected {
         record(sc[id] == want, "imported \(id) = \(want)", "got \(sc[id] ?? "nil")")
     }
+    record(sc["windows.next-display"] == nil, "imported Next Display = ⌃⌥] (Bento's default: no override)", "got \(sc["windows.next-display"] ?? "nil")")
     record(Set(w["dragMoveModifiers"] as? [String] ?? []) == ["cmd", "opt"], "imported ⌘⌥ move gesture", "\(w["dragMoveModifiers"] ?? "nil")")
     // That plist puts ⌃⌥← on Move Left (the user's original "broken" report): it now moves to the edge.
     step("⌃⌥← after importing that plist = Move Left", { key("ctrl+opt+left") },

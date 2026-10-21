@@ -23,7 +23,7 @@ final class DragController: NSObject {
 
     private final class Session {
         let window: AXWindow
-        let wid: CGWindowID
+        var wid: CGWindowID = 0 // main thread (an AX round trip: not in the tap)
         let handle: Geometry.ResizeHandle? // nil = move
         let startMouse: CGPoint
         // Tap thread only.
@@ -39,7 +39,6 @@ final class DragController: NSObject {
 
         init(window: AXWindow, frame: CGRect, handle: Geometry.ResizeHandle?, mouse: CGPoint, press: CGEvent?) {
             self.window = window
-            self.wid = window.windowID ?? 0
             self.handle = handle
             self.startMouse = mouse
             self.startFrame = frame
@@ -169,12 +168,14 @@ final class DragController: NSObject {
             let move = !resize && !cfg.move.isEmpty && flags == cfg.move
             guard resize || move else { return pass }
             let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
-            guard DragController.isDraggableLayer(windowID: cgID),
-                  let w = DragController.window(at: p), let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen
-            else { return pass }
+            guard DragController.isDraggableLayer(windowID: cgID) else { DragController.trace("pass: layer of \(cgID)"); return pass }
+            let t0 = CFAbsoluteTimeGetCurrent()
+            guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
+            guard let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else { DragController.trace("pass: no frame / full screen"); return pass }
             let s = Session(window: w, frame: f, handle: resize ? Geometry.resizeHandle(at: p, in: f) : nil, mouse: p,
                             press: event.copy())
             locked { session = s }
+            DragController.trace("press \(resize ? "resize" : "move") at \(p) frame \(f) lookup \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)) ms")
             return nil
 
         case .leftMouseDragged:
@@ -195,6 +196,7 @@ final class DragController: NSObject {
                 return (s, r)
             }
             guard let s, let release else { return pass }
+            DragController.trace("release at \(p): \(release == .finishDrag ? "drag" : "click, re-posted")")
             switch release {
             case .finishDrag:
                 // A press released far away without drag events still moves.
@@ -236,12 +238,15 @@ final class DragController: NSObject {
 
     private static let systemWide: AXUIElement = {
         let e = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(e, 0.25)
+        AXUIElementSetMessagingTimeout(e, 0.4)
         return e
     }()
 
     /// Window under a point, other apps only (AX to ourselves from this thread
-    /// would wait on our own main thread).
+    /// would wait on our own main thread). Runs inside the tap callback: a hung
+    /// app fails the hit test within its timeout; a busy one gets a little
+    /// longer per element (it is still answering), and the common case is one
+    /// round trip after the hit test (the element's AXWindow).
     static func window(at p: CGPoint) -> AXWindow? {
         var el: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(p.x), Float(p.y), &el) == .success, var cur = el else { return nil }
@@ -249,18 +254,23 @@ final class DragController: NSObject {
         AXUIElementGetPid(cur, &pid)
         guard pid != getpid(), pid > 0 else { return nil }
         func found(_ w: AXUIElement) -> AXWindow {
-            AXUIElementSetMessagingTimeout(w, 0.6) // the drag's frame writes may take longer
+            AXUIElementSetMessagingTimeout(w, 0.6) // the drag's frame writes
             return AXWindow(element: w, pid: pid)
         }
         for _ in 0..<32 {
-            // This runs inside the tap callback: a hung app must not stall every click.
-            AXUIElementSetMessagingTimeout(cur, 0.15)
-            if let role: String = cur.ax(kAXRoleAttribute), role == kAXWindowRole as String { return found(cur) }
+            AXUIElementSetMessagingTimeout(cur, 0.4)
             if let w: AXUIElement = cur.ax(kAXWindowAttribute) { return found(w) }
+            if let role: String = cur.ax(kAXRoleAttribute), role == kAXWindowRole as String { return found(cur) }
             guard let parent: AXUIElement = cur.ax(kAXParentAttribute) else { break }
             cur = parent
         }
         return nil
+    }
+
+    /// BENTO_LOG_EVENTS=1: why a modifier press was or wasn't taken (end-to-end diagnostics).
+    private static func trace(_ s: @autoclosure () -> String) {
+        guard WindowEngine.logEvents else { return }
+        FileHandle.standardError.write("drag \(s())\n".data(using: .utf8) ?? Data())
     }
 
     // MARK: Main thread
@@ -284,6 +294,7 @@ final class DragController: NSObject {
             AXUIElementSetAttributeValue(appEl, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
             enhancedUIApp = appEl
         }
+        s.wid = s.window.windowID ?? 0
         let restoreSize = engine.beginDrag(wid: s.wid, initialFrame: s.startFrame)
         if s.handle == nil {
             if let size = restoreSize {
