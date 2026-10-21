@@ -125,12 +125,12 @@ if [ "$INSTALL_GSKM4" = 1 ]; then
   echo "==> install on gskm4: /opt/homebrew/opt/Bento.app"
   rsync -a --delete "$APP/" "gskm4:/opt/homebrew/opt/Bento.app.new/"
   ssh gskm4 'set -e
-    pkill -f "Bento.app/Contents/MacOS/Bento$" 2>/dev/null && sleep 1 || true
+    WAS_RUNNING=0; pkill -f "Bento.app/Contents/MacOS/Bento$" 2>/dev/null && WAS_RUNNING=1 && sleep 1 || true
     rm -rf /opt/homebrew/opt/Bento.app
     mv /opt/homebrew/opt/Bento.app.new /opt/homebrew/opt/Bento.app
     codesign --verify --strict /opt/homebrew/opt/Bento.app
     mkdir -p ~/Applications && ln -sfn /opt/homebrew/opt/Bento.app ~/Applications/Bento.app
-    open /opt/homebrew/opt/Bento.app'
+    if [ "$WAS_RUNNING" = 1 ]; then open /opt/homebrew/opt/Bento.app; else echo "installed, not launched (quit Rectangle Pro / Shottr / Raycast hotkeys first, then open ~/Applications/Bento.app)"; fi'
 fi
 
 echo "==> done: $APP ($VERSION build $BUILD_NUMBER)"

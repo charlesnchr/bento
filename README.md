@@ -5,7 +5,19 @@ One small native macOS menu-bar app instead of six: screenshots and annotation
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, and Raycast-style floating notes synced through a tiny Rust server.
 
-Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+.
+Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
+~0 % CPU with a ~16 MB footprint; the bundle is 6.5 MB.
+
+## What's in it
+
+| Module | Replaces | Highlights | Default keys |
+|---|---|---|---|
+| Capture + Editor | Shottr | frozen-screen area capture with loupe, window/fullscreen/repeat/delayed, scrolling capture, OCR + QR, colour picker, ruler, pins; editor with editable annotations (arrow, text, shapes, blur/pixelate, smart erase, counter, spotlight, crop, ruler…), **Esc copies and closes**, ⌘S save, drag out, history with re-editing | ⌘⇧2 area, ⌘⇧1 fullscreen, ⌃⌥⌘O copy text |
+| Windows | Rectangle Pro | every Rectangle action with cycling, gaps, snap areas, **⌘⌥-drag move / ⌘⌥⇧-drag resize**, displays, Spaces, layouts, launch positions, stash; imports your Rectangle (Pro) settings on first run | Rectangle's ⌃⌥ set (or your imported keys) |
+| Tiling (off by default) | AeroSpace | auto-tiling manager you toggle on/off: tiles/master-stack/columns/rows/monocle, gaps, float rules, mouse swap/resize | ⌃⌥⌘T toggle, ⌃⌥⌘ H/J/K/L focus, ⌃⌥⌘⇧ H/J/K/L move |
+| App Hotkeys | Raycast hotkeys | shortcut per app (toggle/focus/cycle windows), URL, file or shell command | your own |
+| Clipboard | Raycast/Alfred | text, rich text, images, files, links, colours; 30-day history, search incl. OCR of images, pins, paste/plain paste/⌘1–9 | ⌘⇧V |
+| Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 
 ## Build and install
 
