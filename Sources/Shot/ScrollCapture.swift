@@ -18,6 +18,7 @@ final class ScrollCaptureSession {
     private let sourceApp: NSRunningApplication?
     private let completion: (CapturedImage?) -> Void
     private var content: SCShareableContent?
+    private var chrome: Set<CGWindowID> = []
     private var stitcher: ScrollStitcher?
     private var scale: CGFloat = 2
     private var task: Task<Void, Never>?
@@ -79,14 +80,14 @@ final class ScrollCaptureSession {
             guard let self else { return }
             if code == kVK_Escape || code == kVK_Return || code == kVK_ANSI_KeypadEnter { self.requestStop() }
         }
-        let screen = NSScreen.containing(axRect: region) ?? NSScreen.main!
         let size = p.frame.size
+        let visible = (NSScreen.containing(axRect: region) ?? NSScreen.main)?.visibleFrame ?? cocoa
         var origin = NSPoint(x: cocoa.midX - size.width / 2, y: cocoa.minY - size.height - 12)
-        if origin.y < screen.visibleFrame.minY + 4 {
+        if origin.y < visible.minY + 4 {
             origin.y = cocoa.maxY + 12
-            if origin.y + size.height > screen.visibleFrame.maxY { origin.y = cocoa.minY + 12 }
+            if origin.y + size.height > visible.maxY { origin.y = cocoa.minY + 12 }
         }
-        origin.x = min(max(origin.x, screen.visibleFrame.minX + 4), screen.visibleFrame.maxX - size.width - 4)
+        origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - size.width - 4)
         p.setFrameOrigin(origin)
         p.orderFrontRegardless()
         p.makeKey()
@@ -127,6 +128,7 @@ final class ScrollCaptureSession {
     @MainActor
     private func run() async {
         do {
+            chrome = ScreenGrabber.chromeWindowIDs()
             content = try await ScreenGrabber.content()
         } catch {
             message = error.localizedDescription
@@ -141,7 +143,7 @@ final class ScrollCaptureSession {
             try? await Task.sleep(nanoseconds: 80_000_000)
         }
         guard let first = await grab() else { finish(); return }
-        let st = ScrollStitcher(first: first, maxHeight: max(settings.scrollMaxHeight, 1000),
+        let st = ScrollStitcher(first: first, maxHeight: ScrollStitcher.cappedMaxHeight(settings.scrollMaxHeight, width: first.width),
                                 ignoreRight: Int(16 * scale))
         stitcher = st
         updateStatus()
@@ -149,6 +151,8 @@ final class ScrollCaptureSession {
         let stepPoints = max(20, (region.height * settings.scrollSpeed.stepFraction).rounded())
         var unchanged = 0
         var misses = 0
+        var backward = 0
+        var skipScroll = false
         var lastChange = Date()
 
         while !stopRequested {
@@ -156,16 +160,18 @@ final class ScrollCaptureSession {
             if manual {
                 try? await Task.sleep(nanoseconds: 120_000_000)
             } else {
-                scroll(by: stepPoints, at: center)
+                if !skipScroll { scroll(by: stepPoints, at: center) }
                 expected = Int(stepPoints * scale)
                 try? await Task.sleep(nanoseconds: UInt64(settings.scrollSpeed.settle * 1_000_000_000))
             }
+            skipScroll = false
             if stopRequested { break }
             guard let frame = await grab() else { break }
             switch st.add(frame, expectedShift: expected) {
             case .appended:
                 unchanged = 0
                 misses = 0
+                backward = 0
                 lastChange = Date()
                 message = nil
             case .unchanged:
@@ -173,8 +179,14 @@ final class ScrollCaptureSession {
                 if manual {
                     let idle = Date().timeIntervalSince(lastChange)
                     if idle > (st.frameCount > 1 ? 3 : 15) { stopRequested = true }
-                } else if unchanged >= 2 {
-                    stopRequested = true // reached the end
+                } else if unchanged == 1 {
+                    // Maybe just slow to render: look again before scrolling
+                    // further (two steps at once could lose the overlap).
+                    skipScroll = true
+                } else if unchanged >= 3 {
+                    // Reached the end (or the content doesn't scroll at all).
+                    if st.frameCount == 1 { message = "Nothing scrolled — captured the visible area" }
+                    stopRequested = true
                 }
             case .noMatch:
                 misses += 1
@@ -183,9 +195,20 @@ final class ScrollCaptureSession {
                 } else if misses >= 3 {
                     message = "Lost track of the content"
                     stopRequested = true
+                } else {
+                    skipScroll = true // an animation or late repaint: look again
                 }
             case .backward:
-                if manual { message = up ? "Scroll up to continue" : "Scroll down to continue" }
+                if manual {
+                    message = up ? "Scroll up to continue" : "Scroll down to continue"
+                } else {
+                    backward += 1
+                    if backward >= 2 {
+                        // A scroll utility inverts synthetic events.
+                        message = "Scrolled the wrong way — turn on Reverse scroll direction"
+                        stopRequested = true
+                    }
+                }
             case .reachedMax:
                 message = "Reached the maximum height"
                 stopRequested = true
@@ -212,7 +235,7 @@ final class ScrollCaptureSession {
     @MainActor
     private func grab() async -> PixelFrame? {
         do {
-            let (image, s) = try await ScreenGrabber.capture(axRect: region, content: content)
+            let (image, s) = try await ScreenGrabber.capture(axRect: region, content: content, excluding: chrome)
             scale = s
             guard let f = PixelFrame(image) else { return nil }
             return up ? f.flippedVertically() : f
@@ -231,7 +254,7 @@ final class ScrollCaptureSession {
         border = nil
         panel?.orderOut(nil)
         panel = nil
-        let image = cancelled ? nil : stitcher?.makeImage(flipped: up)
+        let image = cancelled ? nil : stitcher?.makeImage(flipped: up, consume: true)
         ScreenGrabber.log.debug("scroll finished: frames=\(self.stitcher?.frameCount ?? 0) height=\(image?.height ?? 0) message=\(self.message ?? "-", privacy: .public)")
         stitcher = nil
         content = nil

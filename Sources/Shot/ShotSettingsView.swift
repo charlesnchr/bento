@@ -95,7 +95,7 @@ struct ShotSettingsView: View {
             } header: {
                 Text("Scrolling Capture")
             } footer: {
-                Text("Select the scrollable area, then don't touch anything while it scrolls. Manual mode works with apps that scroll in a non-native way (Terminal, VS Code). Reverse direction helps with Mos, Scroll Reverser and similar tools.")
+                Text("Select the scrollable area, then don't touch anything while it scrolls. Manual mode works with apps that scroll in a non-native way (Terminal, VS Code). Reverse direction helps with Mos, Scroll Reverser and similar tools. Wide regions stop earlier: one capture is limited to about 80 megapixels.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

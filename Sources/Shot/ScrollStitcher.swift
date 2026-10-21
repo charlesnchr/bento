@@ -194,6 +194,17 @@ final class ScrollStitcher {
         refSig = OverlapFinder.signature(first, ignoreRight: ignoreRight)
     }
 
+    /// Pixel budget of a stitched image (~320 MB at 4 bytes per pixel). The
+    /// user's maximum height is lowered for wide regions so a long capture
+    /// can't exhaust memory (the image is also copied once when finished).
+    static let pixelBudget = 80_000_000
+
+    /// The maximum height (pixels) for frames of `width` pixels: the user's
+    /// setting (at least 1000 px), capped by `pixelBudget`.
+    static func cappedMaxHeight(_ requested: Int, width: Int) -> Int {
+        min(max(requested, 1000), max(1000, pixelBudget / max(1, width)))
+    }
+
     /// Height of the image `makeImage()` would produce now.
     var height: Int { min(maxHeight, committedRows + (frameHeight - (committedEnd ?? 0))) }
 
@@ -234,13 +245,16 @@ final class ScrollStitcher {
         committedRows += to - from
     }
 
-    /// Assembles the stitched image (rows reversed when `flipped`).
-    func makeImage(flipped: Bool = false) -> CGImage? {
+    /// Assembles the stitched image (rows reversed when `flipped`). With
+    /// `consume`, each strip is released as soon as it is copied, so the peak
+    /// is about one image instead of two; the stitcher is spent afterwards.
+    func makeImage(flipped: Bool = false, consume: Bool = false) -> CGImage? {
         let tailStart = committedEnd ?? 0
         let total = height
         let w = width
         let ref = reference
-        let strips = self.strips
+        var strips = self.strips
+        if consume { self.strips = [] }
         return PixelFrame.makeImage(width: w, height: total) { dst in
             var row = 0
             func put(_ src: UnsafeBufferPointer<UInt32>, rows: Int) {
@@ -250,7 +264,8 @@ final class ScrollStitcher {
                     row += 1
                 }
             }
-            for s in strips { s.withUnsafeBufferPointer { put($0, rows: s.count / w) } }
+            strips.reverse()
+            while let s = strips.popLast() { s.withUnsafeBufferPointer { put($0, rows: s.count / w) } }
             ref.pixels.withUnsafeBufferPointer { buf in
                 let tail = UnsafeBufferPointer(rebasing: buf[(tailStart * w)...])
                 put(tail, rows: ref.height - tailStart)
