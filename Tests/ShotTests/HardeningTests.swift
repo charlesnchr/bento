@@ -60,6 +60,41 @@ import ShotEditor
         #expect(pixels(of: up) == pixels(of: upConsumed))
     }
 
+    /// Text documents repeat most pixel rows from line to line (ascenders,
+    /// descenders, identical words; only the digits differ). The overlap
+    /// must still lock onto the true shift, not a multiple of the line pitch.
+    @Test func stitchesRepetitiveTextLines() throws {
+        let width = 64, pitch = 48, lines = 160
+        var rows: [[UInt32]] = []
+        for line in 0..<lines {
+            for r in 0..<pitch {
+                switch r {
+                case 0..<6, 34..<40: // shared ascender / descender rows
+                    rows.append((0..<width).map { x in x % 7 == r % 7 ? 0xFF00_0000 : 0xFFFF_FFFF })
+                case 6..<34: // the line number's digits make these rows unique
+                    rows.append((0..<width).map { x in (x * 31 + r * 17 + line * 101) % 5 == 0 ? 0xFF00_0000 : 0xFFFF_FFFF })
+                default: // gap between lines
+                    rows.append([UInt32](repeating: 0xFFFF_FFFF, count: width))
+                }
+            }
+        }
+        let visible = 520
+        func frame(_ offset: Int) -> PixelFrame {
+            PixelFrame(width: width, height: visible, pixels: Array(rows[offset..<(offset + visible)].joined()))
+        }
+        let st = ScrollStitcher(first: frame(0))
+        var offset = 0
+        for step in [313, 313, 290, 313, 313, 200, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313, 313] {
+            offset = min(offset + step, rows.count - visible)
+            let r = st.add(frame(offset), expectedShift: 313)
+            guard case .appended = r else { Issue.record("offset \(offset): \(r)"); return }
+            if offset == rows.count - visible { break }
+        }
+        let img = try #require(st.makeImage())
+        #expect(img.height == offset + visible)
+        #expect(pixels(of: img) == Array(rows[0..<(offset + visible)].joined()))
+    }
+
     @Test func shadowCanvasKeepsWindowAtOneToOne() {
         let content = CGSize(width: 1000, height: 600)
         let probe = CGSize(width: 500, height: 300)

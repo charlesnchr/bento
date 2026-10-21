@@ -140,28 +140,43 @@ enum OverlapFinder {
             for j in js where j != i { votes[j - i + h] += 1 }
         }
 
-        var best = 0, bestVotes = 0
-        for k in 0..<(2 * h) where votes[k] > 0 {
+        // Pick by match ratio (votes / rows that could match at that shift),
+        // not raw votes: text repeats most pixel rows from line to line, so a
+        // shift off by a few line pitches matches many rows too, and a smaller
+        // one has a bigger overlap — it used to outvote the true shift.
+        let maxVotes = votes.max() ?? 0
+        guard maxVotes > 0 else { return .none }
+        let floor = max(3, maxVotes / 10)
+        let target = expected ?? 0
+        var best: (d: Int, votes: Int, ratio: Double)?
+        for k in 0..<(2 * h) where votes[k] >= floor {
             let d = k - h
-            let v = votes[k]
-            if v > bestVotes {
-                best = d; bestVotes = v
-            } else if v == bestVotes {
-                let target = expected ?? 0
-                if abs(d - target) < abs(best - target) { best = d }
+            let comparable = comparableRows(a, b, shift: d, lo: lo, hi: hi)
+            guard comparable >= 3 else { continue }
+            let ratio = Double(votes[k]) / Double(comparable)
+            if let cur = best {
+                if ratio > cur.ratio + 0.02 { best = (d, votes[k], ratio) }
+                else if ratio >= cur.ratio - 0.02 {
+                    // About as good: prefer the expected step, then more evidence.
+                    let closer = abs(d - target) < abs(cur.d - target)
+                    if closer || (abs(d - target) == abs(cur.d - target) && votes[k] > cur.votes) { best = (d, votes[k], ratio) }
+                }
+            } else {
+                best = (d, votes[k], ratio)
             }
         }
-        guard bestVotes > 0 else { return .none }
+        guard let best, best.ratio >= minRatio else { return .none }
+        return best.d > 0 ? .shift(best.d, top: top, bottom: bottom) : .backward(-best.d)
+    }
 
-        // How many rows should have matched for this shift?
-        var expectedRows = 0
-        if best > 0 {
-            for i in lo..<max(lo, hi - best) where !b.flat[i] && !a.flat[i + best] { expectedRows += 1 }
-        } else {
-            for i in (lo - best)..<hi where i >= lo && !b.flat[i] && !a.flat[i + best] { expectedRows += 1 }
-        }
-        guard expectedRows >= 3, Double(bestVotes) >= minRatio * Double(expectedRows) else { return .none }
-        return best > 0 ? .shift(best, top: top, bottom: bottom) : .backward(-best)
+    /// Rows of `b` in lo..<hi that can be compared with `a` at a shift
+    /// (both rows inside the band and not flat).
+    static func comparableRows(_ a: Signature, _ b: Signature, shift d: Int, lo: Int, hi: Int) -> Int {
+        let start = max(lo, lo - d), end = min(hi, hi - d)
+        guard start < end else { return 0 }
+        var n = 0
+        for i in start..<end where !b.flat[i] && !a.flat[i + d] { n += 1 }
+        return n
     }
 }
 
