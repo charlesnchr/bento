@@ -1,0 +1,8 @@
+.build/
+.build-*/
+dist/
+*.xcodeproj
+.swiftpm/
+server/target/
+.DS_Store
+Resources/Bento-1024.png
