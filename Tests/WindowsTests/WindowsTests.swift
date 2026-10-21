@@ -507,10 +507,12 @@ private func snap(_ x: CGFloat, _ y: CGFloat, screens: [ScreenRect] = [screenA],
     }
     // Same display (matched by frame): unchanged.
     let same = LayoutManager.map(entry(R(1700, 100, 500, 400), on: screenB.frame), to: snap)
-    #expect(same.0 == R(1700, 100, 500, 400) && same.1 == 1)
+    #expect(same?.0 == R(1700, 100, 500, 400) && same?.1 == 1)
     // A display that is gone: proportionally onto the first display.
     let gone = LayoutManager.map(entry(R(-1920, 0, 960, 1080), on: R(-1920, 0, 1920, 1080)), to: snap)
-    #expect(gone.1 == 0 && gone.0 == R(0, 25, 800, 960))
+    #expect(gone?.1 == 0 && gone?.0 == R(0, 25, 800, 960))
+    // No displays at all (mid reconfiguration): nothing to place, no crash.
+    #expect(LayoutManager.map(entry(R(0, 0, 10, 10), on: screenA.frame), to: ScreenSnapshot(screens: [], rects: [])) == nil)
 }
 
 // MARK: - Rectangle import
@@ -647,4 +649,129 @@ private func importPlan(_ prefs: [String: Any], pro: Bool = true, settings: Wind
     var off = on
     off["enabled"] = false
     #expect(SpaceMover.shortcut(fromSymbolicHotKey: off) == nil)
+}
+
+// MARK: - QA pass: Rectangle snap geometry on the user's 1512×982 screen
+
+/// MacBook Pro 14" default scaling: notch menu bar 33 pt, Dock 61 pt at the bottom.
+private let mbp = ScreenRect(frame: R(0, 0, 1512, 982), visible: R(0, 33, 1512, 888))
+
+@Test func snapAreasUseTheFullScreenFrameLikeRectangle() {
+    // Rectangle tests the cursor against NSScreen.frame (menu bar included) with
+    // 5 pt edge margins and 20 pt corners beyond them: the top area is the
+    // first 5 pt of the menu bar, not the strip below it.
+    #expect(snap(756, 0, screens: [mbp]) == .maximize)
+    #expect(snap(756, 4.9, screens: [mbp]) == .maximize)
+    #expect(snap(756, 5, screens: [mbp]) == nil)
+    #expect(snap(756, 34, screens: [mbp]) == nil) // just under the menu bar: no snap (same in Rectangle)
+    // Right edge near the top is the "top half" short edge (145 pt); the
+    // top-right quarter needs both edges within 25 pt.
+    #expect(snap(1510, 36, screens: [mbp]) == .topHalf)
+    #expect(snap(1510, 24.9, screens: [mbp]) == .topRight)
+    #expect(snap(1488, 2, screens: [mbp]) == .topRight)
+    #expect(snap(1486, 2, screens: [mbp]) == .maximize)
+    #expect(snap(1510, 149, screens: [mbp]) == .topHalf)
+    #expect(snap(1510, 151, screens: [mbp]) == .rightHalf)
+    #expect(snap(1510, 832, screens: [mbp]) == .rightHalf)
+    #expect(snap(1510, 834, screens: [mbp]) == .bottomHalf)
+    #expect(snap(1510, 980, screens: [mbp]) == .bottomRight)
+    #expect(snap(2, 980, screens: [mbp]) == .bottomLeft)
+    // Bottom edge over the Dock: thirds of the full width (504 pt).
+    #expect(snap(504, 980, screens: [mbp]) == .firstThird)
+    #expect(snap(505, 980, screens: [mbp]) == .centerThird)
+    #expect(snap(1008, 980, screens: [mbp]) == .centerThird)
+    #expect(snap(1009, 980, screens: [mbp]) == .lastThird)
+    #expect(snap(756, 976, screens: [mbp]) == nil)
+}
+
+@Test func snapPreviewsMatchRectangleFrames() {
+    let o = GeometryOptions()
+    func preview(_ c: WindowCommand) -> CGRect { Geometry.rect(for: c, count: 0, in: mbp.visible, window: someWindow, options: o) }
+    #expect(preview(.maximize) == R(0, 33, 1512, 888))
+    #expect(preview(.topLeft) == R(0, 33, 756, 444))
+    #expect(preview(.bottomRight) == R(756, 477, 756, 444))
+    #expect(preview(.topHalf) == R(0, 33, 1512, 444))
+    #expect(preview(.firstThird) == R(0, 33, 504, 888))
+    #expect(preview(.firstTwoThirds) == R(0, 33, 1008, 888))
+    #expect(preview(.centerTwoThirds) == R(252, 33, 1008, 888))
+}
+
+// MARK: - QA pass: modifier-drag gestures
+
+@Test func pressWithoutTravelIsAClick() {
+    var g = DragGesture(start: CGPoint(x: 100, y: 100))
+    let jitter = g.drag(to: CGPoint(x: 101, y: 101)) // below the threshold
+    #expect(!jitter && !g.moving)
+    let r = g.release(at: CGPoint(x: 101, y: 102))
+    #expect(r == .replayClick && g.ended)
+}
+
+@Test func travelTurnsAPressIntoADragOnce() {
+    var g = DragGesture(start: CGPoint(x: 100, y: 100))
+    let a = g.drag(to: CGPoint(x: 102, y: 100))
+    let b = g.drag(to: CGPoint(x: 103, y: 100))   // crosses 3 pt: starts the drag
+    let c = g.drag(to: CGPoint(x: 300, y: 250))   // already dragging
+    #expect(!a && b && !c)
+    #expect(g.latest == CGPoint(x: 300, y: 250))
+    // Coming back near the start doesn't make it a click again.
+    let r = g.release(at: CGPoint(x: 100, y: 100))
+    #expect(r == .finishDrag)
+}
+
+@Test func releaseFarAwayWithoutDragEventsStillMoves() {
+    var g = DragGesture(start: CGPoint(x: 100, y: 100))
+    let r = g.release(at: CGPoint(x: 400, y: 100))
+    #expect(r == .finishDrag)
+    #expect(g.moving && g.latest == CGPoint(x: 400, y: 100))
+}
+
+// MARK: - QA pass: hostile input never traps
+
+@Test func oddConfigNumbersAreSanitized() {
+    var s = WindowsSettings()
+    s.windowGap = .infinity
+    s.screenMargin = .nan
+    s.sizeStep = -.infinity
+    s.almostMaximizeWidth = .nan
+    s.almostMaximizeHeight = 7
+    let o = s.geometry
+    #expect(o.windowGap == 0 && o.screenMargin == 0 && o.sizeStep == 30)
+    #expect(o.almostMaximize == CGSize(width: 0.9, height: 1))
+    #expect(WindowsSettings.points(.nan) == 0 && WindowsSettings.points(.infinity) == 0 && WindowsSettings.points(12.4) == 12)
+    #expect(WindowsSettings.fraction("1/inf") == nil && WindowsSettings.fraction("nan/2") == nil)
+}
+
+@Test func hostileRectanglePrefsDontTrap() {
+    let p = importPlan(["gapSize": Double.infinity, "screenEdgeGapTop": Double.nan, "sizeOffset": Double.infinity,
+                        "leftHalf": mas(1 << 40, 0x80000), "rightHalf": mas(-5, 0x80000)], pro: false)
+    #expect(p.settings.windowGap == 0 && p.settings.screenMargin == 0)
+    #expect(p.settings.sizeStep == 30)
+    #expect(p.assignments["windows.left-half"]?.origin == .unbound)
+    #expect(RectangleImport.summary(p).contains("shortcuts set"))
+    #expect(SpaceMover.shortcut(fromSymbolicHotKey: ["enabled": true, "value": ["parameters": [65535, 1 << 20, 0]]]) == nil)
+    #expect(StashManager.hiddenFrame(R(0, 0, 10, 10), edge: .left, screen: 3, screens: [screenA], sliver: 12) == nil)
+}
+
+@Test func importReadsRectangleExportJSON() throws {
+    let json = """
+    {"bundleId": "com.knollsoft.Rectangle", "version": "92",
+     "shortcuts": {"leftHalf": {"keyCode": 123, "modifierFlags": 786432}, "maximize": {"keyCode": 36, "modifierFlags": 786432}},
+     "defaults": {"gapSize": {"float": 6}, "windowSnapping": {"int": 2}, "alternateDefaultShortcuts": {"bool": true},
+                  "subsequentExecutionMode": {"int": 2}}}
+    """
+    let prefs = try #require(RectangleImport.parse(Data(json.utf8)))
+    let src = RectangleImport.source(forFile: URL(fileURLWithPath: "/tmp/RectangleConfig.json"), prefs: prefs)
+    #expect(src.name == "Rectangle" && !src.isPro)
+    let p = RectangleImport.plan(prefs: prefs, sourceName: src.name, isPro: src.isPro, settings: WindowsSettings(),
+                                 current: bentoDefaults, spaces: true)
+    #expect(p.assignments["windows.left-half"]?.shortcut == sc("ctrl+opt+left"))
+    #expect(p.assignments["windows.left-half"]?.origin == .explicit)
+    #expect(p.assignments["windows.first-third"]?.origin == .rectangleDefault)
+    #expect(p.settings.windowGap == 6 && !p.settings.snapping && !p.settings.cycleOnRepeat)
+    #expect(p.skipped.isEmpty)
+    // A Pro preferences plist is recognised by its keys even under another name.
+    let plist = try PropertyListSerialization.data(fromPropertyList: thisMacPro, format: .binary, options: 0)
+    let proPrefs = try #require(RectangleImport.parse(plist))
+    #expect(RectangleImport.source(forFile: URL(fileURLWithPath: "/tmp/backup.plist"), prefs: proPrefs).isPro)
+    #expect(RectangleImport.parse(Data("not a plist".utf8)) == nil)
 }

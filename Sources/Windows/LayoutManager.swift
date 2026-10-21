@@ -30,6 +30,7 @@ final class LayoutManager {
         let z = WindowList.zOrder()
         let snap = ScreenSnapshot.current()
         var entries: [SavedLayout.Entry] = []
+        guard !snap.rects.isEmpty else { return SavedLayout(name: name, windows: entries) }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isHidden && $0.processIdentifier != getpid() && $0.bundleIdentifier != nil
         }
@@ -103,9 +104,10 @@ final class LayoutManager {
         for (w, e) in zip(unmatched, remaining) { pairs.append((w, e)) }
 
         let snap = ScreenSnapshot.current()
+        guard !snap.rects.isEmpty else { return false }
         for (w, e) in pairs {
-            guard let current = w.frame else { continue }
-            let (target, si) = LayoutManager.map(e, to: snap)
+            guard let current = w.frame, let mapped = LayoutManager.map(e, to: snap) else { continue }
+            let (target, si) = mapped
             engine.place(w, from: current, to: target, visible: snap.rects[si].visible)
         }
         return true
@@ -113,7 +115,8 @@ final class LayoutManager {
 
     /// Where a saved frame goes on today's displays: same display if present
     /// (by UUID, then by frame), otherwise proportionally onto the main display.
-    static func map(_ e: SavedLayout.Entry, to snap: ScreenSnapshot) -> (CGRect, Int) {
+    static func map(_ e: SavedLayout.Entry, to snap: ScreenSnapshot) -> (CGRect, Int)? {
+        guard !snap.rects.isEmpty else { return nil }
         if let uuid = e.displayUUID, let i = snap.screens.firstIndex(where: { uuid == LayoutManager.uuid(of: $0) }) {
             return (translate(e, to: snap.rects[i]), i)
         }

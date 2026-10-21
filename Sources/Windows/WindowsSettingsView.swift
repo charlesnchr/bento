@@ -56,6 +56,8 @@ struct WindowsSettingsView: View {
                 Spacer()
                 Button("Import…") { module.importFromRectangle(interactive: true) }
                     .disabled(source == nil)
+                Button("Choose File…") { module.importFromFile() }
+                    .help("Import a Rectangle or Rectangle Pro preferences plist, or a JSON file exported from Rectangle")
             }
         }
     }
@@ -73,7 +75,7 @@ struct WindowsSettingsView: View {
             Toggle("Repeating Left or Right Half at the screen edge moves to the next display",
                    isOn: $model.value.moveToAdjacentDisplayOnRepeat)
             Stepper(value: $model.value.sizeStep, in: 5...200, step: 5) {
-                LabeledContent("Make Larger / Smaller step", value: "\(Int(model.value.sizeStep)) pt")
+                LabeledContent("Make Larger / Smaller step", value: "\(WindowsSettings.points(model.value.sizeStep)) pt")
             }
             Stepper(value: $model.value.almostMaximizeWidth, in: 0.5...1, step: 0.05) {
                 LabeledContent("Almost Maximize width", value: percent(model.value.almostMaximizeWidth))
@@ -85,7 +87,7 @@ struct WindowsSettingsView: View {
         }
     }
 
-    private func percent(_ v: Double) -> String { "\(Int((v * 100).rounded())) %" }
+    private func percent(_ v: Double) -> String { "\(WindowsSettings.points(v * 100)) %" }
 
     // MARK: Gaps
 
@@ -107,7 +109,7 @@ struct WindowsSettingsView: View {
             HStack {
                 Slider(value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = $0.rounded() }), in: 0...40)
                     .frame(maxWidth: 220)
-                Text("\(Int(value.wrappedValue)) pt").monospacedDigit().frame(width: 44, alignment: .trailing)
+                Text("\(WindowsSettings.points(value.wrappedValue)) pt").monospacedDigit().frame(width: 44, alignment: .trailing)
             }
         }
     }
@@ -274,7 +276,7 @@ struct WindowsSettingsView: View {
     private var stashSection: some View {
         Section {
             Stepper(value: $model.value.stashSliver, in: 4...60, step: 2) {
-                LabeledContent("Visible sliver", value: "\(Int(model.value.stashSliver)) pt")
+                LabeledContent("Visible sliver", value: "\(WindowsSettings.points(model.value.stashSliver)) pt")
             }
             Toggle("Reveal when the pointer touches the sliver", isOn: $model.value.stashRevealOnHover)
         } header: {

@@ -102,8 +102,15 @@ final class WindowEngine {
 
     /// Tells other modules (Tiling) that the user explicitly placed a window.
     func didPlace(_ w: AXWindow) {
+        if WindowEngine.logEvents {
+            // BENTO_LOG_EVENTS=1: one line per placement on stderr (end-to-end tests count them).
+            let f = w.frame.map { r in [r.minX, r.minY, r.width, r.height].map { "\(WindowsSettings.points(Double($0)))" }.joined(separator: " ") } ?? "?"
+            FileHandle.standardError.write("windowPlaced \(w.title) \(f)\n".data(using: .utf8) ?? Data())
+        }
         NotificationCenter.default.post(name: BentoEvents.windowPlaced, object: nil, userInfo: ["window": w])
     }
+
+    static let logEvents = ProcessInfo.processInfo.environment["BENTO_LOG_EVENTS"] != nil
 
     /// Sets a frame and, when the app keeps a different size (minimum size,
     /// character grid, fixed-size window), aligns it to the edges the target
@@ -182,6 +189,7 @@ final class WindowEngine {
     private func performMulti(_ cmd: WindowCommand) -> Bool {
         let focused = AXWindow.focused()
         let snap = ScreenSnapshot.current()
+        guard !snap.rects.isEmpty else { return false }
         let idx = focused?.frame.map { snap.index(containing: $0) } ?? snap.index(at: NSScreen.mouseAX)
         let z = WindowList.zOrder()
         var windows: [AXWindow]
@@ -238,7 +246,7 @@ enum WindowList {
         var i = 0
         for info in list {
             guard (info[kCGWindowLayer as String] as? Int) == 0, let n = info[kCGWindowNumber as String] as? Int else { continue }
-            out[CGWindowID(n)] = i
+            out[CGWindowID(truncatingIfNeeded: n)] = i
             i += 1
         }
         return out
@@ -257,7 +265,7 @@ enum WindowList {
               let d = list.first,
               let b = d[kCGWindowBounds as String] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: b) else { return nil }
-        return Info(id: id, pid: pid_t(d[kCGWindowOwnerPID as String] as? Int ?? 0), frame: rect,
+        return Info(id: id, pid: pid_t(truncatingIfNeeded: d[kCGWindowOwnerPID as String] as? Int ?? 0), frame: rect,
                     layer: d[kCGWindowLayer as String] as? Int ?? 0)
     }
 }

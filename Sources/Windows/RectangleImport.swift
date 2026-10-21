@@ -58,8 +58,45 @@ enum RectangleImport {
     }
 
     static func read(_ url: URL) -> [String: Any]? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count <= 4 << 20 else { return nil }
+        return parse(data)
+    }
+
+    /// A preferences plist, or the JSON file from Rectangle's "Export"
+    /// (`{bundleId, shortcuts: {action: {keyCode, modifierFlags}}, defaults: {key: {bool|int|float|double|string}}}`),
+    /// flattened into the plist's shape.
+    static func parse(_ data: Data) -> [String: Any]? {
+        if let plist = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] {
+            return plist
+        }
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              json["shortcuts"] != nil || json["defaults"] != nil else { return nil }
+        var prefs: [String: Any] = [:]
+        for (key, value) in json["defaults"] as? [String: Any] ?? [:] {
+            guard let d = value as? [String: Any] else { continue }
+            if let v = d["bool"] as? Bool { prefs[key] = v }
+            else if let v = d["int"] as? NSNumber { prefs[key] = v.intValue }
+            else if let v = d["double"] as? NSNumber { prefs[key] = v.doubleValue }
+            else if let v = d["float"] as? NSNumber { prefs[key] = v.doubleValue }
+            else if let v = d["string"] as? String { prefs[key] = v }
+        }
+        for (key, value) in json["shortcuts"] as? [String: Any] ?? [:] {
+            if let d = value as? [String: Any] { prefs[key] = d }
+        }
+        if let bid = json["bundleId"] as? String { prefs[exportBundleKey] = bid }
+        return prefs
+    }
+
+    /// Set on prefs parsed from an exported JSON file.
+    static let exportBundleKey = "__bentoExportBundleId"
+
+    /// Name and flavour for a file the user picked.
+    static func source(forFile url: URL, prefs: [String: Any]) -> Source {
+        let file = url.lastPathComponent.lowercased()
+        let bid = prefs[exportBundleKey] as? String
+        let pro = bid == "com.knollsoft.Hookshot" || file.contains("hookshot") || file.contains("rectangle pro") || file.contains("rectanglepro")
+            || ["gestures", "nextDisplayRatio", "prevDisplayRatio", "nextSpace", "prevSpace"].contains { prefs[$0] != nil }
+        return Source(name: pro ? "Rectangle Pro" : "Rectangle", isPro: pro, url: url)
     }
 
     // MARK: Key mapping
@@ -107,7 +144,7 @@ enum RectangleImport {
 
     /// MASShortcut dictionary → Shortcut. nil for `{}` / garbage.
     static func shortcut(_ value: Any?) -> Shortcut? {
-        guard let d = value as? [String: Any], let code = (d["keyCode"] as? NSNumber)?.intValue, code >= 0 else { return nil }
+        guard let d = value as? [String: Any], let code = (d["keyCode"] as? NSNumber)?.intValue, (0..<0xFFFF).contains(code) else { return nil }
         let raw = (d["modifierFlags"] as? NSNumber)?.uintValue ?? 0
         let mods = NSEvent.ModifierFlags(rawValue: raw).intersection([.command, .option, .control, .shift])
         return Shortcut(keyCode: UInt32(code), modifiers: mods)
@@ -235,14 +272,18 @@ enum RectangleImport {
             }
         }
 
-        let gap = (p["gapSize"] as? NSNumber)?.doubleValue
+        func number(_ key: String) -> Double? {
+            guard let v = (p[key] as? NSNumber)?.doubleValue, v.isFinite else { return nil }
+            return v
+        }
+        let gap = number("gapSize").map { $0.clamped(0...200) }
         let edges = ["screenEdgeGapTop", "screenEdgeGapBottom", "screenEdgeGapLeft", "screenEdgeGapRight"]
-            .compactMap { (p[$0] as? NSNumber)?.doubleValue }
+            .compactMap(number).map { $0.clamped(0...200) }
         if gap != nil || !edges.isEmpty {
             let g = max(0, gap ?? 0)
             s.windowGap = g
             s.screenMargin = g + (edges.max() ?? 0)
-            note("Gaps \(Int(s.windowGap)) pt between windows, \(Int(s.screenMargin)) pt at screen edges")
+            note("Gaps \(WindowsSettings.points(s.windowGap)) pt between windows, \(WindowsSettings.points(s.screenMargin)) pt at screen edges")
             if Set(edges).count > 1 { plan.notes.append("Rectangle's per-edge screen gaps differ; Bento uses the largest for all edges.") }
         }
         if let on = optionalBool(p["applyGapsToMaximize"]) { s.gapsOnMaximize = on }
@@ -279,11 +320,11 @@ enum RectangleImport {
                 note("Cycle sizes " + s.cycleSizes.joined(separator: ", "))
             }
         }
-        if let h = (p["almostMaximizeHeight"] as? NSNumber)?.doubleValue, h > 0, h <= 1 { s.almostMaximizeHeight = h }
-        if let w = (p["almostMaximizeWidth"] as? NSNumber)?.doubleValue, w > 0, w <= 1 { s.almostMaximizeWidth = w }
-        if let step = (p["sizeOffset"] as? NSNumber)?.doubleValue, step > 0 {
-            s.sizeStep = step
-            note("Larger / Smaller step \(Int(step)) pt")
+        if let h = number("almostMaximizeHeight"), h > 0, h <= 1 { s.almostMaximizeHeight = h }
+        if let w = number("almostMaximizeWidth"), w > 0, w <= 1 { s.almostMaximizeWidth = w }
+        if let step = number("sizeOffset"), step > 0 {
+            s.sizeStep = step.clamped(1...1000)
+            note("Larger / Smaller step \(WindowsSettings.points(s.sizeStep)) pt")
         }
         s.importedFromRectangle = true
         plan.settings = s
