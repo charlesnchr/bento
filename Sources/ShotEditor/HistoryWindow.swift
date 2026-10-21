@@ -41,6 +41,9 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         collection.delegate = self
         collection.controller = self
         collection.register(HistoryItem.self, forItemWithIdentifier: HistoryItem.id)
+        // Bounded: scrolling through hundreds of captures must not keep every
+        // decoded thumbnail (NSCache also drops them under memory pressure).
+        thumbs.countLimit = 150
 
         let scroll = NSScrollView()
         scroll.documentView = collection
@@ -194,12 +197,23 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         let e = entries[indexPath.item]
         let key = "\(e.id)-\(e.doc.modified.timeIntervalSince1970)" as NSString
         var thumb = thumbs.object(forKey: key)
-        if thumb == nil, let img = NSImage(contentsOf: e.thumbURL) {
+        if thumb == nil, let img = HistoryWindowController.loadThumbnail(e.thumbURL) {
             thumbs.setObject(img, forKey: key)
             thumb = img
         }
         item.configure(entry: e, thumbnail: thumb)
         return item
+    }
+
+    /// Thumbnail decoded at cell size (2x the 184 pt cell), not the stored 480 px.
+    static func loadThumbnail(_ url: URL) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 400,
+                  kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / 2, height: CGFloat(cg.height) / 2))
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { refreshPreview() }
