@@ -143,7 +143,6 @@ struct GeneralPane: View {
 struct PermissionsView: View {
     @State private var ax = Permissions.accessibility
     @State private var screen = Permissions.screenRecording
-    private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -156,10 +155,20 @@ struct PermissionsView: View {
                 Permissions.open(.screenRecording)
             }
         }
-        .onReceive(timer) { _ in
-            ax = Permissions.accessibility
-            screen = Permissions.screenRecording
+        // No notification exists for permission changes: poll, but only while
+        // something is missing and this pane is visible.
+        .task {
+            while !Task.isCancelled, !(ax && screen) {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                refresh()
+            }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private func refresh() {
+        ax = Permissions.accessibility
+        screen = Permissions.screenRecording
     }
 
     private func row(_ name: String, granted: Bool, grant: @escaping () -> Void) -> some View {
