@@ -264,7 +264,7 @@ enum HexColor {
 
     static func hex(_ color: NSColor, alpha: Bool = false) -> String {
         let c = color.usingColorSpace(.sRGB) ?? color
-        func b(_ v: CGFloat) -> Int { Int((v.clamped(0...1) * 255).rounded()) }
+        func b(_ v: CGFloat) -> Int { v.isFinite ? Int((v.clamped(0...1) * 255).rounded()) : 0 }
         let base = String(format: "#%02X%02X%02X", b(c.redComponent), b(c.greenComponent), b(c.blueComponent))
         return alpha && c.alphaComponent < 1 ? base + String(format: "%02X", b(c.alphaComponent)) : base
     }

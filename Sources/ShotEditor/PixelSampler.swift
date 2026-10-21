@@ -18,7 +18,9 @@ final class PixelSampler {
     var pixelSize: (w: Int, h: Int) { (image.width, image.height) }
 
     func pixelPoint(_ p: CGPoint) -> (x: Int, y: Int)? {
-        let x = Int(floor(p.x * scale)), y = Int(floor(p.y * scale))
+        let fx = floor(p.x * scale), fy = floor(p.y * scale)
+        guard fx.isFinite, fy.isFinite, fx >= 0, fy >= 0, fx < CGFloat(image.width), fy < CGFloat(image.height) else { return nil }
+        let x = Int(fx), y = Int(fy)
         guard x >= 0, y >= 0, x < image.width, y < image.height else { return nil }
         return (x, y)
     }
