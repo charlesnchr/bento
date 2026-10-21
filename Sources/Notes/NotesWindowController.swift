@@ -244,6 +244,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     /// Loads a note into the editor.
     func load(_ note: Note, selection: NSRange?) {
         closeInline()
+        if textView.hasMarkedText() { textView.unmarkText() } // the IME's range would point into the old text
         loadingNote = true
         noteID = note.id
         let attrs: [NSAttributedString.Key: Any] = [.font: styler.theme.bodyFont, .foregroundColor: styler.theme.paragraph]
@@ -268,12 +269,24 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         let old = storage.string as NSString
         let new = body as NSString
         guard old as String != body else { return }
-        // minimal replaced range: common prefix/suffix
+        if textView.hasMarkedText() { textView.unmarkText() }
+        closeInline()
+        // minimal replaced range: common prefix/suffix, on composed-character boundaries
+        // (never split a surrogate pair or an emoji sequence)
         let maxPrefix = min(old.length, new.length)
         var p = 0
         while p < maxPrefix, old.character(at: p) == new.character(at: p) { p += 1 }
+        if p < old.length { p = min(p, old.rangeOfComposedCharacterSequence(at: p).location) }
+        if p < new.length { p = min(p, new.rangeOfComposedCharacterSequence(at: p).location) }
         var s = 0
         while s < min(old.length, new.length) - p, old.character(at: old.length - 1 - s) == new.character(at: new.length - 1 - s) { s += 1 }
+        func endAligned(_ str: NSString, _ s: Int) -> Int {
+            let e = str.length - s
+            guard e > p, e < str.length else { return s }
+            let r = str.rangeOfComposedCharacterSequence(at: e)
+            return r.location < e ? str.length - NSMaxRange(r) : s
+        }
+        s = max(0, min(endAligned(old, s), endAligned(new, s)))
         let replaced = NSRange(location: p, length: old.length - p - s)
         let insert = new.substring(with: NSRange(location: p, length: new.length - p - s))
         var sel = textView.selectedRange()
@@ -421,7 +434,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         guard loc < storage.length || (loc == storage.length && loc > 0) else { return nil }
         let line = text.lineRange(for: NSRange(location: loc, length: 0))
         guard line.location < storage.length, let len = storage.attribute(.notesPrefixLen, at: line.location, effectiveRange: nil) as? Int else { return nil }
-        let contentStart = line.location + len
+        // never past the line's end, even if the attribute is stale
+        var lineEnd = NSMaxRange(line)
+        if lineEnd > line.location, text.character(at: lineEnd - 1) == 10 { lineEnd -= 1 }
+        let contentStart = min(line.location + len, lineEnd)
         guard loc < contentStart else { return nil }
         if previous == contentStart, loc < previous, line.location > 0 { return line.location - 1 }
         return contentStart
@@ -632,7 +648,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private func restoreFrame() {
         if let s = controller.store.kv("window.frame") {
             let r = NSRectFromString(s)
-            if r.width >= minSize.width, r.height >= minSize.height, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(r) }) {
+            if r.width.isFinite, r.height.isFinite, r.width >= minSize.width, r.height >= minSize.height, NotesWindowController.isReachable(r) {
                 panel.setFrame(r, display: false)
                 return
             }
@@ -640,17 +656,38 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         panel.setFrame(originalFrame(size: NotesWindowController.defaultSize), display: false)
     }
 
+    /// A saved frame from a display that's gone (or dragged almost off-screen) comes back
+    /// at the original position; a frame taller/wider than the screen is shrunk to fit.
     private func ensureOnScreen() {
-        if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(panel.frame) }) {
-            panel.setFrame(originalFrame(size: panel.frame.size), display: false)
+        let f = panel.frame
+        if !NotesWindowController.isReachable(f) {
+            panel.setFrame(originalFrame(size: f.size), display: false)
+        } else if let vf = (panel.screen ?? NSScreen.main)?.visibleFrame, f.height > vf.height || f.width > vf.width {
+            var r = f
+            r.size.width = max(minSize.width, min(f.width, vf.width))
+            r.size.height = max(minSize.height, min(f.height, vf.height))
+            r.origin.y = min(max(f.maxY - r.height, vf.minY), vf.maxY - r.height)
+            r.origin.x = min(max(r.minX, vf.minX), vf.maxX - r.width)
+            panel.setFrame(r, display: false)
+        }
+    }
+
+    /// Whether enough of the title bar is on a screen to see and drag the window.
+    static func isReachable(_ r: NSRect, screens: [NSRect] = NSScreen.screens.map(\.visibleFrame)) -> Bool {
+        let titleBar = NSRect(x: r.minX, y: r.maxY - 28, width: r.width, height: 28)
+        return screens.contains { vf in
+            let i = titleBar.intersection(vf)
+            return !i.isNull && i.width >= 80 && i.height >= 12
         }
     }
 
     /// Raycast's "original position": top right of the screen with the mouse.
     private func originalFrame(size: NSSize) -> NSRect {
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
-        let vf = screen.visibleFrame
-        return NSRect(x: vf.maxX - size.width - 24, y: vf.maxY - size.height - 24, width: size.width, height: size.height)
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens.first
+        let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let w = min(max(minSize.width, size.width), vf.width - 48)
+        let h = min(max(minSize.height, size.height), vf.height - 48)
+        return NSRect(x: vf.maxX - w - 24, y: vf.maxY - h - 24, width: w, height: h)
     }
 
     func moveToOriginalPosition(animated: Bool) {

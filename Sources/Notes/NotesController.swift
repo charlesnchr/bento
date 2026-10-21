@@ -23,6 +23,7 @@ final class NotesController {
     private var observers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem?
     private var running = false
+    private var paletteRefreshQueued = false
 
     init(store: NoteStore = NoteStore()) {
         self.store = store
@@ -36,6 +37,10 @@ final class NotesController {
             if id == self?.currentID { self?.flushPendingSave() }
         }
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
+        engine.onConflictCopy = { [weak self] copy, _ in
+            self?.countCache.removeValue(forKey: copy.id)
+            HUD.show("Conflicting Edit Kept as a Copy", symbol: "doc.on.doc")
+        }
     }
 
     // MARK: Lifecycle
@@ -47,7 +52,13 @@ final class NotesController {
         settings = ConfigStore.shared.section("notes", default: NotesSettings())
         observers.append(ConfigStore.shared.observe("notes") { [weak self] in self?.reloadSettings() })
         observers.append(NotificationCenter.default.addObserver(forName: NoteStore.didChange, object: store, queue: .main) { [weak self] _ in
-            self?.windowController?.palette.refresh()
+            // a snapshot applies hundreds of notes in one go: rebuild the open list once
+            guard let self, self.windowController?.palette.isOpen == true, !self.paletteRefreshQueued else { return }
+            self.paletteRefreshQueued = true
+            DispatchQueue.main.async {
+                self.paletteRefreshQueued = false
+                self.windowController?.palette.refresh()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             self?.flushPendingSave()
@@ -127,6 +138,22 @@ final class NotesController {
             if let id { open(id, recordHistory: false) } else { createNote(body: "") }
         }
         w.show(focus: true)
+        warnIfNotPersistent()
+    }
+
+    private var warnedNotPersistent = false
+
+    /// The database couldn't be opened (permissions, disk, corruption): say so instead of
+    /// letting the user type into notes that vanish on quit.
+    private func warnIfNotPersistent() {
+        guard !store.isPersistent, !warnedNotPersistent, let w = windowController else { return }
+        warnedNotPersistent = true
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Notes Can't Be Saved"
+        alert.informativeText = "The notes database at \(NoteStore.defaultURL?.path ?? "?") couldn't be opened. "
+            + "Changes are kept in memory\(settings.sync.enabled ? " and synced" : "") until Bento quits. See Console (category notes) for details."
+        alert.beginSheetModal(for: w.panel) { _ in }
     }
 
     func hideWindow() {
@@ -258,7 +285,13 @@ final class NotesController {
     private func discardIfEmpty(_ id: String) {
         guard let n = store.note(id), n.seq == nil, !n.dirty || n.body.isEmpty,
               n.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, store.liveNotes.count > 1 else { return }
-        store.remove(id)
+        if n.dirty {
+            // It had text that may already be on the server (ack not seen yet): delete it
+            // there too instead of forgetting it locally.
+            mutate(id) { $0.deleted = true; $0.body = "" }
+        } else {
+            store.remove(id)
+        }
         window.forgetUndo(id)
         backStack.removeAll { $0 == id }
         forwardStack.removeAll { $0 == id }
@@ -321,14 +354,29 @@ final class NotesController {
         guard hasPending, let n = pendingNote else { return }
         hasPending = false
         pendingNote = nil
-        // the note may have been replaced remotely in between
-        if let stored = store.note(n.id), stored.updatedAt > n.updatedAt, !stored.dirty { return }
-        var toSave = n
-        if let stored = store.note(n.id) {
-            toSave.meta = stored.meta
-            toSave.seq = stored.seq
-            toSave.openedAt = stored.openedAt
+        guard let stored = store.note(n.id) else {
+            // removed underneath (shouldn't happen): never drop typed text
+            var lost = n
+            lost.id = UUID().uuidString
+            lost.seq = nil
+            lost.baseHash = nil
+            store.save(lost)
+            sync.localChange()
+            return
         }
+        if stored.deleted || (stored.updatedAt > n.updatedAt && !stored.dirty) {
+            // Replaced remotely before this edit reached the store (sync flushes first, so
+            // this is a safety net): keep the text as a conflicted copy instead of dropping it.
+            if n.body != stored.body { engine.preserve(body: n.body, of: stored) }
+            sync.localChange()
+            return
+        }
+        var toSave = n
+        toSave.meta = stored.meta
+        toSave.seq = stored.seq
+        toSave.openedAt = stored.openedAt
+        toSave.baseHash = stored.baseHash
+        toSave.updatedAt = max(n.updatedAt, stored.updatedAt + (stored.body == n.body ? 0 : 1))
         store.save(toSave)
         sync.localChange()
     }

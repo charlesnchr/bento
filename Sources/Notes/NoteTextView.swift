@@ -18,6 +18,16 @@ final class NoteTextView: NSTextView {
             return
         }
         let sorted = r.edits.sorted { $0.range.location < $1.range.location }
+        // An out-of-bounds or overlapping edit would raise inside NSTextStorage: refuse it.
+        var prevEnd = 0
+        for e in sorted {
+            guard e.range.location != NSNotFound, e.range.location >= prevEnd, NSMaxRange(e.range) <= ts.length else {
+                NSSound.beep()
+                return
+            }
+            prevEnd = NSMaxRange(e.range)
+        }
+        if hasMarkedText() { unmarkText() }
         breakUndoCoalescing()
         guard shouldChangeText(inRanges: sorted.map { NSValue(range: $0.range) }, replacementStrings: sorted.map(\.replacement)) else { return }
         ts.beginEditing()

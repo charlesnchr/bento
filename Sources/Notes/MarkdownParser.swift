@@ -276,6 +276,21 @@ enum MarkdownParser {
     static func inlineSpans(_ text: NSString, in range: NSRange? = nil) -> [InlineSpan] {
         let r = range ?? NSRange(location: 0, length: text.length)
         guard r.length > 0 else { return [] }
+        guard r.location == 0, r.length == text.length else {
+            // Work on a copy of just this line: the regexes would otherwise bridge (copy)
+            // the whole document on every call, which made typing in long notes slow.
+            let sub = text.substring(with: r) as NSString
+            func shift(_ x: NSRange) -> NSRange { NSRange(location: x.location + r.location, length: x.length) }
+            return inlineSpansOfWhole(sub).map { sp in
+                InlineSpan(kind: sp.kind, range: shift(sp.range), contentRange: shift(sp.contentRange), markers: sp.markers.map(shift))
+            }
+        }
+        return inlineSpansOfWhole(text)
+    }
+
+    private static func inlineSpansOfWhole(_ text: NSString) -> [InlineSpan] {
+        let r = NSRange(location: 0, length: text.length)
+        guard r.length > 0 else { return [] }
         var spans: [InlineSpan] = []
         // Ranges no other construct may partially overlap (code spans, link urls).
         var hard: [NSRange] = []

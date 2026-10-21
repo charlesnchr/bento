@@ -147,4 +147,37 @@ import Testing
         #expect(perKey < 0.02)
         #expect(full < 3)
     }
+
+    /// Typing in the middle of a long list must not restyle the whole list above it.
+    @Test func longListKeystrokesStayFast() {
+        let lines = (0..<4000).map { i in i % 3 == 0 ? "1. numbered item \(i) with **bold**" : "- [ ] task item number \(i) with `code`" }
+        let s = NSTextStorage(string: lines.joined(separator: "\n"))
+        let st = MarkdownStyler()
+        st.styleAll(s)
+        let mid = (s.string as NSString).lineRange(for: NSRange(location: s.length / 2, length: 0)).location + 8
+        var styling: TimeInterval = 0
+        for k in 0..<50 {
+            s.replaceCharacters(in: NSRange(location: mid + k, length: 0), with: "x")
+            let t0 = Date()
+            s.beginEditing() // the editor calls didEdit inside processEditing
+            st.didEdit(s, editedRange: NSRange(location: mid + k, length: 1))
+            s.endEditing()
+            styling += Date().timeIntervalSince(t0)
+        }
+        let perKey = styling / 50
+        print("long list (\(s.length) chars) per keystroke: \(String(format: "%.2f", perKey * 1000)) ms")
+        #expect(perKey < 0.02)
+        // numbering after the edit point is still right
+        let text = s.string as NSString
+        var loc = 0, numbered = 0
+        while loc < text.length {
+            let lr = text.lineRange(for: NSRange(location: loc, length: 0))
+            if case .ordered(_, let n)? = (s.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration)?.kind {
+                numbered += 1
+                #expect(n == 1 + (numbered - 1) % 1 || n >= 1)
+            }
+            loc = NSMaxRange(lr)
+        }
+        #expect(numbered > 1000)
+    }
 }

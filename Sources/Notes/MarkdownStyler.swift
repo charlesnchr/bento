@@ -60,12 +60,20 @@ final class MarkdownStyler {
 
     private func restyle(_ s: NSTextStorage, start: Int, end: Int) {
         let text = s.mutableString
-        var from = min(start, text.length)
-        // Back up to the start of a list so numbering is right.
+        let start = min(start, text.length)
+        var from = start
+        // Back up to the start of a list so numbering is right (lines above `start` are
+        // only re-parsed for the counters; their attributes are kept when unchanged).
         while from > 0 {
             let prev = text.lineRange(for: NSRange(location: from - 1, length: 0))
             guard let d = decoration(s, at: prev.location), d.listLevel != nil else { break }
             from = prev.location
+            // a top-level bullet/task resets every counter: nothing above it matters
+            switch d.kind {
+            case .bullet(0), .task(0, _): break
+            default: continue
+            }
+            break
         }
         let inCode: Bool
         if from == 0 {
@@ -75,7 +83,7 @@ final class MarkdownStyler {
         } else {
             inCode = MarkdownParser.isInCode(text, lineStart: from)
         }
-        styleLines(s, from: from, minEnd: end, inCode: inCode, force: false)
+        styleLines(s, from: from, minEnd: end, inCode: inCode, force: false, applyFrom: start)
     }
 
     private func decoration(_ s: NSTextStorage, at loc: Int) -> BlockDecoration? {
@@ -83,7 +91,7 @@ final class MarkdownStyler {
         return s.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration
     }
 
-    private func styleLines(_ s: NSTextStorage, from: Int, minEnd: Int, inCode startInCode: Bool, force: Bool) {
+    private func styleLines(_ s: NSTextStorage, from: Int, minEnd: Int, inCode startInCode: Bool, force: Bool, applyFrom: Int = 0) {
         let text = s.mutableString
         let length = text.length
         var loc = from
@@ -107,7 +115,9 @@ final class MarkdownStyler {
 
             if full.length == 0 { break } // empty last line: nothing to style
             if !force, loc >= minEnd, let old = decoration(s, at: loc), old == deco { break }
-            apply(s, line: r, full: full, parsed: p, deco: deco, text: text)
+            if force || NSMaxRange(full) > applyFrom || decoration(s, at: loc) != deco {
+                apply(s, line: r, full: full, parsed: p, deco: deco, text: text)
+            }
 
             prevDeco = deco
             inCode = inCodeAfter

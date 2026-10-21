@@ -53,6 +53,10 @@ struct Note: Equatable {
     // Local only
     var dirty = false
     var openedAt: Int64 = 0
+    /// `NoteText.hash` of the body of the server version this local version is based on
+    /// (nil: unknown). Lets the sync engine tell a real concurrent edit from a
+    /// meta-only change on either side.
+    var baseHash: UInt64?
 
     init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
         self.id = id
@@ -156,6 +160,30 @@ enum NoteText {
 
     /// Lowercased haystack for search.
     static func searchText(of body: String) -> String { plainText(of: body).lowercased() }
+
+    /// Stable 64-bit FNV-1a hash of the UTF-8 bytes (Swift's `Hasher` is seeded per process).
+    static func hash(_ s: String) -> UInt64 {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in s.utf8 {
+            h ^= UInt64(b)
+            h = h &* 0x0000_0100_0000_01b3
+        }
+        return h
+    }
+
+    /// Body of a conflicted copy: the title line gets " (conflicted copy, <device>)".
+    /// nil when the body has no visible text (nothing worth keeping).
+    static func conflictCopyBody(_ body: String, device: String) -> String? {
+        // same line `title(of:)` picks, so the copy is recognisable in the notes list
+        var lines = body.components(separatedBy: "\n")
+        for (i, line) in lines.enumerated() {
+            guard !isFenceOrRule(line), !plainLine(line).trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            let suffix = device.isEmpty ? " (conflicted copy)" : " (conflicted copy, \(device))"
+            lines[i] = line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) + suffix
+            return lines.joined(separator: "\n")
+        }
+        return nil
+    }
 }
 
 /// "4m ago", "3w ago" style relative dates like Raycast's notes list.

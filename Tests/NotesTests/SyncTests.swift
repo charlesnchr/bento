@@ -1,4 +1,5 @@
 import Foundation
+import BentoCore
 import Testing
 @testable import Notes
 
@@ -191,6 +192,234 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
     }
 }
 
+/// Data-safety cases: nothing a user typed may disappear because of sync timing.
+@Suite struct SyncSafetyTests {
+    func engine(_ repo: MemoryRepo) -> SyncEngine {
+        let e = SyncEngine(repo: repo)
+        e.device = "me"
+        return e
+    }
+
+    /// A note synced at seq 10 with body `base`, then edited locally.
+    func edited(_ repo: MemoryRepo, base: String, now body: String, updated: Int64 = 200) {
+        var n = local("a", body, updated: updated, dirty: true, seq: 10)
+        n.baseHash = NoteText.hash(base)
+        repo.save(n)
+        repo.lastSeq = 10
+    }
+
+    func theirs(_ body: String, updated: Int64, seq: Int64 = 11, device: String = "other", meta: [String: JSONValue] = [:]) -> Note {
+        var r = remote("a", body, updated: updated, seq: seq)
+        r.device = device
+        r.meta = meta
+        return r
+    }
+
+    func copies(_ repo: MemoryRepo) -> [Note] { repo.notes.values.filter { $0.meta["conflictOf"] != nil } }
+
+    @Test func ackForAnOlderVersionKeepsTheNewerOneQueued() {
+        // Typing while a put is in flight, then the connection drops after the first ack.
+        let repo = MemoryRepo()
+        repo.save(local("a", "v1", updated: 10, dirty: true))
+        let e = engine(repo)
+        e.markSent(e.notesToSend()[0])
+        var n = repo.notes["a"]!
+        n.body = "v2"; n.updatedAt = 20
+        repo.save(n)
+        e.markSent(e.notesToSend()[0])          // v2 in flight too
+        e.ack(id: "a", seq: 1, accepted: true)  // ack for v1
+        #expect(repo.notes["a"]?.dirty == true)
+        #expect(repo.notes["a"]?.baseHash == NoteText.hash("v1"))
+        e.reset()                                // socket died before v2's ack
+        #expect(e.notesToSend().map(\.body) == ["v2"])
+        e.markSent(e.notesToSend()[0])
+        e.ack(id: "a", seq: 2, accepted: true)
+        #expect(repo.notes["a"]?.dirty == false)
+        #expect(repo.notes["a"]?.baseHash == NoteText.hash("v2"))
+    }
+
+    @Test func restAcksMatchTheirVersionEvenOutOfOrder() {
+        let repo = MemoryRepo()
+        repo.save(local("a", "v1", updated: 10, dirty: true))
+        let e = engine(repo)
+        e.markSent(repo.notes["a"]!)
+        var n = repo.notes["a"]!
+        n.body = "v2"; n.updatedAt = 20
+        repo.save(n)
+        e.markSent(n)
+        e.ack(id: "a", seq: 2, accepted: true, version: 20) // v2's response first
+        e.ack(id: "a", seq: 1, accepted: true, version: 10)
+        #expect(repo.notes["a"]?.dirty == false)
+        #expect(repo.notes["a"]?.seq == 2)
+        #expect(repo.notes["a"]?.baseHash == NoteText.hash("v2"))
+    }
+
+    @Test func concurrentEditThatLosesBecomesAConflictedCopy() {
+        let repo = MemoryRepo()
+        edited(repo, base: "# Plan\nbase", now: "# Plan\nbase + mine", updated: 200)
+        let e = engine(repo)
+        var conflicted: [String] = []
+        e.onConflictCopy = { _, original in conflicted.append(original) }
+        #expect(e.applyRemote(theirs("# Plan\nbase + theirs", updated: 300)) == .adopted)
+        #expect(repo.notes["a"]?.body == "# Plan\nbase + theirs")
+        let c = copies(repo)
+        #expect(c.count == 1)
+        #expect(c.first?.body == "# Plan (conflicted copy, me)\nbase + mine")
+        #expect(c.first?.dirty == true)        // synced to the other Macs
+        #expect(conflicted == ["a"])
+        #expect(e.notesToSend().map(\.id) == [c.first!.id])
+    }
+
+    @Test func concurrentEditThatWinsKeepsTheirTextAsACopy() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base + mine", updated: 300)
+        let e = engine(repo)
+        #expect(e.applyRemote(theirs("base + theirs", updated: 200)) == .keptLocal)
+        #expect(repo.notes["a"]?.body == "base + mine")
+        #expect(repo.notes["a"]?.seq == 11)
+        #expect(copies(repo).map(\.body) == ["base + theirs (conflicted copy, other)"])
+        // the same version arriving again (reconnect snapshot) doesn't copy twice
+        #expect(e.applyRemote(theirs("base + theirs", updated: 200)) == .keptLocal)
+        #expect(copies(repo).count == 1)
+    }
+
+    @Test func burstOfConflictsUpdatesOneCopy() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base + mine", updated: 300)
+        let e = engine(repo)
+        e.applyRemote(theirs("base + t1", updated: 200, seq: 11))
+        var n = repo.notes["a"]!
+        n.body = "base + mine 2"; n.updatedAt = 400
+        repo.save(n)
+        e.applyRemote(theirs("base + t1 t2", updated: 350, seq: 12))
+        #expect(copies(repo).map(\.body) == ["base + t1 t2 (conflicted copy, other)"])
+    }
+
+    @Test func metaOnlyRemoteChangeMergesWithLocalText() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base + mine", updated: 200)
+        let e = engine(repo)
+        #expect(e.applyRemote(theirs("base", updated: 300, meta: ["pinned": .bool(true)])) == .merged)
+        let n = repo.notes["a"]!
+        #expect(n.body == "base + mine")
+        #expect(n.pinned)
+        #expect(n.dirty)
+        #expect(n.updatedAt > 300)
+        #expect(copies(repo).isEmpty)
+    }
+
+    @Test func localMetaOnlyChangeTakesTheirText() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base", updated: 300) // e.g. pinned here
+        var n = repo.notes["a"]!
+        n.pinned = true
+        repo.save(n)
+        let e = engine(repo)
+        #expect(e.applyRemote(theirs("base + theirs", updated: 200)) == .merged)
+        let m = repo.notes["a"]!
+        #expect(m.body == "base + theirs")
+        #expect(m.pinned)
+        #expect(m.dirty && m.updatedAt > 300)
+        #expect(copies(repo).isEmpty)
+    }
+
+    @Test func ourOwnEchoIsNotAConflict() {
+        // Our put was accepted but its ack was lost; the snapshot brings it back.
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base + typed more", updated: 300)
+        let e = engine(repo)
+        #expect(e.applyRemote(theirs("base + typed", updated: 250, device: "me")) == .keptLocal)
+        #expect(copies(repo).isEmpty)
+    }
+
+    @Test func remoteDeleteOfAnEditedNoteKeepsTheEdit() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base + mine", updated: 200)
+        let e = engine(repo)
+        var tomb = theirs("", updated: 300)
+        tomb.deleted = true
+        #expect(e.applyRemote(tomb) == .adopted)
+        #expect(repo.notes["a"]?.deleted == true)
+        #expect(copies(repo).map(\.body) == ["base + mine (conflicted copy, me)"])
+    }
+
+    @Test func remoteDeleteOfAnUnchangedNoteIsJustADelete() {
+        let repo = MemoryRepo()
+        edited(repo, base: "base", now: "base", updated: 200)
+        let e = engine(repo)
+        var tomb = theirs("", updated: 300)
+        tomb.deleted = true
+        #expect(e.applyRemote(tomb) == .adopted)
+        #expect(copies(repo).isEmpty)
+    }
+
+    @Test func restoredServerDoesNotProduceSpuriousCopies() {
+        let repo = MemoryRepo()
+        var n = local("a", "v3 (server lost this)", updated: 300, dirty: false, seq: 30)
+        n.baseHash = NoteText.hash(n.body)
+        repo.save(n)
+        repo.lastSeq = 30
+        let e = engine(repo)
+        #expect(e.applySnapshot([], seq: 12))  // restored backup: seq went back
+        #expect(repo.notes["a"]?.dirty == true)
+        #expect(repo.notes["a"]?.seq == nil)
+        // the full resync brings the older version from the backup
+        #expect(e.applySnapshot([theirs("v1 (backup)", updated: 100, seq: 9)], seq: 12) == false)
+        #expect(repo.notes["a"]?.body == "v3 (server lost this)")
+        #expect(e.notesToSend().map(\.id) == ["a"])
+        #expect(copies(repo).isEmpty)
+    }
+
+    @Test func restoredServerWithANewerEditKeepsOursAsACopy() {
+        let repo = MemoryRepo()
+        var n = local("a", "mine (server lost this)", updated: 300, dirty: false, seq: 30)
+        n.baseHash = NoteText.hash(n.body)
+        repo.save(n)
+        repo.lastSeq = 30
+        let e = engine(repo)
+        #expect(e.applySnapshot([], seq: 12))
+        e.applySnapshot([theirs("edited after the restore", updated: 400, seq: 13)], seq: 13)
+        #expect(repo.notes["a"]?.body == "edited after the restore")
+        #expect(copies(repo).map(\.body) == ["mine (server lost this) (conflicted copy, me)"])
+    }
+
+    @Test func tooLargeNotesAreParkedUntilEdited() {
+        let repo = MemoryRepo()
+        repo.save(local("big", "x", updated: 10, dirty: true))
+        let e = engine(repo)
+        e.markUnsendable(repo.notes["big"]!)
+        #expect(e.notesToSend().isEmpty)
+        #expect(e.blockedNotes.map(\.id) == ["big"])
+        var n = repo.notes["big"]!
+        n.updatedAt = 11
+        repo.save(n)
+        #expect(e.blockedNotes.isEmpty)
+        #expect(e.notesToSend().count == 1)
+    }
+
+    @Test func conflictCopyTitle() {
+        #expect(NoteText.conflictCopyBody("\n```\ncode\n```\n# Title  \nbody", device: "Air")
+                == "\n```\ncode (conflicted copy, Air)\n```\n# Title  \nbody")
+        #expect(NoteText.conflictCopyBody("# Title  \nbody", device: "Air") == "# Title (conflicted copy, Air)\nbody")
+        #expect(NoteText.conflictCopyBody("  \n\n", device: "Air") == nil)
+        #expect(NoteText.title(of: NoteText.conflictCopyBody("- [ ] milk", device: "")!) == "milk (conflicted copy)")
+    }
+
+    @Test func stableHash() {
+        #expect(NoteText.hash("") == 0xcbf2_9ce4_8422_2325)
+        #expect(NoteText.hash("a") == 0xaf63_dc4c_8601_ec8c)
+        #expect(NoteText.hash("abc") != NoteText.hash("acb"))
+    }
+
+    @Test func isolatedInstancesNeverUseTheLiveServer() {
+        #expect(SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
+        #expect(SyncSettings.isBlocked(serverHost: "BENTO.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
+        #expect(!SyncSettings.isBlocked(serverHost: "127.0.0.1", environment: ["BENTO_HOME": "/tmp/x"]))
+        #expect(!SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: [:]))
+        #expect(!SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: ["BENTO_HOME": "/tmp/x", "BENTO_ALLOW_LIVE_SYNC": "1"]))
+    }
+}
+
 @Suite struct StoreTests {
     func tempURL() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("notes-test-\(UUID().uuidString).sqlite")
@@ -227,6 +456,38 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(s2.kvJSON("nav.back", as: [String].self) == ["a", "b"])
         #expect(s2.liveNotes.map(\.id) == ["a"])
         #expect(s2.trashedNotes.map(\.id) == ["t"])
+    }
+
+    @Test func migratesOldDatabasesAndKeepsBaseHash() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            // a DB written by the first release (no base_hash column)
+            let db = try SQLiteDB(path: url.path)
+            try db.exec("""
+            CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER, device TEXT NOT NULL DEFAULT '',
+              meta TEXT NOT NULL DEFAULT '{}', dirty INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO notes (id, body, created_at, updated_at, dirty) VALUES ('old', 'kept', 1, 2, 1);
+            """)
+        }
+        do {
+            let s = NoteStore(url: url)
+            #expect(s.note("old")?.body == "kept")
+            #expect(s.note("old")?.dirty == true)
+            #expect(s.note("old")?.baseHash == nil)
+            var n = s.note("old")!
+            n.baseHash = NoteText.hash("kept") // > Int64.max: stored as its bit pattern
+            s.save(n)
+        }
+        #expect(NoteStore(url: url).note("old")?.baseHash == NoteText.hash("kept"))
+    }
+
+    @Test func nulCharactersDontTruncateBodies() {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        NoteStore(url: url).save(Note(id: "n", body: "before\u{0}after", createdAt: 1, updatedAt: 1))
+        #expect(NoteStore(url: url).note("n")?.body == "beforeafter")
     }
 
     @Test func listOrder() {
