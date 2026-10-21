@@ -18,9 +18,10 @@ enum CaptureOutput {
         case .editor:
             editor.open(capture) // stores in history too
         case .copy:
-            editor.record(capture)
             editor.copyToClipboard(capture.image, scale: capture.scale)
             HUD.show("Copied", symbol: "doc.on.doc")
+            // History encodes a PNG on the main thread: after the clipboard.
+            DispatchQueue.main.async { editor.record(capture) }
         case .save:
             editor.record(capture)
             saveInBackground(capture, settings: s) { result in
@@ -30,8 +31,8 @@ enum CaptureOutput {
                 }
             }
         case .copyAndSave:
-            editor.record(capture)
             editor.copyToClipboard(capture.image, scale: capture.scale)
+            DispatchQueue.main.async { editor.record(capture) }
             saveInBackground(capture, settings: s) { result in
                 switch result {
                 case .success: HUD.show("Copied and saved", symbol: "doc.on.doc")

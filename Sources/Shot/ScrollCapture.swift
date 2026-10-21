@@ -167,7 +167,9 @@ final class ScrollCaptureSession {
             skipScroll = false
             if stopRequested { break }
             guard let frame = await grab() else { break }
-            switch st.add(frame, expectedShift: expected) {
+            let result = st.add(frame, expectedShift: expected)
+            ScreenGrabber.log.debug("scroll frame \(st.frameCount): \(String(describing: result), privacy: .public) expected=\(expected ?? -1) height=\(st.height)")
+            switch result {
             case .appended:
                 unchanged = 0
                 misses = 0
@@ -238,12 +240,26 @@ final class ScrollCaptureSession {
             let (image, s) = try await ScreenGrabber.capture(axRect: region, content: content, excluding: chrome)
             scale = s
             guard let f = PixelFrame(image) else { return nil }
+            ScrollCaptureSession.dumpFrame(image)
             return up ? f.flippedVertically() : f
         } catch {
             ScreenGrabber.log.error("scroll frame failed: \(error.localizedDescription, privacy: .public)")
             message = error.localizedDescription
             return nil
         }
+    }
+
+    /// QA aid: with BENTO_SHOT_FRAMES=/some/dir every grabbed frame is
+    /// written there as frame-NNN.png (to replay stitching in tests).
+    private static let frameDumpDir = ProcessInfo.processInfo.environment["BENTO_SHOT_FRAMES"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    private static var dumped = 0
+
+    private static func dumpFrame(_ image: CGImage) {
+        guard let dir = frameDumpDir else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        dumped += 1
+        let url = dir.appendingPathComponent(String(format: "frame-%03d.png", dumped))
+        _ = CaptureOutput.write(image, scale: 1, to: url, format: .png, quality: 1)
     }
 
     @MainActor
