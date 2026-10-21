@@ -181,12 +181,13 @@ public extension AXUIElement {
     func ax<T>(_ attribute: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(self, attribute as CFString, &value) == .success, let value else { return nil }
-        // CF types can't be checked with `as?`; compare type ids before casting.
-        if T.self == AXUIElement.self {
-            return CFGetTypeID(value) == AXUIElementGetTypeID() ? (value as! T) : nil
-        }
-        if T.self == AXValue.self {
-            return CFGetTypeID(value) == AXValueGetTypeID() ? (value as! T) : nil
+        // CF casts are unchecked, so verify the type: misbehaving apps return
+        // odd values, and using them as AX elements would crash later.
+        if T.self == AXUIElement.self { return CFGetTypeID(value) == AXUIElementGetTypeID() ? (value as! T) : nil }
+        if T.self == AXValue.self { return CFGetTypeID(value) == AXValueGetTypeID() ? (value as! T) : nil }
+        if T.self == [AXUIElement].self {
+            guard let list = value as? [AnyObject] else { return nil }
+            return list.filter { CFGetTypeID($0) == AXUIElementGetTypeID() } as? T
         }
         return value as? T
     }

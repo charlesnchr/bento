@@ -71,6 +71,7 @@ struct GeneralPane: View {
     let delegate: AppDelegate
     @ObservedObject var general: ConfigSection<GeneralSettings>
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
+    @State private var loginNeedsApproval = LaunchAtLogin.needsApproval
 
     var body: some View {
         Form {
@@ -91,13 +92,30 @@ struct GeneralPane: View {
                     )) {
                         Label(m.title, systemImage: m.symbol)
                     }
+                    .accessibilityIdentifier("module-toggle:\(m.id)")
                 }
             }
 
             Section("App") {
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, on in LaunchAtLogin.set(on) }
+                Toggle("Launch at login", isOn: Binding(
+                    get: { launchAtLogin },
+                    set: { on in
+                        // Show what the system actually did, not what was asked.
+                        launchAtLogin = LaunchAtLogin.set(on)
+                        loginNeedsApproval = LaunchAtLogin.needsApproval
+                    }
+                ))
+                .disabled(!LaunchAtLogin.isAvailable)
+                .accessibilityIdentifier("launch-at-login")
+                if !LaunchAtLogin.isAvailable {
+                    Text("Only available in the installed app.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if loginNeedsApproval {
+                    Text("Allow Bento in System Settings → General → Login Items.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle("Show menu bar icon", isOn: $general.value.showMenuBarIcon)
+                    .accessibilityIdentifier("show-menu-bar-icon")
                 if !general.value.showMenuBarIcon {
                     Text("Open settings again by launching Bento from Finder or `open bento://settings`.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -125,7 +143,6 @@ struct GeneralPane: View {
 struct PermissionsView: View {
     @State private var ax = Permissions.accessibility
     @State private var screen = Permissions.screenRecording
-    private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -138,10 +155,20 @@ struct PermissionsView: View {
                 Permissions.open(.screenRecording)
             }
         }
-        .onReceive(timer) { _ in
-            ax = Permissions.accessibility
-            screen = Permissions.screenRecording
+        // No notification exists for permission changes: poll, but only while
+        // something is missing and this pane is visible.
+        .task {
+            while !Task.isCancelled, !(ax && screen) {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                refresh()
+            }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private func refresh() {
+        ax = Permissions.accessibility
+        screen = Permissions.screenRecording
     }
 
     private func row(_ name: String, granted: Bool, grant: @escaping () -> Void) -> some View {
@@ -184,17 +211,19 @@ struct ShortcutsPane: View {
     }
 
     private func filtered(_ actions: [BentoAction]) -> [BentoAction] {
-        guard !search.isEmpty else { return actions }
-        let q = search.lowercased()
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return actions }
         return actions.filter {
-            $0.title.lowercased().contains(q) || $0.id.contains(q)
-                || (ActionRegistry.shared.shortcut(for: $0.id)?.displayString.lowercased().contains(q) ?? false)
+            $0.title.lowercased().contains(q) || $0.id.lowercased().contains(q)
+                || ($0.group?.lowercased().contains(q) ?? false)
+                || (ActionRegistry.shared.shortcut(for: $0.id).map { $0.displayString.lowercased().contains(q) || $0.configString.contains(q) } ?? false)
         }
     }
 }
 
 struct ShortcutRow: View {
     let action: BentoAction
+    /// Bumped on registry reloads so the row re-reads its state.
     let revision: Int
 
     var body: some View {
@@ -203,23 +232,25 @@ struct ShortcutRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(action.title)
-                if reg.failed.contains(action.id) {
-                    Text("Shortcut unavailable (used by another app or action)")
+                if let reason = reg.failureReason(for: action.id) {
+                    Text("Shortcut unavailable: \(reason.prefix(1).lowercased() + reason.dropFirst())")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
             Spacer()
-            if current != action.defaultShortcut {
+            // Launcher-style actions store their own binding: no default to reset to.
+            if action.bindingWriter == nil, current != action.defaultShortcut {
                 Button {
-                    reg.setShortcut(action.defaultShortcut, for: action.id)
+                    // Like recording it: the default moves here from any action using it now.
+                    reg.assign(action.defaultShortcut, to: action.id)
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }
                 .buttonStyle(.borderless)
                 .help("Reset to default (\(action.defaultShortcut?.displayString ?? "none"))")
+                .accessibilityIdentifier("reset:\(action.id)")
             }
             ShortcutRecorder(actionID: action.id)
-                .id("\(action.id)-\(revision)")
         }
     }
 }
@@ -229,6 +260,7 @@ struct ShortcutRow: View {
 struct ModulePane: View {
     let module: BentoModule
     @Binding var enabled: Bool
+    @State private var revision = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -248,10 +280,12 @@ struct ModulePane: View {
             } else {
                 Form {
                     Section("Shortcuts") {
-                        ForEach(module.actions) { ShortcutRow(action: $0, revision: 0) }
+                        ForEach(module.actions) { ShortcutRow(action: $0, revision: revision) }
                     }
                 }
                 .formStyle(.grouped)
+                .disabled(!enabled)
+                .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
             }
         }
     }

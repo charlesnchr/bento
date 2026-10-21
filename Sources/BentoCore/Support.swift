@@ -128,13 +128,19 @@ public enum AppActivation {
 public enum DockPresence {
     private static var count = 0
 
+    /// Outstanding retains (diagnostics).
+    public static var retainCount: Int { count }
+
     public static func retain() {
         count += 1
         if count == 1 { NSApp.setActivationPolicy(.regular) }
     }
 
     public static func release() {
-        guard count > 0 else { return }
+        guard count > 0 else {
+            BentoLog.core.error("DockPresence.release() without matching retain()")
+            return
+        }
         count -= 1
         guard count == 0 else { return }
         // Defer so a window closing and another opening doesn't flicker the icon.

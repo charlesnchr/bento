@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private let navigator = SettingsNavigator()
     private var signalSources: [DispatchSourceSignal] = []
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
+    /// Number of times the settings window was created / torn down (diagnostics).
+    private var settingsOpened = 0
+    private var settingsClosed = 0
 
     init(modules: [BentoModule]) {
         self.modules = modules
@@ -65,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         installMainMenu()
         AXDefaults.install()
+        ConfigStore.shared.problemHandler = { HUD.show($0, symbol: "exclamationmark.triangle", duration: 4) }
+        if let problem = ConfigStore.shared.lastProblem {
+            HUD.show(problem, symbol: "exclamationmark.triangle", duration: 4)
+        }
         ConfigStore.shared.materialize("general", default: GeneralSettings())
 
         ActionRegistry.shared.isModuleEnabled = { [weak self] id in self?.running.contains(id) ?? false }
@@ -90,11 +97,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil {
             // Dev only: `scripts/perform <action-id>` triggers actions without
             // hotkeys (which may be owned by other running apps).
-            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.charles.bento.dev.perform"),
-                                                                object: nil, queue: .main) { note in
+            let dnc = DistributedNotificationCenter.default()
+            observers.append(dnc.addObserver(forName: Notification.Name("com.charles.bento.dev.perform"), object: nil, queue: .main) { note in
                 guard let id = note.object as? String else { return }
                 if !ActionRegistry.shared.perform(id) { BentoLog.core.error("dev perform: unknown action \(id, privacy: .public)") }
-            }
+            })
+            // Dev only: any bento:// URL, addressed to one instance by its
+            // BENTO_HOME (object), since `open bento://…` only reaches the
+            // installed app: userInfo["url"] = "bento://debug/state".
+            let home = ProcessInfo.processInfo.environment["BENTO_HOME"] ?? ""
+            observers.append(dnc.addObserver(forName: Notification.Name("com.charles.bento.dev.url"), object: home, queue: .main) { [weak self] note in
+                guard let s = note.userInfo?["url"] as? String, let url = URL(string: s) else { return }
+                self?.open(url)
+            })
         }
 
         updateStatusItem()
@@ -156,17 +171,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
-        switch url.host {
+        open(url)
+    }
+
+    private func open(_ url: URL) {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch url.host?.lowercased() {
         case "action":
-            let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if !ActionRegistry.shared.perform(id) { HUD.show("Unknown action \(id)", symbol: "questionmark.circle") }
+            if !ActionRegistry.shared.perform(path) { HUD.show("Unknown action \(path)", symbol: "questionmark.circle") }
         case "debug":
             writeDiagnostics()
         case "settings":
-            let page = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            showSettings(page: page.isEmpty ? nil : page)
+            showSettings(page: path.isEmpty ? nil : path)
         default:
-            break
+            BentoLog.core.error("Unknown URL \(url.absoluteString, privacy: .public)")
         }
     }
 
@@ -187,11 +205,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             "modules": modulesInfo,
             "actions": actions,
             "failed": Array(reg.failed).sorted(),
+            "registry": reg.diagnostics(),
+            "config": ["watching": ConfigStore.shared.isWatching, "pendingWrite": ConfigStore.shared.hasPendingWrite,
+                       "problem": ConfigStore.shared.lastProblem ?? ""],
+            "settingsWindow": ["open": settingsWindow != nil, "opened": settingsOpened, "closed": settingsClosed],
+            "dockPresence": DockPresence.retainCount,
+            "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
+            "statusItem": statusItem != nil,
+            "launchAtLogin": LaunchAtLogin.statusDescription,
             "time": Date().timeIntervalSince1970,
         ]
         let url = AppPaths.supportDir.appendingPathComponent("diagnostics.json")
-        if let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys]) {
+        // Module diagnostics are free-form: anything that isn't a JSON type
+        // would make JSONSerialization raise, so normalise first.
+        let safe = AppDelegate.jsonSafe(info)
+        if JSONSerialization.isValidJSONObject(safe),
+           let data = try? JSONSerialization.data(withJSONObject: safe, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Converts a value into JSON types: non-finite numbers become null and
+    /// anything unknown its description.
+    static func jsonSafe(_ value: Any) -> Any {
+        switch value {
+        case let d as [String: Any]: return d.mapValues(jsonSafe)
+        case let d as [AnyHashable: Any]: return Dictionary(d.map { ("\($0.key)", jsonSafe($0.value)) }, uniquingKeysWith: { a, _ in a })
+        case let a as [Any]: return a.map(jsonSafe)
+        case let s as Set<String>: return s.sorted()
+        case let s as String: return s
+        case let n as NSNumber:
+            if CFGetTypeID(n) == CFBooleanGetTypeID() { return n }
+            return n.doubleValue.isFinite ? n : NSNull()
+        case is NSNull: return NSNull()
+        default:
+            let mirror = Mirror(reflecting: value)
+            if mirror.displayStyle == .optional { return mirror.children.first.map { jsonSafe($0.value) } ?? NSNull() }
+            return String(describing: value)
         }
     }
 
@@ -216,7 +266,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         for m in modules where running.contains(m.id) {
-            m.menuItems().forEach(menu.addItem)
+            for item in m.menuItems() {
+                // NSMenu raises if an item already belongs to another menu.
+                guard item.menu == nil else {
+                    BentoLog.core.error("Module \(m.id, privacy: .public) returned a menu item that is already in a menu")
+                    continue
+                }
+                menu.addItem(item)
+            }
         }
         if !menu.items.isEmpty { menu.addItem(.separator()) }
         if !Permissions.accessibility || !Permissions.screenRecording {
@@ -273,7 +330,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: Settings window
 
     func showSettings(page: String?) {
-        navigator.select(page)
+        // Unknown pages (typos in bento://settings/<id>) fall back to General.
+        let known = page.map { p in ["general", "shortcuts"].contains(p) || modules.contains { $0.id == p } } ?? true
+        navigator.select(known ? page : nil)
         showSettings(nil)
     }
 
@@ -294,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.setFrameAutosaveName("BentoSettings")
             w.delegate = self
             settingsWindow = w
+            settingsOpened += 1
             DockPresence.retain()
         }
         AppActivation.activateSelf()
@@ -306,10 +366,15 @@ extension AppDelegate {
     /// Drop the settings UI entirely when closed so it costs nothing while idle.
     func windowWillClose(_ notification: Notification) {
         guard let w = notification.object as? NSWindow, w === settingsWindow else { return }
-        DispatchQueue.main.async { [weak self] in
+        // Forget the window now, so a settings request arriving before the
+        // teardown below opens a fresh window instead of the closing one.
+        settingsWindow = nil
+        settingsClosed += 1
+        w.delegate = nil
+        w.setFrameAutosaveName("") // the frame is already saved; free the name for the next window
+        DockPresence.release()
+        DispatchQueue.main.async {
             w.contentViewController = nil
-            self?.settingsWindow = nil
-            DockPresence.release()
         }
     }
 }
@@ -317,13 +382,37 @@ extension AppDelegate {
 // MARK: - Launch at login
 
 enum LaunchAtLogin {
-    static var isEnabled: Bool { SMAppService.mainApp.status == .enabled }
+    /// Only a real app bundle can be a login item; dev builds (raw binaries,
+    /// BENTO_DEV) must never register one.
+    static var isAvailable: Bool {
+        Bundle.main.bundleIdentifier != nil && Bundle.main.bundlePath.hasSuffix(".app")
+            && ProcessInfo.processInfo.environment["BENTO_DEV"] == nil
+    }
 
-    static func set(_ on: Bool) {
+    static var isEnabled: Bool { isAvailable && SMAppService.mainApp.status == .enabled }
+
+    static var needsApproval: Bool { isAvailable && SMAppService.mainApp.status == .requiresApproval }
+
+    static var statusDescription: String {
+        guard isAvailable else { return "unavailable" }
+        switch SMAppService.mainApp.status {
+        case .enabled: return "enabled"
+        case .requiresApproval: return "requiresApproval"
+        case .notRegistered: return "notRegistered"
+        case .notFound: return "notFound"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// Returns the resulting state (which may differ from `on` if the system refused).
+    @discardableResult
+    static func set(_ on: Bool) -> Bool {
+        guard isAvailable else { return false }
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
             BentoLog.core.error("Launch at login change failed: \(String(describing: error), privacy: .public)")
         }
+        return isEnabled
     }
 }
