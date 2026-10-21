@@ -188,7 +188,8 @@ public final class ShotModule: BentoModule {
     func captureActiveWindow() {
         guard !isBusy, ScreenGrabber.ensurePermission() else { return }
         guard let w = ScreenGrabber.activeWindow() else {
-            HUD.show("No active window", symbol: "macwindow")
+            // Nothing focused (e.g. the desktop): let the user pick one.
+            captureWindowPicker()
             return
         }
         captureWindow(w, action: nil)
@@ -200,7 +201,8 @@ public final class ShotModule: BentoModule {
         Task { @MainActor in
             defer { self.busy = false }
             do {
-                let (raw, scale) = try await ScreenGrabber.captureWindow(id: info.id, shadow: s.windowShadow)
+                let fallback = NSScreen.containing(axRect: info.frame)?.backingScaleFactor ?? 2
+                let (raw, scale) = try await ScreenGrabber.captureWindow(id: info.id, shadow: s.windowShadow, fallbackScale: fallback)
                 let canvasPts = WindowComposer.canvasSize(window: CGSize(width: raw.width, height: raw.height), padding: s.windowPadding, scale: scale)
                 let size = CGSize(width: canvasPts.width / scale, height: canvasPts.height / scale)
                 let rect = CGRect(x: info.frame.midX - size.width / 2, y: info.frame.midY - size.height / 2, width: size.width, height: size.height)
@@ -221,7 +223,8 @@ public final class ShotModule: BentoModule {
     // MARK: Repeat area
 
     func repeatArea() {
-        guard let rect = LastArea.load() else {
+        guard let rect = LastArea.load(), ScreenGrabber.isOnScreen(axRect: rect) else {
+            guard !isBusy else { return }
             HUD.show("No previous area — select one", symbol: "rectangle.dashed")
             captureArea()
             return
@@ -301,10 +304,14 @@ public final class ShotModule: BentoModule {
 
     private func recognize(_ image: CGImage) {
         let keepBreaks = settings.ocrKeepLineBreaks
+        guard OCRText.canRecognize(image) else {
+            HUD.show("No text found", symbol: "text.viewfinder")
+            return
+        }
         HUD.show("Recognizing text…", symbol: "text.viewfinder", duration: 4)
         Task.detached(priority: .userInitiated) {
             let codes = TextRecognizer.barcodes(image)
-            let text = (try? await OCRText.recognize(image)) ?? ""
+            let text = codes.isEmpty ? ((try? await OCRText.recognize(image)) ?? "") : ""
             await MainActor.run {
                 let pb = NSPasteboard.general
                 if !codes.isEmpty {
@@ -334,8 +341,36 @@ public final class ShotModule: BentoModule {
 
 /// OCR text helpers.
 enum OCRText {
+    /// Vision rejects images of 2 px or less in either dimension.
+    static func canRecognize(_ image: CGImage) -> Bool { image.width > 2 && image.height > 2 }
+
+    /// Recognizes text in reading order (lines grouped like the editor's OCR).
+    /// Vision reports some failures both to the request's handler and by
+    /// throwing from `perform`, so the continuation is guarded to resume
+    /// exactly once (and always: `perform` is synchronous).
     static func recognize(_ image: CGImage) async throws -> String {
-        try await TextRecognizer.recognize(image)
+        guard canRecognize(image) else { return "" }
+        return try await withCheckedThrowingContinuation { cont in
+            let once = ResumeOnce(cont)
+            let request = VNRecognizeTextRequest { req, err in
+                if let err { once.resume(throwing: err); return }
+                let runs = ((req.results as? [VNRecognizedTextObservation]) ?? []).compactMap { o -> TextRecognizer.Run? in
+                    guard let s = o.topCandidates(1).first?.string else { return nil }
+                    let b = o.boundingBox // bottom-left origin; flip to top-down
+                    return TextRecognizer.Run(text: s, minX: b.minX, minY: 1 - b.maxY, maxY: 1 - b.minY)
+                }
+                once.resume(returning: TextRecognizer.lines(runs))
+            }
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.automaticallyDetectsLanguage = true
+            do {
+                try VNImageRequestHandler(cgImage: image).perform([request])
+            } catch {
+                once.resume(throwing: error)
+            }
+            once.resume(returning: "")
+        }
     }
 
     struct OCRRun { var text: String; var minX: CGFloat; var minY: CGFloat; var maxY: CGFloat }
@@ -367,6 +402,25 @@ enum OCRText {
     }
 }
 
+/// Resumes a checked continuation at most once, from any thread.
+final class ResumeOnce<T> {
+    private var continuation: CheckedContinuation<T, Error>?
+    private let lock = NSLock()
+
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
+
+    func resume(returning value: T) { take()?.resume(returning: value) }
+    func resume(throwing error: Error) { take()?.resume(throwing: error) }
+
+    private func take() -> CheckedContinuation<T, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let c = continuation
+        continuation = nil
+        return c
+    }
+}
+
 /// The last selected area (for Repeat Last Area), kept across launches.
 enum LastArea {
     private static var url: URL { AppPaths.support("shot").appendingPathComponent("last-area.json") }
@@ -382,7 +436,8 @@ enum LastArea {
         if let cached { return cached }
         guard let data = try? Data(contentsOf: url),
               let d = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
-              let x = d["x"], let y = d["y"], let w = d["w"], let h = d["h"], w >= 1, h >= 1 else { return nil }
+              let x = d["x"], let y = d["y"], let w = d["w"], let h = d["h"], w >= 1, h >= 1,
+              [x, y, w, h].allSatisfy(\.isFinite) else { return nil }
         let r = CGRect(x: x, y: y, width: w, height: h)
         cached = r
         return r
