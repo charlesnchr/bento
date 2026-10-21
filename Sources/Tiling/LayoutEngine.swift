@@ -85,10 +85,12 @@ enum LayoutMath {
     static let minRatio = 0.1
     static let maxRatio = 0.9
 
-    static func clampRatio(_ r: Double) -> Double { min(max(r, minRatio), maxRatio) }
+    /// Clamped to [minRatio, maxRatio]; NaN/infinite (min/max would pass NaN through) becomes 0.5.
+    static func clampRatio(_ r: Double) -> Double { r.isFinite ? min(max(r, minRatio), maxRatio) : 0.5 }
 
     /// Splits `r` in two along `axis`, leaving `gap` between the parts.
     static func split(_ r: CGRect, _ axis: Axis, ratio: Double, gap: CGFloat) -> (CGRect, CGRect) {
+        let ratio = ratio.isFinite ? min(max(ratio, 0), 1) : 0.5
         switch axis {
         case .horizontal:
             let avail = max(0, r.width - gap)
@@ -358,7 +360,10 @@ struct LayoutState: Equatable {
 
     func order(_ visible: Set<WindowID>) -> [WindowID] { tree?.visibleLeaves(visible) ?? [] }
 
-    private func weight(_ id: WindowID) -> Double { weights[id] ?? 1 }
+    private func weight(_ id: WindowID) -> Double {
+        guard let w = weights[id], w.isFinite, w > 0.01 else { return 1 }
+        return w
+    }
 
     // MARK: Edits
 
@@ -370,20 +375,36 @@ struct LayoutState: Equatable {
         var vis = visible
         vis.remove(id)
         let order = tree.visibleLeaves(vis)
-        let target: WindowID?
+        var target: WindowID?
         var newFirst = false
         switch placement {
         case .afterFocused: target = focused.flatMap { order.contains($0) ? $0 : nil } ?? order.last
         case .end: target = order.last
         case .first: target = order.first; newFirst = true
         }
-        guard let target else {
+        guard let chosen = target else {
             // Nothing visible on this display (only windows of other Spaces).
             self.tree = .split(.horizontal, 0.5, tree, .leaf(id))
             return
         }
-        let r = tree.frames(in: area, gap: gap, visible: vis)[target] ?? area
-        self.tree = tree.splitting(target, with: id, axis: r.width >= r.height ? .horizontal : .vertical, newFirst: newFirst)
+        let frames = tree.frames(in: area, gap: gap, visible: vis)
+        if kind == .tiles, placement != .first, let r = frames[chosen], !LayoutState.canSplit(r, gap: gap) {
+            // Halving a small tile again (dwindle) makes windows no app can be
+            // that small: split the roomiest tile instead.
+            func size(_ id: WindowID) -> CGFloat { frames[id].map { $0.width * $0.height } ?? 0 }
+            target = order.max { size($0) < size($1) } ?? chosen
+        }
+        let t = target ?? chosen
+        let r = frames[t] ?? area
+        self.tree = tree.splitting(t, with: id, axis: r.width >= r.height ? .horizontal : .vertical, newFirst: newFirst)
+    }
+
+    /// Smallest tile a split may create when there is a choice (points).
+    static let minTile = CGSize(width: 240, height: 160)
+
+    /// Whether halving `r` along its longer side leaves tiles of at least `minTile`.
+    static func canSplit(_ r: CGRect, gap: CGFloat) -> Bool {
+        r.width >= r.height ? (r.width - gap) / 2 >= minTile.width : (r.height - gap) / 2 >= minTile.height
     }
 
     mutating func remove(_ id: WindowID) {
@@ -398,8 +419,11 @@ struct LayoutState: Equatable {
         weights[b] = wa
     }
 
-    /// Puts `new` where `old` was (cross-display swaps).
+    /// Puts `new` where `old` was (e.g. a native tab replacing another one).
     mutating func replace(_ old: WindowID, with new: WindowID) {
+        guard old != new, contains(old) else { return }
+        // A window must never appear twice in the tree.
+        if contains(new) { remove(new) }
         tree = tree?.replacing(old, with: .leaf(new))
         weights[new] = weights.removeValue(forKey: old)
     }
@@ -462,11 +486,11 @@ struct LayoutState: Equatable {
         case .tiles:
             return tree.frames(in: area, gap: gap, visible: visible)
         case .monocle:
-            return Dictionary(uniqueKeysWithValues: order.map { ($0, area) })
+            return Dictionary(order.map { ($0, area) }, uniquingKeysWith: { a, _ in a })
         case .columns, .rows:
             let rects = LayoutMath.distribute(area, kind == .columns ? .horizontal : .vertical,
                                               weights: order.map(weight), gap: gap)
-            return Dictionary(uniqueKeysWithValues: zip(order, rects).map { ($0, $1) })
+            return Dictionary(zip(order, rects).map { ($0, $1) }, uniquingKeysWith: { a, _ in a })
         case .masterStack:
             guard order.count > 1 else { return [order[0]: area] }
             let (masterRect, stackRect) = LayoutMath.split(area, .horizontal, ratio: masterRatio, gap: gap)

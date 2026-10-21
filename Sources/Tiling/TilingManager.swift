@@ -4,10 +4,18 @@ import BentoCore
 
 private let log = BentoLog.make("tiling")
 
+/// What AX callbacks point at: kept alive by every `AppObserver`, cleared on
+/// `stop()`, so a callback delivered after the manager stopped (or was freed)
+/// finds nil instead of a dangling pointer.
+final class TilingCallbackTarget {
+    weak var manager: TilingManager?
+    init(_ manager: TilingManager) { self.manager = manager }
+}
+
 private func tilingAXCallback(_ observer: AXObserver, _ element: AXUIElement, _ notification: CFString,
                               _ refcon: UnsafeMutableRawPointer?) {
     guard let refcon else { return }
-    Unmanaged<TilingManager>.fromOpaque(refcon).takeUnretainedValue().handle(notification as String, element)
+    Unmanaged<TilingCallbackTarget>.fromOpaque(refcon).takeUnretainedValue().manager?.handle(notification as String, element)
 }
 
 /// The running tiling manager. Exists only while tiling is on; `stop()` removes
@@ -37,11 +45,15 @@ final class TilingManager {
     private var observerFailures: [pid_t: Int] = [:]
     /// Apps observed although not eligible by default (user tiled a window of a floating app).
     private var forcedPIDs: Set<pid_t> = []
+    /// Windows the Windows module placed before Tiling tracked them (newest last).
+    private var placedUntracked: [WindowID] = []
     /// Tiled windows currently on screen (current Space, not minimized/hidden/fullscreen).
     private(set) var visible: Set<WindowID> = []
     /// Last frame we set (as read back), to tell our own moves from the user's.
     private var expected: [WindowID: CGRect] = [:]
     private var lastSet: [WindowID: Date] = [:]
+    /// Last frame sent per window and the frame the app actually took.
+    private var lastApplied: [WindowID: (target: CGRect, result: CGRect)] = [:]
     private var corrections: [WindowID: (count: Int, since: Date)] = [:]
     private var mru: [WindowID] = []
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
@@ -52,11 +64,22 @@ final class TilingManager {
     private var dragging: Set<WindowID> = []
     /// Frame each dragged window had when the drag started.
     private var dragOrigin: [WindowID: CGRect] = [:]
+    private var lastDragMove = Date.distantPast
     private var mouseMonitor: Any?
     private var running = false
     private var generation = 0
 
     private static let layoutDefaultsKey = "BentoTilingDisplayLayouts"
+    /// AX messaging timeout for tracked windows (seconds).
+    static let axTimeout: Float = 0.5
+
+    /// Dev/e2e only (`BENTO_DEV` + `BENTO_TILING_TITLE_FILTER`): tile only windows whose
+    /// title contains this, so tests never touch other windows of the same app.
+    private static let titleFilter: String? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["BENTO_DEV"] != nil, let f = env["BENTO_TILING_TITLE_FILTER"], !f.isEmpty else { return nil }
+        return f
+    }()
 
     /// Apps whose windows have no (enabled) fullscreen button but should still tile.
     private static let fullscreenButtonExempt: Set<String> = [
@@ -70,14 +93,17 @@ final class TilingManager {
         self.settings = settings
     }
 
-    private var refcon: UnsafeMutableRawPointer { Unmanaged.passUnretained(self).toOpaque() }
+    private var callbackTarget: TilingCallbackTarget?
     private var innerGap: CGFloat { settings.clampedInnerGap }
 
     // MARK: - Lifecycle
 
+    deinit { stop() }
+
     func start() {
         guard !running else { return }
         running = true
+        callbackTarget = TilingCallbackTarget(self)
         let ws = NSWorkspace.shared.notificationCenter
         func on(_ center: NotificationCenter, _ name: Notification.Name, _ body: @escaping (Notification) -> Void) {
             tokens.append((center, center.addObserver(forName: name, object: nil, queue: .main) { body($0) }))
@@ -93,9 +119,13 @@ final class TilingManager {
             self.dropApp(app.processIdentifier)
             self.scheduleRefresh(after: 0.05)
         }
-        for name in [NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification,
-                     NSWorkspace.activeSpaceDidChangeNotification] {
+        for name in [NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
             on(ws, name) { [weak self] _ in self?.scheduleRefresh(after: 0.1) }
+        }
+        on(ws, NSWorkspace.activeSpaceDidChangeNotification) { [weak self] _ in
+            // The window list can lag the Space switch animation: look again once it is over.
+            self?.scheduleRefresh(after: 0.1)
+            self?.later(0.8) { $0.scheduleRefresh(after: 0) }
         }
         on(ws, NSWorkspace.didActivateApplicationNotification) { [weak self] note in
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -122,15 +152,17 @@ final class TilingManager {
         generation += 1
         for (center, token) in tokens { center.removeObserver(token) }
         tokens = []
+        callbackTarget?.manager = nil
+        callbackTarget = nil
         observers.values.forEach { $0.invalidate() }
         observers = [:]
         refreshWork?.cancel(); refreshWork = nil; refreshDeadline = nil
         externalWork?.cancel(); externalWork = nil
-        if let m = mouseMonitor { NSEvent.removeMonitor(m) }
-        mouseMonitor = nil
+        removeMouseMonitor()
         displays = [:]; screenAreas = [:]; windows = [:]; idByElement = [:]; visible = []
-        expected = [:]; lastSet = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]; externallyMoved = []
-        forcedPIDs = []; observerFailures = [:]
+        expected = [:]; lastSet = [:]; lastApplied = [:]; corrections = [:]; mru = []; dragging = []; dragOrigin = [:]
+        externallyMoved = []
+        forcedPIDs = []; observerFailures = [:]; placedUntracked = []
     }
 
     /// Applies changed settings without rebuilding the trees when possible.
@@ -205,15 +237,26 @@ final class TilingManager {
     // MARK: - Moves and drags
 
     private func windowMoved(_ wid: WindowID) {
-        guard !dragging.contains(wid), visible.contains(wid), let t = windows[wid], !t.floating, let cur = t.ax.frame else { return }
+        if dragging.contains(wid) {
+            lastDragMove = Date()
+            return
+        }
+        guard let t = windows[wid], !t.floating else { return }
+        guard visible.contains(wid) else {
+            // Not laid out right now (full screen, another Space…): its state may have changed.
+            scheduleRefresh(after: 0.3)
+            return
+        }
+        guard let cur = t.ax.frame else { return }
         if let e = expected[wid], cur.approxEqual(e) { return }
-        if NSEvent.pressedMouseButtons & 1 != 0 {
+        if TilingManager.leftButtonDown {
             beginDrag(wid)
             return
         }
         if let set = lastSet[wid], Date().timeIntervalSince(set) < 0.5 {
             // The app is still settling after our resize (async apps, size clamping).
             expected[wid] = cur
+            lastApplied[wid]?.result = cur
             return
         }
         externallyMoved.insert(wid)
@@ -259,21 +302,52 @@ final class TilingManager {
     private func beginDrag(_ wid: WindowID) {
         if !dragging.contains(wid) { log.info("drag started \(wid, privacy: .public)") }
         if dragOrigin[wid] == nil, let e = expected[wid] { dragOrigin[wid] = e }
+        let first = dragging.isEmpty
         dragging.insert(wid)
+        lastDragMove = Date()
         if mouseMonitor == nil {
             mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
                 // CG event location is already in AX (top-left) coordinates.
-                self?.endDrag(at: event.cgEvent?.location)
+                let location = event.cgEvent?.location
+                // A moment later, so a snap by the Windows module (dispatched on the
+                // same mouse-up) floats the window before we would snap it back.
+                self?.later(0.08) { $0.endDrag(at: location) }
             }
         }
-        if NSEvent.pressedMouseButtons & 1 == 0 {
-            DispatchQueue.main.async { [weak self] in self?.endDrag() }
+        if first { watchDrag() }
+    }
+
+    /// The mouse-up can be missed (swallowed by an event tap, or released over
+    /// our own window where global monitors are blind): while a drag lasts,
+    /// check the button a few times a second.
+    private func watchDrag() {
+        later(0.25) { m in
+            guard !m.dragging.isEmpty else { return }
+            if !TilingManager.leftButtonDown {
+                m.later(0.1) { $0.endDrag() }
+            } else if Date().timeIntervalSince(m.lastDragMove) > 30 {
+                // A button that reads as held with nothing moving for this long is a
+                // lost mouse-up (synthetic input), not a drag: don't freeze the layout.
+                log.info("drag abandoned after 30 s without movement")
+                m.endDrag()
+            } else {
+                m.watchDrag()
+            }
         }
     }
 
-    private func endDrag(at location: CGPoint? = nil) {
+    /// Hardware button state. `NSEvent.pressedMouseButtons` follows the session's
+    /// event stream, which misses a mouse-down swallowed by an event tap (the
+    /// Windows module's modifier-drag), so such drags looked like external moves.
+    static var leftButtonDown: Bool { CGEventSource.buttonState(.hidSystemState, button: .left) }
+
+    private func removeMouseMonitor() {
         if let m = mouseMonitor { NSEvent.removeMonitor(m) }
         mouseMonitor = nil
+    }
+
+    private func endDrag(at location: CGPoint? = nil) {
+        removeMouseMonitor()
         guard running, !dragging.isEmpty else { return }
         let ids = dragging
         dragging = []
@@ -281,22 +355,25 @@ final class TilingManager {
         dragOrigin = [:]
         let point = location ?? NSScreen.mouseAX
         log.info("drag ended at \(point.x, privacy: .public),\(point.y, privacy: .public) windows \(ids, privacy: .public)")
-        for wid in ids { finishDrag(wid, from: origins[wid], at: point) }
+        // The Space may have changed during the drag (window dragged to another Space).
+        let onScreen = Set(WindowList.onScreen().map(\.id))
+        for wid in ids { finishDrag(wid, from: origins[wid], at: point, onScreen: onScreen) }
         refresh()
     }
 
-    private func finishDrag(_ wid: WindowID, from origin: CGRect?, at point: CGPoint) {
-        guard let t = windows[wid], let cur = t.ax.frame, let old = origin, let did = display(of: wid) else { return }
+    private func finishDrag(_ wid: WindowID, from origin: CGRect?, at point: CGPoint, onScreen: Set<WindowID>) {
+        guard onScreen.contains(wid), let t = windows[wid], let cur = t.ax.frame, let old = origin,
+              let did = display(of: wid) else { return }
         expected[wid] = cur // so the next layout pass really moves it
         guard settings.mouseSupport else { return } // just snap back
-        if abs(cur.width - old.width) > 2 || abs(cur.height - old.height) > 2 {
+        if TilingManager.isResize(from: old, to: cur) {
             // Resized with the mouse: move the matching split(s).
             if let area = layoutArea(did) {
                 _ = displays[did]?.applyUserResize(wid, from: old, to: cur, area: area, gap: innerGap, visible: visible)
             }
             return
         }
-        if let (target, targetDisplay) = tiledWindow(at: point, excluding: wid) {
+        if let (target, targetDisplay) = tiledWindow(at: point, excluding: wid), onScreen.contains(target) {
             log.info("drop \(wid, privacy: .public) onto \(target, privacy: .public)")
             if targetDisplay == did {
                 displays[did]?.swap(wid, target)
@@ -310,6 +387,17 @@ final class TilingManager {
             insert(wid, into: pd, placement: .end)
         }
         // Otherwise: dropped on empty space or itself; the refresh snaps it back.
+    }
+
+    /// A mouse resize keeps an edge of each axis in place; a move shifts them
+    /// all, even when the size changes too (the Windows module restores a
+    /// window's pre-snap size when its title-bar drag starts).
+    static func isResize(from old: CGRect, to new: CGRect) -> Bool {
+        let t: CGFloat = 2
+        guard abs(new.width - old.width) > t || abs(new.height - old.height) > t else { return false }
+        let anchoredX = abs(new.minX - old.minX) <= t || abs(new.maxX - old.maxX) <= t
+        let anchoredY = abs(new.minY - old.minY) <= t || abs(new.maxY - old.maxY) <= t
+        return anchoredX && anchoredY
     }
 
     // MARK: - Refresh (discover windows, update trees, apply)
@@ -340,10 +428,10 @@ final class TilingManager {
         if !dragging.isEmpty {
             // endDrag refreshes. If the mouse-up was missed (released over our own
             // window, where the global monitor is blind), finish the drag now.
-            if NSEvent.pressedMouseButtons & 1 == 0 { endDrag() }
+            if !TilingManager.leftButtonDown { endDrag() }
             return
         }
-        if force { expected = [:] }
+        if force { expected = [:]; lastApplied = [:] }
 
         syncDisplays()
         syncObservers()
@@ -356,6 +444,11 @@ final class TilingManager {
             guard let list: [AXUIElement] = obs.appElement.ax(kAXWindowsAttribute) else { continue }
             for el in list {
                 let w = AXWindow(element: el, pid: pid)
+                if idByElement[w] == nil {
+                    // Window elements don't inherit the app element's timeout: without
+                    // this, a hung app could block the main thread for 6 s per call.
+                    AXUIElementSetMessagingTimeout(el, TilingManager.axTimeout)
+                }
                 guard let wid = idByElement[w] ?? w.windowID else { continue }
                 listed.insert(wid)
                 if var t = windows[wid] {
@@ -368,9 +461,12 @@ final class TilingManager {
                 }
                 // Classify only on-screen windows (minimized/hidden ones report odd subroles).
                 guard onScreen.contains(wid) else { continue }
+                if let f = TilingManager.titleFilter, !w.title.contains(f) { continue }
                 let bid = app.bundleIdentifier
                 let auto = shouldFloat(w, bundleID: bid)
-                windows[wid] = TrackedWindow(ax: w, bundleID: bid, autoFloat: auto, userFloat: nil,
+                let placed = placedUntracked.contains(wid)
+                if placed { placedUntracked.removeAll { $0 == wid } }
+                windows[wid] = TrackedWindow(ax: w, bundleID: bid, autoFloat: auto, userFloat: placed ? true : nil,
                                              originalFrame: w.frame, detected: Date())
                 idByElement[w] = wid
                 obs.observe(w)
@@ -459,7 +555,7 @@ final class TilingManager {
         if let obs = observers[pid] { return obs }
         // Apps that never answer AX are not retried forever (each try can block briefly).
         guard observerFailures[pid, default: 0] < 3 else { return nil }
-        guard let obs = AppObserver(pid: pid, refcon: refcon, callback: tilingAXCallback) else {
+        guard let target = callbackTarget, let obs = AppObserver(pid: pid, target: target, callback: tilingAXCallback) else {
             observerFailures[pid, default: 0] += 1
             return nil
         }
@@ -484,6 +580,7 @@ final class TilingManager {
         visible.remove(wid)
         expected[wid] = nil
         lastSet[wid] = nil
+        lastApplied[wid] = nil
         corrections[wid] = nil
         dragging.remove(wid)
         dragOrigin[wid] = nil
@@ -529,20 +626,35 @@ final class TilingManager {
 
     func applyLayout() {
         guard running, dragging.isEmpty else { return }
-        for (_, frames) in allFrames() {
-            for (wid, r) in frames { setFrame(wid, r) }
+        for (did, frames) in allFrames() {
+            guard let area = layoutArea(did) else { continue }
+            for (wid, r) in frames { setFrame(wid, r, area: area) }
         }
     }
 
-    private func setFrame(_ wid: WindowID, _ r: CGRect) {
+    private func setFrame(_ wid: WindowID, _ r: CGRect, area: CGRect) {
         guard let t = windows[wid] else { return }
-        if let e = expected[wid], e.approxEqual(r, tolerance: 1) { return }
-        if expected[wid] == nil, let cur = t.ax.frame, cur.approxEqual(r, tolerance: 1) {
+        if let e = expected[wid] {
+            if e.approxEqual(r, tolerance: 1) { return }
+            // The app keeps this window at another size (minimum size) and nothing
+            // moved it since: sending the same frame again changes nothing.
+            if let last = lastApplied[wid], last.target.approxEqual(r, tolerance: 1), last.result.approxEqual(e, tolerance: 1) { return }
+        } else if let cur = t.ax.frame, cur.approxEqual(r, tolerance: 1) {
             expected[wid] = cur
             return
         }
         t.ax.setFrame(r)
-        expected[wid] = t.ax.frame ?? r
+        var actual = t.ax.frame ?? r
+        if actual.maxX > area.maxX + 1 || actual.maxY > area.maxY + 1 {
+            // Bigger than its tile (minimum size): overlap the neighbour rather
+            // than hang off the screen edge.
+            let p = CGPoint(x: actual.maxX > area.maxX + 1 ? max(area.minX, area.maxX - actual.width) : actual.minX,
+                            y: actual.maxY > area.maxY + 1 ? max(area.minY, area.maxY - actual.height) : actual.minY)
+            t.ax.setPosition(p)
+            actual = t.ax.frame ?? CGRect(origin: p, size: actual.size)
+        }
+        expected[wid] = actual
+        lastApplied[wid] = (r, actual)
         lastSet[wid] = Date()
     }
 
@@ -722,8 +834,10 @@ final class TilingManager {
                 HUD.show("\(app.localizedName ?? "App") is not tiled", symbol: "macwindow")
                 return
             }
+            if let f = TilingManager.titleFilter, !w.title.contains(f) { return }
             forcedPIDs.insert(w.pid)
             guard let obs = ensureObserver(w.pid) else { return }
+            AXUIElementSetMessagingTimeout(w.element, TilingManager.axTimeout)
             windows[wid] = TrackedWindow(ax: w, bundleID: app.bundleIdentifier, autoFloat: true, userFloat: false,
                                          originalFrame: w.frame, detected: Date())
             idByElement[w] = wid
@@ -771,12 +885,26 @@ final class TilingManager {
     /// being tiled and keeps the frame they chose (posted before the AX move
     /// notifications arrive, so it is never snapped back).
     private func floatPlaced(_ w: AXWindow) {
-        guard let wid = idByElement[w] ?? w.windowID, var t = windows[wid], !t.floating else { return }
+        guard let wid = idByElement[w] ?? w.windowID else { return }
+        guard var t = windows[wid] else {
+            // Placed before we saw it (a Windows launch rule on a new window): it starts floating.
+            placedUntracked.removeAll { $0 == wid }
+            placedUntracked.append(wid)
+            if placedUntracked.count > 16 { placedUntracked.removeFirst() }
+            return
+        }
+        guard !t.floating else { return }
         t.userFloat = true
         windows[wid] = t
         if let did = display(of: wid) { displays[did]?.remove(wid) }
         visible.remove(wid)
         expected[wid] = nil
+        // A modifier-drag swallows the mouse-up our drag tracking waits for:
+        // the drag of this window is over now.
+        if dragging.remove(wid) != nil {
+            dragOrigin[wid] = nil
+            if dragging.isEmpty { removeMouseMonitor() }
+        }
         applyLayout()
     }
 
@@ -858,7 +986,24 @@ final class TilingManager {
         let floating = windows.filter { $0.value.floating }.map { "\($0.key) \($0.value.ax.title)" }
         lines.append("floating: \(floating)")
         lines.append("observers: \(observers.count) apps, tracked windows: \(windows.count), visible: \(visible.count)")
+        lines.append("dragging: \(dragging.count), mouse monitor: \(mouseMonitor != nil), pending refresh: \(refreshWork != nil), "
+                     + "pending external: \(externalWork != nil), live app observers: \(AppObserver.live)")
         return lines.joined(separator: "\n")
+    }
+
+    /// Runtime state for `bento://debug/state`.
+    var diagnostics: [String: Any] {
+        [
+            "running": running,
+            "observedApps": observers.count,
+            "trackedWindows": windows.count,
+            "tiled": visible.count,
+            "floating": windows.values.filter(\.floating).count,
+            "dragging": dragging.count,
+            "mouseMonitor": mouseMonitor != nil,
+            "pendingRefresh": refreshWork != nil,
+            "layouts": Dictionary(uniqueKeysWithValues: displays.map { ("\($0.key)", $0.value.kind.rawValue) }),
+        ]
     }
 
     private static func describe(_ n: TileNode) -> String {

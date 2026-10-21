@@ -320,3 +320,110 @@ private func state(_ kind: LayoutKind, _ ids: [WindowID], placement: Placement =
     #expect(s.clampedMasterRatio == LayoutMath.maxRatio)
     #expect(s.clampedResizeStep == 0.01)
 }
+
+@Test func mouseResizeVersusMove() {
+    let old = CGRect(x: 0, y: 0, width: 500, height: 600)
+    #expect(TilingManager.isResize(from: old, to: CGRect(x: 0, y: 0, width: 620, height: 600)))       // right edge
+    #expect(TilingManager.isResize(from: old, to: CGRect(x: -50, y: -40, width: 550, height: 640)))   // top-left corner
+    #expect(!TilingManager.isResize(from: old, to: CGRect(x: 100, y: 50, width: 500, height: 600)))   // plain move
+    // A move whose size changed too (Windows restores the pre-snap size on drag) is still a move.
+    #expect(!TilingManager.isResize(from: old, to: CGRect(x: 300, y: 200, width: 400, height: 300)))
+}
+
+@Test func settingsIgnoreWrongTypes() throws {
+    let json = #"{"innerGap": "wide", "onlyApps": "com.apple.TextEdit", "masterRatio": 7}"#
+    let s = try JSONDecoder().decode(TilingSettings.self, from: Data(json.utf8))
+    #expect(s.innerGap == 8 && s.onlyApps.isEmpty)
+    #expect(s.clampedMasterRatio == LayoutMath.maxRatio)
+}
+
+@Test func ratiosAreNeverNaN() {
+    #expect(LayoutMath.clampRatio(.nan) == 0.5)
+    #expect(LayoutMath.clampRatio(.infinity) == 0.5)
+    #expect(LayoutMath.clampRatio(-.infinity) == 0.5)
+    let (a, b) = LayoutMath.split(area, .horizontal, ratio: .nan, gap: 0)
+    #expect(a.width == 500 && b.width == 500)
+    // A NaN master ratio still yields finite frames.
+    var m = state(.masterStack, [1, 2])
+    m.masterRatio = .nan
+    #expect(m.frames(area: area, gap: 8, visible: [1, 2]).values.allSatisfy { $0.width.isFinite && $0.height.isFinite })
+    // A NaN edge coordinate from a bogus AX frame keeps the tree finite.
+    var t = state(.tiles, [1, 2])
+    _ = t.applyUserResize(1, from: CGRect(x: 0, y: 0, width: 500, height: 600),
+                          to: CGRect(x: 0, y: 0, width: CGFloat.nan, height: 600), area: area, gap: 0, visible: [1, 2])
+    #expect(t.frames(area: area, gap: 0, visible: [1, 2]).values.allSatisfy { $0.width.isFinite && $0.minX.isFinite })
+}
+
+@Test func badWeightsFallBackToEqualShares() {
+    var c = state(.columns, [1, 2])
+    c.weights = [1: .nan, 2: 0]
+    let f = c.frames(area: area, gap: 0, visible: [1, 2])
+    #expect(f[1]!.width == 500 && f[2]!.width == 500)
+    #expect(mut { c.grow(1, by: 0.1, visible: [1, 2]) })
+    #expect(c.frames(area: area, gap: 0, visible: [1, 2])[1]!.width == 600)
+}
+
+@Test func emptyAndSingleWindowStatesAreSafe() {
+    for kind in LayoutKind.allCases {
+        var e = LayoutState(kind: kind)
+        #expect(e.frames(area: area, gap: 8, visible: [1]).isEmpty)
+        e.remove(1)
+        e.swap(1, 2)
+        e.replace(1, with: 2)
+        e.balance(masterRatio: 0.5, visible: [])
+        #expect(!mut { e.promote(1, visible: [1]) })
+        #expect(!mut { e.grow(1, by: 0.1, visible: [1]) })
+        #expect(!mut { e.toggleSplitAxis(1, visible: [1]) })
+        #expect(!mut { e.applyUserResize(1, from: area, to: area.insetBy(dx: 10, dy: 10), area: area, gap: 8, visible: [1]) })
+        #expect(e.tree == nil)
+
+        var one = state(kind, [7])
+        #expect(one.frames(area: area, gap: 8, visible: [7]) == [7: area])
+        #expect(one.frames(area: area, gap: 8, visible: []).isEmpty)
+        #expect(!mut { one.promote(7, visible: [7]) })
+        #expect(!mut { one.grow(7, by: 0.1, visible: [7]) })
+        #expect(!mut { one.toggleSplitAxis(7, visible: [7]) })
+        #expect(!mut { one.applyUserResize(7, from: area, to: area.insetBy(dx: 10, dy: 10), area: area, gap: 8, visible: [7]) })
+        one.balance(masterRatio: 0.5, visible: [7])
+        one.remove(7)
+        #expect(one.tree == nil)
+    }
+    // Zero-sized areas (a display going away) do not trap.
+    let z = state(.columns, [1, 2, 3]).frames(area: .zero, gap: 8, visible: [1, 2, 3])
+    #expect(z.count == 3)
+}
+
+@Test func replaceNeverDuplicatesAWindow() {
+    var s = state(.columns, [1, 2, 3])
+    s.replace(1, with: 3)
+    #expect(s.windows.sorted() == [2, 3])
+    #expect(s.frames(area: area, gap: 0, visible: [2, 3]).count == 2)
+    s.replace(9, with: 4) // unknown window: no-op
+    #expect(s.windows.sorted() == [2, 3])
+}
+
+@Test func neighborWithoutCandidates() {
+    #expect(Neighbor.find(from: area, direction: .left, candidates: [(WindowID, CGRect)]()) == nil)
+    #expect(Neighbor.cycle([WindowID](), from: 1, forward: true) == nil)
+    #expect(Neighbor.cycle([1, 2], from: 9, forward: true) == nil)
+}
+
+@Test func manyWindowsSplitTheRoomiestTile() {
+    // Dwindling 8 windows would leave the last two 86 pt wide on this screen.
+    let screen = CGRect(x: 8, y: 41, width: 1496, height: 872)
+    let ids = Array(WindowID(1)...8)
+    for placement in [Placement.end, .afterFocused] {
+        var s = LayoutState(kind: .tiles)
+        for id in ids {
+            s.insert(id, focused: 1, placement: placement, area: screen, gap: 8, visible: Set(ids))
+        }
+        let f = s.frames(area: screen, gap: 8, visible: Set(ids))
+        #expect(f.count == 8)
+        #expect(f.values.allSatisfy { $0.width >= LayoutState.minTile.width && $0.height >= LayoutState.minTile.height })
+        #expect(f.values.allSatisfy { screen.contains($0) })
+    }
+    // Small tiles are still split when there is room nowhere else; other layouts keep the order.
+    var c = LayoutState(kind: .columns)
+    for id in ids { c.insert(id, focused: 1, placement: .afterFocused, area: screen, gap: 8, visible: Set(ids)) }
+    #expect(c.windows == [1, 8, 7, 6, 5, 4, 3, 2])
+}

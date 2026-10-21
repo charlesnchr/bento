@@ -134,12 +134,16 @@ public final class TilingModule: BentoModule {
         }
         if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil {
             list.append(BentoAction("tiling.debug-dump", "Dump State", group: manage, hiddenFromMenu: true) { [weak self] in
-                let text = self?.manager?.debugDescription() ?? "manager off"
+                let text = self?.manager?.debugDescription() ?? "manager off, live app observers: \(AppObserver.live)"
                 let url = AppPaths.support("tiling").appendingPathComponent("state.txt")
                 try? text.write(to: url, atomically: true, encoding: .utf8)
             })
         }
         return list
+    }
+
+    public func diagnostics() -> [String: Any] {
+        ["managerOn": settings.managerOn, "liveAppObservers": AppObserver.live, "manager": manager?.diagnostics ?? [:]]
     }
 
     // MARK: Menu

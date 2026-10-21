@@ -4,13 +4,16 @@ import BentoCore
 
 /// One AXObserver per observed app: app-level notifications (window created,
 /// focus changed) plus per-window ones (destroyed, moved, resized, minimized).
-/// Callbacks arrive on the main run loop; the refcon is the `TilingManager`.
+/// Callbacks arrive on the main run loop; the refcon is the `target` object.
 final class AppObserver {
     let pid: pid_t
     let appElement: AXUIElement
     private let observer: AXObserver
     private let refcon: UnsafeMutableRawPointer
+    private let target: AnyObject
     private var windows: Set<AXWindow> = []
+    /// Number of live observers (main thread; diagnostics and tests).
+    private(set) static var live = 0
 
     static let appNotifications = [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification]
     static let windowNotifications = [
@@ -19,7 +22,10 @@ final class AppObserver {
     ]
 
     /// Nil when the app does not (yet) answer accessibility requests.
-    init?(pid: pid_t, refcon: UnsafeMutableRawPointer, callback: AXObserverCallback) {
+    /// `target` is passed to `callback` as the refcon and kept alive by this
+    /// observer, so a late callback can never see a freed object.
+    init?(pid: pid_t, target: AnyObject, callback: AXObserverCallback) {
+        let refcon = Unmanaged.passUnretained(target).toOpaque()
         var created: AXObserver?
         guard AXObserverCreate(pid, callback, &created) == .success, let created else { return nil }
         let app = AXWindow.appElement(pid)
@@ -33,8 +39,12 @@ final class AppObserver {
         self.appElement = app
         self.observer = created
         self.refcon = refcon
+        self.target = target
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
+        AppObserver.live += 1
     }
+
+    deinit { AppObserver.live -= 1 }
 
     func observe(_ w: AXWindow) {
         guard !windows.contains(w) else { return }
