@@ -102,7 +102,7 @@ final class PinController: NSObject, NSWindowDelegate {
     func copy() {
         guard let image else { return }
         Clipboard.copy(image, scale: scale)
-        HUD.show("Copied", symbol: "doc.on.doc")
+        Feedback.hud("Copied", symbol: "doc.on.doc")
     }
 
     func menu() -> NSMenu {

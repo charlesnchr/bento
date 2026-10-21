@@ -112,7 +112,8 @@ enum EditorTool: String, CaseIterable {
 
 /// Remembers size and style per annotation kind across editors (like Shottr).
 enum ToolMemory {
-    private static let defaults = UserDefaults.standard
+    /// Replaceable so tests don't read or write the app's remembered sizes.
+    static var defaults = UserDefaults.standard
     private static let sizeKey = "ShotEditor.toolSizes"
     private static let styleKey = "ShotEditor.toolStyles"
 

@@ -132,7 +132,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         statusBar.onColorClick = { [weak self] in
             guard let self, let hex = self.statusBar.lastHex else { return }
             Clipboard.copyText(hex)
-            HUD.show("Copied \(hex)", symbol: "eyedropper")
+            Feedback.hud("Copied \(hex)", symbol: "eyedropper")
         }
         toolbar.update()
         updateStatus()
@@ -471,7 +471,7 @@ final class EditorController: NSObject, NSWindowDelegate {
             let url = FilenamePattern.uniqueURL(in: folder, name: suggestedName(save), ext: save.format.ext)
             guard let img = flattened(forExport: true) else { return false }
             try ImageCodec.write(img, scale: exportScale, format: save.format, quality: save.jpegQuality, to: url)
-            if showHUD { HUD.show("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down") }
+            if showHUD { Feedback.hud("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down") }
             return true
         } catch {
             presentError("Couldn't save the image", error)
@@ -499,7 +499,7 @@ final class EditorController: NSObject, NSWindowDelegate {
             guard let img = self.flattened(forExport: true) else { return }
             do {
                 try ImageCodec.write(img, scale: self.exportScale, format: format, quality: save.jpegQuality, to: url)
-                HUD.show("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down")
+                Feedback.hud("Saved \(url.lastPathComponent)", symbol: "square.and.arrow.down")
             } catch {
                 self.presentError("Couldn't save the image", error)
             }
@@ -620,7 +620,7 @@ final class EditorController: NSObject, NSWindowDelegate {
 
     /// Shrinks the selection to the content inside it (A with a selection).
     func autoAdjustRegion() {
-        guard let r = region, let adjusted = sampler.contentBounds(in: r) else { NSSound.beep(); return }
+        guard let r = region, let adjusted = sampler.contentBounds(in: r) else { Feedback.beep(); return }
         region = adjusted
     }
 

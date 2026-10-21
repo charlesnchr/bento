@@ -1,6 +1,7 @@
 import AppKit
 import ImageIO
 import UniformTypeIdentifiers
+import BentoCore
 
 enum FilenamePattern {
     /// Same syntax as the capture module: `{app}`, `{kind}`, `{w}`, `{h}`;
@@ -72,13 +73,31 @@ enum ImageCodec {
 
     /// Loads an image file; scale comes from its DPI (144 dpi -> 2x).
     static func load(_ url: URL) -> (CGImage, CGFloat)? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let image = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        return load(src)
+    }
+
+    static func load(_ data: Data) -> (CGImage, CGFloat)? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        return load(src)
+    }
+
+    private static func load(_ src: CGImageSource) -> (CGImage, CGFloat)? {
+        guard CGImageSourceGetCount(src) > 0,
+              let image = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              image.width > 0, image.height > 0
         else { return nil }
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         let dpi = (props?[kCGImagePropertyDPIWidth] as? NSNumber)?.doubleValue ?? 72
-        let scale = max(1, (dpi / 72).rounded())
-        return (image, CGFloat(scale))
+        return (image, scale(dpi: dpi))
+    }
+
+    /// Screenshots are 72, 144 or 216 dpi (1x–3x); anything else (96 dpi
+    /// exports, 300 dpi scans, garbage) opens at 1x.
+    static func scale(dpi: Double) -> CGFloat {
+        guard dpi.isFinite, dpi > 0 else { return 1 }
+        let ratio = dpi / 72, r = ratio.rounded()
+        return r >= 1 && r <= 3 && abs(ratio - r) < 0.1 ? CGFloat(r) : 1
     }
 
     /// Resamples to a different pixels-per-point scale (e.g. 2x -> 1x).
@@ -110,35 +129,64 @@ enum ImageCodec {
     }
 }
 
+/// HUD messages and beeps, mutable so headless tests don't flash windows on
+/// the screen or make noise.
+enum Feedback {
+    static var muted = false
+
+    static func hud(_ text: String, symbol: String? = nil, duration: TimeInterval = 1.1) {
+        guard !muted else { return }
+        HUD.show(text, symbol: symbol, duration: duration)
+    }
+
+    static func beep() {
+        guard !muted else { return }
+        NSSound.beep()
+    }
+}
+
 enum Clipboard {
+    /// The pasteboard copies go to (tests use a private one).
+    static var pasteboard = NSPasteboard.general
+
     /// Puts PNG on the pasteboard and promises TIFF lazily: an uncompressed
     /// TIFF of a Retina fullscreen capture is ~24 MB, and most apps take PNG.
-    static func copy(_ image: CGImage, scale: CGFloat) {
-        let rep = NSBitmapImageRep(cgImage: image)
-        rep.size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        guard let png = ImageCodec.data(image, scale: scale, format: .png) ?? rep.representation(using: .png, properties: [:]) else { return }
-        let pb = NSPasteboard.general
+    static func copy(_ image: CGImage, scale: CGFloat, to pb: NSPasteboard = Clipboard.pasteboard) {
+        let pointSize = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        // The PNG encoder's buffers are big for large captures; free them right away.
+        let encoded: Data? = autoreleasepool {
+            ImageCodec.data(image, scale: scale, format: .png) ?? {
+                let rep = NSBitmapImageRep(cgImage: image)
+                rep.size = pointSize
+                return rep.representation(using: .png, properties: [:])
+            }()
+        }
+        guard let png = encoded else { return }
         pb.clearContents()
         let item = NSPasteboardItem()
         item.setData(png, forType: .png)
-        let provider = LazyTIFFProvider(png: png, pointSize: rep.size)
+        let provider = LazyTIFFProvider(png: png, pointSize: pointSize)
         item.setDataProvider(provider, forTypes: [.tiff])
         LazyTIFFProvider.current = provider
         pb.writeObjects([item])
     }
 
-    static func copyText(_ s: String) {
-        let pb = NSPasteboard.general
+    static func copyText(_ s: String, to pb: NSPasteboard = Clipboard.pasteboard) {
         pb.clearContents()
         pb.setString(s, forType: .string)
     }
 
-    /// Image on the pasteboard (pasted screenshots, copied files).
-    static func image() -> (CGImage, CGFloat)? {
-        let pb = NSPasteboard.general
+    /// Image on the pasteboard (pasted screenshots, copied files). Image data
+    /// is decoded once into a bitmap, with the scale taken from its DPI.
+    static func image(from pb: NSPasteboard = Clipboard.pasteboard) -> (CGImage, CGFloat)? {
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
            let url = urls.first, let loaded = ImageCodec.load(url) {
             return loaded
+        }
+        let types: [NSPasteboard.PasteboardType] = [.png, .tiff, NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+                                                    NSPasteboard.PasteboardType(UTType.heic.identifier)]
+        for type in types where pb.availableType(from: [type]) != nil {
+            if let data = pb.data(forType: type), let loaded = ImageCodec.load(data) { return loaded }
         }
         guard let img = NSImage(pasteboard: pb), let rep = img.representations.first,
               let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
@@ -160,9 +208,19 @@ final class LazyTIFFProvider: NSObject, NSPasteboardItemDataProvider {
     }
 
     func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
-        guard type == .tiff, let rep = NSBitmapImageRep(data: png) else { return }
-        rep.size = pointSize
-        if let tiff = rep.tiffRepresentation { item.setData(tiff, forType: .tiff) }
+        guard type == .tiff, let tiff = tiffData() else { return }
+        item.setData(tiff, forType: .tiff)
+    }
+
+    /// LZW-compressed TIFF at the right point size. Uncompressed, a 15 000 px
+    /// scrolling capture is 170 MB (held by the pasteboard item for as long
+    /// as Bento owns the clipboard); LZW makes screenshots 10–100× smaller.
+    func tiffData() -> Data? {
+        autoreleasepool {
+            guard let rep = NSBitmapImageRep(data: png) else { return nil }
+            rep.size = pointSize
+            return rep.tiffRepresentation(using: .lzw, factor: 0) ?? rep.tiffRepresentation
+        }
     }
 
     func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {

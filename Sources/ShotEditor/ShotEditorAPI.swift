@@ -108,7 +108,7 @@ public final class ShotEditor {
             return
         }
         guard let (image, scale) = ImageCodec.load(fileURL) else {
-            HUD.show("Can't open \(fileURL.lastPathComponent)", symbol: "exclamationmark.triangle")
+            Feedback.hud("Can't open \(fileURL.lastPathComponent)", symbol: "exclamationmark.triangle")
             return
         }
         open(CapturedImage(image: image, scale: scale, kind: .file))
@@ -129,7 +129,7 @@ public final class ShotEditor {
     /// Opens the image on the clipboard (or a copied image file) in the editor.
     public func openClipboardImage() {
         guard let (image, scale) = Clipboard.image() else {
-            HUD.show("No image on the clipboard", symbol: "doc.on.clipboard")
+            Feedback.hud("No image on the clipboard", symbol: "doc.on.clipboard")
             return
         }
         open(CapturedImage(image: image, scale: scale, kind: .pasted))

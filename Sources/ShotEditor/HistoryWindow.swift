@@ -113,7 +113,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
     func copySelected() {
         guard let e = selectedEntries.first, let img = flattened(e) else { return }
         Clipboard.copy(img, scale: e.doc.scale)
-        HUD.show("Copied", symbol: "doc.on.doc")
+        Feedback.hud("Copied", symbol: "doc.on.doc")
     }
 
     func deleteSelected() {
