@@ -700,29 +700,33 @@ enum Geometry {
         var y: Int
     }
 
-    /// The window is split in thirds on each axis; the cell under the cursor
-    /// picks the corner / edge. The centre cell uses the nearest corner.
-    static func resizeHandle(at p: CGPoint, in f: CGRect) -> ResizeHandle {
-        func axis(_ v: CGFloat, _ lo: CGFloat, _ len: CGFloat) -> Int {
-            if v < lo + len / 3 { return -1 }
-            if v > lo + len * 2 / 3 { return 1 }
-            return 0
-        }
-        var h = ResizeHandle(x: axis(p.x, f.minX, f.width), y: axis(p.y, f.minY, f.height))
-        if h.x == 0 && h.y == 0 {
-            h.x = p.x < f.midX ? -1 : 1
-            h.y = p.y < f.midY ? -1 : 1
-        }
-        return h
+    /// Live nearest-edge resizing: on each axis the edge on the pointer's side
+    /// of the window's centre follows the pointer, re-decided at every step, so
+    /// it is always a corner and the direction flips as the pointer crosses the
+    /// middle (e.g. after shrinking past it). A small dead band around the
+    /// centre keeps the current side so it doesn't flicker.
+    static func liveSide(_ v: CGFloat, mid: CGFloat, current: Int, band: CGFloat = 4) -> Int {
+        if v > mid + band { return 1 }
+        if v < mid - band { return -1 }
+        return current != 0 ? current : (v >= mid ? 1 : -1)
     }
 
-    static func resized(_ start: CGRect, handle: ResizeHandle, delta d: CGPoint, minSize: CGSize = CGSize(width: 120, height: 60)) -> CGRect {
-        var minX = start.minX, maxX = start.maxX, minY = start.minY, maxY = start.maxY
-        if handle.x < 0 { minX = min(start.minX + d.x, maxX - minSize.width) }
-        if handle.x > 0 { maxX = max(start.maxX + d.x, minX + minSize.width) }
-        if handle.y < 0 { minY = min(start.minY + d.y, maxY - minSize.height) }
-        if handle.y > 0 { maxY = max(start.maxY + d.y, minY + minSize.height) }
-        return CGRect(x: minX.rounded(), y: minY.rounded(), width: (maxX - minX).rounded(), height: (maxY - minY).rounded())
+    /// The corner a resize starts from: the pointer's quarter of the window.
+    static func liveHandle(at p: CGPoint, in f: CGRect) -> ResizeHandle {
+        ResizeHandle(x: liveSide(p.x, mid: f.midX, current: 0), y: liveSide(p.y, mid: f.midY, current: 0))
+    }
+
+    /// One resize step for a pointer move q → p (AX coordinates, y down).
+    /// Returns the new (unrounded) frame and the sides used.
+    static func liveResizeStep(_ f: CGRect, from q: CGPoint, to p: CGPoint, sides: ResizeHandle,
+                               minSize: CGSize = CGSize(width: 120, height: 60)) -> (CGRect, ResizeHandle) {
+        let sx = liveSide(q.x, mid: f.midX, current: sides.x)
+        let sy = liveSide(q.y, mid: f.midY, current: sides.y)
+        let dx = p.x - q.x, dy = p.y - q.y
+        var minX = f.minX, maxX = f.maxX, minY = f.minY, maxY = f.maxY
+        if sx > 0 { maxX = max(maxX + dx, minX + minSize.width) } else { minX = min(minX + dx, maxX - minSize.width) }
+        if sy > 0 { maxY = max(maxY + dy, minY + minSize.height) } else { minY = min(minY + dy, maxY - minSize.height) }
+        return (CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY), ResizeHandle(x: sx, y: sy))
     }
 
     /// Rectangle's restore while the system drags a window by its title bar:

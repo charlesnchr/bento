@@ -87,12 +87,26 @@ $CTL --expect $B hover 830 680 830 730 cmd+opt          # down 50 -> origin (200
 sleep 0.3; $CTL modifiers none; sleep 0.5
 expect "move → ⇧ resize → release ⇧ move in one gesture" "200 300 650 450"
 
-# 4. Holding ⌘⌥ and releasing without moving changes nothing.
+# 4. Live nearest edges: starting at the window's centre and moving left, the
+#    right edge follows for the first few points, then the pointer is past the
+#    (moving) middle and the left edge takes over: the window grows leftwards.
+reset; active
+$CTL modifiers cmd+opt+shift
+$CTL --expect $B hover 600 450 450 450 cmd+opt+shift
+sleep 0.3; $CTL modifiers none; sleep 0.5
+got=$($CTL frame $B $T)
+if python3 -c "import sys; x,y,w,h=map(int,'$got'.split()); sys.exit(0 if abs(x-158)<=4 and abs(x+w-892)<=4 and y==250 and h==400 else 1)"; then
+  ok "resize edge flips as the pointer crosses the middle ($got)"
+else
+  bad "resize edge flip: got ($got), want ~(158 250 734 400)"
+fi
+
+# 5. Holding ⌘⌥ and releasing without moving changes nothing.
 reset; active
 $CTL modifiers cmd+opt; sleep 0.3; $CTL modifiers none; sleep 0.4
 expect "⌘⌥ held without moving: no change" "300 250 600 400"
 
-# 5. Modifiers released: further pointer moves don't drag.
+# 6. Modifiers released: further pointer moves don't drag.
 reset; active
 $CTL modifiers cmd+opt
 $CTL --expect $B hover 600 450 650 450 cmd+opt

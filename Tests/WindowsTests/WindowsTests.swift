@@ -426,21 +426,61 @@ private func snap(_ x: CGFloat, _ y: CGFloat, screens: [ScreenRect] = [screenA],
 
 // MARK: - Modifier drag
 
-@Test func resizeHandles() {
-    let f = R(100, 100, 300, 300)
-    #expect(Geometry.resizeHandle(at: CGPoint(x: 110, y: 110), in: f) == .init(x: -1, y: -1))
-    #expect(Geometry.resizeHandle(at: CGPoint(x: 390, y: 250), in: f) == .init(x: 1, y: 0))
-    #expect(Geometry.resizeHandle(at: CGPoint(x: 250, y: 390), in: f) == .init(x: 0, y: 1))
-    #expect(Geometry.resizeHandle(at: CGPoint(x: 240, y: 260), in: f) == .init(x: -1, y: 1))
+@Test func liveResizeStartsFromThePointersQuarter() {
+    let f = R(100, 100, 300, 300) // centre (250, 250)
+    #expect(Geometry.liveHandle(at: CGPoint(x: 110, y: 110), in: f) == .init(x: -1, y: -1))
+    // Near the middle of an edge it is still a corner: both axes respond.
+    #expect(Geometry.liveHandle(at: CGPoint(x: 390, y: 250), in: f) == .init(x: 1, y: 1))
+    #expect(Geometry.liveHandle(at: CGPoint(x: 250, y: 390), in: f) == .init(x: 1, y: 1))
+    #expect(Geometry.liveHandle(at: CGPoint(x: 240, y: 260), in: f) == .init(x: -1, y: 1))
 }
 
-@Test func resizeMath() {
+/// Runs a pointer path through the live resize model.
+private func liveResize(_ f: CGRect, path: [CGPoint]) -> (CGRect, Geometry.ResizeHandle) {
+    var frame = f
+    var sides = Geometry.liveHandle(at: path[0], in: f)
+    for (q, p) in zip(path, path.dropFirst()) { (frame, sides) = Geometry.liveResizeStep(frame, from: q, to: p, sides: sides) }
+    return (frame, sides)
+}
+
+private func line(_ a: CGPoint, _ b: CGPoint, steps: Int = 40) -> [CGPoint] {
+    (0...steps).map { i in CGPoint(x: a.x + (b.x - a.x) * CGFloat(i) / CGFloat(steps), y: a.y + (b.y - a.y) * CGFloat(i) / CGFloat(steps)) }
+}
+
+@Test func liveResizeMovesTheEdgesOnThePointersSide() {
     let f = R(100, 100, 300, 300)
-    #expect(Geometry.resized(f, handle: .init(x: 1, y: 1), delta: CGPoint(x: 50, y: 20)) == R(100, 100, 350, 320))
-    #expect(Geometry.resized(f, handle: .init(x: -1, y: 0), delta: CGPoint(x: -40, y: 99)) == R(60, 100, 340, 300))
-    #expect(Geometry.resized(f, handle: .init(x: 0, y: -1), delta: CGPoint(x: 0, y: 30)) == R(100, 130, 300, 270))
-    // Can't collapse past the minimum size; the opposite edge stays put.
-    #expect(Geometry.resized(f, handle: .init(x: -1, y: -1), delta: CGPoint(x: 500, y: 500)) == R(280, 340, 120, 60))
+    // Bottom-right quarter, moving right/down: right and bottom edges follow.
+    #expect(liveResize(f, path: line(CGPoint(x: 380, y: 380), CGPoint(x: 430, y: 400))).0 == R(100, 100, 350, 320))
+    // Top-left quarter, moving left/up: left and top edges follow.
+    #expect(liveResize(f, path: line(CGPoint(x: 120, y: 120), CGPoint(x: 80, y: 90))).0 == R(60, 70, 340, 330))
+    // Top-right quarter, up and right: top and right edges.
+    #expect(liveResize(f, path: line(CGPoint(x: 380, y: 120), CGPoint(x: 420, y: 100))).0 == R(100, 80, 340, 320))
+    // Started at the middle of the right edge: right edge plus (dead band → bottom) both respond.
+    #expect(liveResize(f, path: line(CGPoint(x: 390, y: 250), CGPoint(x: 440, y: 280))).0 == R(100, 100, 350, 330))
+}
+
+@Test func liveResizeFlipsSideWhenThePointerCrossesTheMiddle() {
+    let f = R(0, 0, 400, 300) // pointer 30 pt left of the right edge
+    // Shrink from the right: the right edge follows until the pointer has passed
+    // the (moving) centre, then the left edge takes over and the window grows left.
+    let (r, sides) = liveResize(f, path: line(CGPoint(x: 370, y: 150), CGPoint(x: -100, y: 150), steps: 200))
+    #expect(sides.x == -1)
+    #expect(r.minX < 0)                       // grew past the original left edge
+    #expect(r.width >= 120)                   // never below the minimum
+    // Back to the right: the left edge follows (pointer stays in the left half).
+    let (r2, s2) = liveResize(r, path: line(CGPoint(x: -100, y: 150), CGPoint(x: -60, y: 150)))
+    #expect(s2.x == -1)
+    #expect(abs(r2.minX - (r.minX + 40)) < 0.5 && abs(r2.maxX - r.maxX) < 0.5)
+}
+
+@Test func liveResizeKeepsTheMinimumAndTheOppositeEdge() {
+    let f = R(100, 100, 300, 300)
+    let (r, _) = Geometry.liveResizeStep(f, from: CGPoint(x: 120, y: 120), to: CGPoint(x: 620, y: 620), sides: .init(x: -1, y: -1))
+    #expect(r == R(280, 340, 120, 60))
+    // The dead band keeps the current side right at the centre.
+    #expect(Geometry.liveSide(251, mid: 250, current: -1) == -1)
+    #expect(Geometry.liveSide(249, mid: 250, current: 1) == 1)
+    #expect(Geometry.liveSide(260, mid: 250, current: -1) == 1)
 }
 
 @Test func unsnapKeepsGrabPoint() {

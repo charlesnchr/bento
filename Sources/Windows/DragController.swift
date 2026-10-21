@@ -59,6 +59,10 @@ final class DragController: NSObject {
         var startFrame: CGRect
         var begun = false
         var applied: CGPoint?
+        /// Resize model: the frame as we intend it (unrounded) and the pointer at
+        /// the last step. Steps are incremental so the moving edges can change.
+        var liveFrame: CGRect?
+        var lastPointer: CGPoint?
         /// The window moved or resized at some point in the gesture (any segment).
         var changed = false
         var finished = false
@@ -68,7 +72,7 @@ final class DragController: NSObject {
             self.hover = hover
             self.mode = mode
             self.requested = mode
-            self.handle = mode == .resize ? Geometry.resizeHandle(at: mouse, in: frame) : nil
+            self.handle = mode == .resize ? Geometry.liveHandle(at: mouse, in: frame) : nil
             self.startMouse = mouse
             self.startFrame = frame
             self.pressEvent = press
@@ -395,7 +399,7 @@ final class DragController: NSObject {
         if s.hover, let f = s.window.frame {
             // A hover gesture may have waited for the pointer to move: start from now.
             s.startFrame = f
-            if s.mode == .resize { s.handle = Geometry.resizeHandle(at: s.startMouse, in: f) }
+            if s.mode == .resize { s.handle = Geometry.liveHandle(at: s.startMouse, in: f) }
         }
         let restoreSize = s.mode == .move ? engine.beginDrag(wid: s.wid, initialFrame: s.startFrame) : nil
         if s.mode == .move {
@@ -451,7 +455,9 @@ final class DragController: NSObject {
         s.startMouse = p
         s.applied = p
         s.mode = mode
-        s.handle = mode == .resize ? Geometry.resizeHandle(at: p, in: s.startFrame) : nil
+        s.handle = mode == .resize ? Geometry.liveHandle(at: p, in: s.startFrame) : nil
+        s.liveFrame = nil
+        s.lastPointer = nil
         if mode == .move && config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
         DragController.trace("mode \(mode == .resize ? "resize" : "move") at \(p)")
     }
@@ -461,15 +467,30 @@ final class DragController: NSObject {
         s.applied = p
         s.changed = true
         let d = CGPoint(x: p.x - s.startMouse.x, y: p.y - s.startMouse.y)
-        if let h = s.handle {
-            let r = Geometry.resized(s.startFrame, handle: h, delta: d)
-            s.window.setSize(r.size)
-            if h.x < 0 || h.y < 0 {
-                // Keep the opposite edge fixed even if the app clamps the size.
-                let size = s.window.size ?? r.size
-                s.window.setPosition(CGPoint(x: h.x < 0 ? s.startFrame.maxX - size.width : s.startFrame.minX,
-                                             y: h.y < 0 ? s.startFrame.maxY - size.height : s.startFrame.minY))
+        if s.mode == .resize {
+            // Incremental: each step decides again which edges follow the pointer.
+            let q = s.lastPointer ?? s.startMouse
+            let model = s.liveFrame ?? s.startFrame
+            let (step, sides) = Geometry.liveResizeStep(model, from: q, to: p, sides: s.handle ?? .init(x: 0, y: 0))
+            var next = step
+            s.handle = sides
+            s.lastPointer = p
+            let target = Geometry.integral(next)
+            s.window.setSize(target.size)
+            // The app may clamp the size: keep the fixed edges where they are.
+            let actual = s.window.size ?? target.size
+            if abs(actual.width - target.width) > 1 {
+                if sides.x < 0 { next.origin.x = next.maxX - actual.width }
+                next.size.width = actual.width
             }
+            if abs(actual.height - target.height) > 1 {
+                if sides.y < 0 { next.origin.y = next.maxY - actual.height }
+                next.size.height = actual.height
+            }
+            if next.origin != model.origin || actual != target.size {
+                s.window.setPosition(CGPoint(x: next.minX.rounded(), y: next.minY.rounded()))
+            }
+            s.liveFrame = next
         } else {
             s.window.setPosition(CGPoint(x: (s.startFrame.minX + d.x).rounded(), y: (s.startFrame.minY + d.y).rounded()))
             if config.snap { snapper.update(cursor: p) }

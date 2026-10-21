@@ -522,23 +522,24 @@ func phaseDrag() {
         ("top-left corner", CGPoint(x: S.minX + inset, y: S.minY + inset), CGPoint(x: -40, y: -20), r(-40, -20, 40, 20)),
         ("top-right corner", CGPoint(x: S.maxX - inset, y: S.minY + inset), CGPoint(x: 40, y: -20), r(0, -20, 40, 20)),
         ("bottom-left corner", CGPoint(x: S.minX + inset, y: S.maxY - inset), CGPoint(x: -40, y: 20), r(-40, 0, 40, 20)),
-        ("right edge", CGPoint(x: S.maxX - inset, y: S.midY), CGPoint(x: 50, y: 30), r(0, 0, 50, 0)),
-        ("left edge", CGPoint(x: S.minX + inset, y: S.midY), CGPoint(x: -50, y: 30), r(-50, 0, 50, 0)),
-        ("top edge", CGPoint(x: S.midX, y: S.minY + 60), CGPoint(x: 30, y: -30), r(0, -30, 0, 30)),
-        ("bottom edge", CGPoint(x: S.midX, y: S.maxY - inset), CGPoint(x: 30, y: 30), r(0, 0, 0, 30)),
+        // Live nearest edges: always a corner; right at the middle the dead band picks right / bottom.
+        ("right-edge middle → right + bottom", CGPoint(x: S.maxX - inset, y: S.midY), CGPoint(x: 50, y: 30), r(0, 0, 50, 30)),
+        ("left-edge middle → left + bottom", CGPoint(x: S.minX + inset, y: S.midY), CGPoint(x: -50, y: 30), r(-50, 0, 50, 30)),
+        ("top-edge middle → top + right", CGPoint(x: S.midX, y: S.minY + 60), CGPoint(x: 30, y: -30), r(0, -30, 30, 30)),
+        ("bottom-edge middle → bottom + right", CGPoint(x: S.midX, y: S.maxY - inset), CGPoint(x: 30, y: 30), r(0, 0, 30, 30)),
         ("centre → nearest corner (top-left)", CGPoint(x: S.midX - 10, y: S.midY - 10), CGPoint(x: -20, y: -20), r(-20, -20, 20, 20)),
     ]
     for (n, p, d, want) in regions { modDrag("⌘⌥⇧ resize from \(n)", from: p, by: d, mods: rs, want: want) }
-    // Shrinking past the minimum: the app's minimum size wins, the opposite (bottom-right) edges stay put.
+    // Shrinking from the top-left keeps the bottom-right edges put (pointer stays in its quarter).
     setFrame(S); ensureFront()
     var before = placedCount()
     let tl = CGPoint(x: S.minX + inset, y: S.minY + inset)
     if onMyWindow(tl) {
-        ctl(["drag", "\(Int(tl.x))", "\(Int(tl.y))", "\(Int(tl.x + 900))", "\(Int(tl.y + 600))", rs])
+        ctl(["drag", "\(Int(tl.x))", "\(Int(tl.y))", "\(Int(tl.x + 100))", "\(Int(tl.y + 60))", rs])
         pause(0.5)
         let g = frame()
-        let ok = g.map { abs($0.maxX - S.maxX) <= 1 && abs($0.maxY - S.maxY) <= 1 && $0.width < S.width && $0.height < S.height } ?? false
-        record(ok && placedCount() - before == 1, "⌘⌥⇧ shrink past the minimum keeps the bottom-right edges", "got \(fmt(g))")
+        let ok = g.map { abs($0.maxX - S.maxX) <= 1 && abs($0.maxY - S.maxY) <= 1 && abs($0.width - (S.width - 100)) <= 2 && abs($0.height - (S.height - 60)) <= 2 } ?? false
+        record(ok && placedCount() - before == 1, "⌘⌥⇧ shrink from top-left keeps the bottom-right edges", "got \(fmt(g))")
     }
 
     // Very fast: down and up far away with no drag events in between.
