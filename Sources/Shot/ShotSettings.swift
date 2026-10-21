@@ -76,6 +76,8 @@ struct ShotSettings: Codable, Equatable {
     var adjustSelectionBeforeCapture = false
     /// Fullscreen captures every display into one image instead of the one under the mouse.
     var fullscreenAllDisplays = false
+    /// Include the mouse pointer in area, window, fullscreen and repeat captures.
+    var includeCursor = false
 
     // Window capture
     var windowShadow = true
@@ -98,6 +100,8 @@ struct ShotSettings: Codable, Equatable {
 
     // Text and colour
     var ocrKeepLineBreaks = true
+    /// Vision language code to prefer for Copy Text ("" = detect automatically).
+    var ocrLanguage = ""
     var colorFormat: ColorFormat = .hex
 
     static var current: ShotSettings { ConfigStoreAccess.settings }

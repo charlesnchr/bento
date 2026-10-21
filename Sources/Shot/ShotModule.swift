@@ -74,14 +74,16 @@ public final class ShotModule: BentoModule {
     private var isBusy: Bool { busy || CaptureOverlay.isActive || ScrollCaptureSession.isActive || Countdown.isActive }
 
     /// Freezes the screens and shows the overlay.
-    private func freeze(_ options: CaptureOverlay.Options, screens: [NSScreen] = NSScreen.screens,
+    /// `cursor`: freeze the pointer into the image ("Include pointer"), only
+    /// for captures of what the user sees (not text, colour or scrolling).
+    private func freeze(_ options: CaptureOverlay.Options, screens: [NSScreen] = NSScreen.screens, cursor: Bool = false,
                         completion: @escaping (OverlayOutcome, NSRunningApplication?) -> Void) {
         guard !isBusy, ScreenGrabber.ensurePermission() else { return }
         busy = true
         let front = NSWorkspace.shared.frontmostApplication
         Task { @MainActor in
             do {
-                let snaps = try await ScreenGrabber.snapshot(screens: screens)
+                let snaps = try await ScreenGrabber.snapshot(screens: screens, cursor: cursor)
                 self.busy = false
                 CaptureOverlay.present(snapshots: snaps, options: options) { outcome in completion(outcome, front) }
             } catch {
@@ -105,7 +107,7 @@ public final class ShotModule: BentoModule {
     // MARK: Area
 
     func captureArea(action: ShotSettings.AfterCapture? = nil) {
-        freeze(overlayOptions(.area, title: action == .pin ? "Pin" : nil)) { [weak self] outcome, front in
+        freeze(overlayOptions(.area, title: action == .pin ? "Pin" : nil), cursor: settings.includeCursor) { [weak self] outcome, front in
             self?.handleAreaOutcome(outcome, front: front, action: action)
         }
     }
@@ -143,7 +145,7 @@ public final class ShotModule: BentoModule {
         Task { @MainActor in
             defer { self.busy = false }
             do {
-                let snaps = try await ScreenGrabber.snapshot(screens: screens)
+                let snaps = try await ScreenGrabber.snapshot(screens: screens, cursor: self.settings.includeCursor)
                 let capture: CapturedImage?
                 if snaps.count == 1, let s = snaps.first {
                     capture = CapturedImage(image: s.image, scale: s.scale, rect: s.axFrame, kind: .fullscreen,
@@ -180,7 +182,7 @@ public final class ShotModule: BentoModule {
     // MARK: Window
 
     func captureWindowPicker() {
-        freeze(overlayOptions(.window)) { [weak self] outcome, front in
+        freeze(overlayOptions(.window), cursor: settings.includeCursor) { [weak self] outcome, front in
             self?.handleAreaOutcome(outcome, front: front, action: nil)
         }
     }
@@ -235,7 +237,7 @@ public final class ShotModule: BentoModule {
         Task { @MainActor in
             defer { self.busy = false }
             do {
-                let (image, scale) = try await ScreenGrabber.capture(axRect: rect)
+                let (image, scale) = try await ScreenGrabber.capture(axRect: rect, cursor: self.settings.includeCursor)
                 let app = self.appOwning(point: CGPoint(x: rect.midX, y: rect.midY)) ?? front
                 CaptureOutput.deliver(CapturedImage(image: image, scale: scale, rect: rect, kind: .repeatArea,
                                                     sourceAppName: app?.localizedName, sourceBundleID: app?.bundleIdentifier))
@@ -304,6 +306,7 @@ public final class ShotModule: BentoModule {
 
     private func recognize(_ image: CGImage) {
         let keepBreaks = settings.ocrKeepLineBreaks
+        let language = settings.ocrLanguage
         guard OCRText.canRecognize(image) else {
             HUD.show("No text found", symbol: "text.viewfinder")
             return
@@ -311,7 +314,7 @@ public final class ShotModule: BentoModule {
         HUD.show("Recognizing text…", symbol: "text.viewfinder", duration: 4)
         Task.detached(priority: .userInitiated) {
             let codes = TextRecognizer.barcodes(image)
-            let text = codes.isEmpty ? ((try? await OCRText.recognize(image)) ?? "") : ""
+            let text = codes.isEmpty ? ((try? await OCRText.recognize(image, language: language)) ?? "") : ""
             await MainActor.run {
                 let pb = NSPasteboard.general
                 if !codes.isEmpty {
@@ -348,7 +351,8 @@ enum OCRText {
     /// Vision reports some failures both to the request's handler and by
     /// throwing from `perform`, so the continuation is guarded to resume
     /// exactly once (and always: `perform` is synchronous).
-    static func recognize(_ image: CGImage) async throws -> String {
+    /// `language`: a Vision language code ("zh-Hans") to prefer, "" = automatic.
+    static func recognize(_ image: CGImage, language: String = "") async throws -> String {
         guard canRecognize(image) else { return "" }
         return try await withCheckedThrowingContinuation { cont in
             let once = ResumeOnce(cont)
@@ -363,7 +367,11 @@ enum OCRText {
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
-            request.automaticallyDetectsLanguage = true
+            if language.isEmpty {
+                request.automaticallyDetectsLanguage = true
+            } else {
+                request.recognitionLanguages = [language]
+            }
             do {
                 try VNImageRequestHandler(cgImage: image).perform([request])
             } catch {
@@ -371,6 +379,13 @@ enum OCRText {
             }
             once.resume(returning: "")
         }
+    }
+
+    /// Languages Vision can read, for the settings picker.
+    static var supportedLanguages: [String] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        return (try? request.supportedRecognitionLanguages()) ?? []
     }
 
     struct OCRRun { var text: String; var minX: CGFloat; var minY: CGFloat; var maxY: CGFloat }

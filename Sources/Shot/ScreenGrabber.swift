@@ -88,11 +88,11 @@ enum ScreenGrabber {
         return v.isFinite && v >= 0.5 ? v : max(1, fallback)
     }
 
-    static func configuration(width: Int, height: Int) -> SCStreamConfiguration {
+    static func configuration(width: Int, height: Int, cursor: Bool = false) -> SCStreamConfiguration {
         let c = SCStreamConfiguration()
         c.width = max(1, width)
         c.height = max(1, height)
-        c.showsCursor = false
+        c.showsCursor = cursor
         c.captureResolution = .best
         c.colorSpaceName = CGColorSpace.sRGB
         c.pixelFormat = kCVPixelFormatType_32BGRA
@@ -101,11 +101,11 @@ enum ScreenGrabber {
 
     /// Captures a display, or a display-local rect of it (points).
     static func capture(display: SCDisplay, content: SCShareableContent, localRect: CGRect? = nil,
-                        excluding ids: Set<CGWindowID>, fallbackScale: CGFloat) async throws -> (CGImage, CGFloat) {
+                        excluding ids: Set<CGWindowID>, fallbackScale: CGFloat, cursor: Bool = false) async throws -> (CGImage, CGFloat) {
         let filter = filter(display: display, content: content, excluding: ids)
         let scale = safeScale(filter.pointPixelScale, fallback: fallbackScale)
         let rect = localRect ?? CGRect(x: 0, y: 0, width: CGFloat(display.width), height: CGFloat(display.height))
-        let cfg = configuration(width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()))
+        let cfg = configuration(width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()), cursor: cursor)
         if localRect != nil { cfg.sourceRect = rect }
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
         return (image, scale)
@@ -114,7 +114,7 @@ enum ScreenGrabber {
     /// Freezes the given screens (all by default), concurrently. Screen
     /// geometry is read on the main thread; the captures run in parallel.
     @MainActor
-    static func snapshot(screens: [NSScreen] = NSScreen.screens) async throws -> [DisplaySnapshot] {
+    static func snapshot(screens: [NSScreen] = NSScreen.screens, cursor: Bool = false) async throws -> [DisplaySnapshot] {
         let targets = screens.map { (screen: $0, id: $0.displayID, axFrame: $0.axFrame, scale: $0.backingScaleFactor) }
         let chrome = chromeWindowIDs()
         let content = try await content()
@@ -125,7 +125,8 @@ enum ScreenGrabber {
                 guard let display = content.displays.first(where: { $0.displayID == t.id }) else { continue }
                 let fallback = t.scale
                 group.addTask {
-                    let (image, scale) = try await capture(display: display, content: content, excluding: chrome, fallbackScale: fallback)
+                    let (image, scale) = try await capture(display: display, content: content, excluding: chrome,
+                                                           fallbackScale: fallback, cursor: cursor)
                     return (display.displayID, image, scale)
                 }
             }
@@ -150,7 +151,8 @@ enum ScreenGrabber {
 
     /// Captures a global AX rect live (repeat-area, scrolling frames).
     @MainActor
-    static func capture(axRect: CGRect, content: SCShareableContent? = nil, excluding: Set<CGWindowID>? = nil) async throws -> (CGImage, CGFloat) {
+    static func capture(axRect: CGRect, content: SCShareableContent? = nil, excluding: Set<CGWindowID>? = nil,
+                        cursor: Bool = false) async throws -> (CGImage, CGFloat) {
         guard isOnScreen(axRect: axRect), let screen = NSScreen.containing(axRect: axRect) else { throw GrabError.noDisplay }
         let displayID = screen.displayID, fallback = screen.backingScaleFactor
         let local = ShotGeometry.localRect(axRect, in: screen.axFrame).intersection(CGRect(origin: .zero, size: screen.frame.size))
@@ -161,7 +163,7 @@ enum ScreenGrabber {
             return try await Self.content()
         }()
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw GrabError.noDisplay }
-        return try await capture(display: display, content: content, localRect: local, excluding: chrome, fallbackScale: fallback)
+        return try await capture(display: display, content: content, localRect: local, excluding: chrome, fallbackScale: fallback, cursor: cursor)
     }
 
     /// Captures one window on its own (even if covered), with or without the
