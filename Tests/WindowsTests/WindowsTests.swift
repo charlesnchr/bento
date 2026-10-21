@@ -696,6 +696,18 @@ private let mbp = ScreenRect(frame: R(0, 0, 1512, 982), visible: R(0, 33, 1512, 
     #expect(preview(.centerTwoThirds) == R(252, 33, 1008, 888))
 }
 
+@Test func titleBarUnsnapKeepsTheWindowUnderTheGrabPoint() {
+    let snapped = R(0, 33, 756, 888), size = CGSize(width: 600, height: 400)
+    // Grabbed near the left: the narrower window still contains the grab point, nothing moves.
+    #expect(Geometry.titleBarUnsnapShift(current: snapped, size: size, grabX: 110) == 0)
+    // Grabbed beyond the new width: shift right just enough (32 pt inside the right edge)…
+    #expect(Geometry.titleBarUnsnapShift(current: snapped, size: size, grabX: 700) == 132)
+    // …but never past the old right edge.
+    #expect(Geometry.titleBarUnsnapShift(current: snapped, size: size, grabX: 755) == 156)
+    // Restoring to a larger size never shifts.
+    #expect(Geometry.titleBarUnsnapShift(current: R(0, 33, 400, 400), size: size, grabX: 390) == 0)
+}
+
 // MARK: - QA pass: modifier-drag gestures
 
 @Test func pressWithoutTravelIsAClick() {

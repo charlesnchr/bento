@@ -248,9 +248,15 @@ final class DragController: NSObject {
         var pid: pid_t = 0
         AXUIElementGetPid(cur, &pid)
         guard pid != getpid(), pid > 0 else { return nil }
+        func found(_ w: AXUIElement) -> AXWindow {
+            AXUIElementSetMessagingTimeout(w, 0.6) // the drag's frame writes may take longer
+            return AXWindow(element: w, pid: pid)
+        }
         for _ in 0..<32 {
-            if let role: String = cur.ax(kAXRoleAttribute), role == kAXWindowRole as String { return AXWindow(element: cur, pid: pid) }
-            if let w: AXUIElement = cur.ax(kAXWindowAttribute) { return AXWindow(element: w, pid: pid) }
+            // This runs inside the tap callback: a hung app must not stall every click.
+            AXUIElementSetMessagingTimeout(cur, 0.15)
+            if let role: String = cur.ax(kAXRoleAttribute), role == kAXWindowRole as String { return found(cur) }
+            if let w: AXUIElement = cur.ax(kAXWindowAttribute) { return found(w) }
             guard let parent: AXUIElement = cur.ax(kAXParentAttribute) else { break }
             cur = parent
         }

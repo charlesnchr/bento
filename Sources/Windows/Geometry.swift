@@ -725,6 +725,15 @@ enum Geometry {
         return CGRect(x: minX.rounded(), y: minY.rounded(), width: (maxX - minX).rounded(), height: (maxY - minY).rounded())
     }
 
+    /// Rectangle's restore while the system drags a window by its title bar:
+    /// keep the window where it is and shift it right only as far as needed
+    /// for the grab point (`grabX`, screen x) to stay on the narrower window.
+    static func titleBarUnsnapShift(current: CGRect, size: CGSize, grabX: CGFloat) -> CGFloat {
+        let inset = min(32, size.width / 2)
+        let needed = grabX - current.minX - (size.width - inset)
+        return min(max(0, needed), max(0, current.width - size.width)).rounded()
+    }
+
     /// Frame for a snapped window being dragged away: back to its old size,
     /// keeping the grab point at the same relative spot under the cursor.
     static func unsnapped(_ current: CGRect, restoreSize s: CGSize, grab: CGPoint, keepVertical: Bool) -> CGRect {

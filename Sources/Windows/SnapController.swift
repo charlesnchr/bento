@@ -111,10 +111,15 @@ final class SnapController {
         axWindow = SnapController.axWindow(id: windowID, pid: pid, near: cursor)
         guard let w = axWindow else { return }
         if let size = engine.beginDrag(wid: windowID, initialFrame: initialFrame) {
-            // Dragged out of a snapped slot: back to the old size under the cursor.
-            let r = Geometry.unsnapped(current, restoreSize: size, grab: CGPoint(x: downPoint.x + current.minX - initialFrame.minX, y: cursor.y), keepVertical: true)
-            w.setSize(r.size)
-            w.setPosition(r.origin)
+            // Dragged out of a snapped slot: back to the old size. The system is
+            // moving the window, so (like Rectangle) leave its position alone and
+            // only shift it as far as the grab point needs to stay on it; a
+            // position computed from the lagging window list would make the
+            // window jump away from the cursor.
+            let grabX = downPoint.x + current.minX - initialFrame.minX
+            let shift = Geometry.titleBarUnsnapShift(current: current, size: size, grabX: grabX)
+            if shift > 0, let p = w.position { w.setPosition(CGPoint(x: p.x + shift, y: p.y)) }
+            w.setSize(size)
         }
     }
 
