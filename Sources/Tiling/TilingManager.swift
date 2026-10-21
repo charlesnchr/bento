@@ -64,6 +64,7 @@ final class TilingManager {
     private var dragging: Set<WindowID> = []
     /// Frame each dragged window had when the drag started.
     private var dragOrigin: [WindowID: CGRect] = [:]
+    private var lastDragMove = Date.distantPast
     private var mouseMonitor: Any?
     private var running = false
     private var generation = 0
@@ -236,7 +237,11 @@ final class TilingManager {
     // MARK: - Moves and drags
 
     private func windowMoved(_ wid: WindowID) {
-        guard !dragging.contains(wid), let t = windows[wid], !t.floating else { return }
+        if dragging.contains(wid) {
+            lastDragMove = Date()
+            return
+        }
+        guard let t = windows[wid], !t.floating else { return }
         guard visible.contains(wid) else {
             // Not laid out right now (full screen, another Space…): its state may have changed.
             scheduleRefresh(after: 0.3)
@@ -299,6 +304,7 @@ final class TilingManager {
         if dragOrigin[wid] == nil, let e = expected[wid] { dragOrigin[wid] = e }
         let first = dragging.isEmpty
         dragging.insert(wid)
+        lastDragMove = Date()
         if mouseMonitor == nil {
             mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
                 // CG event location is already in AX (top-left) coordinates.
@@ -319,6 +325,11 @@ final class TilingManager {
             guard !m.dragging.isEmpty else { return }
             if !TilingManager.leftButtonDown {
                 m.later(0.1) { $0.endDrag() }
+            } else if Date().timeIntervalSince(m.lastDragMove) > 30 {
+                // A button that reads as held with nothing moving for this long is a
+                // lost mouse-up (synthetic input), not a drag: don't freeze the layout.
+                log.info("drag abandoned after 30 s without movement")
+                m.endDrag()
             } else {
                 m.watchDrag()
             }
