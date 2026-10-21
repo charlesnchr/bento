@@ -16,7 +16,7 @@ OUT="$H/out"
 BIN="$ROOT/.build/debug/Bento"
 CTL=/tmp/shot-ctl
 BCTL=/tmp/bentoctl
-DOCNAME=shot-qa
+DOCNAME=shot-qa   # per phase: shot-qa-<phase> (set in setup)
 DOC="/tmp/$DOCNAME.rtf"
 FINDER_DIR="$H/shot-finder"
 SESSION="$ROOT/scripts/e2e/session"
@@ -84,14 +84,34 @@ write_doc() {
   } > "$DOC"
 }
 
+# Closes our TextEdit documents. If TextEdit doesn't answer (stuck in a mouse
+# tracking loop on our document after a lost mouse-up), release the button
+# over our document and try again.
+close_docs() {
+  local script=(-e 'with timeout of 8 seconds' -e 'tell application "TextEdit" to close (every document whose name starts with "shot-qa") saving no' -e 'end timeout')
+  osascript "${script[@]}" >/dev/null 2>&1 && return 0
+  local at; at=$("$BCTL" windows TextEdit 2>/dev/null | awk '/shot-qa/ {print $3 + 60, $4 + 120; exit}')
+  [ -n "$at" ] && { echo "  info  TextEdit not answering; releasing the mouse over our document"; "$BCTL" up $at; sleep 0.5; }
+  osascript "${script[@]}" >/dev/null 2>&1
+}
+# TextEdit must answer Apple events (it doesn't while stuck tracking a mouse drag).
+textedit_ok() { osascript -e 'with timeout of 4 seconds' -e 'tell application "TextEdit" to get name of front document' -e 'end timeout' >/dev/null 2>&1; }
+snap_doc() {
+  local w; w=$("$BCTL" windows TextEdit 2>/dev/null | awk -v n="$DOCNAME" 'index($0, n) {print $1; exit}')
+  [ -n "$w" ] && screencapture -x -o -l "$w" "$H/doc-$1.png"
+}
+
 setup() {
   local phase="$1" lines="${2:-160}"
+  DOCNAME="shot-qa-$phase"; DOC="/tmp/$DOCNAME.rtf"
   "$SESSION" start shot || exit 75
   START=$(date +%s)
+  close_docs
   "$CTL" clip-save "$H/clip.plist" 2>/dev/null
   write_config
   rm -rf "$OUT"; mkdir -p "$OUT"
-  BENTO_HOME="$H" BENTO_DEV=1 "$BIN" > "$H/bento-$phase.log" 2>&1 &
+  rm -rf "$H/frames"
+  BENTO_HOME="$H" BENTO_DEV=1 BENTO_SHOT_FRAMES="$H/frames" "$BIN" > "$H/bento-$phase.log" 2>&1 &
   PID=$!; disown "$PID"
   log stream --level debug --style compact --predicate "subsystem == \"com.charles.bento\" AND processID == $PID" > "$H/log-$phase.txt" 2>/dev/null &
   LOGPID=$!; disown "$LOGPID"
@@ -101,18 +121,18 @@ setup() {
   front_doc
   "$BCTL" setframe com.apple.TextEdit "$DOCNAME" 120 80 760 640 >/dev/null 2>&1
   sleep 1.2
-  # Our document as laid out (for debugging coordinates).
-  local docwin; docwin=$("$BCTL" windows TextEdit 2>/dev/null | awk -v n="$DOCNAME" 'index($0, n) {print $1; exit}')
-  [ -n "$docwin" ] && screencapture -x -o -l "$docwin" "$H/doc-$phase.png"
+  snap_doc "$phase-start" # as laid out (for debugging coordinates)
   alive || { bad "Bento started"; exit 1; }
   echo "phase $phase (pid $PID)"
 }
 
 cleanup() {
+  snap_doc "${DOCNAME#shot-qa-}-end"
+  textedit_ok || bad "TextEdit answers at the end of the phase (a mouse-up went missing)"
   [ -n "${PID:-}" ] && alive && kill "$PID" 2>/dev/null
   sleep 0.5
   [ -n "${LOGPID:-}" ] && kill "$LOGPID" 2>/dev/null
-  osascript -e "tell application \"TextEdit\" to close (every document whose name starts with \"$DOCNAME\") saving no" >/dev/null 2>&1
+  close_docs
   [ -n "${FINDER_OPEN:-}" ] && "$CTL" axclose com.apple.finder shot-finder
   [ -f "$H/clip.plist" ] && "$CTL" clip-restore "$H/clip.plist"
   if ls -t "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -20 | grep -q '^Bento'; then
@@ -360,38 +380,38 @@ phase_scroll() {
   local sampler=$!
   marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
   scroll_done 60
-  c=$(clip_wait 20); "$CTL" clip-png "$H/scroll-down.png"
+  c=$(clip_wait 80); "$CTL" clip-png "$H/scroll-down.png"; snap_doc scroll-1
   check "scrolling capture down ($c)" [ "${c%% *}" = image ]
   local text; text=$("$CTL" ocr "$H/scroll-down.png" | tr '\n' ' ')
   checkc "stitched image has the first and last lines" '[[ "$text" == *"Line 00"* && "$text" == *"Line 300"* ]]' 
 
   marker; key ctrl+opt+cmd+f18; overlay_up; ctl drag 125 190 860 712
   scroll_done 60
-  c=$(clip_wait 20); "$CTL" clip-png "$H/scroll-up.png"
+  c=$(clip_wait 80); "$CTL" clip-png "$H/scroll-up.png"; snap_doc scroll-2
   text=$("$CTL" ocr "$H/scroll-up.png" | tr '\n' ' ')
   checkc "scrolling capture up ($c)" '[ "${c%% *}" = image ] && [[ "$text" == *"Line 001"* && "$text" == *"Line 300"* ]]' 
 
   setting .shot.scrollMaxHeight 1000
   marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
   scroll_done 30
-  c=$(clip_wait 20)
+  c=$(clip_wait 80)
   check "max height stops at 1000 px ($c)" [ "$c" = "image 1470x1000" ]
   setting .shot.scrollMaxHeight 20000
 
   # Nothing to scroll: the document's title bar.
   marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 300 84 700 108
   scroll_done 20
-  c=$(clip_wait 20)
+  c=$(clip_wait 80)
   check "content that doesn't scroll gives the visible area ($c)" [ "$c" = "image 800x48" ]
 
   # Manual: we scroll, Return finishes.
   setting .shot.scrollMode '"manual"'
   marker; key ctrl+opt+cmd+f17; overlay_up; ctl drag 125 190 860 712
   "$CTL" wait "$PID" 25 3 360 64
-  for _ in 1 2 3 4 5 6; do "$CTL" scroll 500 400 -150 --doc "$DOCNAME" || abort; sleep 0.35; done
+  for _ in 1 2 3 4 5 6; do "$CTL" scroll 500 400 -150 --doc "$DOCNAME" --pid "$PID"; [ $? = 75 ] && abort; sleep 0.35; done
   key return
   "$CTL" gone "$PID" 25 10 360 64
-  c=$(clip_wait 20)
+  c=$(clip_wait 80)
   checkc "manual scrolling capture ($c)" '[ "${c%% *}" = image ] && [ "${c##*x}" -gt 1100 ]' 
   kill $sampler 2>/dev/null
   peak=$(sort -n "$H/rss.txt" | tail -1)

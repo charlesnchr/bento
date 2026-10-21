@@ -79,9 +79,12 @@ func onScreenWindows() -> [Win] {
     }
 }
 
+/// Click-through system overlays (Dock's and Notification Center's full-screen windows).
+let systemOverlays: Set<String> = ["Window Server", "Dock", "Notification Center", "Notification Centre"]
+
 /// The topmost window containing a point, ignoring the menu bar / Dock / cursor layers.
 func top(at p: CGPoint) -> Win? {
-    onScreenWindows().first { $0.frame.contains(p) && $0.layer < 2000 && !["Window Server", "Dock"].contains($0.owner) }
+    onScreenWindows().first { $0.frame.contains(p) && $0.layer < 2000 && !systemOverlays.contains($0.owner) }
 }
 
 func requirePid() -> pid_t { guard let p = pidOpt else { fail("--pid required") }; return p }
@@ -208,7 +211,9 @@ case "key":
 case "scroll":
     let p = point(1)
     guard argv.count > 3, let dy = Int32(argv[3]), let doc = docOpt else { fail("scroll x y dy --doc NAME") }
-    guard let w = top(at: p), w.owner == "TextEdit", w.title.contains(doc) else { fail("point \(p) is not on our TextEdit document; not scrolling") }
+    // Bento's click-through region frame (layer 25) may lie on top; the scroll goes to what's below.
+    let target = onScreenWindows().first { $0.frame.contains(p) && $0.layer < 2000 && !systemOverlays.contains($0.owner) && $0.pid != (pidOpt ?? -1) }
+    guard let w = target, w.owner == "TextEdit", w.title.contains(doc) else { fail("point \(p) is not on our TextEdit document; not scrolling") }
     mouse(.mouseMoved, p, []); usleep(40000)
     var left = abs(dy)
     while left > 0 {
