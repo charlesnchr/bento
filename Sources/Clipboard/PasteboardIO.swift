@@ -216,12 +216,12 @@ enum PasteboardWriter {
                 item.setString(urls.map(\.path).joined(separator: "\n"), forType: .string)
                 items = [item]
             } else {
-                items = urls.map { url in
-                    let item = NSPasteboardItem()
-                    item.setString(url.absoluteString, forType: .fileURL)
-                    item.setString(url.lastPathComponent, forType: .string)
-                    return item
-                }
+                // Write NSURLs like Finder: raw `public.file-url` strings on the
+                // general pasteboard are dropped for every item but the first.
+                // No marker here (it would need an extra item); the monitor's
+                // change-count skip already ignores this write.
+                pb.clearContents()
+                return pb.writeObjects(urls.map { $0 as NSURL })
             }
         }
         for item in items { item.setData(Data(), forType: PasteboardTypes.own) }
@@ -294,6 +294,11 @@ final class PasteboardMonitor {
         let c = pb.changeCount
         guard c != lastChange else { return }
         lastChange = c
-        onChange?(pb)
+        // Writers often clear and then add representations in several steps;
+        // read a moment later so we see the finished contents.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.timer != nil, self.pb.changeCount == c, self.lastChange == c else { return }
+            self.onChange?(self.pb)
+        }
     }
 }

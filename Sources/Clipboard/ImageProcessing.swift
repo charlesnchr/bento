@@ -95,8 +95,16 @@ enum ImageProcessor {
 
 /// On-device text recognition (Vision), used to make images searchable.
 enum TextRecognition {
+    /// Keeps memory bounded while leaving tall scrolling captures readable.
+    static let pixelBudget = 24_000_000.0
+
     static func recognize(url: URL) -> String? {
-        guard let cg = ImageProcessor.downsampled(url, maxPixels: 4096) else { return nil }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let (w, h) = ImageProcessor.pixelSize(src, 0)
+        guard w > 0, h > 0 else { return nil }
+        let scale = min(1, (pixelBudget / Double(w * h)).squareRoot())
+        let maxSide = Int((Double(max(w, h)) * scale).rounded(.down))
+        guard let cg = ImageProcessor.downsampled(url, maxPixels: maxSide) else { return nil }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true

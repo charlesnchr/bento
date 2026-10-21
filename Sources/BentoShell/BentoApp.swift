@@ -14,12 +14,13 @@ public struct GeneralSettings: Codable, Equatable {
 public enum BentoApp {
     /// Dev harness entry: isolates config/data under /tmp/bento-dev/<name>
     /// (override with BENTO_HOME) and accepts `scripts/perform <action-id>`.
-    public static func runDev(_ name: String, modules: [BentoModule]) -> Never {
+    /// `modules` is an autoclosure so the environment is set before any module's init runs.
+    public static func runDev(_ name: String, modules: @autoclosure () -> [BentoModule]) -> Never {
         if ProcessInfo.processInfo.environment["BENTO_HOME"] == nil {
             setenv("BENTO_HOME", "/tmp/bento-dev/\(name)", 1)
         }
         setenv("BENTO_DEV", "1", 1)
-        run(modules: modules)
+        run(modules: modules())
     }
 
     public static func run(modules: [BentoModule]) -> Never {
