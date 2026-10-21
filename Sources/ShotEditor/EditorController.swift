@@ -4,6 +4,7 @@ import BentoCore
 
 /// One editor window: a capture, its annotations, tools, undo, export.
 final class EditorController: NSObject, NSWindowDelegate {
+    private var dockRetained = false
     struct EditState: Equatable {
         var annotations: [Annotation]
         var crop: CGRect?
@@ -163,6 +164,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         scrollView.magnification = zoom
         centerCanvas()
+        if !dockRetained { DockPresence.retain(); dockRetained = true }
         AppActivation.activateSelf()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
@@ -204,6 +206,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         window.toolbar = nil
         onClose?(self)
         restoreFocusIfNeeded()
+        if dockRetained { DockPresence.release(); dockRetained = false }
     }
 
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { undo }

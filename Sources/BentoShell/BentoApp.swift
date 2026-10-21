@@ -246,6 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.setFrameAutosaveName("BentoSettings")
             w.delegate = self
             settingsWindow = w
+            DockPresence.retain()
         }
         AppActivation.activateSelf()
         settingsWindow?.makeKeyAndOrderFront(nil)
@@ -260,6 +261,7 @@ extension AppDelegate {
         DispatchQueue.main.async { [weak self] in
             w.contentViewController = nil
             self?.settingsWindow = nil
+            DockPresence.release()
         }
     }
 }

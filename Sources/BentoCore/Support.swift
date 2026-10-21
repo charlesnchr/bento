@@ -120,6 +120,30 @@ public enum AppActivation {
     public static var previousApp: NSRunningApplication?
 }
 
+// MARK: - Dock presence
+
+/// Bento is a menu-bar (accessory) app. Document-like windows (screenshot
+/// editor, settings) retain Dock presence so they show up in ⌘-Tab and the
+/// Dock while open; the icon disappears again when the last one closes.
+public enum DockPresence {
+    private static var count = 0
+
+    public static func retain() {
+        count += 1
+        if count == 1 { NSApp.setActivationPolicy(.regular) }
+    }
+
+    public static func release() {
+        guard count > 0 else { return }
+        count -= 1
+        guard count == 0 else { return }
+        // Defer so a window closing and another opening doesn't flicker the icon.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if count == 0 { NSApp.setActivationPolicy(.accessory) }
+        }
+    }
+}
+
 // MARK: - Misc
 
 public extension NSImage {
