@@ -514,9 +514,9 @@ scale() {
 }
 
 case "$MODE" in
-  stress) stress ;;
-  gui) gui ;;
-  scale) scale ;;
+  stress) stress; rm -f "$HOMEDIR/big.txt" ;;
+  gui) gui; rm -f "$HOMEDIR/big.txt" "$DOC" ;;
+  scale) scale; rm -f "$DOC"; rm -rf "$IMG" "$HOMEDIR/support/Clipboard/thumbs" ;;
   _doc_has) doc_text | grep -q "$2"; exit $? ;;
   *) say "usage: $0 stress|gui|scale"; exit 2 ;;
 esac
