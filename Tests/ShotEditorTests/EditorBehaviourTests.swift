@@ -187,6 +187,20 @@ struct EditorBehaviourTests {
         ed.close()
     }
 
+    @Test func resizingToNothingKeepsTheOriginal() {
+        let ed = makeEditor()
+        tool(ed, "r")
+        drag(ed, from: CGPoint(x: 50, y: 50), to: CGPoint(x: 150, y: 120))
+        drag(ed, from: CGPoint(x: 150, y: 120), to: CGPoint(x: 50.5, y: 50.5)) // bottom-right onto top-left
+        #expect(ed.doc.annotations[0].rect == CGRect(x: 50, y: 50, width: 100, height: 70))
+        #expect(ed.undo.undoActionName != "Resize")
+        tool(ed, "l")
+        drag(ed, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 300, y: 200))
+        drag(ed, from: CGPoint(x: 300, y: 200), to: CGPoint(x: 200.5, y: 200))
+        #expect(ed.doc.annotations[1].p2 == CGPoint(x: 300, y: 200))
+        ed.close()
+    }
+
     // MARK: Undo / redo
 
     @Test func longUndoRedoSequenceWithCrop() {

@@ -136,8 +136,12 @@ final class AnnotationView: NSView {
         cg.translateBy(x: -canvasOrigin.x, y: -canvasOrigin.y)
         var anns = doc.annotations
         if let d = editor.draft { anns.append(d) }
+        // Shadow blur is in device pixels and its cost grows with the radius:
+        // scaled with the zoom, one shape at 3200% took seconds per redraw
+        // (Gaussian blur over the whole view) and froze the editor. Above 4x the
+        // shadow stops growing; nobody inspects shadows at pixel zoom.
         let rc = RenderContext(image: editor.image, scale: doc.scale, canvas: doc.canvasRect, effects: editor.effects,
-                               shadowScale: mag * (window?.backingScaleFactor ?? 2) / 2, editingTextID: editor.editingTextID)
+                               shadowScale: min(mag, 4) * (window?.backingScaleFactor ?? 2) / 2, editingTextID: editor.editingTextID)
         Renderer.drawAll(anns, rc: rc, cg: cg)
 
         let accent = NSColor.controlAccentColor
@@ -521,8 +525,16 @@ final class AnnotationView: NSView {
             }
         case .moving(_, _, _, let duplicated):
             editor.commit(duplicated ? "Duplicate" : "Move", from: before)
-        case .handle:
-            editor.commit("Resize", from: before)
+        case let .handle(id, _, original):
+            // Dragging a handle onto the opposite one would leave an invisible,
+            // unselectable annotation: keep the original size instead.
+            let tiny = 3 / mag
+            if let a = editor.doc.annotations.first(where: { $0.id == id }),
+               (a.isBoxKind && (a.rect.width < tiny || a.rect.height < tiny)) || (a.isTwoPointKind && a.p1.distance(to: a.p2) < tiny * 2) {
+                editor.updateAnnotation(id) { $0 = original }
+            } else {
+                editor.commit("Resize", from: before)
+            }
         case .region:
             if let r = editor.region, r.width < 2 || r.height < 2 { editor.region = nil }
         case .regionMove, .regionHandle, .pan:
