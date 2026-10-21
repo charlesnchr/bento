@@ -428,6 +428,7 @@ phase_scroll() {
   scroll_done 30
   c=$(clip_wait 100)
   check "max height stops at 3000 px ($c)" [ "$c" = "image 1470x3000" ]
+  check "the limit is reported (progress panel and HUD)" grep -q "message=Reached the maximum height (3,000 px)" "$H/log-scroll.txt"
   setting .shot.scrollMaxHeight 20000
 
   # Nothing to scroll: the document's title bar.
