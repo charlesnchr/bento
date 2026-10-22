@@ -78,7 +78,7 @@ until then they show “server needs an update” and keep tasks local.
 ```sh
 scripts/deploy-server.sh                 # cargo test, cross-build, upload, install, verify
 scripts/deploy-server.sh --skip-tests
-scripts/deploy-server.sh --only-token --token-to local --token-to gskm4   # copy token to clients
+scripts/deploy-server.sh --only-token --token-to local --token-to macbook   # copy token to clients
 ```
 
 It builds with cargo-zigbuild (falls back to Docker `rust:alpine` if zigbuild is
@@ -117,7 +117,7 @@ WebSocket connect/hello/disconnect), `curl https://bento.radian.dk/v1/health`.
 
 ```sh
 ssh hetzner '(umask 077; openssl rand -hex 32 > /etc/bento-sync/token) && systemctl restart bento-sync'
-scripts/deploy-server.sh --only-token --token-to local --token-to gskm4
+scripts/deploy-server.sh --only-token --token-to local --token-to macbook
 ```
 
 Clients with the old token get 401 until their token file is updated (the app

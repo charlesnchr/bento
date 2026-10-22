@@ -4,7 +4,7 @@
 #
 #   scripts/deploy-server.sh                      # test, build, deploy
 #   scripts/deploy-server.sh --skip-tests         # build + deploy
-#   scripts/deploy-server.sh --token-to local --token-to gskm4
+#   scripts/deploy-server.sh --token-to local --token-to macbook
 #                                                 # also copy the token to clients
 #   scripts/deploy-server.sh --only-token --token-to local
 #

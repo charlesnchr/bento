@@ -24,17 +24,22 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 ## Build and install
 
 ```sh
-scripts/build.sh                 # release build -> dist/Bento.app (signed)
-scripts/build.sh --install       # + install to /Applications and relaunch
-scripts/build.sh --install-gskm4 # + install on gskm4 (/opt/homebrew/opt/Bento.app, ~/Applications link)
+scripts/build.sh            # release build -> dist/Bento.app (signed)
+scripts/build.sh --install  # + install to /Applications (or $BENTO_INSTALL_DIR) and relaunch
 ```
 
-Builds are signed with the same persistent self-signed identity as Jot
-(**Jot Local Development**). The private key only exists in gskm4's login
-keychain, so the script signs over SSH on gskm4 when the identity isn't in a
-local keychain. The designated requirement pins `com.charles.bento` plus the
-certificate's leaf hash, so Accessibility and Screen Recording grants survive
-rebuilds. `--adhoc` signs ad hoc instead (grants then reset on every build).
+`--install` removes the `dist` copy afterwards so Spotlight only finds the
+installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
+`/Applications`, it links `~/Applications/Bento.app` to the install and warns
+until `/Applications/Bento.app` is linked too (one `sudo ln`).
+
+To keep Accessibility and Screen Recording grants across rebuilds, sign with a
+persistent code-signing identity: set `BENTO_SIGN_IDENTITY` to its SHA-1, either
+in the environment or in an untracked `scripts/config.local.sh` (see
+`scripts/config.sh`). The designated requirement then pins `com.charles.bento`
+plus the certificate's leaf hash. Grants are per Mac, so each machine can use
+its own identity. Without an identity, or with `--adhoc`, builds are signed
+ad hoc and grants reset on every build.
 
 On first launch, grant **Accessibility** (window management, modifier-drag,
 pasting) and **Screen Recording** (screenshots) from Settings → General.

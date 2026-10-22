@@ -620,7 +620,7 @@ private func importPlan(_ prefs: [String: Any], pro: Bool = true, settings: Wind
     #expect(p.settings.snapping && p.settings.windowGap == 0 && p.settings.cycleOnRepeat)
 }
 
-@Test func importGskm4StyleRectanglePro() {
+@Test func importRealWorldRectanglePro() {
     var prefs: [String: Any] = [
         "nextDisplayRatio": mas(30, ctrlOpt), "prevDisplayRatio": mas(33, ctrlOpt),
         "gestures": "[32,{\"flags\":1572864,\"trail\":0}]",

@@ -8,6 +8,9 @@
 # bentoctl refuses to post events while the user-active flag exists.
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$ROOT/scripts/config.sh"
+# Exact path match; $INSTALLED_APP is not a regex.
+installed_running() { ps -axo command | grep -qxF "$INSTALLED_APP/Contents/MacOS/Bento"; }
 FLAG=/tmp/bento-user-active
 idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
 build_tools() {
@@ -33,10 +36,10 @@ case "${1:-}" in
       [ -d /tmp/bento-gui.lock ] && [ "$(sed -n 1p /tmp/bento-gui.lock/owner 2>/dev/null)" = "$who" ] && rm -rf /tmp/bento-gui.lock
       sleep 5
     done
-    if pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null; then
+    if installed_running; then
       touch /tmp/bento-e2e-restore
       osascript -e 'tell application id "com.charles.bento" to quit' >/dev/null 2>&1
-      for _ in $(seq 1 20); do pgrep -f "^/Applications/Bento.app/Contents/MacOS/Bento$" >/dev/null || break; sleep 0.25; done
+      for _ in $(seq 1 20); do installed_running || break; sleep 0.25; done
     fi
     echo "session started for $who (user idle, guard running)" ;;
   check)
@@ -44,7 +47,7 @@ case "${1:-}" in
   end)
     who="${2:-unknown}"
     [ -f /tmp/bento-guard.pid ] && kill "$(cat /tmp/bento-guard.pid)" 2>/dev/null; rm -f /tmp/bento-guard.pid
-    if [ -f /tmp/bento-e2e-restore ]; then rm -f /tmp/bento-e2e-restore; open -g /Applications/Bento.app; fi
+    if [ -f /tmp/bento-e2e-restore ]; then rm -f /tmp/bento-e2e-restore; open -g "$INSTALLED_APP"; fi
     "$ROOT/scripts/gui-lock" release "$who" >/dev/null
     [ -f "$FLAG" ] && echo "session ended early: $(cat $FLAG)" || echo "session ended" ;;
   *) echo "usage: $0 start|check|end <who> [idle-seconds]" >&2; exit 2 ;;
