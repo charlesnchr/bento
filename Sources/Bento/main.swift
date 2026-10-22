@@ -5,6 +5,7 @@ import Tiling
 import Launcher
 import Clipboard
 import Notes
+import Todo
 
 BentoApp.run(modules: [
     ShotModule(),
@@ -13,4 +14,5 @@ BentoApp.run(modules: [
     LauncherModule(),
     ClipboardModule(),
     NotesModule(),
+    TodoModule(),
 ])
