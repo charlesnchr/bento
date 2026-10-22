@@ -126,7 +126,7 @@ Server sends a WebSocket ping frame every 30 s; clients may also send `{"type":"
 receives: the snapshot and `note` broadcasts only contain documents of those
 collections. A put's collection is `note.collection`, defaulting to the connection's
 first collection. Puts to a collection the connection didn't subscribe to are acked but
-never echoed back to it.
+never echoed back to it (not even the stored winner of a rejected put).
 
 ## Conflict rule (last writer wins)
 

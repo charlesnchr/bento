@@ -9,8 +9,13 @@
 //! * Before acking a put with seq N, queued broadcasts with seq < N are
 //!   forwarded first, so a client that tracks `last_seq` never skips a change
 //!   and every connection sees seqs (notes and acks) in increasing order.
+//!
+//! Collections: `hello.collections` (default `["notes"]`) filters the snapshot
+//! and the forwarded broadcasts. The filter is applied when an event is
+//! forwarded, after the seq checks above, so events of other collections are
+//! simply dropped and don't affect ordering (seqs of one collection have gaps).
 
-use crate::store::{NoteIn, PutOutcome};
+use crate::store::{valid_collection, NoteIn, PutOutcome, DEFAULT_COLLECTION, INVALID_COLLECTION};
 use crate::{log, AppState, Event, MAX_REQUEST_BYTES};
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -27,6 +32,7 @@ use tokio::time::{interval_at, Instant};
 const PING_EVERY: Duration = Duration::from_secs(30);
 /// Close the connection if nothing (not even a pong) arrived for this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(95);
+const MAX_COLLECTIONS: usize = 8;
 
 pub async fn handler(State(st): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.max_message_size(MAX_REQUEST_BYTES)
@@ -42,6 +48,8 @@ enum ClientMsg {
         since: Option<i64>,
         #[serde(default)]
         device: Option<String>,
+        #[serde(default)]
+        collections: Option<Vec<String>>,
     },
     Put {
         note: NoteIn,
@@ -58,6 +66,9 @@ struct Conn {
     /// `seq <= floor` are skipped because the snapshot already contained them.
     floor: Option<i64>,
     device: String,
+    /// What the connection receives (snapshot + broadcasts); the first one is
+    /// the default for puts without `note.collection`. `["notes"]` until hello.
+    collections: Vec<String>,
 }
 
 /// Why the loop ended.
@@ -72,7 +83,15 @@ async fn connection(st: AppState, socket: WebSocket) {
     inner.active_conns.fetch_add(1, Ordering::Relaxed);
     let id = inner.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut shutdown = inner.shutdown.clone();
-    let mut c = Conn { id, rx: inner.events.subscribe(), st, socket, floor: None, device: String::new() };
+    let mut c = Conn {
+        id,
+        rx: inner.events.subscribe(),
+        st,
+        socket,
+        floor: None,
+        device: String::new(),
+        collections: vec![DEFAULT_COLLECTION.to_string()],
+    };
     log(&format!("ws#{id}: connected"));
     let mut ping = interval_at(Instant::now() + PING_EVERY, PING_EVERY);
     let mut last_seen = Instant::now();
@@ -164,10 +183,14 @@ impl Conn {
     async fn forward(&mut self, ev: &Event) -> Result<(), End> {
         // Before hello nothing is forwarded (the snapshot will contain it).
         let Some(floor) = self.floor else { return Ok(()) };
-        if ev.origin != self.id && ev.seq > floor {
+        if ev.origin != self.id && ev.seq > floor && self.subscribed(&ev.collection) {
             self.send_text(ev.msg.clone()).await?;
         }
         Ok(())
+    }
+
+    fn subscribed(&self, collection: &str) -> bool {
+        self.collections.iter().any(|c| c == collection)
     }
 
     /// Forward queued broadcasts with `seq < before`. Returns the first queued
@@ -191,17 +214,33 @@ impl Conn {
         };
         match msg {
             ClientMsg::Ping => self.send_json(json!({"type": "pong"})).await,
-            ClientMsg::Hello { since, device } => {
+            ClientMsg::Hello { since, device, collections } => {
+                if let Some(cs) = collections {
+                    if cs.is_empty() || cs.len() > MAX_COLLECTIONS {
+                        let msg = format!("hello.collections needs 1-{MAX_COLLECTIONS} names");
+                        return self.send_error(&msg, None).await;
+                    }
+                    if !cs.iter().all(|c| valid_collection(c)) {
+                        return self.send_error(INVALID_COLLECTION, None).await;
+                    }
+                    self.collections.clear();
+                    for c in cs {
+                        if !self.subscribed(&c) {
+                            self.collections.push(c);
+                        }
+                    }
+                }
                 if let Some(d) = device {
                     self.device = d.chars().take(64).collect();
                 }
                 let since = since.unwrap_or(0);
-                match self.st.changes_since(since).await {
+                match self.st.changes_since(since, self.collections.clone()).await {
                     Ok((notes, seq)) => {
                         log(&format!(
-                            "ws#{}: hello device={:?} since={since} -> {} notes, seq {seq}",
+                            "ws#{}: hello device={:?} collections={:?} since={since} -> {} notes, seq {seq}",
                             self.id,
                             self.device,
+                            self.collections,
                             notes.len()
                         ));
                         // Everything up to `seq` is in the snapshot; skip those events.
@@ -211,10 +250,13 @@ impl Conn {
                     Err(e) => self.send_error(&e.to_string(), None).await,
                 }
             }
-            ClientMsg::Put { note } => {
+            ClientMsg::Put { mut note } => {
                 let id_hint = note.id.clone();
+                if note.collection.is_none() {
+                    note.collection = Some(self.collections[0].clone());
+                }
                 let fallback = if self.device.is_empty() { "unknown" } else { &self.device };
-                let change = match note.into_change(None, fallback) {
+                let change = match note.into_change(None, None, fallback) {
                     Ok(c) => c,
                     Err(e) => return self.send_error(&e.to_string(), id_hint.as_deref()).await,
                 };
@@ -232,7 +274,9 @@ impl Conn {
                     "accepted": out.accepted,
                 }))
                 .await?;
-                if !out.accepted {
+                // Documents of collections this connection didn't subscribe to are
+                // never sent to it, not even the stored winner of a rejected put.
+                if !out.accepted && self.subscribed(&out.note.collection) {
                     self.send_json(json!({"type": "note", "note": out.note})).await?;
                 }
                 if let Some(ev) = later {
