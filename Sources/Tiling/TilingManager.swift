@@ -885,6 +885,7 @@ final class TilingManager {
     /// being tiled and keeps the frame they chose (posted before the AX move
     /// notifications arrive, so it is never snapped back).
     private func floatPlaced(_ w: AXWindow) {
+        guard w.pid != getpid() else { return } // Bento's own windows are never tiled
         guard let wid = idByElement[w] ?? w.windowID else { return }
         guard var t = windows[wid] else {
             // Placed before we saw it (a Windows launch rule on a new window): it starts floating.

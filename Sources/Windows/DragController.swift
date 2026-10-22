@@ -109,6 +109,10 @@ final class DragController: NSObject {
     /// flags), so holding the modifiers over the desktop doesn't hit-test on
     /// every pointer move.
     private var hoverMiss: (CGWindowID, UInt64)?
+    /// Bento's own windows a gesture may take (lock): kept by the main thread,
+    /// since the tap thread can't ask AppKit or AX about them.
+    private var ownDraggable: Set<CGWindowID> = []
+    private var windowObservers: [NSObjectProtocol] = []
 
     init(engine: WindowEngine, snapper: SnapController) {
         self.engine = engine
@@ -131,6 +135,7 @@ final class DragController: NSObject {
         guard !running else { return }
         running = true
         locked { stopRequested = false }
+        observeOwnWindows()
         let thread = Thread { [self] in runTap() }
         thread.name = "Bento window drag tap"
         thread.qualityOfService = .userInteractive
@@ -140,6 +145,8 @@ final class DragController: NSObject {
     func stop() {
         guard running else { return }
         running = false
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        windowObservers = []
         let (rl, s): (CFRunLoop?, Session?) = locked {
             stopRequested = true
             // Disabled under the lock: the tap thread enables it under the
@@ -157,6 +164,30 @@ final class DragController: NSObject {
             CFRunLoopWakeUp(rl)
         }
         if let s { finish(s) }
+    }
+
+    /// Keeps `ownDraggable` current: windows ordering in or out, entering or
+    /// leaving full screen, closing.
+    private func observeOwnWindows() {
+        let names: [Notification.Name] = [NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification,
+                                          NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
+                                          NSWindow.willCloseNotification]
+        windowObservers = names.map {
+            NotificationCenter.default.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in
+                DispatchQueue.main.async { self?.refreshOwnWindows() } // after a close has taken effect
+            }
+        }
+        refreshOwnWindows()
+    }
+
+    /// Regular Bento windows (Notes, Settings, the editor…): titled, activating,
+    /// movable and not full screen. Not popups, HUDs, pins or the clipboard panel.
+    private func refreshOwnWindows() {
+        let ids = NSApp.windows.filter {
+            $0.isVisible && $0.isMovable && !$0.ignoresMouseEvents && $0.styleMask.contains(.titled)
+                && !$0.styleMask.contains(.nonactivatingPanel) && !$0.styleMask.contains(.fullScreen)
+        }.map { CGWindowID($0.windowNumber) }
+        locked { ownDraggable = Set(ids) }
     }
 
     private func runTap() {
@@ -221,10 +252,11 @@ final class DragController: NSObject {
             let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
             let s: Session
             let t0 = CFAbsoluteTimeGetCurrent()
-            if let own = DragController.ownWindow(cgID) {
+            let info = WindowList.info(cgID)
+            if let own = ownWindow(info) {
                 s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: event.copy(), hover: false)
             } else {
-                guard DragController.isDraggableLayer(windowID: cgID) else { DragController.trace("pass: layer of \(cgID)"); return pass }
+                guard DragController.isDraggableLayer(cgID, info) else { DragController.trace("pass: layer of \(cgID)"); return pass }
                 guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
                 guard let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else { DragController.trace("pass: no frame / full screen"); return pass }
                 s = Session(window: w, frame: f, mode: mode, mouse: p, press: event.copy(), hover: false)
@@ -325,10 +357,11 @@ final class DragController: NSObject {
         let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
         if let miss = hoverMiss, miss.0 == cgID, miss.1 == event.flags.rawValue { return }
         let s: Session
-        if let own = DragController.ownWindow(cgID) {
+        let info = WindowList.info(cgID)
+        if let own = ownWindow(info) {
             s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: nil, hover: true)
         } else {
-            guard DragController.isDraggableLayer(windowID: cgID), let w = DragController.window(at: p),
+            guard DragController.isDraggableLayer(cgID, info), let w = DragController.window(at: p),
                   let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else {
                 hoverMiss = (cgID, event.flags.rawValue)
                 return
@@ -353,18 +386,17 @@ final class DragController: NSObject {
 
     /// Normal app windows and panels only: not the desktop, Dock, menu bar,
     /// notifications or overlays (CG layers below 0 or from the Dock's up).
-    static func isDraggableLayer(windowID: CGWindowID) -> Bool {
-        guard windowID != 0 else { return true } // unknown: decide by AX
-        guard let info = WindowList.info(windowID) else { return true }
+    /// `info`: the window's list entry, nil if unknown.
+    static func isDraggableLayer(_ windowID: CGWindowID, _ info: WindowList.Info?) -> Bool {
+        guard windowID != 0, let info else { return true } // unknown: decide by AX
         return info.layer >= 0 && info.layer < Int(CGWindowLevelForKey(.dockWindow)) && info.pid != getpid()
     }
 
-    /// One of Bento's own normal windows (not an overlay, menu or the like),
-    /// from the window list alone: no AX to ourselves on the tap thread.
-    static func ownWindow(_ windowID: CGWindowID) -> WindowList.Info? {
-        guard let info = WindowList.info(windowID), info.pid == getpid(),
-              info.layer >= 0, info.layer < Int(CGWindowLevelForKey(.dockWindow)),
-              info.frame.width > 0, info.frame.height > 0 else { return nil }
+    /// One of Bento's regular windows (see `refreshOwnWindows`), from the
+    /// window list alone: no AX to ourselves on the tap thread.
+    private func ownWindow(_ info: WindowList.Info?) -> WindowList.Info? {
+        guard let info, info.pid == getpid(), info.frame.width > 0, info.frame.height > 0,
+              locked({ ownDraggable.contains(info.id) }) else { return nil }
         return info
     }
 
@@ -416,10 +448,12 @@ final class DragController: NSObject {
         guard isCurrent(s) else { return }
         if s.window == nil {
             // One of our own windows: in-process AX, here on the main thread.
-            guard let own = NSApp.windows.first(where: { $0.windowNumber == Int(s.wid) }), own.isMovable,
-                  !own.styleMask.contains(.fullScreen),
+            guard let own = NSApp.windows.first(where: { $0.windowNumber == Int(s.wid) }),
                   let w = AXWindow.windows(of: getpid()).first(where: { $0.windowID == s.wid }) else {
-                DragController.trace("pass: own window \(s.wid) not movable")
+                // Gone or not in the AX tree: drop the gesture so later events pass.
+                DragController.trace("pass: no AX element for own window \(s.wid)")
+                locked { s.gesture.ended = true }
+                finish(s)
                 return
             }
             s.window = w

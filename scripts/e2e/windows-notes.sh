@@ -15,8 +15,9 @@ pass=0; fails=()
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { fails+=("$1"); echo "FAIL $1"; }
 
-# The notes panel's frame "x y w h" (CG window list: same coordinates as AX).
-frame() { $CTL windows Bento | awk '$2 == 0 && $5 > 200 && $6 > 100 { print $3, $4, $5, $6; exit }'; }
+# The notes panel's frame "x y w h" (CG window list: same coordinates as AX;
+# layer 3 = floating, the panel floats on top).
+frame() { $CTL windows Bento | awk '$2 == 3 && $5 > 200 && $6 > 100 { printf "%d %d %d %d\n", $3, $4, $5, $6; exit }'; }
 expect() {
   local got; got=$(frame)
   if python3 -c "import sys; g=list(map(int,'$got'.split())); w=list(map(int,'$2'.split())); sys.exit(0 if len(g)==4 and all(abs(a-b)<=2 for a,b in zip(g,w)) else 1)"; then
@@ -26,7 +27,7 @@ expect() {
   fi
 }
 
-swift build --product Bento 2>&1 | grep -E "error" && exit 1
+swift build --product Bento >/tmp/bento-e2e-windows-notes-build.log 2>&1 || { grep -E "error:" /tmp/bento-e2e-windows-notes-build.log; exit 1; }
 swiftc -O scripts/e2e/bentoctl.swift -o $CTL 2>/dev/null
 cat > /tmp/bento-e2e-perform.swift <<'SWIFT'
 import Foundation
