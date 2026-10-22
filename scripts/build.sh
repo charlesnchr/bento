@@ -107,6 +107,7 @@ if [ "$ADHOC" = 1 ] || [ -z "$BENTO_SIGN_IDENTITY" ]; then
   sign_local - ""
 else
   SIGN_HASHES=$(identity_hashes "$BENTO_SIGN_IDENTITY")
+  problem=
   case "$(printf '%s' "$SIGN_HASHES" | grep -c .)" in
     1) sign_local "$SIGN_HASHES" "designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$SIGN_HASHES\"" ;;
     0) problem="no usable code-signing identity matching" ;;
