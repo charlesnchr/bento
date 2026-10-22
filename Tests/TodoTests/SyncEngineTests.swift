@@ -207,6 +207,10 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         store.save([task("a"), task("b")])
         #expect(store.doc("a") != nil && store.doc("b") != nil)
         try other.exec("ROLLBACK")
+        // the next save writes them too, so they survive a restart
+        store.save([task("c")])
+        let reopened = TodoStore(url: url)
+        #expect(reopened.doc("a") != nil && reopened.doc("b") != nil && reopened.doc("c") != nil)
     }
 
     /// Two devices edit random fields of the same tasks while syncing through a fake

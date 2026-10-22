@@ -330,6 +330,58 @@ async fn broadcasts_before_ack_and_no_gap_after_hello() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A rejected put's ack and stored winner (seq S) come after every queued broadcast
+/// with seq < S, so a client keeping last_seq = max(seen) never skips a change.
+#[tokio::test]
+async fn rejected_put_winner_after_earlier_broadcasts() {
+    let srv = Server::start("reject-order").await;
+    let a = srv.addr;
+    let mut c1 = ws_connect(a, TOKEN).await.unwrap();
+    hello(&mut c1, 0).await;
+    http(a, "PUT", "/v1/notes/w", Some(TOKEN), Some(&note("w", "rest", 1000).to_string())).await;
+    // REST writers run while c1's stale puts are handled, so broadcasts are queued
+    // on c1's connection when the rejections are answered.
+    let rounds = 60;
+    let writers: Vec<_> = (0..rounds)
+        .map(|i| {
+            tokio::spawn(async move {
+                let x = format!("x{i}");
+                http(a, "PUT", &format!("/v1/notes/{x}"), Some(TOKEN), Some(&note(&x, "other", 1).to_string())).await;
+                http(a, "PUT", "/v1/notes/w", Some(TOKEN), Some(&note("w", "rest", 1001 + i).to_string())).await;
+            })
+        })
+        .collect();
+    for _ in 0..rounds {
+        send(&mut c1, json!({"type": "put", "note": note("w", "stale", 1)})).await;
+    }
+    for w in writers {
+        w.await.unwrap();
+    }
+    // Every seq below one a message carries must already have arrived as a note.
+    let mut seen = std::collections::HashSet::new();
+    let mut rejected = 0;
+    while rejected < rounds {
+        let m = recv(&mut c1).await;
+        let seq = match m["type"].as_str().unwrap() {
+            "ack" => {
+                assert_eq!(m["accepted"], false);
+                rejected += 1;
+                m["seq"].as_i64().unwrap()
+            }
+            "note" => m["note"]["seq"].as_i64().unwrap(),
+            t => panic!("unexpected {t}"),
+        };
+        if let Some(gap) = (1..seq).find(|k| !seen.contains(k)) {
+            panic!("seq {seq} arrived before {gap}");
+        }
+        if m["type"] == "note" {
+            seen.insert(seq);
+        }
+    }
+    let dir = srv.stop().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 async fn hello_in(ws: &mut Ws, since: i64, collections: &[&str]) -> Value {
     send(ws, json!({"type": "hello", "since": since, "device": "test", "collections": collections})).await;
     let snap = recv(ws).await;

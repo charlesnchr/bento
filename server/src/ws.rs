@@ -264,9 +264,10 @@ impl Conn {
                     Ok(o) => o,
                     Err(e) => return self.send_error(&e.to_string(), id_hint.as_deref()).await,
                 };
-                // Changes committed before this one go out before the ack, later
-                // ones after it, so each connection sees seqs in increasing order.
-                let later = if out.accepted { self.drain_before(out.note.seq).await? } else { None };
+                // Changes committed before this one (for a rejected put: before the
+                // stored winner) go out before the ack, later ones after it, so a client
+                // keeping last_seq = max(seen) never skips one.
+                let later = self.drain_before(out.note.seq).await?;
                 self.send_json(json!({
                     "type": "ack",
                     "id": out.note.id,

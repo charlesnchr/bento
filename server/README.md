@@ -156,7 +156,7 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
 
 * **Ordering.** Changes are broadcast while the DB lock is held, so each WebSocket
   sees notes and acks in strictly increasing `seq` order. Before acking a put with
-  seq N, queued broadcasts with seq < N are sent first. A client that keeps
+  seq N (a rejected put: the stored winner's seq), queued broadcasts with seq < N are sent first. A client that keeps
   `last_seq = max(seen seq)` therefore never skips a change.
 * **Collections.** `hello.collections` (default `["notes"]`, 1–8 valid names,
   duplicates ignored; otherwise an `error` and no snapshot) filters the snapshot

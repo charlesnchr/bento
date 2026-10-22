@@ -25,6 +25,8 @@ final class TodoStore: TodoRepository {
     private var pendingIDs: Set<String> = []
     private var pendingRemote = false
     private var postScheduled = false
+    /// Documents whose last write failed (database locked): written again with the next save.
+    private var unsaved: Set<String> = []
 
     static var defaultURL: URL? { AppPaths.support("Todo").appendingPathComponent("todo.sqlite") }
 
@@ -107,6 +109,7 @@ final class TodoStore: TodoRepository {
     func doc(_ id: String) -> TodoDoc? { cache[id] }
 
     func save(_ doc: TodoDoc, remote: Bool) {
+        retryUnsaved()
         if cache[doc.id] == doc { return }
         cache[doc.id] = doc
         write(doc)
@@ -115,15 +118,16 @@ final class TodoStore: TodoRepository {
 
     /// Saves several documents in one transaction (bulk edits, reordering).
     func save(_ docs: [TodoDoc]) {
+        retryUnsaved()
         let changed = docs.filter { cache[$0.id] != $0 }
         guard !changed.isEmpty else { return }
         for d in changed { cache[d.id] = d }
         do {
             try db?.transaction { for d in changed { write(d) } }
         } catch {
-            // The change stays in memory either way; write what can be written one by one.
+            // The change stays in memory and is written with the next save.
             log.error("Todo transaction failed: \(String(describing: error), privacy: .public)")
-            for d in changed { write(d) }
+            unsaved.formUnion(changed.map(\.id))
         }
         for d in changed { post(d.id, remote: false) }
     }
@@ -173,7 +177,22 @@ final class TodoStore: TodoRepository {
 
     // MARK: Private
 
-    private func write(_ d: TodoDoc) {
+    /// Writes what an earlier save couldn't; stops at the first failure (still locked).
+    private func retryUnsaved() {
+        guard !unsaved.isEmpty else { return }
+        let ids = Array(unsaved)
+        unsaved = []
+        for (i, id) in ids.enumerated() {
+            guard let d = cache[id] else { continue }
+            if !write(d) {
+                unsaved.formUnion(ids[i...])
+                return
+            }
+        }
+    }
+
+    @discardableResult
+    private func write(_ d: TodoDoc) -> Bool {
         var body = d.body
         // The SQLite layer passes text as C strings: a NUL would truncate the body on disk.
         if body.utf8.contains(0) { body = body.replacingOccurrences(of: "\u{0}", with: "") }
@@ -185,8 +204,11 @@ final class TodoStore: TodoRepository {
               updated_at = excluded.updated_at, deleted = excluded.deleted, seq = excluded.seq,
               device = excluded.device, meta = excluded.meta, dirty = excluded.dirty
             """, [d.id, body, d.type, d.createdAt, d.updatedAt, d.deleted, d.seq, d.device, TodoStore.encodeObject(d.meta), d.dirty])
+            return true
         } catch {
             log.error("Saving todo failed: \(String(describing: error), privacy: .public)")
+            unsaved.insert(d.id)
+            return false
         }
     }
 
