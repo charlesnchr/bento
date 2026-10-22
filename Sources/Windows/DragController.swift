@@ -22,6 +22,11 @@ import BentoCore
 /// double-clicks) keep working. Hover never swallows pointer moves. AX writes
 /// happen on the main thread, coalesced to the display refresh by a
 /// CADisplayLink that runs only during a gesture.
+///
+/// Bento's own windows (sticky notes, settings, …) work too: the tap thread
+/// can't use AX on its own process (that waits on the main thread), so they
+/// are recognised from the window list and their AX element is looked up on
+/// the main thread when the gesture begins (in-process AX is a direct call).
 final class DragController: NSObject {
     struct Config: Equatable {
         var move: CGEventFlags = []
@@ -46,9 +51,10 @@ final class DragController: NSObject {
     }
 
     private final class Session {
-        let window: AXWindow
+        /// Main thread once begun; nil until then for Bento's own windows.
+        var window: AXWindow?
         let hover: Bool
-        var wid: CGWindowID = 0 // main thread (an AX round trip: not in the tap)
+        var wid: CGWindowID // main thread (an AX round trip: not in the tap)
         // Tap thread only.
         let pressEvent: CGEvent?
         // Guarded by `lock`.
@@ -70,8 +76,9 @@ final class DragController: NSObject {
         var changed = false
         var finished = false
 
-        init(window: AXWindow, frame: CGRect, mode: Mode, mouse: CGPoint, press: CGEvent?, hover: Bool) {
+        init(window: AXWindow?, wid: CGWindowID = 0, frame: CGRect, mode: Mode, mouse: CGPoint, press: CGEvent?, hover: Bool) {
             self.window = window
+            self.wid = wid
             self.hover = hover
             self.mode = mode
             self.requested = mode
@@ -212,11 +219,17 @@ final class DragController: NSObject {
             let cfg = locked { tapConfig }
             guard let mode = DragController.mode(for: event.flags, cfg) else { return pass }
             let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
-            guard DragController.isDraggableLayer(windowID: cgID) else { DragController.trace("pass: layer of \(cgID)"); return pass }
+            let s: Session
             let t0 = CFAbsoluteTimeGetCurrent()
-            guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
-            guard let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else { DragController.trace("pass: no frame / full screen"); return pass }
-            let s = Session(window: w, frame: f, mode: mode, mouse: p, press: event.copy(), hover: false)
+            if let own = DragController.ownWindow(cgID) {
+                s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: event.copy(), hover: false)
+            } else {
+                guard DragController.isDraggableLayer(windowID: cgID) else { DragController.trace("pass: layer of \(cgID)"); return pass }
+                guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
+                guard let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else { DragController.trace("pass: no frame / full screen"); return pass }
+                s = Session(window: w, frame: f, mode: mode, mouse: p, press: event.copy(), hover: false)
+            }
+            let f = s.startFrame
             locked { session = s }
             DragController.trace("press \(mode == .resize ? "resize" : "move") at \(p) frame \(f) lookup \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)) ms")
             return nil
@@ -311,12 +324,18 @@ final class DragController: NSObject {
         // Start a hover gesture on the window under the pointer.
         let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
         if let miss = hoverMiss, miss.0 == cgID, miss.1 == event.flags.rawValue { return }
-        guard DragController.isDraggableLayer(windowID: cgID), let w = DragController.window(at: p),
-              let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else {
-            hoverMiss = (cgID, event.flags.rawValue)
-            return
+        let s: Session
+        if let own = DragController.ownWindow(cgID) {
+            s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: nil, hover: true)
+        } else {
+            guard DragController.isDraggableLayer(windowID: cgID), let w = DragController.window(at: p),
+                  let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else {
+                hoverMiss = (cgID, event.flags.rawValue)
+                return
+            }
+            s = Session(window: w, frame: f, mode: mode, mouse: p, press: nil, hover: true)
         }
-        let s = Session(window: w, frame: f, mode: mode, mouse: p, press: nil, hover: true)
+        let f = s.startFrame
         locked { session = s }
         DragController.trace("hover \(mode == .resize ? "resize" : "move") at \(p) frame \(f)")
     }
@@ -338,6 +357,15 @@ final class DragController: NSObject {
         guard windowID != 0 else { return true } // unknown: decide by AX
         guard let info = WindowList.info(windowID) else { return true }
         return info.layer >= 0 && info.layer < Int(CGWindowLevelForKey(.dockWindow)) && info.pid != getpid()
+    }
+
+    /// One of Bento's own normal windows (not an overlay, menu or the like),
+    /// from the window list alone: no AX to ourselves on the tap thread.
+    static func ownWindow(_ windowID: CGWindowID) -> WindowList.Info? {
+        guard let info = WindowList.info(windowID), info.pid == getpid(),
+              info.layer >= 0, info.layer < Int(CGWindowLevelForKey(.dockWindow)),
+              info.frame.width > 0, info.frame.height > 0 else { return nil }
+        return info
     }
 
     private static let systemWide: AXUIElement = {
@@ -386,20 +414,39 @@ final class DragController: NSObject {
         guard !s.begun, !s.finished else { return }
         s.begun = true
         guard isCurrent(s) else { return }
-        let appEl = AXWindow.appElement(s.window.pid)
-        s.window.raise()
-        if config.focus {
-            // AXFrontmost works for background callers where activate() may be refused.
-            AXUIElementSetAttributeValue(s.window.element, kAXMainAttribute as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(appEl, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        if s.window == nil {
+            // One of our own windows: in-process AX, here on the main thread.
+            guard let own = NSApp.windows.first(where: { $0.windowNumber == Int(s.wid) }), own.isMovable,
+                  !own.styleMask.contains(.fullScreen),
+                  let w = AXWindow.windows(of: getpid()).first(where: { $0.windowID == s.wid }) else {
+                DragController.trace("pass: own window \(s.wid) not movable")
+                return
+            }
+            s.window = w
+            if config.focus {
+                NSApp.activate(ignoringOtherApps: true)
+                own.makeKeyAndOrderFront(nil)
+            } else {
+                own.orderFront(nil)
+            }
+        }
+        guard let window = s.window else { return }
+        let appEl = AXWindow.appElement(window.pid)
+        if window.pid != getpid() {
+            window.raise()
+            if config.focus {
+                // AXFrontmost works for background callers where activate() may be refused.
+                AXUIElementSetAttributeValue(window.element, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementSetAttributeValue(appEl, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            }
         }
         if (appEl.ax("AXEnhancedUserInterface") as Bool?) == true {
             // Apps with this on animate every frame change; off for the drag.
             AXUIElementSetAttributeValue(appEl, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
             enhancedUIApp = appEl
         }
-        s.wid = s.window.windowID ?? 0
-        if s.hover, let f = s.window.frame {
+        if s.wid == 0 { s.wid = window.windowID ?? 0 }
+        if s.hover, let f = window.frame {
             // A hover gesture may have waited for the pointer to move: start from now.
             s.startFrame = f
         }
@@ -408,12 +455,12 @@ final class DragController: NSObject {
         if s.mode == .move {
             if let size = restoreSize {
                 let r = Geometry.unsnapped(s.startFrame, restoreSize: size, grab: s.startMouse, keepVertical: false)
-                s.window.setSize(r.size)
-                s.window.setPosition(r.origin)
-                s.startFrame = s.window.frame ?? r
+                window.setSize(r.size)
+                window.setPosition(r.origin)
+                s.startFrame = window.frame ?? r
                 s.changed = true
             }
-            if config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
+            if config.snap { snapper.beginExternalMove(window: window, initialFrame: s.startFrame) }
         }
         startDisplayLink()
     }
@@ -459,20 +506,21 @@ final class DragController: NSObject {
     /// ⇧ pressed or released mid-gesture: continue in the other mode from the
     /// current pointer and frame.
     private func switchMode(_ s: Session, to mode: Mode, at p: CGPoint) {
+        guard let window = s.window else { return }
         if s.mode == .move && config.snap { _ = snapper.endExternalMove(commit: false) }
-        s.startFrame = s.window.frame ?? s.startFrame
+        s.startFrame = window.frame ?? s.startFrame
         s.startMouse = p
         s.applied = p
         s.mode = mode
         s.handle = mode == .resize ? resizeHandle(at: p, in: s.startFrame) : nil
         s.liveFrame = nil
         s.lastPointer = nil
-        if mode == .move && config.snap { snapper.beginExternalMove(window: s.window, initialFrame: s.startFrame) }
+        if mode == .move && config.snap { snapper.beginExternalMove(window: window, initialFrame: s.startFrame) }
         DragController.trace("mode \(mode == .resize ? "resize" : "move") at \(p)")
     }
 
     private func apply(_ s: Session, _ p: CGPoint) {
-        guard s.applied != p else { return }
+        guard let window = s.window, s.applied != p else { return }
         s.applied = p
         s.changed = true
         let d = CGPoint(x: p.x - s.startMouse.x, y: p.y - s.startMouse.y)
@@ -486,9 +534,9 @@ final class DragController: NSObject {
             s.handle = sides
             s.lastPointer = p
             let target = Geometry.integral(next)
-            s.window.setSize(target.size)
+            window.setSize(target.size)
             // The app may clamp the size: keep the fixed edges where they are.
-            let actual = s.window.size ?? target.size
+            let actual = window.size ?? target.size
             if abs(actual.width - target.width) > 1 {
                 if sides.x < 0 { next.origin.x = next.maxX - actual.width }
                 next.size.width = actual.width
@@ -498,11 +546,11 @@ final class DragController: NSObject {
                 next.size.height = actual.height
             }
             if next.origin != model.origin || actual != target.size {
-                s.window.setPosition(CGPoint(x: next.minX.rounded(), y: next.minY.rounded()))
+                window.setPosition(CGPoint(x: next.minX.rounded(), y: next.minY.rounded()))
             }
             s.liveFrame = next
         } else {
-            s.window.setPosition(CGPoint(x: (s.startFrame.minX + d.x).rounded(), y: (s.startFrame.minY + d.y).rounded()))
+            window.setPosition(CGPoint(x: (s.startFrame.minX + d.x).rounded(), y: (s.startFrame.minY + d.y).rounded()))
             if config.snap { snapper.update(cursor: p) }
         }
     }
@@ -519,7 +567,7 @@ final class DragController: NSObject {
             enhancedUIApp = nil
         }
         let snapped = s.mode == .move && config.snap && snapper.endExternalMove(commit: true)
-        if !snapped, s.changed { engine.didPlace(s.window) }
+        if !snapped, s.changed, let window = s.window { engine.didPlace(window) }
     }
 
     @discardableResult
