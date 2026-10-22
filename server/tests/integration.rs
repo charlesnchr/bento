@@ -137,7 +137,7 @@ async fn rest_and_websocket_sync() {
 
     // Health needs no auth.
     let (st, h) = http(a, "GET", "/v1/health", None, None).await;
-    assert_eq!((st, h.clone()), (200, json!({"ok": true, "seq": 0})));
+    assert_eq!((st, h.clone()), (200, json!({"ok": true, "seq": 0, "collections": true})));
 
     // Auth failures.
     assert_eq!(http(a, "GET", "/v1/notes", None, None).await.0, 401);

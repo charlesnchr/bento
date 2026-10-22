@@ -185,7 +185,9 @@ async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response 
 
 async fn health(State(st): State<AppState>) -> Response {
     match st.with_store(|s, _| s.latest_seq()).await {
-        Ok(seq) => json_response(StatusCode::OK, json!({"ok": true, "seq": seq})),
+        // `collections`: clients of other collections must not sync with a server that would
+        // file their documents under notes.
+        Ok(seq) => json_response(StatusCode::OK, json!({"ok": true, "seq": seq, "collections": true})),
         Err(e) => error_response(e),
     }
 }

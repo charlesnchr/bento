@@ -118,6 +118,9 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
     private var pingCheck: DispatchWorkItem?
     /// Last successful REST poll (polling fallback): puts go out right after one.
     private var lastPoll: Date?
+    /// The server said it has collections (`/v1/health`). An older one would file tasks
+    /// under notes, so nothing is sent until it does.
+    private var collectionsOK = false
 
     let device: String = {
         // SCDynamicStore is instant; Host.current() can block on name resolution at launch
@@ -177,6 +180,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
 
     func restart() {
         stop()
+        collectionsOK = false
         backoff = 1
         wsFailures = 0
         start()
@@ -254,6 +258,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
             status.state = .offline("live server blocked in isolated instance")
             return
         }
+        guard collectionsOK else { verifyCollections(); return }
         comps.scheme = comps.scheme == "http" ? "ws" : "wss"
         comps.path = (comps.path.isEmpty ? "" : comps.path) + "/v1/sync"
         guard let url = comps.url else { return }
@@ -418,6 +423,35 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
                 self.scheduleRetry(maxDelay: 60, reason: error)
             }
         }
+    }
+
+    private func verifyCollections() {
+        guard let base = baseURL, let url = URL(string: base.absoluteString + "/v1/health") else { return }
+        if status.state != .polling { status.state = .connecting }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        let gen = generation
+        session.dataTask(with: req) { [weak self] data, resp, err in
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let reachable = (resp as? HTTPURLResponse)?.statusCode == 200 && obj?["ok"] != nil
+            let supported = obj?["collections"] as? Bool == true
+            DispatchQueue.main.async {
+                guard let self, self.running, gen == self.generation, self.task == nil else { return }
+                if supported {
+                    self.collectionsOK = true
+                    self.connect()
+                } else if reachable {
+                    self.log.error("Sync server has no collections; not syncing tasks")
+                    self.status.state = .offline("server needs an update")
+                    self.status.lastError = "The sync server is too old for tasks (no collections); update bento-sync"
+                    self.scheduleRetry(maxDelay: 300, reason: "server lacks collections", minDelay: 60)
+                } else {
+                    self.status.state = .offline(self.shortReason(err?.localizedDescription ?? "unreachable"))
+                    self.status.lastError = err?.localizedDescription
+                    self.scheduleRetry(maxDelay: 60, reason: err?.localizedDescription ?? "health failed")
+                }
+            }
+        }.resume()
     }
 
     private func checkHealth(_ done: @escaping (Bool) -> Void) {

@@ -43,6 +43,9 @@ One server stores documents for several apps. Every document belongs to exactly 
   `notes`. Clients built before collections keep working unchanged and never see
   other collections' documents.
 * Documents sent by the server always carry `"collection"`.
+* Clients of any collection other than `notes` must check `/v1/health` for
+  `"collections": true` before syncing: an older server ignores `collections` and would
+  store their documents as notes.
 
 ## Todo documents (`collection: "todos"`)
 
@@ -88,7 +91,7 @@ Wrong/missing token → HTTP 401 (WebSocket upgrade refused with 401).
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>}` (no auth) |
+| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>,"collections":true}` (no auth; `collections` only on servers that have them) |
 | GET | `/v1/notes?since=<seq>` | – | `{"notes":[Note…],"seq":<latest seq>}` – all notes (incl. tombstones) with `seq > since`, ascending |
 | PUT | `/v1/notes/<id>` | Note (no `seq`) | `{"note":Note,"accepted":true}` or `{"note":<stored Note>,"accepted":false}` |
 | DELETE | `/v1/notes/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |

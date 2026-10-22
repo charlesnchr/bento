@@ -78,7 +78,7 @@ final class PickerModel: ObservableObject, Identifiable {
 
     func refresh(_ q: String? = nil) {
         let q = q ?? field.text
-        if digitShortcuts, let n = Int(q), (1...items.count).contains(n) {
+        if digitShortcuts, let n = Int(q), n >= 1, n <= items.count {
             let item = items[n - 1]
             field.text = ""
             _ = choose(item)
