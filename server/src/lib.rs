@@ -1,4 +1,5 @@
-//! bento-sync: single-user realtime sync server for Bento notes.
+//! bento-sync: single-user realtime sync server for Bento notes (and the other
+//! collections of documents, e.g. todos).
 //! See docs/SYNC_PROTOCOL.md for the wire contract.
 
 pub mod store;
@@ -19,7 +20,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use store::{Change, Note, NoteIn, PutOutcome, Store};
+use store::{Change, Note, NoteIn, PutOutcome, Store, DEFAULT_COLLECTION};
 use tokio::sync::{broadcast, watch};
 
 /// Max HTTP request body / WebSocket message. Larger than the 1 MB note body
@@ -32,6 +33,7 @@ pub(crate) struct Event {
     /// Connection id that made the change (0 = REST).
     origin: u64,
     seq: i64,
+    collection: String,
     /// Pre-serialized `{"type":"note","note":…}` message.
     msg: String,
 }
@@ -88,15 +90,20 @@ impl AppState {
             let out = st.put(change)?;
             if out.accepted {
                 let msg = json!({"type": "note", "note": &out.note}).to_string();
-                let _ = events.send(Arc::new(Event { origin, seq: out.note.seq, msg }));
+                let collection = out.note.collection.clone();
+                let _ = events.send(Arc::new(Event { origin, seq: out.note.seq, collection, msg }));
             }
             Ok(out)
         })
         .await
     }
 
-    pub(crate) async fn changes_since(&self, since: i64) -> Result<(Vec<Note>, i64), store::Error> {
-        self.with_store(move |st, _| st.changes_since(since)).await
+    pub(crate) async fn changes_since(
+        &self,
+        since: i64,
+        collections: Vec<String>,
+    ) -> Result<(Vec<Note>, i64), store::Error> {
+        self.with_store(move |st, _| st.changes_since(since, &collections)).await
     }
 
     async fn get_note(&self, id: String) -> Result<Option<Note>, store::Error> {
@@ -136,6 +143,7 @@ fn error_response(e: store::Error) -> Response {
     let status = match &e {
         store::Error::BadRequest(_) => StatusCode::BAD_REQUEST,
         store::Error::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+        store::Error::Conflict(_) => StatusCode::CONFLICT,
         store::Error::Db(_) | store::Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     if status.is_server_error() {
@@ -177,10 +185,22 @@ async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response 
 
 async fn health(State(st): State<AppState>) -> Response {
     match st.with_store(|s, _| s.latest_seq()).await {
-        Ok(seq) => json_response(StatusCode::OK, json!({"ok": true, "seq": seq})),
+        // `collections`: clients of other collections must not sync with a server that would
+        // file their documents under notes.
+        Ok(seq) => json_response(StatusCode::OK, json!({"ok": true, "seq": seq, "collections": true})),
         Err(e) => error_response(e),
     }
 }
+
+/// Response keys: `/v1/notes…` keeps the original `notes`/`note`, `/v1/c/…` uses `docs`/`doc`.
+#[derive(Clone, Copy)]
+struct Keys {
+    list: &'static str,
+    one: &'static str,
+}
+
+const NOTE_KEYS: Keys = Keys { list: "notes", one: "note" };
+const DOC_KEYS: Keys = Keys { list: "docs", one: "doc" };
 
 #[derive(Deserialize)]
 struct SinceQuery {
@@ -188,32 +208,60 @@ struct SinceQuery {
 }
 
 async fn list_notes(State(st): State<AppState>, Query(q): Query<SinceQuery>) -> Response {
+    list(st, DEFAULT_COLLECTION.into(), q, NOTE_KEYS).await
+}
+
+async fn list_docs(
+    State(st): State<AppState>,
+    Path(collection): Path<String>,
+    Query(q): Query<SinceQuery>,
+) -> Response {
+    if !store::valid_collection(&collection) {
+        return bad_request(store::INVALID_COLLECTION);
+    }
+    list(st, collection, q, DOC_KEYS).await
+}
+
+async fn list(st: AppState, collection: String, q: SinceQuery, keys: Keys) -> Response {
     let since = match q.since.as_deref().map(str::parse::<i64>) {
         None => 0,
         Some(Ok(n)) => n,
         Some(Err(_)) => return bad_request("since must be an integer"),
     };
-    match st.changes_since(since).await {
-        Ok((notes, seq)) => json_response(StatusCode::OK, json!({"notes": notes, "seq": seq})),
+    match st.changes_since(since, vec![collection]).await {
+        Ok((notes, seq)) => json_response(StatusCode::OK, json!({keys.list: notes, "seq": seq})),
         Err(e) => error_response(e),
     }
 }
 
-fn put_response(out: PutOutcome) -> Response {
-    json_response(StatusCode::OK, json!({"note": out.note, "accepted": out.accepted}))
+fn put_response(out: PutOutcome, keys: Keys) -> Response {
+    json_response(StatusCode::OK, json!({keys.one: out.note, "accepted": out.accepted}))
 }
 
 async fn put_note(State(st): State<AppState>, Path(id): Path<String>, body: Bytes) -> Response {
-    let input: NoteIn = match serde_json::from_slice(&body) {
+    put(st, DEFAULT_COLLECTION, &id, &body, NOTE_KEYS).await
+}
+
+async fn put_doc(
+    State(st): State<AppState>,
+    Path((collection, id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    put(st, &collection, &id, &body, DOC_KEYS).await
+}
+
+/// The body's `collection`, if any, must match the path's (400 otherwise).
+async fn put(st: AppState, collection: &str, id: &str, body: &[u8], keys: Keys) -> Response {
+    let input: NoteIn = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => return bad_request(&format!("invalid JSON note: {e}")),
     };
-    let change = match input.into_change(Some(&id), "rest") {
+    let change = match input.into_change(Some(id), Some(collection), "rest") {
         Ok(c) => c,
         Err(e) => return error_response(e),
     };
     match st.put(change, 0).await {
-        Ok(out) => put_response(out),
+        Ok(out) => put_response(out, keys),
         Err(e) => error_response(e),
     }
 }
@@ -229,12 +277,25 @@ async fn delete_note(
     Path(id): Path<String>,
     Query(q): Query<DeleteQuery>,
 ) -> Response {
+    delete(st, DEFAULT_COLLECTION, id, q, NOTE_KEYS).await
+}
+
+async fn delete_doc(
+    State(st): State<AppState>,
+    Path((collection, id)): Path<(String, String)>,
+    Query(q): Query<DeleteQuery>,
+) -> Response {
+    delete(st, &collection, id, q, DOC_KEYS).await
+}
+
+async fn delete(st: AppState, collection: &str, id: String, q: DeleteQuery, keys: Keys) -> Response {
     let updated_at = match q.updated_at.as_deref().map(str::parse::<i64>) {
         None => now_ms(),
         Some(Ok(n)) => n,
         Some(Err(_)) => return bad_request("updated_at must be an integer (unix ms)"),
     };
-    // Keep the stored meta on the tombstone; body is cleared.
+    // Keep the stored meta on the tombstone; body is cleared. (An id stored in
+    // another collection is refused by the put below.)
     let meta = match st.get_note(id.clone()).await {
         Ok(n) => n.map(|n| n.meta),
         Err(e) => return error_response(e),
@@ -248,12 +309,12 @@ async fn delete_note(
         meta,
         ..Default::default()
     };
-    let change = match input.into_change(Some(&id), "rest") {
+    let change = match input.into_change(Some(&id), Some(collection), "rest") {
         Ok(c) => c,
         Err(e) => return error_response(e),
     };
     match st.put(change, 0).await {
-        Ok(out) => put_response(out),
+        Ok(out) => put_response(out, keys),
         Err(e) => error_response(e),
     }
 }
@@ -266,6 +327,8 @@ pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/v1/notes", get(list_notes))
         .route("/v1/notes/{id}", axum::routing::put(put_note).delete(delete_note))
+        .route("/v1/c/{collection}", get(list_docs))
+        .route("/v1/c/{collection}/{id}", axum::routing::put(put_doc).delete(delete_doc))
         .route("/v1/sync", get(ws::handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()

@@ -1,4 +1,4 @@
-# Bento notes sync protocol (v1)
+# Bento sync protocol (v1, with collections)
 
 Server: `bento-sync` (Rust, `server/`), deployed at `https://bento.radian.dk` behind nginx.
 Single user, single shared bearer token. All timestamps are Unix **milliseconds**.
@@ -14,7 +14,8 @@ Single user, single shared bearer token. All timestamps are Unix **milliseconds*
   "deleted": false,                // tombstone; body is "" when deleted
   "seq": 42,                       // server-assigned, strictly increasing per change (absent in client puts)
   "device": "MacBook-Pro",         // device that made the last change
-  "meta": {}                       // opaque JSON object for client extras (e.g. {"pinned":true}); max 4 KB
+  "meta": {},                      // opaque JSON object for client extras (e.g. {"pinned":true}); max 4 KB
+  "collection": "notes"            // which app the document belongs to (see Collections); default "notes"
 }
 ```
 
@@ -28,6 +29,59 @@ keys must be preserved.
 
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 
+## Collections
+
+One server stores documents for several apps. Every document belongs to exactly one
+**collection**: `notes` (the Notes module) or `todos` (the Todo module). Names match
+`[a-z][a-z0-9_-]{0,31}`; the server doesn't keep a fixed list.
+
+* `id`s are unique across all collections. A put whose id already exists in a
+  different collection is refused (REST 409 `{"error":…}`, WebSocket `error` with the id).
+* `seq` is still one global counter, so a client sees gaps in the seqs of its own
+  collection. That is expected; `since` filters use the global seq.
+* Everything that predates collections, and every request that doesn't name one, is
+  `notes`. Clients built before collections keep working unchanged and never see
+  other collections' documents.
+* Documents sent by the server always carry `"collection"`.
+* Clients of any collection other than `notes` must check `/v1/health` for
+  `"collections": true` before syncing: an older server ignores `collections` and would
+  store their documents as notes.
+
+## Todo documents (`collection: "todos"`)
+
+The server treats them like any document (opaque `body`, LWW on `updated_at`). The
+Todo client stores one task or project per document; `body` is a JSON object:
+
+```json
+{
+  "type": "task",                       // "task" | "project"
+  "fields": {
+    "title": "Buy milk",
+    "description": "",
+    "project": "8E1F…" ,                // project document id; null = Inbox
+    "labels": ["errands"],              // label names (labels have no documents)
+    "priority": 1,                      // 1 = p1 (highest) … 4 = p4 (default, none)
+    "due": {"date": "2026-10-23", "time": "17:00"},  // floating local date, optional "HH:mm"; null = no date
+    "completed_at": null,               // ms when completed; null = open
+    "order": 1024.0                     // position within its project (fractional)
+  },
+  "clocks": {"title": 1761000123456, "due": 1761000200000}   // per-field last change (ms)
+}
+```
+
+Project `fields`: `name`, `color` (name from the client palette), `order`, `archived` (bool).
+Fields absent from `fields` take their defaults; unknown fields and types must be preserved.
+
+**Merge.** Two devices editing different fields of the same task must both win, so
+clients merge field by field: for each field the value with the larger clock wins
+(ties: the value whose canonical JSON sorts higher), and the document's `updated_at`
+is the largest clock. When a remote version arrives for a task with unsent local
+changes, the client merges, keeps the result dirty and puts it with
+`updated_at = max(clocks) + 1` if that differs from what the server has; a rejected put is
+handled the same way with the stored winner. A tombstone (`deleted:true`) wins
+over every field change older than its `updated_at`; a field change made after it
+resurrects the task (its put carries the full body).
+
 ## Auth
 
 Every request carries `Authorization: Bearer <token>`. (`?token=<token>` is also accepted for manual testing.)
@@ -37,17 +91,23 @@ Wrong/missing token → HTTP 401 (WebSocket upgrade refused with 401).
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>}` (no auth) |
+| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>,"collections":true}` (no auth; `collections` only on servers that have them) |
 | GET | `/v1/notes?since=<seq>` | – | `{"notes":[Note…],"seq":<latest seq>}` – all notes (incl. tombstones) with `seq > since`, ascending |
 | PUT | `/v1/notes/<id>` | Note (no `seq`) | `{"note":Note,"accepted":true}` or `{"note":<stored Note>,"accepted":false}` |
 | DELETE | `/v1/notes/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
+| GET | `/v1/c/<collection>?since=<seq>` | – | `{"docs":[Doc…],"seq":<latest seq>}` – like `/v1/notes`, for any collection |
+| PUT | `/v1/c/<collection>/<id>` | Doc (no `seq`) | `{"doc":Doc,"accepted":bool}` |
+| DELETE | `/v1/c/<collection>/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
+
+`/v1/notes…` is `/v1/c/notes…` with the original response keys (`notes`, `note`). A
+`collection` in a PUT body must match the path (400 otherwise).
 
 ## WebSocket: `GET /v1/sync` (upgrade)
 
 Client → server:
 
 ```json
-{"type":"hello","since":<last seq the client has applied>,"device":"MacBook-Pro"}
+{"type":"hello","since":<last seq the client has applied>,"device":"MacBook-Pro","collections":["todos"]}
 {"type":"put","note":{…Note without seq…}}
 {"type":"ping"}
 ```
@@ -65,6 +125,12 @@ Server → client:
 
 Server sends a WebSocket ping frame every 30 s; clients may also send `{"type":"ping"}`.
 
+`collections` (optional, default `["notes"]`, 1–8 names) chooses what the connection
+receives: the snapshot and `note` broadcasts only contain documents of those
+collections. A put's collection is `note.collection`, defaulting to the connection's
+first collection. Puts to a collection the connection didn't subscribe to are acked but
+never echoed back to it (not even the stored winner of a rejected put).
+
 ## Conflict rule (last writer wins)
 
 A put for an existing id is **accepted** iff `put.updated_at >= stored.updated_at`
@@ -73,7 +139,7 @@ sender and broadcast as `note` to every other connection. A rejected put is acke
 with `accepted:false` and the stored note is sent back to the sender as `note`
 so it can adopt it. `created_at` is kept from the first version.
 
-## Client behaviour (reference: Notes module)
+## Client behaviour (reference: Notes module; the Todo module follows it with field merges)
 
 - Keep notes in a local SQLite DB; the app works fully offline.
 - Track `last_seq` (highest applied server seq) and a per-note `dirty` flag.

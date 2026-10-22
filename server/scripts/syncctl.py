@@ -10,6 +10,7 @@ Examples:
   syncctl.py watch --since 0                              # WebSocket: print every message
   syncctl.py ws-put --body 'via websocket'
   syncctl.py roundtrip                                    # two WebSockets, put/ack/note/stale/delete
+  syncctl.py --collection todos list                      # another collection (REST /v1/c/todos, WS hello collections)
 
 Server:  --server or $BENTO_SYNC_SERVER (default https://bento.radian.dk)
 Token:   $BENTO_SYNC_TOKEN or --token-file (default ~/.config/bento/sync-token)
@@ -21,6 +22,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -60,6 +62,14 @@ class Ctx:
         self.host = u.hostname
         self.port = u.port or (443 if self.secure else 80)
         self.proxy = self._pick_proxy(args)
+        self.collection = args.collection
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", self.collection):
+            die("--collection must match [a-z][a-z0-9_-]{0,31}")
+        # `notes` keeps the original endpoints (and response keys) old servers understand.
+        if self.collection == "notes":
+            self.base, self.list_key, self.doc_key = "/v1/notes", "notes", "note"
+        else:
+            self.base, self.list_key, self.doc_key = f"/v1/c/{self.collection}", "docs", "doc"
 
     @property
     def token(self):
@@ -246,7 +256,7 @@ class WebSocket:
         raise AssertionError(f"timed out waiting for {what}")
 
     def hello(self, since=0, device="syncctl"):
-        self.send({"type": "hello", "since": since, "device": device})
+        self.send({"type": "hello", "since": since, "device": device, "collections": [self.ctx.collection]})
         return self.expect(lambda m: m.get("type") == "snapshot", "snapshot")
 
     def close(self):
@@ -258,6 +268,12 @@ class WebSocket:
 
 
 def title(body):
+    if (body or "").startswith("{"):  # todo documents: JSON with fields.title / fields.name
+        try:
+            f = json.loads(body).get("fields", {})
+            return str(f.get("title") or f.get("name") or "")[:60]
+        except (ValueError, AttributeError):
+            pass
     for line in (body or "").splitlines():
         line = line.strip().lstrip("#").strip()
         if line:
@@ -280,7 +296,7 @@ def read_body(args):
 
 def note_from_args(args, nid):
     ts = args.updated_at or now_ms()
-    return {
+    note = {
         "id": nid,
         "body": read_body(args),
         "created_at": ts,
@@ -289,6 +305,9 @@ def note_from_args(args, nid):
         "device": args.device,
         "meta": json.loads(args.meta) if args.meta else {},
     }
+    if args.collection != "notes":
+        note["collection"] = args.collection
+    return note
 
 
 def cmd_health(ctx, args):
@@ -298,28 +317,29 @@ def cmd_health(ctx, args):
 
 
 def cmd_list(ctx, args):
-    st, body = ctx.rest("GET", f"/v1/notes?since={args.since}")
+    st, body = ctx.rest("GET", f"{ctx.base}?since={args.since}")
     if st != 200:
         out(body)
         return 1
     if args.json:
         out(body)
     else:
-        summarize(body["notes"])
-        print(f"latest seq: {body['seq']}  ({len(body['notes'])} notes)")
+        docs = body[ctx.list_key]
+        summarize(docs)
+        print(f"latest seq: {body['seq']}  ({len(docs)} {ctx.collection})")
     return 0
 
 
 def cmd_put(ctx, args):
     nid = args.id or str(uuid.uuid4()).upper()
-    st, body = ctx.rest("PUT", f"/v1/notes/{nid}", note_from_args(args, nid))
+    st, body = ctx.rest("PUT", f"{ctx.base}/{nid}", note_from_args(args, nid))
     out(body)
     return 0 if st == 200 else 1
 
 
 def cmd_delete(ctx, args):
     q = f"?updated_at={args.updated_at or now_ms()}&device={urllib.parse.quote(args.device)}"
-    st, body = ctx.rest("DELETE", f"/v1/notes/{args.id}{q}")
+    st, body = ctx.rest("DELETE", f"{ctx.base}/{args.id}{q}")
     out(body)
     return 0 if st == 200 else 1
 
@@ -401,6 +421,7 @@ def main():
     p.add_argument("--no-proxy", action="store_true")
     p.add_argument("--timeout", type=float, default=10.0)
     p.add_argument("--device", default="syncctl")
+    p.add_argument("--collection", default="notes", help="collection to use (default: notes)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health")
     s = sub.add_parser("list")

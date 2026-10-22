@@ -2,7 +2,7 @@
 
 Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI, no third-party
 dependencies) that replaces Shottr, Rectangle Pro, Raycast app hotkeys, a tiling
-window manager (AeroSpace-lite), a clipboard manager and Raycast Notes.
+window manager (AeroSpace-lite), a clipboard manager, Raycast Notes and Todoist.
 
 Priorities, in order: **correct, low resource use, neat**. It runs all day:
 idle CPU must be ~0 %, memory small, nothing polls when an event or notification
@@ -22,13 +22,13 @@ Sources/Bento         main.swift for the real app (all modules)
 Sources/<Module>      one target per feature area
 Dev/Dev<Module>       single-module dev harness executables
 Tests/<Module>Tests   swift-testing tests per target (`import Testing`, `@Test`, `#expect`)
-server/               bento-sync (Rust) for notes sync
+server/               bento-sync (Rust) for notes and todo sync
 scripts/build.sh      release build -> dist/Bento.app, signed (see script header)
 docs/                 this file, SYNC_PROTOCOL.md
 ```
 
 Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
-`Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`.
+`Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`.
 
 ## BentoCore API (read the sources, they are short)
 
@@ -89,6 +89,7 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 | Tiling | `ctrl+opt+cmd+…` letters: h/j/k/l focus, `hyper+h/j/k/l` move, t toggle manager, space cycle layout, f float, minus/equal resize, b balance (0 is emitted by the user's Karabiner layer) |
 | Clipboard | `cmd+shift+v` open history |
 | Notes | `ctrl+opt+n` toggle notes window, other notes shortcuts are local to its window |
+| Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
 
 ## Sync
