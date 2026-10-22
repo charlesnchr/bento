@@ -9,10 +9,31 @@ public final class TodoModule: BentoModule {
     public let title = "Todo"
     public let symbol = "checklist"
 
+    private lazy var controller = TodoController()
+
     public init() {}
 
-    public var actions: [BentoAction] { [] }
+    public var actions: [BentoAction] {
+        [
+            BentoAction("todo.toggle", "Toggle Todo", shortcut: "ctrl+cmd+t") { [weak self] in self?.controller.toggle() },
+            BentoAction("todo.quick-add", "Quick Add Task", shortcut: "ctrl+opt+space") { [weak self] in self?.controller.showQuickAdd() },
+            BentoAction("todo.today", "Show Today", hiddenFromMenu: true) { [weak self] in
+                guard let self else { return }
+                self.controller.go(.today)
+                self.controller.window.show()
+            },
+            BentoAction("todo.inbox", "Show Inbox", hiddenFromMenu: true) { [weak self] in
+                guard let self else { return }
+                self.controller.go(.inbox)
+                self.controller.window.show()
+            },
+        ]
+    }
 
-    public func start() {}
-    public func stop() {}
+    public func start() { controller.start() }
+    public func stop() { controller.stop() }
+
+    public func makeSettingsView() -> AnyView? { controller.makeSettingsView(actions: actions) }
+
+    public func diagnostics() -> [String: Any] { controller.diagnostics }
 }
