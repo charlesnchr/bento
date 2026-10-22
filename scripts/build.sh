@@ -112,7 +112,9 @@ if [ "$INSTALL" = 1 ]; then
   codesign --verify --strict "$INSTALLED_APP"
   if [ "$INSTALLED_APP" != /Applications/Bento.app ]; then
     # ln -sfn onto a real app folder would nest the link inside it.
-    if [ -e ~/Applications/Bento.app ] && [ ! -L ~/Applications/Bento.app ]; then
+    if [ "$BENTO_INSTALL_DIR" = "$HOME/Applications" ]; then
+      :
+    elif [ -e ~/Applications/Bento.app ] && [ ! -L ~/Applications/Bento.app ]; then
       echo "warning: ~/Applications/Bento.app is an old copy, not a link; remove it and rerun"
     else
       mkdir -p ~/Applications && ln -sfn "$INSTALLED_APP" ~/Applications/Bento.app

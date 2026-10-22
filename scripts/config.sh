@@ -10,7 +10,11 @@
 #                        Any other directory is linked from ~/Applications.
 CONFIG_LOCAL="$(dirname "${BASH_SOURCE[0]}")/config.local.sh"
 # shellcheck source=/dev/null
-if [ -f "$CONFIG_LOCAL" ]; then . "$CONFIG_LOCAL" || true; fi
+# A failing command in it must not abort a caller running with set -e
+# (bash 3.2 ignores `|| true` on a sourced file).
+if [ -f "$CONFIG_LOCAL" ]; then
+  case $- in *e*) set +e; . "$CONFIG_LOCAL"; set -e ;; *) . "$CONFIG_LOCAL" ;; esac
+fi
 BENTO_SIGN_IDENTITY="${BENTO_SIGN_IDENTITY:-}"
 BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR:-/Applications}"
 BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR%/}"
