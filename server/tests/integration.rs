@@ -329,3 +329,248 @@ async fn broadcasts_before_ack_and_no_gap_after_hello() {
     let dir = srv.stop().await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+async fn hello_in(ws: &mut Ws, since: i64, collections: &[&str]) -> Value {
+    send(ws, json!({"type": "hello", "since": since, "device": "test", "collections": collections})).await;
+    let snap = recv(ws).await;
+    assert_eq!(snap["type"], "snapshot", "{snap}");
+    snap
+}
+
+fn doc(collection: &str, id: &str, body: &str, updated_at: i64) -> Value {
+    let mut d = note(id, body, updated_at);
+    d["collection"] = json!(collection);
+    d
+}
+
+/// `(id, collection)` of every document in a list.
+fn ids(docs: &Value) -> Vec<(String, String)> {
+    docs.as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["id"].as_str().unwrap().into(), d["collection"].as_str().unwrap().into()))
+        .collect()
+}
+
+fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+}
+
+async fn quiet(ws: &mut Ws) {
+    if let Some(m) = try_recv(ws, Duration::from_millis(200)).await {
+        panic!("unexpected message {m}");
+    }
+}
+
+#[tokio::test]
+async fn collections_are_isolated() {
+    let srv = Server::start("coll").await;
+    let a = srv.addr;
+    let tok = Some(TOKEN);
+
+    // An old client (no `collections`), a todos client and a mixed one (todos first).
+    let mut old = ws_connect(a, TOKEN).await.unwrap();
+    let mut todo = ws_connect(a, TOKEN).await.unwrap();
+    let mut mixed = ws_connect(a, TOKEN).await.unwrap();
+    hello(&mut old, 0).await;
+    hello_in(&mut todo, 0, &["todos"]).await;
+    hello_in(&mut mixed, 0, &["todos", "notes"]).await;
+
+    // Old REST note -> old + mixed, carrying "collection".
+    let (st, r) = http(a, "PUT", "/v1/notes/n1", tok, Some(&note("n1", "one", 1000).to_string())).await;
+    assert_eq!(
+        (st, r["accepted"].clone(), r["note"]["collection"].clone()),
+        (200, json!(true), json!("notes"))
+    );
+    assert_eq!(recv(&mut old).await["note"]["collection"], "notes");
+    assert_eq!(recv(&mut mixed).await["note"]["id"], "n1");
+    quiet(&mut todo).await;
+
+    // Todo WS put without note.collection -> the connection's first collection.
+    send(&mut todo, json!({"type": "put", "note": note("t1", "{}", 1000)})).await;
+    assert_eq!(recv(&mut todo).await, json!({"type": "ack", "id": "t1", "seq": 2, "accepted": true}));
+    let got = recv(&mut mixed).await;
+    assert_eq!((got["note"]["id"].clone(), got["note"]["collection"].clone()), (json!("t1"), json!("todos")));
+    quiet(&mut old).await;
+
+    // Mixed client: default collection is its first one (todos); explicit notes works too.
+    send(&mut mixed, json!({"type": "put", "note": note("t2", "{}", 1000)})).await;
+    assert_eq!(recv(&mut mixed).await["seq"], 3);
+    assert_eq!(recv(&mut todo).await["note"]["id"], "t2");
+    send(&mut mixed, json!({"type": "put", "note": doc("notes", "n2", "two", 1000)})).await;
+    assert_eq!(recv(&mut mixed).await["seq"], 4);
+    assert_eq!(recv(&mut old).await["note"]["id"], "n2");
+    quiet(&mut todo).await;
+    quiet(&mut old).await;
+
+    // /v1/c REST: docs/doc keys; body collection optional but must match the path.
+    let (st, r) =
+        http(a, "PUT", "/v1/c/todos/t3", tok, Some(&note("t3", "{\"type\":\"task\"}", 1).to_string())).await;
+    assert_eq!(st, 200);
+    assert_eq!((r["accepted"].clone(), r["doc"]["collection"].clone()), (json!(true), json!("todos")));
+    assert_eq!(r["doc"]["seq"], 5);
+    assert!(r.get("note").is_none());
+    assert_eq!(recv(&mut todo).await["note"]["id"], "t3");
+    assert_eq!(recv(&mut mixed).await["note"]["id"], "t3");
+    quiet(&mut old).await;
+    let (st, r) = http(a, "PUT", "/v1/c/todos/t4", tok, Some(&doc("todos", "t4", "{}", 1).to_string())).await;
+    assert_eq!((st, r["doc"]["seq"].clone()), (200, json!(6)));
+    recv(&mut todo).await;
+    recv(&mut mixed).await;
+    let (st, r) = http(a, "DELETE", "/v1/c/todos/t4?updated_at=50", tok, None).await;
+    assert_eq!(st, 200);
+    assert_eq!((r["doc"]["deleted"].clone(), r["doc"]["seq"].clone()), (json!(true), json!(7)));
+    assert_eq!(recv(&mut todo).await["note"]["deleted"], true);
+    recv(&mut mixed).await;
+    quiet(&mut old).await;
+    for (path, body) in [
+        ("/v1/c/todos/x", doc("notes", "x", "", 1)),
+        ("/v1/notes/x", doc("todos", "x", "", 1)),
+        ("/v1/c/Todos/x", note("x", "", 1)),
+        ("/v1/c/todos/x", doc("", "x", "", 1)),
+    ] {
+        let (st, r) = http(a, "PUT", path, tok, Some(&body.to_string())).await;
+        assert_eq!(st, 400, "{path} {body}: {r}");
+    }
+    assert_eq!(http(a, "GET", "/v1/c/BAD", tok, None).await.0, 400);
+    assert_eq!(http(a, "GET", "/v1/c/todos", None, None).await.0, 401);
+
+    // Ids are unique across collections: 409 over REST, error with id over WS.
+    for (method, path, body) in [
+        ("PUT", "/v1/c/todos/n1", Some(note("n1", "x", 9999).to_string())),
+        ("PUT", "/v1/notes/t1", Some(note("t1", "x", 9999).to_string())),
+        ("DELETE", "/v1/c/todos/n1?updated_at=9999", None),
+        ("DELETE", "/v1/notes/t1?updated_at=9999", None),
+    ] {
+        let (st, r) = http(a, method, path, tok, body.as_deref()).await;
+        assert_eq!(st, 409, "{method} {path}: {r}");
+        assert!(r["error"].as_str().unwrap().contains("already exists"), "{r}");
+    }
+    send(&mut old, json!({"type": "put", "note": note("t1", "x", 9999)})).await;
+    let e = recv(&mut old).await;
+    assert_eq!((e["type"].clone(), e["id"].clone()), (json!("error"), json!("t1")));
+    send(&mut todo, json!({"type": "put", "note": note("n1", "x", 9999)})).await;
+    assert_eq!(recv(&mut todo).await["id"], "n1");
+    quiet(&mut mixed).await;
+
+    // A put to a collection the connection didn't subscribe to: acked, never sent back to it.
+    send(&mut old, json!({"type": "put", "note": doc("todos", "t5", "{}", 100)})).await;
+    assert_eq!(recv(&mut old).await, json!({"type": "ack", "id": "t5", "seq": 8, "accepted": true}));
+    assert_eq!(recv(&mut todo).await["note"]["id"], "t5");
+    recv(&mut mixed).await;
+    send(&mut old, json!({"type": "put", "note": doc("todos", "t5", "stale", 1)})).await;
+    assert_eq!(recv(&mut old).await, json!({"type": "ack", "id": "t5", "seq": 8, "accepted": false}));
+    quiet(&mut old).await;
+    send(&mut old, json!({"type": "put", "note": doc("No!", "z", "", 1)})).await;
+    let e = recv(&mut old).await;
+    assert_eq!((e["type"].clone(), e["id"].clone()), (json!("error"), json!("z")));
+
+    // Listings.
+    let (_, l) = http(a, "GET", "/v1/notes?since=0", tok, None).await;
+    assert_eq!(ids(&l["notes"]), pairs(&[("n1", "notes"), ("n2", "notes")]));
+    assert_eq!(l["seq"], 8);
+    assert!(l.get("docs").is_none());
+    let (_, l) = http(a, "GET", "/v1/c/notes?since=0", tok, None).await;
+    assert_eq!(ids(&l["docs"]), pairs(&[("n1", "notes"), ("n2", "notes")]));
+    let (_, l) = http(a, "GET", "/v1/c/todos?since=3", tok, None).await;
+    assert_eq!(ids(&l["docs"]), pairs(&[("t3", "todos"), ("t4", "todos"), ("t5", "todos")]));
+    assert_eq!(l["seq"], 8);
+    let (_, l) = http(a, "GET", "/v1/c/nothing-here", tok, None).await;
+    assert_eq!(l, json!({"docs": [], "seq": 8}));
+
+    // Snapshots are filtered too; seq is the global latest.
+    let mut c = ws_connect(a, TOKEN).await.unwrap();
+    let s = hello(&mut c, 0).await;
+    assert_eq!((ids(&s["notes"]), s["seq"].clone()), (pairs(&[("n1", "notes"), ("n2", "notes")]), json!(8)));
+    let s = hello_in(&mut c, 2, &["todos"]).await;
+    assert_eq!(
+        ids(&s["notes"]),
+        pairs(&[("t2", "todos"), ("t3", "todos"), ("t4", "todos"), ("t5", "todos")])
+    );
+    let s = hello_in(&mut c, 0, &["notes", "todos", "notes"]).await;
+    let seqs: Vec<i64> = s["notes"].as_array().unwrap().iter().map(|n| n["seq"].as_i64().unwrap()).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5, 7, 8]);
+
+    // Invalid hellos are refused with an error (no snapshot) and change nothing.
+    let nine: Vec<String> = (0..9).map(|i| format!("c{i}")).collect();
+    for bad in [json!([]), json!(nine), json!(["todos", "Bad"]), json!("todos"), json!([1])] {
+        send(&mut c, json!({"type": "hello", "since": 0, "collections": bad})).await;
+        assert_eq!(recv(&mut c).await["type"], "error", "{bad}");
+    }
+    let s = hello_in(&mut c, 7, &["todos"]).await;
+    assert_eq!(ids(&s["notes"]), pairs(&[("t5", "todos")]));
+
+    // Before hello, puts default to notes.
+    let mut pre = ws_connect(a, TOKEN).await.unwrap();
+    send(&mut pre, json!({"type": "put", "note": note("p1", "pre", 1)})).await;
+    assert_eq!(recv(&mut pre).await["seq"], 9);
+    assert_eq!(recv(&mut old).await["note"]["collection"], "notes");
+    quiet(&mut todo).await;
+
+    let dir = srv.stop().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn ordering_with_collections() {
+    let srv = Server::start("corder").await;
+    let a = srv.addr;
+    let mut todo = ws_connect(a, TOKEN).await.unwrap();
+    let mut old = ws_connect(a, TOKEN).await.unwrap();
+    let mut both = ws_connect(a, TOKEN).await.unwrap();
+    hello_in(&mut todo, 0, &["todos"]).await;
+    hello(&mut old, 0).await;
+    hello_in(&mut both, 0, &["notes", "todos"]).await;
+
+    // Interleaved writers in two collections. The todos client must still see
+    // strictly increasing seqs (gaps where notes were written), with every todo
+    // broadcast that precedes an ack arriving before it.
+    for i in 0..20 {
+        let k = format!("k{i}");
+        send(&mut todo, json!({"type": "put", "note": note(&k, "{}", 1)})).await;
+        let r = format!("r{i}");
+        http(a, "PUT", &format!("/v1/notes/{r}"), Some(TOKEN), Some(&note(&r, "n", 1).to_string())).await;
+        let s = format!("s{i}");
+        http(a, "PUT", &format!("/v1/c/todos/{s}"), Some(TOKEN), Some(&note(&s, "{}", 1).to_string())).await;
+    }
+    let (mut last, mut acks, mut notes) = (0, 0, 0);
+    while acks < 20 || notes < 20 {
+        let m = recv(&mut todo).await;
+        let seq = match m["type"].as_str().unwrap() {
+            "ack" => {
+                acks += 1;
+                m["seq"].as_i64().unwrap()
+            }
+            "note" => {
+                notes += 1;
+                assert_eq!(m["note"]["collection"], "todos");
+                assert!(m["note"]["id"].as_str().unwrap().starts_with('s'));
+                m["note"]["seq"].as_i64().unwrap()
+            }
+            t => panic!("unexpected {t}"),
+        };
+        assert!(seq > last, "seq went from {last} to {seq}");
+        last = seq;
+    }
+    quiet(&mut todo).await;
+
+    let mut last = 0;
+    for _ in 0..20 {
+        let m = recv(&mut old).await;
+        assert_eq!(m["note"]["collection"], "notes");
+        let seq = m["note"]["seq"].as_i64().unwrap();
+        assert!(seq > last);
+        last = seq;
+    }
+    quiet(&mut old).await;
+
+    let mut last = 0;
+    for _ in 0..60 {
+        let seq = recv(&mut both).await["note"]["seq"].as_i64().unwrap();
+        assert!(seq > last);
+        last = seq;
+    }
+    assert_eq!(last, 60);
+    let dir = srv.stop().await;
+    let _ = std::fs::remove_dir_all(dir);
+}

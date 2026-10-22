@@ -3,13 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-bento-sync — realtime sync server for Bento notes
+bento-sync — realtime sync server for Bento notes and todos
 
 USAGE:
   bento-sync [serve]                 run the server
   bento-sync backup <dir> [--keep N] write a consistent copy of the DB to <dir>,
                                      keep the newest N backups (default 14)
-  bento-sync purge <id>...           hard-delete notes (admin; e.g. test data)
+  bento-sync purge <id>...           hard-delete documents of any collection
+                                     (admin; e.g. test data)
   bento-sync --version
 
 ENV:
@@ -170,7 +171,7 @@ fn purge(ids: &[String]) -> Result<(), String> {
     }
     let mut store = open_store(&db_path())?;
     let n = store.purge(ids).map_err(|e| e.to_string())?;
-    println!("purged {n} note(s)");
+    println!("purged {n} document(s)");
     Ok(())
 }
 

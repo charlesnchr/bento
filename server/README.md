@@ -1,18 +1,20 @@
 # bento-sync
 
-Tiny realtime sync server for Bento's floating notes. Rust (tokio + axum + rusqlite),
+Tiny realtime sync server for Bento's floating notes and todos. Rust (tokio + axum + rusqlite),
 one static ~2 MB binary, SQLite in WAL mode, ~3 MB RSS idle.
 The wire contract is **[docs/SYNC_PROTOCOL.md](../docs/SYNC_PROTOCOL.md)**.
+Documents live in **collections** (`notes`, `todos`, …) that share one table, one id
+space and one global `seq`; clients that predate collections only ever see `notes`.
 
 Live: `https://bento.radian.dk` (nginx → `127.0.0.1:8787` on the Hetzner box).
 
 ```
 server/
-  src/store.rs        SQLite schema, validation, LWW + seq logic (unit tests)
-  src/lib.rs          axum router, auth, REST handlers, serve()/graceful shutdown
-  src/ws.rs           /v1/sync WebSocket connection loop
+  src/store.rs        SQLite schema + migrations, validation, LWW + seq logic (unit tests)
+  src/lib.rs          axum router, auth, REST handlers (/v1/notes, /v1/c/<collection>), serve()/graceful shutdown
+  src/ws.rs           /v1/sync WebSocket connection loop (per-connection collection filter)
   src/main.rs         CLI: serve | backup | purge
-  tests/integration.rs  real server on an ephemeral port: REST + 3 WebSocket clients
+  tests/integration.rs  real server on an ephemeral port: REST + WebSocket clients, collections
   scripts/syncctl.py  stdlib-only CLI client (REST + WebSocket, TLS, proxies)
   deploy/             systemd units, nginx site, remote install script
 ../scripts/deploy-server.sh   build + deploy (idempotent)
@@ -58,7 +60,12 @@ scripts/syncctl.py ws-put [ID] --body '…'      # put over WebSocket, prints ac
 scripts/syncctl.py watch --since 0 -v          # stream every WebSocket message
 scripts/syncctl.py roundtrip                   # 2 sockets: put→ack+note, stale put, tombstone
 scripts/syncctl.py --server http://127.0.0.1:8787 --no-proxy health
+scripts/syncctl.py --collection todos list     # any command on another collection
 ```
+
+`--collection` (default `notes`) applies to list/put/delete/ws-put/watch/roundtrip:
+REST goes to `/v1/c/<collection>` (`/v1/notes` for `notes`), WebSocket `hello` sends
+`collections: [<collection>]`.
 
 `roundtrip` leaves a `synctest-…` tombstone; remove test rows with `bento-sync purge` (below).
 
@@ -134,7 +141,7 @@ After a restore `seq` may go backwards. Clients whose `last_seq` is above the
 restored seq should do a full resync (`hello` with `since: 0`). The server doesn't
 detect this itself.
 
-Remove specific notes (e.g. test data) without touching seq:
+Remove specific documents of any collection (e.g. test data) without touching seq:
 
 ```sh
 ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \
@@ -147,12 +154,29 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   sees notes and acks in strictly increasing `seq` order. Before acking a put with
   seq N, queued broadcasts with seq < N are sent first. A client that keeps
   `last_seq = max(seen seq)` therefore never skips a change.
+* **Collections.** `hello.collections` (default `["notes"]`, 1–8 valid names,
+  duplicates ignored; otherwise an `error` and no snapshot) filters the snapshot
+  and the forwarded broadcasts. The filter is applied last, when an event would be
+  sent, so events of other collections are dropped without affecting the ordering
+  rules above (a client just sees gaps in `seq`). Every connection still receives
+  every event internally, so the lag limit below counts all collections. A put's
+  collection is `note.collection`, else the connection's first collection (`notes`
+  before hello). A put to a collection the connection didn't subscribe to is acked
+  but nothing of it is sent back, not even the stored winner when it's rejected.
+  A re-`hello` may change the collections.
+* **Id conflicts.** Ids are unique across collections; a put (or DELETE) for an id
+  stored in another collection is refused before the LWW check: REST 409, WS
+  `error` with `id`. Nothing is written and seq doesn't move.
+* **REST**: `/v1/notes…` is `/v1/c/notes…` with the original keys (`notes`/`note`);
+  `/v1/c/<collection>…` answers with `docs`/`doc`. A body `collection` must match the
+  path, and an invalid collection name in the path is a 400.
 * **Before `hello`** a connection gets no `note` broadcasts: the snapshot already
   contains them, and events with `seq <= snapshot.seq` are skipped after it. Puts
   before `hello` are allowed.
 * **Rejected put:** `ack` carries the *stored* note's seq and `accepted:false`,
   followed by `{"type":"note","note":<stored>}` to the sender only.
-* **Validation:** `id` 1–128 chars `[A-Za-z0-9-_.:]` (UUIDs), `updated_at` required,
+* **Validation:** `id` 1–128 chars `[A-Za-z0-9-_.:]` (UUIDs), `collection`
+  `[a-z][a-z0-9_-]{0,31}` (absent/`null` → default, see above), `updated_at` required,
   `created_at` defaults to `updated_at`, `body` ≤ 1 MiB (413), `meta` must be an
   object ≤ 4 KiB serialized (413; `null`/absent → `{}`), `device` defaults to the
   hello device (WS) or `"rest"`. `deleted:true` forces `body:""`. Request/WS message
@@ -164,4 +188,10 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   95 s is dropped. If a connection falls >256 events behind, it gets an `error` and
   close code 1013 and should reconnect with `hello`. On shutdown, sockets get close
   code 1001.
-* **REST errors** are JSON `{"error": "..."}` with 400/401/404/413/500.
+* **REST errors** are JSON `{"error": "..."}` with 400/401/404/409/413/500.
+* **Schema.** `meta.schema_version` is 2 (collections). Opening a v1 DB (server
+  start, `backup`, `purge`) adds `notes.collection TEXT NOT NULL DEFAULT 'notes'`
+  (existing rows become `notes`) and the `(collection, seq)` index, in one
+  `BEGIN IMMEDIATE` transaction, so it's idempotent and safe while another process
+  has the DB open. A v1 binary still runs on a migrated DB (rollback), but it
+  doesn't filter: it would serve todos to Notes clients as notes.

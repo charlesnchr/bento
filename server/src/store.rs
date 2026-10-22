@@ -3,6 +3,9 @@
 //! All mutations run inside a transaction. `global_seq` lives in the `meta`
 //! table and is bumped by exactly one for every accepted change, so `seq`
 //! values are strictly increasing and unique across all notes.
+//!
+//! Every note belongs to one collection (`notes`, `todos`, …). Ids are unique
+//! across collections; `seq` is one global counter shared by all of them.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,10 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_META_BYTES: usize = 4 * 1024;
 pub const MAX_ID_BYTES: usize = 128;
 pub const MAX_DEVICE_BYTES: usize = 128;
+pub const MAX_COLLECTION_BYTES: usize = 32;
+/// The collection of everything that predates collections and of every request that names none.
+pub const DEFAULT_COLLECTION: &str = "notes";
+const SCHEMA_VERSION: i64 = 2;
 
 /// A note as stored and sent by the server.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -25,6 +32,7 @@ pub struct Note {
     pub seq: i64,
     pub device: String,
     pub meta: Value,
+    pub collection: String,
 }
 
 /// A note as sent by a client (`seq` and any unknown fields are ignored).
@@ -44,6 +52,8 @@ pub struct NoteIn {
     pub device: Option<String>,
     #[serde(default)]
     pub meta: Option<Value>,
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// A validated incoming change, ready to be applied.
@@ -56,6 +66,7 @@ pub struct Change {
     pub deleted: bool,
     pub device: String,
     pub meta: Value,
+    pub collection: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +80,8 @@ pub struct PutOutcome {
 pub enum Error {
     BadRequest(String),
     TooLarge(String),
+    /// The id already exists in a different collection.
+    Conflict(String),
     Internal(String),
     Db(rusqlite::Error),
 }
@@ -76,7 +89,9 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::BadRequest(m) | Error::TooLarge(m) | Error::Internal(m) => f.write_str(m),
+            Error::BadRequest(m) | Error::TooLarge(m) | Error::Conflict(m) | Error::Internal(m) => {
+                f.write_str(m)
+            }
             Error::Db(e) => write!(f, "database error: {e}"),
         }
     }
@@ -94,10 +109,28 @@ pub fn valid_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
+/// `[a-z][a-z0-9_-]{0,31}`
+pub fn valid_collection(name: &str) -> bool {
+    let b = name.as_bytes();
+    !b.is_empty()
+        && b.len() <= MAX_COLLECTION_BYTES
+        && b[0].is_ascii_lowercase()
+        && b.iter().all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
+}
+
+pub const INVALID_COLLECTION: &str = "invalid collection (1-32 chars: a-z, then a-z 0-9 - _)";
+
 impl NoteIn {
-    /// Validate a client note. `path_id` is the id from the URL (REST) if any;
-    /// `fallback_device` is used when the note carries no device name.
-    pub fn into_change(self, path_id: Option<&str>, fallback_device: &str) -> Result<Change, Error> {
+    /// Validate a client note. `path_id` / `path_collection` come from the URL
+    /// (REST) if any and must match the body's; without either, the body's
+    /// collection or `notes` is used. `fallback_device` is used when the note
+    /// carries no device name.
+    pub fn into_change(
+        self,
+        path_id: Option<&str>,
+        path_collection: Option<&str>,
+        fallback_device: &str,
+    ) -> Result<Change, Error> {
         let id = match (path_id, self.id.as_deref()) {
             (Some(p), Some(b)) if p != b => {
                 return Err(Error::BadRequest(format!("id mismatch: path {p:?} vs body {b:?}")))
@@ -108,6 +141,17 @@ impl NoteIn {
         };
         if !valid_id(&id) {
             return Err(Error::BadRequest("invalid id (1-128 chars of A-Z a-z 0-9 - _ . :)".into()));
+        }
+        let collection = match (path_collection, self.collection) {
+            (Some(p), Some(b)) if p != b => {
+                return Err(Error::BadRequest(format!("collection mismatch: path {p:?} vs body {b:?}")))
+            }
+            (Some(p), _) => p.to_string(),
+            (None, Some(b)) => b,
+            (None, None) => DEFAULT_COLLECTION.to_string(),
+        };
+        if !valid_collection(&collection) {
+            return Err(Error::BadRequest(INVALID_COLLECTION.into()));
         }
         let updated_at =
             self.updated_at.ok_or_else(|| Error::BadRequest("note.updated_at is required".into()))?;
@@ -134,7 +178,7 @@ impl NoteIn {
         if device.len() > MAX_DEVICE_BYTES {
             return Err(Error::BadRequest(format!("device exceeds {MAX_DEVICE_BYTES} bytes")));
         }
-        Ok(Change { id, body, created_at: self.created_at, updated_at, deleted, device, meta })
+        Ok(Change { id, body, created_at: self.created_at, updated_at, deleted, device, meta, collection })
     }
 }
 
@@ -160,7 +204,8 @@ CREATE TABLE IF NOT EXISTS notes (
     deleted     INTEGER NOT NULL DEFAULT 0,
     seq         INTEGER NOT NULL UNIQUE,
     device      TEXT NOT NULL DEFAULT '',
-    meta        TEXT NOT NULL DEFAULT '{}'
+    meta        TEXT NOT NULL DEFAULT '{}',
+    collection  TEXT NOT NULL DEFAULT 'notes'
 ) STRICT;
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY NOT NULL,
@@ -170,7 +215,7 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('global_seq', 0);
 INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', 1);
 ";
 
-const NOTE_COLS: &str = "id, body, created_at, updated_at, deleted, seq, device, meta";
+const NOTE_COLS: &str = "id, body, created_at, updated_at, deleted, seq, device, meta, collection";
 
 fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     let meta: String = r.get(7)?;
@@ -183,6 +228,7 @@ fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         seq: r.get(5)?,
         device: r.get(6)?,
         meta: serde_json::from_str(&meta).unwrap_or_else(|_| Value::Object(Map::new())),
+        collection: r.get(8)?,
     })
 }
 
@@ -211,22 +257,63 @@ impl Store {
         conn.execute_batch(
             "PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA cache_size = -2000;",
         )?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Store { conn })
+        let mut store = Store { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Create or upgrade the schema. One IMMEDIATE transaction, so it is
+    /// idempotent and safe while another process (e.g. the running server) has
+    /// the DB open: the check and the upgrade happen under the write lock.
+    fn migrate(&mut self) -> Result<(), Error> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
+        let has_collection: bool = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'collection'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        // v1 -> v2: collections. A v1 table gets the column with ADD COLUMN, which
+        // fills existing rows with the default 'notes'. Binaries from before v2 keep
+        // working on a migrated DB (they name their columns explicitly).
+        if !has_collection {
+            tx.execute_batch("ALTER TABLE notes ADD COLUMN collection TEXT NOT NULL DEFAULT 'notes'")?;
+        }
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS notes_collection_seq ON notes (collection, seq)")?;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'schema_version' AND value < ?1",
+            [SCHEMA_VERSION],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> Result<i64, Error> {
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0))?)
     }
 
     pub fn latest_seq(&self) -> Result<i64, Error> {
         Ok(global_seq(&self.conn)?)
     }
 
-    /// All notes (incl. tombstones) with `seq > since`, ascending, plus the latest seq.
-    /// Read in one transaction so the pair is consistent.
-    pub fn changes_since(&mut self, since: i64) -> Result<(Vec<Note>, i64), Error> {
+    /// All notes (incl. tombstones) of `collections` with `seq > since`, ascending,
+    /// plus the latest (global) seq. Read in one transaction so the pair is consistent.
+    pub fn changes_since<S: AsRef<str>>(
+        &mut self,
+        since: i64,
+        collections: &[S],
+    ) -> Result<(Vec<Note>, i64), Error> {
         let tx = self.conn.transaction()?;
-        let notes = {
-            let mut st =
-                tx.prepare_cached(&format!("SELECT {NOTE_COLS} FROM notes WHERE seq > ?1 ORDER BY seq ASC"))?;
-            let rows = st.query_map([since], row_to_note)?;
+        let notes = if collections.is_empty() {
+            Vec::new()
+        } else {
+            let marks = vec!["?"; collections.len()].join(", ");
+            let mut st = tx.prepare_cached(&format!(
+                "SELECT {NOTE_COLS} FROM notes WHERE seq > ? AND collection IN ({marks}) ORDER BY seq ASC"
+            ))?;
+            let args = std::iter::once(rusqlite::types::Value::Integer(since))
+                .chain(collections.iter().map(|c| rusqlite::types::Value::Text(c.as_ref().to_string())));
+            let rows = st.query_map(rusqlite::params_from_iter(args), row_to_note)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let seq = global_seq(&tx)?;
@@ -241,10 +328,17 @@ impl Store {
         Ok(n)
     }
 
-    /// Apply a change under the LWW rule.
+    /// Apply a change under the LWW rule. An id stored in a different collection
+    /// is refused with `Error::Conflict`.
     pub fn put(&mut self, c: Change) -> Result<PutOutcome, Error> {
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let stored = get_note(&tx, &c.id)?;
+        if let Some(s) = stored.as_ref().filter(|s| s.collection != c.collection) {
+            return Err(Error::Conflict(format!(
+                "id {:?} already exists in collection {:?}",
+                s.id, s.collection
+            )));
+        }
         if !lww_accepts(stored.as_ref().map(|s| s.updated_at), c.updated_at) {
             // Nothing written; dropping the transaction rolls it back.
             return Ok(PutOutcome { note: stored.expect("rejected implies stored"), accepted: false });
@@ -267,10 +361,11 @@ impl Store {
             seq,
             device: c.device,
             meta: c.meta,
+            collection: c.collection,
         };
         tx.execute(
-            "INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, collection)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                 body = excluded.body, updated_at = excluded.updated_at,
                 deleted = excluded.deleted, seq = excluded.seq,
@@ -283,7 +378,8 @@ impl Store {
                 note.deleted as i64,
                 note.seq,
                 note.device,
-                note.meta.to_string()
+                note.meta.to_string(),
+                note.collection
             ],
         )?;
         tx.commit()?;
@@ -323,7 +419,7 @@ mod tests {
             updated_at: Some(updated_at),
             ..Default::default()
         }
-        .into_change(None, "test")
+        .into_change(None, None, "test")
         .unwrap()
     }
 
@@ -391,12 +487,12 @@ mod tests {
             deleted: Some(true),
             ..Default::default()
         }
-        .into_change(None, "x")
+        .into_change(None, None, "x")
         .unwrap();
         let o = s.put(del).unwrap();
         assert!(o.accepted && o.note.deleted);
         assert_eq!(o.note.body, "");
-        let (notes, seq) = s.changes_since(1).unwrap();
+        let (notes, seq) = s.changes_since(1, &["notes"]).unwrap();
         assert_eq!(seq, 2);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].deleted);
@@ -411,14 +507,14 @@ mod tests {
             s.put(change(id, "b", i as i64)).unwrap();
         }
         s.put(change("x", "b2", 10)).unwrap(); // x moves to seq 4
-        let (all, seq) = s.changes_since(0).unwrap();
+        let (all, seq) = s.changes_since(0, &["notes"]).unwrap();
         assert_eq!(seq, 4);
         assert_eq!(all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["y", "z", "x"]);
         assert_eq!(all.iter().map(|n| n.seq).collect::<Vec<_>>(), [2, 3, 4]);
-        let (some, _) = s.changes_since(3).unwrap();
+        let (some, _) = s.changes_since(3, &["notes"]).unwrap();
         assert_eq!(some.len(), 1);
         assert_eq!(some[0].id, "x");
-        assert!(s.changes_since(4).unwrap().0.is_empty());
+        assert!(s.changes_since(4, &["notes"]).unwrap().0.is_empty());
     }
 
     #[test]
@@ -442,7 +538,7 @@ mod tests {
         let _ = std::fs::remove_file(&bak);
         s.backup_to(&bak).unwrap();
         let mut b = Store::open(&bak).unwrap();
-        assert_eq!(b.changes_since(0).unwrap().0.len(), 3);
+        assert_eq!(b.changes_since(0, &["notes"]).unwrap().0.len(), 3);
         drop(b);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -450,47 +546,195 @@ mod tests {
     #[test]
     fn validation() {
         let ok = NoteIn { id: Some("A-1".into()), updated_at: Some(1), ..Default::default() };
-        assert_eq!(ok.clone().into_change(None, "dev").unwrap().device, "dev");
-        assert!(matches!(ok.clone().into_change(Some("B"), "d"), Err(Error::BadRequest(_))));
-        assert_eq!(ok.clone().into_change(Some("A-1"), "d").unwrap().id, "A-1");
+        assert_eq!(ok.clone().into_change(None, None, "dev").unwrap().device, "dev");
+        assert!(matches!(ok.clone().into_change(Some("B"), None, "d"), Err(Error::BadRequest(_))));
+        assert_eq!(ok.clone().into_change(Some("A-1"), None, "d").unwrap().id, "A-1");
         let no_ts = NoteIn { id: Some("a".into()), ..Default::default() };
-        assert!(matches!(no_ts.into_change(None, "d"), Err(Error::BadRequest(_))));
+        assert!(matches!(no_ts.into_change(None, None, "d"), Err(Error::BadRequest(_))));
         let bad_id = NoteIn { id: Some("a/b".into()), updated_at: Some(1), ..Default::default() };
-        assert!(matches!(bad_id.into_change(None, "d"), Err(Error::BadRequest(_))));
+        assert!(matches!(bad_id.into_change(None, None, "d"), Err(Error::BadRequest(_))));
         let big = NoteIn {
             id: Some("a".into()),
             updated_at: Some(1),
             body: Some("x".repeat(MAX_BODY_BYTES + 1)),
             ..Default::default()
         };
-        assert!(matches!(big.into_change(None, "d"), Err(Error::TooLarge(_))));
+        assert!(matches!(big.into_change(None, None, "d"), Err(Error::TooLarge(_))));
         let max = NoteIn {
             id: Some("a".into()),
             updated_at: Some(1),
             body: Some("x".repeat(MAX_BODY_BYTES)),
             ..Default::default()
         };
-        assert!(max.into_change(None, "d").is_ok());
+        assert!(max.into_change(None, None, "d").is_ok());
         let big_meta = NoteIn {
             id: Some("a".into()),
             updated_at: Some(1),
             meta: Some(json!({ "k": "x".repeat(MAX_META_BYTES) })),
             ..Default::default()
         };
-        assert!(matches!(big_meta.into_change(None, "d"), Err(Error::TooLarge(_))));
+        assert!(matches!(big_meta.into_change(None, None, "d"), Err(Error::TooLarge(_))));
         let arr_meta = NoteIn {
             id: Some("a".into()),
             updated_at: Some(1),
             meta: Some(json!([1])),
             ..Default::default()
         };
-        assert!(matches!(arr_meta.into_change(None, "d"), Err(Error::BadRequest(_))));
+        assert!(matches!(arr_meta.into_change(None, None, "d"), Err(Error::BadRequest(_))));
         let null_meta = NoteIn {
             id: Some("a".into()),
             updated_at: Some(1),
             meta: Some(Value::Null),
             ..Default::default()
         };
-        assert_eq!(null_meta.into_change(None, "d").unwrap().meta, json!({}));
+        assert_eq!(null_meta.into_change(None, None, "d").unwrap().meta, json!({}));
+    }
+
+    fn doc(collection: &str, id: &str, body: &str, updated_at: i64) -> Change {
+        Change { collection: collection.into(), ..change(id, body, updated_at) }
+    }
+
+    fn temp_db(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bento-sync-unit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("t.db")
+    }
+
+    /// The schema exactly as v1 binaries created it, with two rows.
+    const V1_SCHEMA: &str = r#"
+        CREATE TABLE IF NOT EXISTS notes (
+            id          TEXT PRIMARY KEY NOT NULL,
+            body        TEXT NOT NULL,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            deleted     INTEGER NOT NULL DEFAULT 0,
+            seq         INTEGER NOT NULL UNIQUE,
+            device      TEXT NOT NULL DEFAULT '',
+            meta        TEXT NOT NULL DEFAULT '{}'
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY NOT NULL,
+            value INTEGER NOT NULL
+        ) STRICT;
+        INSERT OR IGNORE INTO meta (key, value) VALUES ('global_seq', 0);
+        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', 1);
+        INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta)
+            VALUES ('a', 'alpha', 10, 10, 0, 1, 'mac', '{"pinned":true}'),
+                   ('b', '', 20, 30, 1, 2, 'mac', '{}');
+        UPDATE meta SET value = 2 WHERE key = 'global_seq';
+    "#;
+
+    #[test]
+    fn migrates_v1_db_with_rows() {
+        let path = temp_db("migrate");
+        // A v1 database, kept open by a "running v1 server" during the migration.
+        let v1 = Connection::open(&path).unwrap();
+        v1.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0)).unwrap();
+        v1.execute_batch(V1_SCHEMA).unwrap();
+
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.latest_seq().unwrap(), 2);
+        let (notes, seq) = s.changes_since(0, &["notes"]).unwrap();
+        assert_eq!(seq, 2);
+        let got: Vec<_> = notes.iter().map(|n| (n.id.as_str(), n.collection.as_str())).collect();
+        assert_eq!(got, [("a", "notes"), ("b", "notes")]);
+        assert_eq!(notes[0].meta, json!({"pinned": true}));
+        assert!(notes[1].deleted);
+        assert!(s.changes_since(0, &["todos"]).unwrap().0.is_empty());
+        let idx: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notes_collection_seq'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(s.put(doc("todos", "t", "{}", 5)).unwrap().note.seq, 3);
+
+        // A v1 binary still works on the migrated DB (rollback); its rows land in `notes`.
+        v1.execute_batch(
+            "UPDATE meta SET value = 4 WHERE key = 'global_seq';
+             INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta)
+             VALUES ('old', 'from v1', 1, 1, 0, 4, 'old', '{}');",
+        )
+        .unwrap();
+        drop(v1);
+        assert_eq!(s.get("old").unwrap().unwrap().collection, "notes");
+        drop(s);
+
+        // Idempotent: reopening changes nothing.
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.latest_seq().unwrap(), 4);
+        assert_eq!(s.changes_since(0, &["notes", "todos"]).unwrap().0.len(), 4);
+        drop(s);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn fresh_db_is_v2() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+    }
+
+    #[test]
+    fn collection_validation() {
+        for ok in ["notes", "todos", "a", "a-b_c9", &"x".repeat(32)] {
+            assert!(valid_collection(ok), "{ok}");
+        }
+        for bad in ["", "Notes", "1abc", "-a", "_a", "a b", "a.b", "a/b", "é", &"x".repeat(33)] {
+            assert!(!valid_collection(bad), "{bad}");
+        }
+        let n = NoteIn { id: Some("a".into()), updated_at: Some(1), ..Default::default() };
+        assert_eq!(n.clone().into_change(None, None, "d").unwrap().collection, "notes");
+        assert_eq!(n.clone().into_change(None, Some("todos"), "d").unwrap().collection, "todos");
+        let t = NoteIn { collection: Some("todos".into()), ..n.clone() };
+        assert_eq!(t.clone().into_change(None, None, "d").unwrap().collection, "todos");
+        assert_eq!(t.clone().into_change(Some("a"), Some("todos"), "d").unwrap().collection, "todos");
+        assert!(matches!(t.into_change(None, Some("notes"), "d"), Err(Error::BadRequest(_))));
+        let bad = NoteIn { collection: Some("To Do".into()), ..n.clone() };
+        assert!(matches!(bad.into_change(None, None, "d"), Err(Error::BadRequest(_))));
+        let empty = NoteIn { collection: Some(String::new()), ..n.clone() };
+        assert!(matches!(empty.into_change(None, None, "d"), Err(Error::BadRequest(_))));
+        assert!(matches!(n.into_change(None, Some("BAD"), "d"), Err(Error::BadRequest(_))));
+    }
+
+    #[test]
+    fn id_conflict_across_collections() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.put(change("a", "note", 1000)).unwrap();
+        // Refused whatever the timestamps say; nothing written, seq unchanged.
+        assert!(matches!(s.put(doc("todos", "a", "task", 5000)), Err(Error::Conflict(_))));
+        assert!(matches!(s.put(doc("todos", "a", "task", 1)), Err(Error::Conflict(_))));
+        let stored = s.get("a").unwrap().unwrap();
+        assert_eq!((stored.body.as_str(), stored.collection.as_str(), stored.seq), ("note", "notes", 1));
+        assert_eq!(s.latest_seq().unwrap(), 1);
+        // Same collection still follows LWW.
+        assert!(s.put(change("a", "newer", 2000)).unwrap().accepted);
+    }
+
+    #[test]
+    fn changes_since_filters_collections() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.put(change("n1", "a", 1)).unwrap(); // 1
+        s.put(doc("todos", "t1", "b", 1)).unwrap(); // 2
+        s.put(doc("other", "o1", "c", 1)).unwrap(); // 3
+        s.put(change("n2", "d", 1)).unwrap(); // 4
+        s.put(doc("todos", "t2", "e", 1)).unwrap(); // 5
+        let ids = |s: &mut Store, since, cs: &[&str]| {
+            let (v, seq) = s.changes_since(since, cs).unwrap();
+            assert_eq!(seq, 5, "latest seq is global");
+            v.into_iter().map(|n| n.id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&mut s, 0, &["notes"]), ["n1", "n2"]);
+        assert_eq!(ids(&mut s, 0, &["todos"]), ["t1", "t2"]);
+        assert_eq!(ids(&mut s, 0, &["todos", "notes"]), ["n1", "t1", "n2", "t2"]);
+        assert_eq!(ids(&mut s, 2, &["notes", "todos"]), ["n2", "t2"]);
+        assert!(ids(&mut s, 0, &["nope"]).is_empty());
+        assert!(ids(&mut s, 0, &[]).is_empty());
+        assert_eq!(s.changes_since(0, &["todos"]).unwrap().0[0].collection, "todos");
     }
 }
