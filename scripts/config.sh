@@ -2,7 +2,8 @@
 # Set them in the environment or, per machine, in scripts/config.local.sh
 # (untracked), e.g.  : "${BENTO_INSTALL_DIR:=/opt/homebrew/opt/bento}"
 #
-#   BENTO_SIGN_IDENTITY  SHA-1 of a persistent code-signing identity. Builds
+#   BENTO_SIGN_IDENTITY  SHA-1 or exact name of a persistent code-signing
+#                        identity (it needn't be trusted). Builds
 #                        signed with it keep Accessibility / Screen Recording
 #                        grants across rebuilds; without it they are signed ad hoc.
 #                        Grants are per Mac, so each machine can use its own.

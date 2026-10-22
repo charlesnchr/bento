@@ -19,7 +19,6 @@ BUNDLE_ID="com.charles.bento"
 APP="$ROOT/dist/Bento.app"
 VERSION="0.1.0"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 0).$(date +%y%m%d%H%M)"
-REQUIREMENT="designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$BENTO_SIGN_IDENTITY\""
 
 INSTALL=0; ADHOC=0
 for arg in "$@"; do
@@ -76,17 +75,33 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 sign_local() {
-  codesign --force --sign "$1" --timestamp=none ${2:+--requirements "=$REQUIREMENT"} "$APP"
+  codesign --force --sign "$1" --timestamp=none ${2:+--requirements "=$2"} "$APP"
+}
+
+# SHA-1 of the keychain identity whose hash or name is exactly $1. Lists
+# untrusted identities too (no -v): a self-signed certificate signs fine
+# without being trusted.
+identity_hash() {
+  security find-identity -p codesigning 2>/dev/null | awk -v id="$1" '
+    $1 ~ /^[0-9]+\)$/ {
+      name = $0; sub(/^[^"]*"/, "", name); sub(/".*$/, "", name)
+      if (toupper($2) == toupper(id) || name == id) { print $2; exit }
+    }'
 }
 
 echo "==> sign"
 if [ "$ADHOC" = 1 ] || [ -z "$BENTO_SIGN_IDENTITY" ]; then
   [ "$ADHOC" = 1 ] || echo "note: BENTO_SIGN_IDENTITY not set, signing ad hoc (permission grants reset on every build)"
   sign_local - ""
-elif security find-identity -v -p codesigning 2>/dev/null | grep -q "$BENTO_SIGN_IDENTITY"; then
-  sign_local "$BENTO_SIGN_IDENTITY" req
+elif SIGN_HASH=$(identity_hash "$BENTO_SIGN_IDENTITY") && [ -n "$SIGN_HASH" ]; then
+  sign_local "$SIGN_HASH" "designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$SIGN_HASH\""
 else
-  echo "signing identity $BENTO_SIGN_IDENTITY is not in a local keychain (or use --adhoc)" >&2
+  {
+    echo "no code-signing identity matching BENTO_SIGN_IDENTITY=$BENTO_SIGN_IDENTITY in the keychain search list."
+    echo "Identities found (hash \"name\"):"
+    security find-identity -p codesigning 2>/dev/null | awk '$1 ~ /^[0-9]+\)$/ && !seen[$2]++ { $1 = " "; print }'
+    echo "Set BENTO_SIGN_IDENTITY to one of these (scripts/config.local.sh), or use --adhoc."
+  } >&2
   exit 1
 fi
 codesign --verify --strict --verbose=1 "$APP"
