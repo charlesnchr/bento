@@ -90,7 +90,7 @@ struct QuickAddView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "plus.circle.fill").foregroundStyle(Color(nsColor: TodoStyle.priority(1))).font(.system(size: 17))
                 TokenField(model: field, placeholder: "Buy milk tomorrow 5pm p1 #Errands @shop",
                            font: .systemFont(ofSize: 18),

@@ -12,7 +12,7 @@
 # Data safety: every instance has its own BENTO_HOME under $WORK and syncs with a local
 # bento-sync on a free port (temp DB, random token). The live server is never touched.
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK=${TODO_E2E_WORK:-/tmp/bento-e2e-todo}
 SRV="$ROOT/server/target/debug/bento-sync"
 BIN="$ROOT/.build/debug/Bento"
@@ -355,13 +355,15 @@ gui_session() {
   eventually 3 "A frontmost after quick add" bash -c "[ \"\$($CTL frontmost)\" = '$A' ]"
   guarded || return 75
 
-  log "- x selects, bulk priority, ⌘⌫ deletes, z restores"
+  log "- x selects, bulk priority, ⌘⌫ deletes, z restores (in Upcoming, where both tasks show)"
+  press "$A" g u; sleep 0.5
   press "$A" k k k k; sleep 0.2
   press "$A" x j x; sleep 0.2
   press "$A" 2; sleep 0.5
   eventually 5 "both selected tasks got priority 2" bash -c "[ \"\$(python3 '$WORK/q.py' field '$WORK' $PORT $TOKEN a 'Call mom' priority)\" = 2 ] && [ \"\$(python3 '$WORK/q.py' field '$WORK' $PORT $TOKEN a 'Buy milk' priority)\" = 2 ]"
   local id_mom; id_mom=$(q id a "Call mom")
-  press "$A" escape; sleep 0.2
+  press "$A" escape; sleep 0.2   # clears the selection (doesn't close: something was selected)
+  check "Esc with a selection keeps the window" bash -c "[ \"\$($CTL frontmost)\" = '$A' ]"
   press "$A" k k k; sleep 0.2
   press "$A" cmd+delete; sleep 0.6
   local gone=0
@@ -397,6 +399,8 @@ suite_gui() {
 }
 
 # ---------------------------------------------------------------- main
+
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0  # sourced: just the helpers
 
 trap 'kill_all 2>/dev/null' EXIT
 build

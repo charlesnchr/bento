@@ -241,6 +241,7 @@ final class TodoController: ObservableObject {
 
     func hideWindow() {
         guard let w = windowController, w.isVisible else { return }
+        log.debug("hideWindow")
         commitEditor()
         let wasActive = NSApp.isActive && (w.isKey || NSApp.keyWindow == nil)
         w.hide()
@@ -366,6 +367,7 @@ final class TodoController: ObservableObject {
     }
 
     func perform(_ c: TodoCommand) {
+        log.debug("command \(c.rawValue, privacy: .public)")
         switch c {
         case .quickAdd: showQuickAdd(project: view.projectID)
         case .addBottom: beginAdd(top: false)

@@ -127,6 +127,8 @@ struct TodoKey: Equatable, Hashable {
             case Code.right: s += "→"
             case Code.home: s += "Home"
             case Code.end: s += "End"
+            case Code.keypadEnter: s += "⌤"
+            case Code.forwardDelete: s += "⌦"
             default: s += "#\(code)"
             }
         }

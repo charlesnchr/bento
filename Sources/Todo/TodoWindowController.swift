@@ -64,6 +64,10 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    func windowDidResignKey(_ n: Notification) {
+        BentoLog.make("todo").debug("window resigned key; first responder \(String(describing: self.panel.firstResponder), privacy: .public)")
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         controller.hideWindow()
         return false
