@@ -28,6 +28,11 @@ scripts/build.sh            # release build -> dist/Bento.app (signed)
 scripts/build.sh --install  # + install to /Applications (or $BENTO_INSTALL_DIR) and relaunch
 ```
 
+`--install` removes the `dist` copy afterwards so Spotlight only finds the
+installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
+`/Applications`, it links `~/Applications/Bento.app` to the install and warns
+until `/Applications/Bento.app` is linked too (one `sudo ln`).
+
 To keep Accessibility and Screen Recording grants across rebuilds, sign with a
 persistent code-signing identity: set `BENTO_SIGN_IDENTITY` to its SHA-1, either
 in the environment or in an untracked `scripts/config.local.sh` (see

@@ -10,7 +10,8 @@
 #                        Any other directory is linked from ~/Applications.
 CONFIG_LOCAL="$(dirname "${BASH_SOURCE[0]}")/config.local.sh"
 # shellcheck source=/dev/null
-[ -f "$CONFIG_LOCAL" ] && . "$CONFIG_LOCAL"
+if [ -f "$CONFIG_LOCAL" ]; then . "$CONFIG_LOCAL" || true; fi
 BENTO_SIGN_IDENTITY="${BENTO_SIGN_IDENTITY:-}"
 BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR:-/Applications}"
+BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR%/}"
 INSTALLED_APP="$BENTO_INSTALL_DIR/Bento.app"

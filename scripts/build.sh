@@ -111,10 +111,18 @@ if [ "$INSTALL" = 1 ]; then
   mv "$INSTALLED_APP.new" "$INSTALLED_APP"
   codesign --verify --strict "$INSTALLED_APP"
   if [ "$INSTALLED_APP" != /Applications/Bento.app ]; then
-    mkdir -p ~/Applications && ln -sfn "$INSTALLED_APP" ~/Applications/Bento.app
+    # ln -sfn onto a real app folder would nest the link inside it.
+    if [ -e ~/Applications/Bento.app ] && [ ! -L ~/Applications/Bento.app ]; then
+      echo "warning: ~/Applications/Bento.app is an old copy, not a link; remove it and rerun"
+    else
+      mkdir -p ~/Applications && ln -sfn "$INSTALLED_APP" ~/Applications/Bento.app
+    fi
     # /Applications needs sudo; it only has to be linked once.
-    [ "$(readlink /Applications/Bento.app)" = "$INSTALLED_APP" ] \
-      || echo "warning: /Applications/Bento.app is not a link to $INSTALLED_APP (sudo ln -sfn \"$INSTALLED_APP\" /Applications/Bento.app)"
+    if [ "$(readlink /Applications/Bento.app)" != "$INSTALLED_APP" ]; then
+      fix="sudo ln -sfn \"$INSTALLED_APP\" /Applications/Bento.app"
+      [ -e /Applications/Bento.app ] && [ ! -L /Applications/Bento.app ] && fix="sudo rm -rf /Applications/Bento.app && $fix"
+      echo "warning: /Applications/Bento.app is not a link to $INSTALLED_APP ($fix)"
+    fi
   fi
   # Drop the build copy so Spotlight and Launch Services only know the installed app.
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
@@ -122,4 +130,4 @@ if [ "$INSTALL" = 1 ]; then
   open "$INSTALLED_APP"
 fi
 
-echo "==> done: $APP ($VERSION build $BUILD_NUMBER)"
+echo "==> done: $([ "$INSTALL" = 1 ] && echo "$INSTALLED_APP" || echo "$APP") ($VERSION build $BUILD_NUMBER)"
