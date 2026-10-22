@@ -17,6 +17,7 @@
 # bentoctl --expect can verify that keystrokes go to them and nowhere else.
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$ROOT/scripts/config.sh"
 WORK=${NOTES_E2E_WORK:-/tmp/bento-e2e-notes}
 SRV="$ROOT/server/target/debug/bento-sync"
 BIN="$ROOT/.build/debug/Bento"
@@ -414,7 +415,7 @@ close_scratch() {
 }
 
 other_instances() {
-  ps -axo pid,command | grep -E "/(Bento|DevNotes)$" | grep -v "$WORK/" | grep -v "/Applications/Bento.app" | grep -v grep
+  ps -axo pid,command | grep -E "/(Bento|DevNotes)$" | grep -v "$WORK/" | grep -vF "$INSTALLED_APP/" | grep -v grep
 }
 
 gui_session_1() {

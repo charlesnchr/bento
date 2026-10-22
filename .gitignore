@@ -7,3 +7,4 @@ server/target/
 .DS_Store
 Resources/Bento-1024.png
 .claude/
+scripts/config.local.sh

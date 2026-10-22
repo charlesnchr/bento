@@ -1,35 +1,30 @@
 #!/bin/bash
 # Build, bundle, sign and (optionally) install Bento.app.
 #
-#   scripts/build.sh                 release build -> dist/Bento.app, signed
-#   scripts/build.sh --install       ...and install to /Applications, relaunch
-#   scripts/build.sh --install-gskm4 ...and install on gskm4 (/opt/homebrew/opt)
-#   scripts/build.sh --adhoc         ad-hoc signature (permissions reset on every build)
+#   scripts/build.sh            release build -> dist/Bento.app, signed
+#   scripts/build.sh --install  ...and install to $BENTO_INSTALL_DIR, relaunch
+#   scripts/build.sh --adhoc    ad-hoc signature (permissions reset on every build)
 #
-# Signing uses the same persistent self-signed identity as Jot
-# ("Jot Local Development"). Its private key lives only in gskm4's login
-# keychain, so when it is not in a local keychain the bundle is signed over SSH
-# on gskm4 and copied back. The designated requirement pins the bundle id and
-# the certificate leaf hash, so macOS keeps Accessibility / Screen Recording
-# grants across rebuilds.
+# Signing and install location are configured in scripts/config.sh. With a
+# persistent identity the designated requirement pins the bundle id and the
+# certificate leaf hash, so macOS keeps Accessibility / Screen Recording grants
+# across rebuilds.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-IDENTITY="04F231DA34F7555198B3E7FC23BDB049C27C16D3"   # Jot Local Development (SHA-1)
-SIGN_HOST="${BENTO_SIGN_HOST:-gskm4}"
+. "$ROOT/scripts/config.sh"
 BUNDLE_ID="com.charles.bento"
 APP="$ROOT/dist/Bento.app"
 VERSION="0.1.0"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 0).$(date +%y%m%d%H%M)"
-REQUIREMENT="designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$IDENTITY\""
+REQUIREMENT="designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$BENTO_SIGN_IDENTITY\""
 
-INSTALL=0; INSTALL_GSKM4=0; ADHOC=0
+INSTALL=0; ADHOC=0
 for arg in "$@"; do
   case "$arg" in
     --install) INSTALL=1 ;;
-    --install-gskm4) INSTALL_GSKM4=1 ;;
     --adhoc) ADHOC=1 ;;
     *) echo "unknown option $arg" >&2; exit 2 ;;
   esac
@@ -85,18 +80,14 @@ sign_local() {
 }
 
 echo "==> sign"
-if [ "$ADHOC" = 1 ]; then
+if [ "$ADHOC" = 1 ] || [ -z "$BENTO_SIGN_IDENTITY" ]; then
+  [ "$ADHOC" = 1 ] || echo "note: BENTO_SIGN_IDENTITY not set, signing ad hoc (permission grants reset on every build)"
   sign_local - ""
-elif security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
-  sign_local "$IDENTITY" req
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "$BENTO_SIGN_IDENTITY"; then
+  sign_local "$BENTO_SIGN_IDENTITY" req
 else
-  # Sign on the host that holds the Jot identity's private key.
-  REMOTE_DIR=".t3/scratch/bento-sign"
-  ssh -o ConnectTimeout=10 "$SIGN_HOST" "mkdir -p $REMOTE_DIR && rm -rf $REMOTE_DIR/Bento.app"
-  rsync -a "$APP" "$SIGN_HOST:$REMOTE_DIR/"
-  ssh "$SIGN_HOST" "codesign --force --sign $IDENTITY --keychain \$HOME/Library/Keychains/login.keychain-db --timestamp=none --requirements '=$REQUIREMENT' $REMOTE_DIR/Bento.app"
-  rm -rf "$APP"
-  rsync -a "$SIGN_HOST:$REMOTE_DIR/Bento.app" "$ROOT/dist/"
+  echo "signing identity $BENTO_SIGN_IDENTITY is not in a local keychain (or use --adhoc)" >&2
+  exit 1
 fi
 codesign --verify --strict --verbose=1 "$APP"
 codesign -dvv "$APP" 2>&1 | grep -E "^(Identifier|Authority)=" || true
@@ -111,26 +102,24 @@ quit_running() {
 }
 
 if [ "$INSTALL" = 1 ]; then
-  echo "==> install /Applications/Bento.app"
+  echo "==> install $INSTALLED_APP"
   quit_running
-  rm -rf /Applications/Bento.app.new
-  ditto "$APP" /Applications/Bento.app.new
-  rm -rf /Applications/Bento.app
-  mv /Applications/Bento.app.new /Applications/Bento.app
-  codesign --verify --strict /Applications/Bento.app
-  open /Applications/Bento.app
-fi
-
-if [ "$INSTALL_GSKM4" = 1 ]; then
-  echo "==> install on gskm4: /opt/homebrew/opt/Bento.app"
-  rsync -a --delete "$APP/" "gskm4:/opt/homebrew/opt/Bento.app.new/"
-  ssh gskm4 'set -e
-    WAS_RUNNING=0; pkill -f "Bento.app/Contents/MacOS/Bento$" 2>/dev/null && WAS_RUNNING=1 && sleep 1 || true
-    rm -rf /opt/homebrew/opt/Bento.app
-    mv /opt/homebrew/opt/Bento.app.new /opt/homebrew/opt/Bento.app
-    codesign --verify --strict /opt/homebrew/opt/Bento.app
-    mkdir -p ~/Applications && ln -sfn /opt/homebrew/opt/Bento.app ~/Applications/Bento.app
-    if [ "$WAS_RUNNING" = 1 ]; then open /opt/homebrew/opt/Bento.app; else echo "installed, not launched (quit Rectangle Pro / Shottr / Raycast hotkeys first, then open ~/Applications/Bento.app)"; fi'
+  mkdir -p "$BENTO_INSTALL_DIR"
+  rm -rf "$INSTALLED_APP.new"
+  ditto "$APP" "$INSTALLED_APP.new"
+  rm -rf "$INSTALLED_APP"
+  mv "$INSTALLED_APP.new" "$INSTALLED_APP"
+  codesign --verify --strict "$INSTALLED_APP"
+  if [ "$INSTALLED_APP" != /Applications/Bento.app ]; then
+    mkdir -p ~/Applications && ln -sfn "$INSTALLED_APP" ~/Applications/Bento.app
+    # /Applications needs sudo; it only has to be linked once.
+    [ "$(readlink /Applications/Bento.app)" = "$INSTALLED_APP" ] \
+      || echo "warning: /Applications/Bento.app is not a link to $INSTALLED_APP (sudo ln -sfn \"$INSTALLED_APP\" /Applications/Bento.app)"
+  fi
+  # Drop the build copy so Spotlight and Launch Services only know the installed app.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+  rm -rf "$APP"
+  open "$INSTALLED_APP"
 fi
 
 echo "==> done: $APP ($VERSION build $BUILD_NUMBER)"
