@@ -120,7 +120,7 @@ struct TodoDoc: Equatable {
     mutating func markDeleted(at clock: Int64? = nil) {
         guard !deleted else { return }
         deleted = true
-        updatedAt = max(updatedAt + 1, clock ?? TodoDoc.nextClock(after: updatedAt))
+        updatedAt = max(updatedAt == .max ? .max : updatedAt + 1, clock ?? TodoDoc.nextClock(after: updatedAt))
     }
 
     var maxClock: Int64 { clocks.values.max() ?? createdAt }

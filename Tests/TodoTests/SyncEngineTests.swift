@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import BentoCore
 @testable import Todo
 
 final class MemoryRepo: TodoRepository {
@@ -160,6 +161,52 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         e.applySnapshot([r], seq: 10)
         #expect(e.applySnapshot([], seq: 3))
         #expect(repo.docs["t1"]!.dirty && repo.lastSeq == 0)
+    }
+
+    @Test func newerLocalDeletionOutlivesAnOlderRemoteOne() {
+        let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
+        var base = task(); base.seq = 1
+        e.applyRemote(base)
+        var local = repo.docs["t1"]!
+        local.markDeleted(at: 3000); local.dirty = true
+        repo.save(local, remote: false)
+        var tomb = TodoDoc(id: "t1", type: "", createdAt: 1000, updatedAt: 2000); tomb.deleted = true; tomb.seq = 2
+        e.applyRemote(tomb)
+        let d = repo.docs["t1"]!
+        #expect(d.deleted && d.dirty && d.updatedAt == 3000)
+        // an edit stamped between the two deletions doesn't resurrect it
+        var edit = base; edit.setTitle("between", at: 2500); edit.seq = 3
+        e.applyRemote(edit)
+        #expect(repo.docs["t1"]!.deleted)
+    }
+
+    @Test func rejectedPutWinnerDoesNotMoveTheCursor() {
+        let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
+        var a = task(); a.seq = 10
+        e.applySnapshot([a], seq: 10)
+        var stored = a; stored.setTitle("theirs", at: 5000); stored.seq = 12
+        e.applyRemote(stored, advanceCursor: false)
+        #expect(repo.docs["t1"]!.title == "theirs" && repo.lastSeq == 10)
+    }
+
+    @Test func deletingAtTheLargestTimestampDoesNotTrap() {
+        var d = task()
+        d.updatedAt = .max
+        d.markDeleted()
+        #expect(d.deleted && d.updatedAt == .max)
+    }
+
+    @Test func bulkSaveKeepsChangesWhenTheDatabaseIsLocked() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("todo-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("todo.sqlite")
+        let store = TodoStore(url: url)
+        let other = try SQLiteDB(path: url.path)
+        try other.exec("BEGIN IMMEDIATE")
+        store.save([task("a"), task("b")])
+        #expect(store.doc("a") != nil && store.doc("b") != nil)
+        try other.exec("ROLLBACK")
     }
 
     /// Two devices edit random fields of the same tasks while syncing through a fake

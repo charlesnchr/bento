@@ -670,7 +670,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
                 let stored = TodoWire.decode(obj["doc"])
                 let accepted = obj["accepted"] as? Bool ?? false
                 self.engine.ack(id: n.id, seq: accepted ? stored?.seq : nil, accepted: accepted, version: n.updatedAt)
-                if !accepted, let stored { self.engine.applyRemote(stored) }
+                if !accepted, let stored { self.engine.applyRemote(stored, advanceCursor: false) }
                 self.markSynced()
                 self.updatePending()
             }

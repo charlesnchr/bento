@@ -25,6 +25,8 @@ final class TaskEditor: ObservableObject, Identifiable {
     let defaults: Defaults
     let title: TokenFieldModel
     let notes: TokenFieldModel
+    /// The task as it was when editing began (to keep a draft if it's deleted meanwhile).
+    var snapshot: TodoDoc?
     /// What the editor started with: only what the user changed is written back, so a
     /// title or description changed on another device meanwhile isn't overwritten.
     let originalTitle: String
@@ -473,6 +475,7 @@ final class TodoController: ObservableObject {
         commitEditor()
         focus = id
         editor = makeEditor(taskID: id, anchor: .after(id), defaults: .init(project: t.project), title: t.title, notes: t.notes)
+        editor?.snapshot = t
     }
 
     private func makeEditor(taskID: String?, anchor: TaskEditor.Anchor, defaults: TaskEditor.Defaults, title: String = "", notes: String = "") -> TaskEditor {
@@ -501,9 +504,14 @@ final class TodoController: ObservableObject {
         let notes = e.notes.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed = QuickAddParser.parse(text, projects: projectNames, labels: labels)
         if let id = e.taskID {
-            guard task(id) != nil else { cancelEditor(); return }
             let changedText = text != e.originalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let changedNotes = notes != e.originalNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard task(id) != nil else {
+                // Deleted on another device while editing: a changed draft becomes a new task.
+                if changedText || changedNotes, let old = e.snapshot { restoreDraft(old, parsed: changedText ? parsed : nil, notes: changedNotes ? notes : nil) }
+                cancelEditor()
+                return
+            }
             mutate([id], message: nil) { t in
                 if changedText { apply(parsed, to: &t, title: true) }
                 if changedNotes { t.setNotes(notes) }
@@ -521,6 +529,20 @@ final class TodoController: ObservableObject {
             editor = nil
             windowController?.focusList()
         }
+    }
+
+    /// A copy of `old` (a task deleted elsewhere while it was being edited) with the
+    /// editor's changes, as a new task.
+    private func restoreDraft(_ old: TodoDoc, parsed: QuickAddResult?, notes: String?) {
+        let project = old.project.flatMap { store.doc($0)?.isProject == true ? $0 : nil }
+        var t = TodoDoc.newTask(title: old.title, project: project, labels: old.labels, priority: old.priority,
+                                due: old.due, order: order(for: .bottom, project: project))
+        t.device = client.device
+        if let n = notes ?? (old.notes.isEmpty ? nil : old.notes) { t.setNotes(n) }
+        if let parsed { apply(parsed, to: &t, title: true) }
+        t.dirty = true
+        commit([t], previous: [nil], message: "Deleted on another device, saved as a new task")
+        focus = t.id
     }
 
     /// Commits an open editor (window hidden, view changed). Unsaved new text is kept.

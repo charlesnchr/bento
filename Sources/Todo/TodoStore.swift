@@ -33,6 +33,8 @@ final class TodoStore: TodoRepository {
         if let url {
             do {
                 db = try SQLiteDB(path: url.path)
+                // Wait briefly for another connection's lock instead of failing the write.
+                try? db?.exec("PRAGMA busy_timeout=1000")
             } catch {
                 BentoLog.make("todo").error("Cannot open todo DB: \(String(describing: error), privacy: .public)")
             }
@@ -115,13 +117,14 @@ final class TodoStore: TodoRepository {
     func save(_ docs: [TodoDoc]) {
         let changed = docs.filter { cache[$0.id] != $0 }
         guard !changed.isEmpty else { return }
-        _ = try? db?.transaction {
-            for d in changed {
-                cache[d.id] = d
-                write(d)
-            }
+        for d in changed { cache[d.id] = d }
+        do {
+            try db?.transaction { for d in changed { write(d) } }
+        } catch {
+            // The change stays in memory either way; write what can be written one by one.
+            log.error("Todo transaction failed: \(String(describing: error), privacy: .public)")
+            for d in changed { write(d) }
         }
-        if db == nil { for d in changed { cache[d.id] = d } }
         for d in changed { post(d.id, remote: false) }
     }
 

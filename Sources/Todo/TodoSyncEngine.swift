@@ -26,9 +26,12 @@ final class TodoSyncEngine {
 
     // MARK: Incoming
 
+    /// `advanceCursor`: the transport delivered every earlier change before this one
+    /// (WebSocket, polls), so last_seq may move to its seq. Not for a REST put's stored
+    /// winner, whose seq can be ahead of changes this client hasn't seen.
     @discardableResult
-    func applyRemote(_ r: TodoDoc) -> RemoteResult {
-        if let s = r.seq, s > repo.lastSeq { repo.lastSeq = s }
+    func applyRemote(_ r: TodoDoc, advanceCursor: Bool = true) -> RemoteResult {
+        if advanceCursor, let s = r.seq, s > repo.lastSeq { repo.lastSeq = s }
         guard let local = repo.doc(r.id) else {
             var d = r
             d.dirty = false
@@ -63,7 +66,10 @@ final class TodoSyncEngine {
         }
         // Tombstones: a deletion wins over field changes older than it, and loses to newer ones.
         if r.deleted {
-            return local.deleted || r.updatedAt >= local.maxClock ? adopt(r) : outranking(local, r, local: local)
+            // Both deleted: the later deletion stamp wins, so a newer local one is kept and
+            // resent (an edit between the two stamps must not resurrect the task).
+            if local.deleted { return r.updatedAt >= local.updatedAt ? adopt(r) : outranking(local, r, local: local) }
+            return r.updatedAt >= local.maxClock ? adopt(r) : outranking(local, r, local: local)
         }
         if local.deleted {
             return r.maxClock > local.updatedAt ? adopt(r) : outranking(local, r, local: local)
