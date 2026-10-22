@@ -3,7 +3,8 @@
 One small native macOS menu-bar app instead of six: screenshots and annotation
 (Shottr), window management with snapping and modifier-drag (Rectangle Pro),
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
-with images, and Raycast-style floating notes synced through a tiny Rust server.
+with images, Raycast-style floating notes and a Todoist-style todo list, both
+synced in real time through a tiny Rust server.
 
 Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 ~0 % CPU with a ~16 MB footprint; the bundle is 6.5 MB.
@@ -18,6 +19,7 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | App Hotkeys | Raycast hotkeys | shortcut per app (toggle/focus/cycle windows), URL, file or shell command | your own |
 | Clipboard | Raycast/Alfred | text, rich text, images, files, links, colours; 30-day history, search incl. OCR of images, pins, paste/plain paste/⌘1–9 | ⌘⇧V |
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
+| Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 
 ## Build and install
 
@@ -52,8 +54,8 @@ open "bento://action/windows.left-half"
 open "bento://settings"
 ```
 
-Data (clipboard history, captures, notes DB) is in
-`~/Library/Application Support/Bento/`. The notes sync token is in
+Data (clipboard history, captures, notes and todo DBs) is in
+`~/Library/Application Support/Bento/`. The sync token (shared by Notes and Todo) is in
 `~/.config/bento/sync-token`.
 
 ## Development
@@ -67,5 +69,5 @@ scripts/perform clipboard.show                # trigger an action in a running d
 
 Each module has a `Dev<Module>` harness that runs only that module, with config
 and data isolated under `/tmp/bento-dev/<module>`. Layout and conventions:
-`docs/SPEC.md`. Notes sync protocol: `docs/SYNC_PROTOCOL.md`. Server:
+`docs/SPEC.md`. Sync protocol (notes and todos): `docs/SYNC_PROTOCOL.md`. Server:
 `server/README.md`.

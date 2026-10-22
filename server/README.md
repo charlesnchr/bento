@@ -71,6 +71,10 @@ REST goes to `/v1/c/<collection>` (`/v1/notes` for `notes`), WebSocket `hello` s
 
 ## Deploy
 
+**Deploy order:** deploy the server before (or with) a Bento build that has the Todo
+module. Todo clients only sync once `/v1/health` reports `"collections": true`;
+until then they show “server needs an update” and keep tasks local.
+
 ```sh
 scripts/deploy-server.sh                 # cargo test, cross-build, upload, install, verify
 scripts/deploy-server.sh --skip-tests
