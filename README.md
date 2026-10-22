@@ -34,12 +34,12 @@ installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
 until `/Applications/Bento.app` is linked too (one `sudo ln`).
 
 To keep Accessibility and Screen Recording grants across rebuilds, sign with a
-persistent code-signing identity: set `BENTO_SIGN_IDENTITY` to its SHA-1, either
-in the environment or in an untracked `scripts/config.local.sh` (see
-`scripts/config.sh`). The designated requirement then pins `com.charles.bento`
-plus the certificate's leaf hash. Grants are per Mac, so each machine can use
-its own identity. Without an identity, or with `--adhoc`, builds are signed
-ad hoc and grants reset on every build.
+persistent code-signing identity: set `BENTO_SIGN_IDENTITY` to its SHA-1 or
+exact name (it needn't be trusted), either in the environment or in an untracked
+`scripts/config.local.sh` (see `scripts/config.sh`). The designated requirement
+then pins `com.charles.bento` plus the certificate's leaf hash. Grants are per
+Mac, so each machine can use its own identity. Without an identity, or with
+`--adhoc`, builds are signed ad hoc and grants reset on every build.
 
 On first launch, grant **Accessibility** (window management, modifier-drag,
 pasting) and **Screen Recording** (screenshots) from Settings → General.

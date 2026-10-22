@@ -19,7 +19,6 @@ BUNDLE_ID="com.charles.bento"
 APP="$ROOT/dist/Bento.app"
 VERSION="0.1.0"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 0).$(date +%y%m%d%H%M)"
-REQUIREMENT="designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$BENTO_SIGN_IDENTITY\""
 
 INSTALL=0; ADHOC=0
 for arg in "$@"; do
@@ -76,18 +75,53 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 sign_local() {
-  codesign --force --sign "$1" --timestamp=none ${2:+--requirements "=$REQUIREMENT"} "$APP"
+  codesign --force --sign "$1" --timestamp=none ${2:+--requirements "=$2"} "$APP"
+}
+
+# Code-signing identities in the keychain search list as `SHA-1 "name"`, one
+# per line. Untrusted ones are included (no -v): a self-signed certificate
+# signs fine without being trusted. Expired or revoked ones are left out.
+signing_identities() {
+  local out
+  out=$(security find-identity -p codesigning 2>/dev/null) || true
+  printf '%s\n' "$out" | awk '
+    $1 ~ /^[0-9]+\)$/ && !seen[$2]++ {
+      line = $0; sub(/^ *[0-9]+\) */, "", line)
+      if (line ~ /\)$/ && line !~ /\(CSSMERR_TP_NOT_TRUSTED\)$/) next
+      sub(/ *\(CSSMERR_TP_NOT_TRUSTED\)$/, "", line)
+      print line
+    }'
+}
+
+# SHA-1s of the identities whose hash or name is exactly $1.
+identity_hashes() {
+  signing_identities | ID="$1" awk '{
+    name = $0; sub(/^[^ ]+ "/, "", name); sub(/"$/, "", name)
+    if (toupper($1) == toupper(ENVIRON["ID"]) || name == ENVIRON["ID"]) print $1
+  }'
 }
 
 echo "==> sign"
 if [ "$ADHOC" = 1 ] || [ -z "$BENTO_SIGN_IDENTITY" ]; then
   [ "$ADHOC" = 1 ] || echo "note: BENTO_SIGN_IDENTITY not set, signing ad hoc (permission grants reset on every build)"
   sign_local - ""
-elif security find-identity -v -p codesigning 2>/dev/null | grep -q "$BENTO_SIGN_IDENTITY"; then
-  sign_local "$BENTO_SIGN_IDENTITY" req
 else
-  echo "signing identity $BENTO_SIGN_IDENTITY is not in a local keychain (or use --adhoc)" >&2
-  exit 1
+  SIGN_HASHES=$(identity_hashes "$BENTO_SIGN_IDENTITY")
+  problem=
+  case "$(printf '%s' "$SIGN_HASHES" | grep -c .)" in
+    1) sign_local "$SIGN_HASHES" "designated => identifier \"$BUNDLE_ID\" and certificate leaf = H\"$SIGN_HASHES\"" ;;
+    0) problem="no usable code-signing identity matching" ;;
+    *) problem="several code-signing identities match (set the SHA-1 instead):" ;;
+  esac
+  if [ -n "${problem:-}" ]; then
+    {
+      echo "$problem BENTO_SIGN_IDENTITY=$BENTO_SIGN_IDENTITY"
+      echo "Identities in the keychain search list (SHA-1 \"name\"):"
+      signing_identities | sed 's/^/  /'
+      echo "Set BENTO_SIGN_IDENTITY to one of these (scripts/config.local.sh), or use --adhoc."
+    } >&2
+    exit 1
+  fi
 fi
 codesign --verify --strict --verbose=1 "$APP"
 codesign -dvv "$APP" 2>&1 | grep -E "^(Identifier|Authority)=" || true
