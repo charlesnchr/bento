@@ -408,7 +408,7 @@ struct EditorRow: View {
                        font: .systemFont(ofSize: 14, weight: .medium),
                        onSubmit: { f in c.submitEditor(continueAdding: e.taskID == nil && !f.contains(.command)) },
                        onCancel: { c.cancelEditor() },
-                       onTab: { back in if !back { e.notes.focus(); return true }; return false })
+                       onTab: { back in if !back { e.notes.focus() }; return true })
             CompletionList(model: e.title, colorOf: { name in
                 TodoStyle.project(c.projects.first { $0.name == name }?.color ?? "grey")
             })
@@ -478,7 +478,7 @@ struct TodoFooter: View {
             if let t = c.toast {
                 Text(t.message)
                 if t.undoable {
-                    Button("Undo") { c.undo() }.buttonStyle(.link)
+                    Button("Undo") { c.undo(t.undoID) }.buttonStyle(.link)
                     Text("Z").foregroundStyle(.tertiary)
                 }
             } else {

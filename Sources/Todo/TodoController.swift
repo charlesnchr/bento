@@ -25,7 +25,10 @@ final class TaskEditor: ObservableObject, Identifiable {
     let defaults: Defaults
     let title: TokenFieldModel
     let notes: TokenFieldModel
-    @Published var notesFocused = false
+    /// What the editor started with: only what the user changed is written back, so a
+    /// title or description changed on another device meanwhile isn't overwritten.
+    let originalTitle: String
+    let originalNotes: String
 
     init(taskID: String?, anchor: Anchor, defaults: Defaults, title: String = "", notes: String = "") {
         self.taskID = taskID
@@ -33,6 +36,8 @@ final class TaskEditor: ObservableObject, Identifiable {
         self.defaults = defaults
         self.title = TokenFieldModel(text: title, parses: true)
         self.notes = TokenFieldModel(text: notes)
+        originalTitle = title
+        originalNotes = notes
     }
 }
 
@@ -109,8 +114,10 @@ final class PickerModel: ObservableObject, Identifiable {
 
 struct TodoToast: Equatable {
     var message: String
-    var undoable: Bool
+    /// The undo entry its Undo button reverts.
+    var undoID: UUID?
     var id = UUID()
+    var undoable: Bool { undoID != nil }
 }
 
 /// Owns the store, sync, and the todo window's state; every command lives here.
@@ -140,7 +147,12 @@ final class TodoController: ObservableObject {
     let keys = TodoKeyRouter()
     private var back: [TodoListView] = []
     private var forward: [TodoListView] = []
-    private struct UndoEntry { var docs: [TodoDoc]; var message: String }
+    /// One undoable change: each document before (nil: created) and after it.
+    private struct UndoEntry {
+        var changes: [(before: TodoDoc?, after: TodoDoc)]
+        var message: String
+        var id = UUID()
+    }
     private var undoStack: [UndoEntry] = []
     private var observers: [NSObjectProtocol] = []
     private var searchSink: AnyCancellable?
@@ -158,6 +170,7 @@ final class TodoController: ObservableObject {
         settings = ConfigStore.shared.section("todo", default: TodoSettings())
         view = settings.home
         if let raw = store.kv("sidebar") { sidebarVisible = raw != "0" }
+        keys.onChordChange = { [weak self] waiting in self?.awaitingChord = waiting }
     }
 
     // MARK: Lifecycle
@@ -249,11 +262,10 @@ final class TodoController: ObservableObject {
         projects = store.projects
         labels = store.labels
         let tasks = store.tasks
-        let liveProjects = projects.filter { !$0.archived || view.projectID == $0.id }
         counts = TodoQuery.counts(tasks: tasks, projects: projects, dates: dates)
         if case .project(let id) = view, store.doc(id)?.isProject != true { view = settings.home }
         let old = rows
-        rows = TodoQuery.rows(for: view, tasks: tasks, projects: liveProjects, showCompleted: showCompleted, dates: dates)
+        rows = TodoQuery.rows(for: view, tasks: tasks, projects: projects, showCompleted: showCompleted, dates: dates)
         fixFocus(previous: old)
     }
 
@@ -349,7 +361,6 @@ final class TodoController: ObservableObject {
         }
         var consumed = false
         let cmd = keys.command(for: e, consumed: &consumed)
-        awaitingChord = keys.awaitingG
         if let cmd { perform(cmd) }
         return consumed
     }
@@ -488,13 +499,12 @@ final class TodoController: ObservableObject {
         let notes = e.notes.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed = QuickAddParser.parse(text, projects: projectNames, labels: labels)
         if let id = e.taskID {
-            guard let old = task(id) else { cancelEditor(); return }
-            let changedText = text != old.title
+            guard task(id) != nil else { cancelEditor(); return }
+            let changedText = text != e.originalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let changedNotes = notes != e.originalNotes.trimmingCharacters(in: .whitespacesAndNewlines)
             mutate([id], message: nil) { t in
-                if changedText {
-                    apply(parsed, to: &t, title: true)
-                }
-                t.setNotes(notes)
+                if changedText { apply(parsed, to: &t, title: true) }
+                if changedNotes { t.setNotes(notes) }
             }
             editor = nil
             windowController?.focusList()
@@ -559,7 +569,26 @@ final class TodoController: ObservableObject {
         return t
     }
 
+    /// Fractional orders halve a gap on every insert between the same neighbours; after
+    /// ~50 they run out of precision. Respace a project's tasks before that happens.
+    private func renumberIfCrowded(project: String?) {
+        let siblings = store.tasks.filter { $0.project == project }.sorted(by: TodoQuery.manualOrder)
+        let crowded = zip(siblings, siblings.dropFirst()).contains { a, b in b.order - a.order < 1e-6 * max(1, abs(a.order)) }
+        guard crowded else { return }
+        var out: [TodoDoc] = []
+        for (i, t) in siblings.enumerated() {
+            var d = t
+            d.setOrder(Double(i + 1) * 1024)
+            d.dirty = true
+            d.device = client.device
+            if d != t { out.append(d) }
+        }
+        store.save(out)
+        client.localChange()
+    }
+
     private func order(for anchor: TaskEditor.Anchor, project: String?) -> Double {
+        renumberIfCrowded(project: project)
         switch anchor {
         case .top: return nextOrder(project: project, top: true)
         case .bottom, .endOfGroup: return nextOrder(project: project, top: false)
@@ -596,64 +625,74 @@ final class TodoController: ObservableObject {
     }
 
     private func commit(_ docs: [TodoDoc], previous: [TodoDoc?], message: String?) {
-        // a creation is undone by deleting: remember a tombstone-to-be
-        let before = zip(docs, previous).map { d, p -> TodoDoc in
-            if let p { return p }
-            var gone = d
-            gone.deleted = true
-            return gone
-        }
-        undoStack.append(UndoEntry(docs: before, message: message ?? "Change"))
+        let entry = UndoEntry(changes: Array(zip(previous, docs)), message: message ?? "Change")
+        undoStack.append(entry)
         if undoStack.count > 100 { undoStack.removeFirst(undoStack.count - 100) }
         store.save(docs)
         client.localChange()
-        if let message { flash(message, undoable: true) }
+        if let message { flash(message, undoID: entry.id) }
     }
 
-    func undo() {
-        guard let entry = undoStack.popLast() else { flash("Nothing to undo"); return }
+    /// Reverts the newest change, or the one with `id` (a toast's Undo button).
+    func undo(_ id: UUID? = nil) {
+        guard let i = id.map({ id in undoStack.lastIndex { $0.id == id } }) ?? (undoStack.isEmpty ? nil : undoStack.count - 1) else {
+            flash(id == nil ? "Nothing to undo" : "Already undone")
+            return
+        }
+        let entry = undoStack.remove(at: i)
         var out: [TodoDoc] = []
-        for old in entry.docs {
-            guard let cur = store.doc(old.id) else { continue }
-            var d = TodoController.restore(cur, to: old)
+        for (before, after) in entry.changes {
+            guard let cur = store.doc(after.id), var d = TodoController.restore(cur, before: before, after: after) else { continue }
             d.device = client.device
-            if d != cur { out.append(d) }
+            out.append(d)
         }
         store.save(out)
         client.localChange()
-        if let first = entry.docs.first, !first.deleted, first.isTask { focus = first.id }
+        if let first = entry.changes.first, let b = first.before, b.isTask { focus = b.id }
         flash("Undone: \(entry.message)")
     }
 
-    /// `cur` changed back to `old`'s content as a new local change (fresh clocks, so it
-    /// wins over the change being undone on every device).
-    static func restore(_ cur: TodoDoc, to old: TodoDoc) -> TodoDoc {
+    /// Reverts what one change did (`before` → `after`) to the document as it is now (`cur`),
+    /// as a new local change with fresh clocks so it wins everywhere. Only the fields that
+    /// change touched, and only where they still hold the value it wrote: edits made since,
+    /// here or on another device, are kept. nil when there is nothing left to revert.
+    static func restore(_ cur: TodoDoc, before: TodoDoc?, after: TodoDoc) -> TodoDoc? {
         var d = cur
         let c = TodoDoc.nextClock(after: cur.updatedAt, cur.maxClock)
-        if old.deleted {
+        guard let before else {
+            // undo a creation
+            guard !cur.deleted else { return nil }
             d.markDeleted(at: c)
-        } else if cur.deleted {
+            d.dirty = true
+            return d
+        }
+        if after.deleted, !before.deleted {
+            // undo a deletion
+            guard cur.deleted else { return nil }
             d.deleted = false
-            d.fields = old.fields
-            d.type = old.type
+            d.type = before.type
+            d.fields = before.fields
             for k in d.fields.keys { d.clocks[k] = c }
             d.updatedAt = c
-        } else {
-            for k in Set(cur.fields.keys).union(old.fields.keys) where cur.fields[k] != old.fields[k] {
-                d.set(k, old.fields[k] ?? .null, at: c)
-            }
+            d.dirty = true
+            return d
         }
+        guard !cur.deleted else { return nil }
+        for k in Set(before.fields.keys).union(after.fields.keys) where before.fields[k] != after.fields[k] && cur.fields[k] == after.fields[k] {
+            d.set(k, before.fields[k] ?? .null, at: c)
+        }
+        guard d != cur else { return nil }
         d.dirty = true
         return d
     }
 
-    func flash(_ message: String, undoable: Bool = false) {
-        let t = TodoToast(message: message, undoable: undoable)
+    func flash(_ message: String, undoID: UUID? = nil) {
+        let t = TodoToast(message: message, undoID: undoID)
         toast = t
         toastWork?.cancel()
         let w = DispatchWorkItem { [weak self] in if self?.toast?.id == t.id { self?.toast = nil } }
         toastWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + (undoable ? 6 : 2.5), execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (undoID != nil ? 6 : 2.5), execute: w)
     }
 
     private func plural(_ n: Int, _ s: String) -> String { n == 1 ? "1 \(s)" : "\(n) \(s)s" }
@@ -703,7 +742,9 @@ final class TodoController: ObservableObject {
     func reorder(_ delta: Int) {
         guard view.isManualOrder else { flash("Tasks are sorted by date here"); return }
         guard let f = focus, selection.isEmpty || selection == [f] else { return }
-        let list = rows.compactMap(\.task).filter { !$0.isCompleted }
+        renumberIfCrowded(project: task(f)?.project)
+        // fresh from the store: the renumbering above isn't in `rows` yet
+        let list = rows.compactMap { $0.task.flatMap { self.task($0.id) } }.filter { !$0.isCompleted }
         guard let i = list.firstIndex(where: { $0.id == f }) else { return }
         let j = i + delta
         guard list.indices.contains(j) else { return }
@@ -739,17 +780,20 @@ final class TodoController: ObservableObject {
         return p
     }
 
+    private static func same(_ a: String, _ b: String) -> Bool { a.caseInsensitiveCompare(b) == .orderedSame }
+
     func renameLabel(_ old: String, to new: String) {
-        let ids = store.tasks.filter { $0.labels.contains(old) }.map(\.id)
+        let ids = store.tasks.filter { $0.labels.contains { Self.same($0, old) } }.map(\.id)
         mutate(ids, message: "Label renamed") { t in
-            t.setLabels(t.labels.map { $0 == old ? new : $0 })
+            var seen = Set<String>()
+            t.setLabels(t.labels.map { Self.same($0, old) ? new : $0 }.filter { seen.insert($0.lowercased()).inserted })
         }
         if view == .label(old) { go(.label(new), recordHistory: false) }
     }
 
     func deleteLabel(_ name: String) {
-        let ids = store.tasks.filter { $0.labels.contains(name) }.map(\.id)
-        mutate(ids, message: "Label @\(name) removed") { t in t.setLabels(t.labels.filter { $0 != name }) }
+        let ids = store.tasks.filter { $0.labels.contains { Self.same($0, name) } }.map(\.id)
+        mutate(ids, message: "Label @\(name) removed") { t in t.setLabels(t.labels.filter { !Self.same($0, name) }) }
         if view == .label(name) { go(settings.home) }
     }
 

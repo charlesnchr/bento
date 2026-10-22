@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 @testable import Todo
 
@@ -89,21 +89,66 @@ private func titles(_ rows: [TodoRow]) -> [String] {
 }
 
 @Suite struct Undo {
-    @Test func restoreFieldsDeletionAndCreation() {
-        var cur = t("x")
-        let old = cur
-        cur.setTitle("changed", at: 5000)
-        cur.setPriority(1, at: 5000)
-        let r = TodoController.restore(cur, to: old)
-        #expect(r.title == "x" && r.priority == 4 && r.dirty && r.clocks["title"]! > 5000)
+    @Test func revertsOnlyWhatTheChangeTouched() {
+        let before = t("x")
+        var after = before
+        after.setCompleted(5000, at: 5000)
+        var cur = after
+        cur.setTitle("renamed on the phone", at: 6000)
+        let r = TodoController.restore(cur, before: before, after: after)!
+        #expect(r.completedAt == nil && r.title == "renamed on the phone" && r.dirty)
+        #expect(r.clocks["completed_at"]! > 6000)
+        // the field was changed again since: nothing left to revert
+        var again = after
+        again.setCompleted(7000, at: 7000)
+        #expect(TodoController.restore(again, before: before, after: after) == nil)
+    }
 
-        var del = old
-        del.markDeleted(at: 6000)
-        let back = TodoController.restore(del, to: old)
+    @Test func deletionAndCreation() {
+        let before = t("x")
+        var after = before
+        after.markDeleted(at: 6000)
+        let back = TodoController.restore(after, before: before, after: after)!
         #expect(!back.deleted && back.title == "x" && back.maxClock > 6000)
+        #expect(TodoController.restore(before, before: nil, after: before)!.deleted)
+        #expect(TodoController.restore(after, before: nil, after: before) == nil)
+    }
+}
 
-        var gone = old
-        gone.deleted = true
-        #expect(TodoController.restore(old, to: gone).deleted)
+@Suite struct Archived {
+    @Test func archivedProjectTasksOnlyShowInTheirProject() {
+        var p = TodoDoc.newProject(name: "Old", order: 1, now: 1)
+        p.id = "old"
+        p.setArchived(true, at: 2)
+        let tasks = [t("kept", due: "2026-10-21", project: "old"), t("inbox", due: "2026-10-21")]
+        #expect(titles(TodoQuery.rows(for: .inbox, tasks: tasks, projects: [p], showCompleted: false, dates: dates)) == ["inbox"])
+        #expect(titles(TodoQuery.rows(for: .today, tasks: tasks, projects: [p], showCompleted: false, dates: dates)) == ["inbox"])
+        #expect(titles(TodoQuery.rows(for: .project("old"), tasks: tasks, projects: [p], showCompleted: false, dates: dates)) == ["kept"])
+        let c = TodoQuery.counts(tasks: tasks, projects: [p], dates: dates)
+        #expect(c.inbox == 1 && c.today == 1)
+    }
+}
+
+@Suite struct Keys {
+    func key(_ chars: String, code: UInt16, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                         characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+    }
+
+    @Test func chordsAndFallthrough() {
+        let r = TodoKeyRouter()
+        var states: [Bool] = []
+        r.onChordChange = { states.append($0) }
+        var consumed = false
+        #expect(r.command(for: key("g", code: 5), consumed: &consumed) == nil && consumed)
+        #expect(r.command(for: key("t", code: 17), consumed: &consumed) == .goToday)
+        #expect(states == [true, false])
+        _ = r.command(for: key("g", code: 5), consumed: &consumed)
+        #expect(r.command(for: key("\u{1b}", code: 53), consumed: &consumed) == .close) // Esc after g isn't swallowed
+        #expect(r.command(for: key("e", code: 14), consumed: &consumed) == .complete)
+        #expect(r.command(for: key("A", code: 0, flags: .shift), consumed: &consumed) == .addTop)
+        #expect(r.command(for: key("?", code: 44, flags: .shift), consumed: &consumed) == .help)
+        #expect(r.command(for: key("k", code: 40, flags: .command), consumed: &consumed) == .quickFind)
+        #expect(r.command(for: key("b", code: 11), consumed: &consumed) == nil && !consumed)
     }
 }

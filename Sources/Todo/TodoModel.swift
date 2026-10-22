@@ -144,7 +144,8 @@ struct TodoDoc: Equatable {
                 if let c = other.clocks[key] { m.clocks[key] = c }
             }
         }
-        for (k, v) in other.extra where m.extra[k] == nil { m.extra[k] = v }
+        // Extra keys have no clocks; no client writes them yet, so take the server's.
+        for (k, v) in other.extra { m.extra[k] = v }
         m.createdAt = min(createdAt, other.createdAt)
         return m
     }
@@ -274,7 +275,9 @@ enum TodoWire {
     /// nil for anything that isn't a todo document (wrong collection, unreadable body).
     static func decode(_ obj: Any?) -> TodoDoc? {
         guard let o = obj as? [String: Any], let id = o["id"] as? String, !id.isEmpty else { return nil }
-        if let c = o["collection"] as? String, c != collection { return nil }
+        // Servers with collections always say which; anything else (e.g. an old server's
+        // notes) isn't ours.
+        guard o["collection"] as? String == collection else { return nil }
         func int(_ k: String) -> Int64? { (o[k] as? NSNumber).flatMap { TodoDoc.int64($0.doubleValue) } }
         guard let updated = int("updated_at") else { return nil }
         var d = TodoDoc(id: id, type: "", createdAt: int("created_at") ?? updated, updatedAt: updated)

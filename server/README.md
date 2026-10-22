@@ -197,5 +197,7 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   start, `backup`, `purge`) adds `notes.collection TEXT NOT NULL DEFAULT 'notes'`
   (existing rows become `notes`) and the `(collection, seq)` index, in one
   `BEGIN IMMEDIATE` transaction, so it's idempotent and safe while another process
-  has the DB open. A v1 binary still runs on a migrated DB (rollback), but it
-  doesn't filter: it would serve todos to Notes clients as notes.
+  has the DB open. **Don't roll back to a v1 binary once todos exist**: it still
+  runs on a migrated DB but doesn't filter, so it serves every todo to Notes clients,
+  which keep them as notes. (Todo clients re-check `/v1/health` on every reconnect
+  and stop syncing with a server that has no collections.)

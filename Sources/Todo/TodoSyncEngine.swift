@@ -110,12 +110,14 @@ final class TodoSyncEngine {
 
     /// An ack for a put. `version` is the updated_at that was sent when the transport
     /// knows it (REST); WebSocket acks arrive in send order and pop the oldest version.
-    func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil) {
+    /// `ordered`: the server sent every earlier change of our collections before this ack
+    /// (WebSocket), so last_seq may jump to it over other collections' seqs.
+    func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil, ordered: Bool = false) {
         let sent = popInflight(id, version: version)
         guard accepted else { return } // the stored winner follows as a `note` message
         guard var d = repo.doc(id) else { return }
         if let seq {
-            if seq == repo.lastSeq + 1 { repo.lastSeq = seq }
+            if seq == repo.lastSeq + 1 || (ordered && seq > repo.lastSeq) { repo.lastSeq = seq }
             d.seq = max(d.seq ?? 0, seq)
         }
         if let sent, d.updatedAt == sent { d.dirty = false }
@@ -128,6 +130,10 @@ final class TodoSyncEngine {
     }
 
     func markUnsendable(_ d: TodoDoc) { failed[d.id] = d.updatedAt }
+
+    /// New connection: refused documents are tried again (the refusal may have been transient;
+    /// oversized ones are caught again before sending).
+    func clearFailed() { failed.removeAll() }
 
     var blockedCount: Int {
         failed.filter { id, v in repo.doc(id).map { $0.dirty && $0.updatedAt == v } ?? false }.count

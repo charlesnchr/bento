@@ -66,6 +66,8 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         let back = TodoWire.decode(TodoWire.encode(d, device: "mac"))!
         #expect(back.fields == d.fields && back.clocks == d.clocks && back.extra == d.extra && back.meta == d.meta)
         #expect(TodoWire.decode(["id": "x", "updated_at": 1, "body": "# a note", "collection": "notes"]) == nil)
+        // an old server sends no collection: not ours
+        #expect(TodoWire.decode(["id": "x", "updated_at": 1, "deleted": true]) == nil)
     }
 }
 

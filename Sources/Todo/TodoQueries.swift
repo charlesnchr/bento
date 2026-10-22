@@ -122,6 +122,9 @@ enum TodoQuery {
     static func rows(for view: TodoListView, tasks: [TodoDoc], projects: [TodoDoc], showCompleted: Bool,
                      dates: TodoDates) -> [TodoRow] {
         let live = Set(projects.map(\.id))
+        // Archived projects' tasks only show in that project (like Todoist).
+        let archived = Set(projects.filter(\.archived).map(\.id)).subtracting([view.projectID].compactMap { $0 })
+        let tasks = tasks.filter { t in t.project.map { !archived.contains($0) } ?? true }
         // Tasks of a deleted project behave like Inbox tasks until moved.
         func inInbox(_ t: TodoDoc) -> Bool { t.project.map { !live.contains($0) } ?? true }
         let open = tasks.filter { !$0.isCompleted }
@@ -215,10 +218,12 @@ enum TodoQuery {
     /// Open-task counts for the sidebar.
     static func counts(tasks: [TodoDoc], projects: [TodoDoc], dates: TodoDates) -> (inbox: Int, today: Int, overdue: Int, byProject: [String: Int]) {
         let live = Set(projects.map(\.id))
+        let archived = Set(projects.filter(\.archived).map(\.id))
         var inbox = 0, today = 0, overdue = 0
         var by: [String: Int] = [:]
         let t = dates.today
         for x in tasks where !x.isCompleted {
+            if let p = x.project, archived.contains(p) { by[p, default: 0] += 1; continue }
             if let p = x.project, live.contains(p) { by[p, default: 0] += 1 } else { inbox += 1 }
             if let d = x.due?.date {
                 if d == t { today += 1 } else if d < t { today += 1; overdue += 1 }

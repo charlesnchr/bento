@@ -187,9 +187,10 @@ struct TokenField: NSViewRepresentable {
                     restyle(v as! TokenTextView)
                     return true
                 }
-                return parent.onTab?(false) ?? false
+                // never a literal tab in a single-line field
+                return parent.onTab?(false) ?? !parent.multiline
             case #selector(NSResponder.insertBacktab(_:)):
-                return parent.onTab?(true) ?? false
+                return parent.onTab?(true) ?? !parent.multiline
             case #selector(NSResponder.moveUp(_:)):
                 if m.completion != nil { m.moveCompletion(-1); return true }
                 return parent.onArrow?(-1) ?? false

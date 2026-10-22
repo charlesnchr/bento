@@ -222,17 +222,21 @@ enum TodoKeyMap {
 
 /// Turns key-down events into commands, with Todoist's `g …` chords.
 final class TodoKeyRouter {
-    private(set) var awaitingG = false
+    private(set) var awaitingG = false { didSet { if awaitingG != oldValue { onChordChange?(awaitingG) } } }
     private var gWork: DispatchWorkItem?
+    /// Chord state changes (the window shows "G…").
+    var onChordChange: ((Bool) -> Void)?
 
     /// The command for an event, nil if it isn't one (or it started a chord: `consumed` is set).
     func command(for e: NSEvent, consumed: inout Bool) -> TodoCommand? {
         let mods = e.modifierFlags.intersection([.command, .option, .control])
         if awaitingG {
-            awaitingG = false
-            gWork?.cancel()
-            consumed = true
-            return TodoKeyMap.bindings.first { $0.key.matches(e, afterG: true) }?.command
+            reset()
+            if let c = TodoKeyMap.bindings.first(where: { $0.key.matches(e, afterG: true) })?.command {
+                consumed = true
+                return c
+            }
+            // not a chord: handle the key on its own (Esc, ⌘ shortcuts, …)
         }
         if mods.isEmpty, e.charactersIgnoringModifiers == "g" {
             awaitingG = true
@@ -250,5 +254,6 @@ final class TodoKeyRouter {
     func reset() {
         awaitingG = false
         gWork?.cancel()
+        gWork = nil
     }
 }

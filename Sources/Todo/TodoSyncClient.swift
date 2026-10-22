@@ -326,6 +326,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
                 return
             }
             helloDone = true
+            engine.clearFailed() // refused puts get another try on every connection
             backoff = 1
             wsFailures = 0
             pollTimer?.invalidate(); pollTimer = nil
@@ -337,7 +338,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
         case "ack":
             guard let id = obj["id"] as? String else { return }
             let accepted = obj["accepted"] as? Bool ?? false
-            engine.ack(id: id, seq: (obj["seq"] as? NSNumber)?.int64Value, accepted: accepted)
+            engine.ack(id: id, seq: (obj["seq"] as? NSNumber)?.int64Value, accepted: accepted, ordered: true)
             markSynced()
         case "note":
             if let n = TodoWire.decode(obj["note"]) {
@@ -400,6 +401,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
 
     private func connectionLost(error: String, wasUpgradeFailure: Bool) {
         guard running else { return }
+        collectionsOK = false // the server may have been replaced (e.g. rolled back): check again
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         helloDone = false
@@ -444,7 +446,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
                     self.log.error("Sync server has no collections; not syncing tasks")
                     self.status.state = .offline("server needs an update")
                     self.status.lastError = "The sync server is too old for tasks (no collections); update bento-sync"
-                    self.scheduleRetry(maxDelay: 300, reason: "server lacks collections", minDelay: 60)
+                    self.scheduleRetry(maxDelay: 300, reason: "server lacks collections", minDelay: 120)
                 } else {
                     self.status.state = .offline(self.shortReason(err?.localizedDescription ?? "unreachable"))
                     self.status.lastError = err?.localizedDescription
@@ -465,6 +467,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func unauthorized() {
+        collectionsOK = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         helloDone = false
