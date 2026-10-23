@@ -253,7 +253,7 @@ hold_opt || bad "couldn't hold ⌥"
 sleep 4
 expect "watcher suspended while X is temporarily visible" "$(state .changeWatcher)" false
 expect "X's return waits while ⌥ is held" "$(state .temporarilyShown)" 1
-traced "return $XID waits: input busy" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
+traced "move $XID not started: input busy" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
 release; check
 eventually 6 "X back once ⌥ is let go" settled
 expect "X hidden again" "$(section X)" hidden
