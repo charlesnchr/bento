@@ -158,10 +158,25 @@ eventually 5 "X's menu opened" opened X; check
 eventually 6 "hidden again once the menu closed" is_hidden
 expect "nothing left moved into view" "$(state .temporarilyShown)" 0
 
-log "Bento Bar"
+log "real shortcut and chevron"
 "$TOOL" url "$BENTO_HOME" "bento://settings/menubar"; sleep 2; check   # activates the harness for typing
 WID=$(/tmp/bentoctl windows DevMenuBar | awk '/Bento Settings/ {print $1; exit}')
 [ -n "$WID" ] && screencapture -x -o -l "$WID" "$OUT/05-settings.png"
+expect "⌃⌥⌘M registered" "$(jq -r '.actions[] | select(.id == "menubar.toggle-hidden") | .failed' "$BENTO_HOME/support/diagnostics.json")" false
+/tmp/bentoctl key ctrl+opt+cmd+m --expect-pid "$HPID" || bad "couldn't type into the harness"
+sleep 0.8; expect "⌃⌥⌘M shows the hidden items" "$(state .visibility)" shown
+/tmp/bentoctl key ctrl+opt+cmd+m --expect-pid "$HPID" >/dev/null 2>&1; sleep 0.8
+expect "⌃⌥⌘M hides them again" "$(state .visibility)" hidden
+CHEV=$(state '.items[] | select(.role | contains("toggle")) | "\((.x + .width / 2) | floor) 16"')
+if /tmp/bentoctl click $CHEV --expect-pid "$HPID" 2>"$OUT/click.err"; then
+  sleep 0.8; expect "clicking the chevron shows them" "$(state .visibility)" shown
+  /tmp/bentoctl click $CHEV --expect-pid "$HPID" >/dev/null 2>&1; sleep 0.8
+  expect "clicking it again hides them" "$(state .visibility)" hidden
+else
+  log "  - chevron click skipped: $(cat "$OUT/click.err")"
+fi
+
+log "Bento Bar"
 : > "$QALOG"
 perform menubar.bar; sleep 1.2; check
 expect "bar open" "$(state .bar.open)" true
@@ -186,6 +201,23 @@ eventually 6 "hidden again after search" is_hidden
 settled() { [ "$(state '"\(.temporarilyShown) \(.arranging)"')" = "0 false" ]; }
 eventually 4 "nothing left moved into view" settled
 expect "Z always hidden again" "$(section Z)" alwaysHidden
+
+log "hide again after a delay"
+setconf() { jq "$1" "$BENTO_HOME/config/config.json" > "$OUT/c.json" && mv "$OUT/c.json" "$BENTO_HOME/config/config.json"; sleep 1; }
+setconf '.menubar.autoRehide = true | .menubar.rehideDelay = 2'
+perform menubar.toggle-hidden; sleep 0.6
+expect "shown" "$(state .visibility)" shown
+eventually 6 "hidden again by the timer" is_hidden
+setconf '.menubar.autoRehide = false'
+
+log "show when an icon changes"
+setconf ".menubar.showOnChange = [\"$P/BentoQAX\"] | .menubar.showOnChangeDuration = 3"
+sleep 3   # the first look records the icon
+kill -USR1 "$QPID"
+is_shown() { [ "$(state .visibility)" = shown ]; }
+eventually 6 "X shown after its icon changed" is_shown
+eventually 8 "hidden again after the alert" is_hidden
+setconf '.menubar.showOnChange = []'
 
 log "idle CPU (20 s, hidden)"
 is_hidden || perform menubar.toggle-hidden

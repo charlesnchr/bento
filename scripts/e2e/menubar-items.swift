@@ -2,8 +2,9 @@
 // Build: swiftc -O scripts/e2e/menubar-items.swift -o /tmp/menubar-items
 //   menubar-items items <log> X Y Z   throwaway status items, one per title (autosave name
 //                                     BentoQA<title>); each logs "open <title>" to <log> when its
-//                                     menu opens and closes the menu itself after 0.8 s. Removed
-//                                     on SIGTERM/SIGINT (and gone with the process anyway).
+//                                     menu opens and closes the menu itself after 0.8 s. SIGUSR1
+//                                     changes their titles (an icon update); removed on
+//                                     SIGTERM/SIGINT (and gone with the process anyway).
 //   menubar-items order               every status item window left to right: "<id> <name> <x>"
 //                                     (names are blank while an item is parked off-screen)
 //   menubar-items url <home> <url>    sends a bento:// URL to the dev instance with that BENTO_HOME
@@ -103,6 +104,10 @@ for t in args.dropFirst(2) {
     items.append(it)
 }
 var sources: [DispatchSourceSignal] = []
+signal(SIGUSR1, SIG_IGN)
+let update = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+update.setEventHandler { for it in items { it.button?.title = (it.button?.title ?? "") + "!" } }
+update.resume(); sources.append(update)
 for sig in [SIGTERM, SIGINT] {
     signal(sig, SIG_IGN)
     let s = DispatchSource.makeSignalSource(signal: sig, queue: .main)
