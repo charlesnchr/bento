@@ -12,7 +12,7 @@
 #
 # Data safety: every instance has its own BENTO_HOME under $WORK, syncs with a local
 # bento-sync on a free port (temp DB, random token). The live server and the user's notes
-# are never touched (isolated instances also refuse bento.radian.dk by themselves).
+# are never touched (isolated instances also refuse any server but a local one by themselves).
 # Instances run from a copy of the binary inside a tiny .app with their own bundle id, so
 # bentoctl --expect can verify that keystrokes go to them and nowhere else.
 set -u

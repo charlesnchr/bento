@@ -12,7 +12,7 @@ Examples:
   syncctl.py roundtrip                                    # two WebSockets, put/ack/note/stale/delete
   syncctl.py --collection todos list                      # another collection (REST /v1/c/todos, WS hello collections)
 
-Server:  --server or $BENTO_SYNC_SERVER (default https://bento.radian.dk)
+Server:  --server, else $BENTO_SYNC_SERVER, else notes.sync.server in ~/.config/bento/config.json
 Token:   $BENTO_SYNC_TOKEN or --token-file (default ~/.config/bento/sync-token)
 Proxy:   --proxy host:port, else $https_proxy / macOS system proxy (urllib.getproxies), --no-proxy to disable
 """
@@ -413,9 +413,20 @@ def cmd_roundtrip(ctx, args):
     return 0
 
 
+def configured_server():
+    """$BENTO_SYNC_SERVER, else the server Bento itself uses (notes.sync.server)."""
+    if os.environ.get("BENTO_SYNC_SERVER"):
+        return os.environ["BENTO_SYNC_SERVER"]
+    try:
+        with open(os.path.expanduser("~/.config/bento/config.json")) as f:
+            return json.load(f)["notes"]["sync"]["server"].strip() or None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--server", default=os.environ.get("BENTO_SYNC_SERVER", "https://bento.radian.dk"))
+    p.add_argument("--server", default=configured_server())
     p.add_argument("--token-file", default="~/.config/bento/sync-token")
     p.add_argument("--proxy", help="HTTP proxy host:port (default: env / macOS system proxy)")
     p.add_argument("--no-proxy", action="store_true")
@@ -442,6 +453,8 @@ def main():
     s.add_argument("-v", "--verbose", action="store_true")
     sub.add_parser("roundtrip")
     args = p.parse_args()
+    if not args.server:
+        p.error("no server: pass --server, set $BENTO_SYNC_SERVER, or set notes.sync.server in Bento")
     ctx = Ctx(args)
     fn = {"health": cmd_health, "list": cmd_list, "put": cmd_put, "ws-put": cmd_ws_put,
           "delete": cmd_delete, "watch": cmd_watch, "roundtrip": cmd_roundtrip}[args.cmd]

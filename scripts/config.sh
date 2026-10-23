@@ -1,4 +1,5 @@
-# Build and install settings, sourced by build.sh and the e2e scripts.
+# Build, install and deploy settings, sourced by build.sh, release.sh,
+# deploy-server.sh and the e2e scripts.
 # Set them in the environment or, per machine, in scripts/config.local.sh
 # (untracked), e.g.  : "${BENTO_INSTALL_DIR:=/opt/homebrew/opt/bento}"
 #
@@ -12,6 +13,8 @@
 #                        with brew, so a local build replaces it in place (until
 #                        the next brew upgrade); otherwise /Applications.
 #                        Any directory but /Applications is linked from ~/Applications.
+#   BENTO_SYNC_DOMAIN    public name of your bento-sync server, for
+#                        deploy-server.sh (e.g. sync.example.com).
 CONFIG_LOCAL="$(dirname "${BASH_SOURCE[0]}")/config.local.sh"
 # shellcheck source=/dev/null
 # A failing command in it must not abort a caller running with set -e

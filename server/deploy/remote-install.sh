@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Runs as root on the server (invoked by scripts/deploy-server.sh with the
-# staging directory as $1). Idempotent: safe to re-run on every deploy.
+# staging directory as $1 and the domain as $2). Idempotent: safe to re-run on
+# every deploy.
 set -euo pipefail
 
 STAGE=${1:?staging dir}
-DOMAIN=bento.radian.dk
+DOMAIN=${2:?domain}
+[[ $DOMAIN =~ ^[A-Za-z0-9.-]+$ ]] || { echo "bad domain: $DOMAIN" >&2; exit 1; }
 PORT=8787
 SITE=/etc/nginx/sites-available/$DOMAIN
 ENABLED=/etc/nginx/sites-enabled/$DOMAIN
 CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
 
 say() { printf '==> %s\n' "$*"; }
+# The nginx configs in the repo are templates with @DOMAIN@ placeholders.
+render() { sed "s/@DOMAIN@/$DOMAIN/g" "$STAGE/$1" > "$STAGE/$1.rendered"; }
 
 # 1. Port must be free or already ours.
 if ss -Hltnp "sport = :$PORT" | grep -q . && ! ss -Hltnp "sport = :$PORT" | grep -q '"bento-sync"'; then
@@ -69,13 +73,15 @@ restore_site() {
 }
 if [ ! -e "$CERT" ]; then
     say "no certificate yet: bootstrapping HTTP-only site and running certbot"
-    install -m 0644 "$STAGE/nginx-bootstrap.conf" "$SITE"
+    render nginx-bootstrap.conf
+    install -m 0644 "$STAGE/nginx-bootstrap.conf.rendered" "$SITE"
     ln -sfn "$SITE" "$ENABLED"
     reload_nginx || restore_site
     certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos \
         --keep-until-expiring --deploy-hook "systemctl reload nginx"
 fi
-install -m 0644 "$STAGE/nginx-bento.radian.dk.conf" "$SITE"
+render nginx-site.conf
+install -m 0644 "$STAGE/nginx-site.conf.rendered" "$SITE"
 ln -sfn "$SITE" "$ENABLED"
 reload_nginx || restore_site
 

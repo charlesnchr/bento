@@ -96,5 +96,5 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 
 ## Sync
 
-See `docs/SYNC_PROTOCOL.md`. Server URL `https://bento.radian.dk`, token in
-`~/.config/bento/sync-token`.
+See `docs/SYNC_PROTOCOL.md`. Self-hosted `bento-sync` (`server/`); no server by default, set
+`notes.sync.server` / `todo.sync.server` in the config. Token in `~/.config/bento/sync-token`.
