@@ -268,6 +268,7 @@ final class ItemScanner {
                     // Before macOS 26 the app is still right (from the window list).
                     if ItemScanner.windowsAreHosted { self.owners[id] = nil } else { self.owners[id]?.element = nil }
                     completion(false)
+                    self.resolveOwners(self.snapshot()) {}
                 }
                 return
             }
