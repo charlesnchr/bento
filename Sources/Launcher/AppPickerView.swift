@@ -129,7 +129,7 @@ struct AppPickerSection: View {
         switch command {
         case .move(let m):
             guard !model.results.isEmpty else { return false }
-            withAnimation(.easeOut(duration: 0.1)) { model.move(m) }
+            model.move(m)   // the tiles animate their own highlight
             return true
         case .submit:
             guard let app = model.selected else {
@@ -155,7 +155,6 @@ struct AppGrid: View {
     /// The search field has focus: arrows and Return act on the selection, so show it.
     let keyboardActive: Bool
     let onPick: (AppCandidate) -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let _ = revision
@@ -179,7 +178,7 @@ struct AppGrid: View {
         }
         .frame(maxWidth: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { model.setWidth($0) }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.results.map(\.id))
+        // No transition on the results: they change as you type, like Spotlight.
     }
 
     private var empty: some View {
@@ -210,6 +209,7 @@ private struct AppTile: View {
     let showsRunning: Bool
     let action: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let shortcut = entry.flatMap { ActionRegistry.shared.shortcut(for: $0.actionID) }
@@ -242,8 +242,8 @@ private struct AppTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: selected)
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selected)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
         .help(help(shortcut))
         .accessibilityLabel(app.name)
         .accessibilityValue(shortcut?.displayString ?? (entry == nil ? "" : "No shortcut"))
