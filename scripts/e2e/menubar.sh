@@ -108,7 +108,9 @@ trap 'exit 130' INT TERM
 # A pointer resting on the menu bar (rightly) keeps shown items from hiding:
 # park it mid-screen for the run, put it back at the end.
 POINTER=$("$TOOL" pointer)
-"$TOOL" warp $(swift -e 'import AppKit; let f = NSScreen.screens[0].frame; print(Int(f.midX), Int(f.midY))' 2>/dev/null)
+MID=$(swift -e 'import AppKit; let f = NSScreen.screens[0].frame; print(Int(f.midX), Int(f.midY))' 2>/dev/null)
+park() { "$TOOL" warp $MID; }
+park
 shot 00-before
 
 # ---------------------------------------------------------------- run
@@ -172,6 +174,7 @@ if /tmp/bentoctl click $CHEV --expect-pid "$HPID" 2>"$OUT/click.err"; then
   sleep 0.8; expect "clicking the chevron shows them" "$(state .visibility)" shown
   /tmp/bentoctl click $CHEV --expect-pid "$HPID" >/dev/null 2>&1; sleep 0.8
   expect "clicking it again hides them" "$(state .visibility)" hidden
+  park   # off the menu bar again, or nothing hides
 else
   log "  - chevron click skipped: $(cat "$OUT/click.err")"
 fi
