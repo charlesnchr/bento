@@ -216,6 +216,29 @@ enum MenuBarLayout {
         return false
     }
 
+    // MARK: Owners
+
+    /// Whether an Accessibility frame and a window frame are the same item:
+    /// their centres agree within a point or two.
+    static func sameItem(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.midX - b.midX) <= 2 && abs(a.midY - b.midY) <= 3
+    }
+
+    /// Matches status item windows to Accessibility elements by position
+    /// (window id → element index). A window that moved while the elements
+    /// were read (`before` → `after`) isn't matched: its old place may hold
+    /// another item's element by then. Those come back in `moved`.
+    static func matchOwners(before: [UInt32: CGRect], after: [UInt32: CGRect],
+                            elements: [CGRect]) -> (matched: [UInt32: Int], moved: Set<UInt32>) {
+        var matched: [UInt32: Int] = [:]
+        var moved = Set<UInt32>()
+        for (id, frame) in before {
+            guard after[id] == frame else { moved.insert(id); continue }
+            if let i = elements.firstIndex(where: { sameItem($0, frame) }) { matched[id] = i }
+        }
+        return (matched, moved)
+    }
+
     /// Whether an item's window is on one of the displays. The clock's
     /// window pokes a little past the right edge of the screen, so only the
     /// left edge and the centre count horizontally.

@@ -171,9 +171,23 @@ final class ItemScanner {
         pendingResolves.append(completion)
         guard !resolving else { return }
         resolving = true
-        let frames = items.filter { $0.role == .regular || $0.role == .fixed || $0.role == .bentoIcon }.map { ($0.windowID, $0.frame) }
-        let known = appsWithExtras
+        scan(items, retries: 2)
+    }
+
+    /// One look at every candidate app's menu bar extras, matched to the
+    /// windows by position. Items move while it runs (an item changing width
+    /// shifts the ones left of it): a window that moved isn't matched, and if
+    /// one still without an owner did, it looks again from a new snapshot.
+    private func scan(_ items: [MenuBarItem], retries: Int) {
+        let tracked = items.filter { $0.role == .regular || $0.role == .fixed || $0.role == .bentoIcon }
+        // Where the windows are as the scan starts (`items` may be older).
+        let before = ItemScanner.frames(of: tracked.map(\.windowID))
         let hosted = ItemScanner.windowsAreHosted
+        // Before macOS 26 the window list knows each item's app for sure:
+        // Accessibility only adds the description and the element.
+        let windowOwners = hosted ? [:] : Dictionary(tracked.compactMap { i in i.ownerPID.map { (i.windowID, $0) } },
+                                                     uniquingKeysWith: { a, _ in a })
+        let known = appsWithExtras
         // Apps to ask: on macOS 26 every app that may own an item (known ones
         // first); before that only the window owners, for their descriptions.
         let candidates: [NSRunningApplication]
@@ -193,10 +207,18 @@ final class ItemScanner {
             let extras = ItemScanner.extras(of: candidates)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.resolving = false
-                self.apply(extras, frames: frames, apps: candidates)
+                let after = ItemScanner.frames(of: Array(before.keys))
+                let moved = self.apply(extras, before: before, after: after, windowOwners: windowOwners, apps: candidates)
                 let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-                self.log.debug("Resolved menu bar owners in \(ms, format: .fixed(precision: 0), privacy: .public) ms (\(candidates.count) apps)")
+                self.log.debug("Resolved menu bar owners in \(ms, format: .fixed(precision: 0), privacy: .public) ms (\(candidates.count) apps, \(moved.count) moved)")
+                if retries > 0, moved.contains(where: { self.owners[$0] == nil }) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                        guard let self else { return }
+                        self.scan(self.snapshot(), retries: retries - 1)
+                    }
+                    return
+                }
+                self.resolving = false
                 let done = self.pendingResolves
                 self.pendingResolves = []
                 done.forEach { $0() }
@@ -204,26 +226,51 @@ final class ItemScanner {
         }
     }
 
-    private func apply(_ extras: [AXExtra], frames: [(CGWindowID, CGRect)], apps: [NSRunningApplication]) {
+    /// Records the owners found; returns the windows that moved meanwhile.
+    private func apply(_ extras: [AXExtra], before: [CGWindowID: CGRect], after: [CGWindowID: CGRect],
+                       windowOwners: [CGWindowID: pid_t], apps: [NSRunningApplication]) -> Set<CGWindowID> {
         let byPID = Dictionary(apps.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
         appsWithExtras.formUnion(extras.map(\.pid))
-        for (wid, frame) in frames {
-            let center = CGPoint(x: frame.midX, y: frame.midY)
-            guard let match = extras.first(where: { abs($0.frame.midX - center.x) <= 2 && abs($0.frame.midY - center.y) <= 3 }),
-                  let app = byPID[match.pid] else { continue }
+        let (matched, moved) = MenuBarLayout.matchOwners(before: before, after: after, elements: extras.map(\.frame))
+        for (wid, i) in matched {
+            let match = extras[i]
+            if let pid = windowOwners[wid], pid != match.pid { continue }
+            guard let app = byPID[match.pid] else { continue }
             owners[wid] = Owner(pid: match.pid, bundleID: app.bundleIdentifier, appName: app.localizedName ?? "",
                                 detail: match.detail, element: match.element)
         }
+        return moved
     }
 
-    /// The accessibility element of an item (for AXPress), if known.
-    func element(for item: MenuBarItem) -> AXUIElement? { owners[item.windowID]?.element }
+    private static func frames(of ids: [CGWindowID]) -> [CGWindowID: CGRect] {
+        Dictionary(ids.compactMap { id in WindowServer.frame(of: id).map { (id, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
 
-    /// AXPress, off the main thread: an app answers only once the menu it
-    /// opened closes, so the call times out while the menu is up. That
+    /// Whether an item can be pressed through Accessibility (its element is known).
+    func canPress(_ item: MenuBarItem) -> Bool { owners[item.windowID]?.element != nil }
+
+    /// AXPress on an item's element, off the main thread. The element is
+    /// checked against the item's window first, as pressing a stale match
+    /// would open another item's menu; one that isn't there any more is
+    /// forgotten and looked up again later. An app answers only once the menu
+    /// it opened closes, so the call times out while the menu is up: that
     /// counts as pressed (a click on top would close the menu again).
-    static func press(_ element: AXUIElement, completion: @escaping (_ pressed: Bool) -> Void) {
+    /// `completion(false)` when it wasn't pressed; the caller clicks instead.
+    func press(_ item: MenuBarItem, completion: @escaping (_ pressed: Bool) -> Void) {
+        let id = item.windowID
+        guard let element = owners[id]?.element else { completion(false); return }
         DispatchQueue.global(qos: .userInitiated).async {
+            guard let ax = ItemScanner.axFrame(element), let window = WindowServer.frame(of: id), MenuBarLayout.sameItem(ax, window) else {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.log.info("Menu bar item element no longer matches window \(id, privacy: .public)")
+                    MenuBarTrace.log("press \(id): element doesn't match the window, not pressed")
+                    // Before macOS 26 the app is still right (from the window list).
+                    if ItemScanner.windowsAreHosted { self.owners[id] = nil } else { self.owners[id]?.element = nil }
+                    completion(false)
+                }
+                return
+            }
             let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
             let pressed = result == .success || result == .cannotComplete
             DispatchQueue.main.async { completion(pressed) }

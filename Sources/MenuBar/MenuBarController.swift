@@ -813,8 +813,8 @@ final class MenuBarController {
     private func click(_ item: MenuBarItem, right: Bool) {
         if visibility != .hidden || !temporarilyShown.isEmpty { watchMenu(of: item) }
         // AXPress opens the menu without moving the pointer.
-        guard !right, let element = scanner.element(for: item) else { postClick(item, right: right); return }
-        ItemScanner.press(element) { [weak self] pressed in
+        guard !right, scanner.canPress(item) else { postClick(item, right: right); return }
+        scanner.press(item) { [weak self] pressed in
             if !pressed { self?.postClick(item, right: right) }
         }
     }
@@ -874,12 +874,12 @@ final class MenuBarController {
 
     /// Last resort: press it where it is (its menu may open at the screen edge).
     private func pressInPlace(_ item: MenuBarItem) {
-        guard let element = scanner.element(for: item) else {
+        guard scanner.canPress(item) else {
             HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle")
             return
         }
         if visibility != .hidden || !temporarilyShown.isEmpty { watchMenu(of: item) }
-        ItemScanner.press(element) { pressed in
+        scanner.press(item) { pressed in
             if !pressed { HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle") }
         }
     }

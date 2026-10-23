@@ -51,3 +51,43 @@ private func barItem(_ id: CGWindowID, _ name: String, x: CGFloat, owner: pid_t?
     let x = barItem(2, "X", x: 400)
     #expect(ChangeWatcher.watched([x], sections: [:], keys: [x.key]).isEmpty)
 }
+
+// MARK: - Owners from Accessibility
+
+private func frame(_ x: CGFloat, _ w: CGFloat = 30) -> CGRect { CGRect(x: x, y: 0, width: w, height: 24) }
+
+@Test func ownersMatchWindowsThatStayedPut() {
+    let before: [UInt32: CGRect] = [1: frame(100), 2: frame(130)]
+    let r = MenuBarLayout.matchOwners(before: before, after: before, elements: [frame(130.5), frame(100)])
+    #expect(r.matched == [1: 1, 2: 0])
+    #expect(r.moved.isEmpty)
+}
+
+@Test func swappedItemsAreNotMatchedToEachOthersElements() {
+    // X at 100 and Y at 130 swap while the elements are read: by their old
+    // places, X would get Y's element (and pressing X would open Y's menu).
+    let before: [UInt32: CGRect] = [1: frame(100), 2: frame(130)]
+    let after: [UInt32: CGRect] = [1: frame(130), 2: frame(100)]
+    let r = MenuBarLayout.matchOwners(before: before, after: after, elements: [frame(130), frame(100)])
+    #expect(r.matched.isEmpty)
+    #expect(r.moved == [1, 2])
+}
+
+@Test func onlyTheItemsThatMovedAreLeftOut() {
+    // An item left of one that grew shifts; the others still match.
+    let before: [UInt32: CGRect] = [1: frame(100), 2: frame(130), 3: frame(200)]
+    let after: [UInt32: CGRect] = [1: frame(92), 2: frame(130), 3: frame(200)]
+    let r = MenuBarLayout.matchOwners(before: before, after: after, elements: [frame(92), frame(130), frame(200)])
+    #expect(r.matched == [2: 1, 3: 2])
+    #expect(r.moved == [1])
+    // A window that's gone counts as moved; an element nowhere near matches nothing.
+    let gone = MenuBarLayout.matchOwners(before: [1: frame(100), 2: frame(300)], after: [2: frame(300)], elements: [frame(100), frame(250)])
+    #expect(gone.matched.isEmpty)
+    #expect(gone.moved == [1])
+}
+
+@Test func sameItemTolerance() {
+    #expect(MenuBarLayout.sameItem(frame(100), frame(101.5)))
+    #expect(!MenuBarLayout.sameItem(frame(100), frame(103)))
+    #expect(!MenuBarLayout.sameItem(frame(100), frame(100).offsetBy(dx: 0, dy: 4)))
+}
