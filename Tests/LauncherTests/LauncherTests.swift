@@ -299,3 +299,28 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(apps.contains { $0.bundleID?.lowercased() == "com.apple.calculator" })
     #expect(Set(apps.map(\.id)).count == apps.count)
 }
+
+private func blank(_ px: Int) -> CGImage {
+    CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+}
+
+@Test func iconBitmapsAreKeptAtTwiceTheDrawnSize() {
+    func pixels(_ image: NSImage) -> Int? { image.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width }
+    let big = IconCache.bitmap(blank(256), side: 48)
+    #expect(big.size == NSSize(width: 48, height: 48))
+    #expect(pixels(big) == 96)
+    let small = IconCache.bitmap(blank(64), side: 48)   // never scaled up
+    #expect(pixels(small) == 64)
+}
+
+@Test @MainActor func iconCacheLoadsIconsThroughQuickLook() async {
+    let cache = IconCache()
+    let finder = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
+    let image = await cache.load(finder, side: 48)
+    #expect(image?.size == NSSize(width: 48, height: 48))
+    #expect(cache.cached(finder, side: 48) != nil)
+    #expect(cache.cached(finder, side: 24) == nil)
+    cache.removeAll()
+    #expect(cache.cached(finder, side: 48) == nil)
+}

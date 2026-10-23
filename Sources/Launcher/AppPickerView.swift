@@ -20,7 +20,8 @@ final class AppPickerModel: ObservableObject {
     private var running: [AppCandidate] = []
     private var installed: [AppCandidate] = []
     private var index: InstalledAppIndex?
-    private var icons: [String: NSImage] = [:]
+    /// Tile and row icons, while the pane is open.
+    let icons = IconCache()
     private(set) var isVisible = false
 
     deinit { index?.cancel() }
@@ -47,7 +48,7 @@ final class AppPickerModel: ObservableObject {
         index = nil
         running = []
         installed = []
-        icons = [:]
+        icons.removeAll()
         results = []
     }
 
@@ -76,13 +77,6 @@ final class AppPickerModel: ObservableObject {
     }
 
     func select(_ app: AppCandidate) { selectedID = app.id }
-
-    func icon(for app: AppCandidate) -> NSImage {
-        if let cached = icons[app.id] { return cached }
-        let icon = NSWorkspace.shared.icon(forFile: app.url.path)
-        icons[app.id] = icon
-        return icon
-    }
 
     private func refilter(resetSelection: Bool) {
         let fresh = AppPicker.results(AppPicker.merge(running: running, installed: installed),
@@ -173,7 +167,7 @@ struct AppGrid: View {
                 // the same count from the width for Up/Down.
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.minTile), spacing: Self.spacing)], spacing: Self.spacing) {
                     ForEach(model.results) { app in
-                        AppTile(app: app, icon: model.icon(for: app), entry: bound.entry(for: app),
+                        AppTile(app: app, icons: model.icons, entry: bound.entry(for: app),
                                 selected: keyboardActive && app.id == model.selectedID,
                                 showsRunning: model.isSearching) {
                             model.select(app)
@@ -205,8 +199,10 @@ struct AppGrid: View {
 }
 
 private struct AppTile: View {
+    static let iconSide: CGFloat = 48
+
     let app: AppCandidate
-    let icon: NSImage
+    let icons: IconCache
     /// The entry that already opens this app.
     let entry: LauncherEntry?
     let selected: Bool
@@ -220,10 +216,7 @@ private struct AppTile: View {
         let failed = entry.map { ActionRegistry.shared.failed.contains($0.actionID) } ?? false
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(nsImage: icon)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 48, height: 48)
+                FileIcon(url: app.url, side: Self.iconSide, cache: icons)
                     .overlay(alignment: .bottom) {
                         if showsRunning && app.isRunning {
                             Circle().fill(.secondary).frame(width: 4, height: 4).offset(y: 5)

@@ -47,7 +47,7 @@ struct LauncherSettingsView: View {
                         // so an entry removed meanwhile (e.g. by editing the file)
                         // can never be written through a stale index.
                         ForEach(model.value.entries) { entry in
-                            EntryRow(entry: entry, revision: revision, highlighted: flashed == entry.id,
+                            EntryRow(entry: entry, revision: revision, highlighted: flashed == entry.id, icons: picker.icons,
                                      update: { change in update(entry.id, change) },
                                      onDelete: { model.value.entries.removeAll { $0.id == entry.id } })
                                 .id(entry.id)
@@ -134,7 +134,7 @@ struct LauncherSettingsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
             if flashed == id { withAnimation(.easeOut(duration: 0.4)) { flashed = nil } }
         }
-        let window = searchAnchor.view?.window
+        let window = searchAnchor.view?.window ?? NSApp.keyWindow
         RecorderFocus.begin(entry.actionID, in: window) { recorder in
             guard returnToSearch else { return }
             watcher.watch(recorder) {
@@ -211,15 +211,14 @@ private struct EntryRow: View {
     let revision: Int
     /// Just added or picked again in the grid.
     let highlighted: Bool
+    let icons: IconCache
     let update: ((inout LauncherEntry) -> Void) -> Void
     let onDelete: () -> Void
 
     var body: some View {
         let appURL = entry.kind == .app ? AppResolver.url(for: entry.target) : nil
         HStack(spacing: 10) {
-            Image(nsImage: icon(appURL))
-                .resizable()
-                .frame(width: 24, height: 24)
+            icon(appURL)
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.displayName).lineLimit(1)
                 HStack(spacing: 4) {
@@ -271,18 +270,23 @@ private struct EntryRow: View {
         }
     }
 
-    private func icon(_ appURL: URL?) -> NSImage {
+    @ViewBuilder private func icon(_ appURL: URL?) -> some View {
         switch entry.kind {
         case .app:
-            if let appURL { return NSWorkspace.shared.icon(forFile: appURL.path) }
-            return NSImage(systemSymbolName: "questionmark.app", accessibilityDescription: nil) ?? NSImage()
+            if let appURL { FileIcon(url: appURL, side: 24, cache: icons) } else { symbol("questionmark.app") }
         case .path:
-            return NSWorkspace.shared.icon(forFile: (entry.target as NSString).expandingTildeInPath)
+            FileIcon(url: URL(fileURLWithPath: (entry.target as NSString).expandingTildeInPath), side: 24, cache: icons)
         case .url:
-            return NSImage(systemSymbolName: "link", accessibilityDescription: nil) ?? NSImage()
+            symbol("link")
         case .command:
-            return NSImage(systemSymbolName: "terminal", accessibilityDescription: nil) ?? NSImage()
+            symbol("terminal")
         }
+    }
+
+    private func symbol(_ name: String) -> some View {
+        Image(nsImage: NSImage(systemSymbolName: name, accessibilityDescription: nil) ?? NSImage())
+            .resizable()
+            .frame(width: 24, height: 24)
     }
 }
 
