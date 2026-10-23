@@ -5,6 +5,8 @@
 #   scripts/build.sh --install  ...and install to $BENTO_INSTALL_DIR, relaunch
 #   scripts/build.sh --adhoc    ad-hoc signature (permissions reset on every build)
 #
+# The version is $BENTO_VERSION (scripts/release.sh sets it) or the latest vX.Y.Z tag.
+#
 # Signing and install location are configured in scripts/config.sh. With a
 # persistent identity the designated requirement pins the bundle id and the
 # certificate leaf hash, so macOS keeps Accessibility / Screen Recording grants
@@ -17,7 +19,8 @@ cd "$ROOT"
 . "$ROOT/scripts/config.sh"
 BUNDLE_ID="com.charles.bento"
 APP="$ROOT/dist/Bento.app"
-VERSION="0.1.0"
+VERSION="${BENTO_VERSION:-$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)}"
+VERSION="${VERSION#v}"; VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 0).$(date +%y%m%d%H%M)"
 
 INSTALL=0; ADHOC=0
@@ -62,7 +65,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSAppleEventsUsageDescription</key><string>Bento uses Apple Events to hide and show apps for app hotkeys.</string>
-  <key>NSHumanReadableCopyright</key><string>Personal build, locally signed, not notarized.</string>
+  <key>NSHumanReadableCopyright</key><string>Signed with a self-signed certificate, not notarized.</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

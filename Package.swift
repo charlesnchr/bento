@@ -57,6 +57,8 @@ let package = Package(
 
         .testTarget(name: "BentoCoreTests", dependencies: ["BentoCore"],
                     swiftSettings: testSwiftSettings, linkerSettings: testLinkerSettings),
+        .testTarget(name: "BentoShellTests", dependencies: ["BentoShell"],
+                    swiftSettings: testSwiftSettings, linkerSettings: testLinkerSettings),
     ] + modules.map {
         .testTarget(name: "\($0)Tests", dependencies: ["BentoCore", .byName(name: $0)],
                     swiftSettings: testSwiftSettings, linkerSettings: testLinkerSettings)

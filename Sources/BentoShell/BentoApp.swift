@@ -7,6 +7,8 @@ public struct GeneralSettings: Codable, Equatable {
     /// Module id -> enabled. Missing ids use the module's default.
     public var enabledModules: [String: Bool] = [:]
     public var showMenuBarIcon = true
+    /// Look for a new release once a day (Homebrew installs install it from the menu).
+    public var checkForUpdates = true
     public init() {}
 }
 
@@ -85,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         observers.append(ConfigStore.shared.observe("general") { [weak self] in
             self?.syncModules()
             self?.updateStatusItem()
+            Updater.shared.setAutomatic(self?.general.checkForUpdates ?? true)
         })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { note in
@@ -125,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         updateStatusItem()
+        Updater.shared.start(automatic: general.checkForUpdates)
         if !Permissions.accessibility || ProcessInfo.processInfo.environment["BENTO_SHOW_SETTINGS"] != nil {
             showSettings(nil)
         }
@@ -170,16 +174,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     // MARK: Single instance
 
+    /// A second launch hands over to the running instance, unless that one is
+    /// stale: an older version, or one whose app is gone (`brew upgrade` in a
+    /// terminal deletes the old keg). Then this launch asks it to quit and takes over.
     private func exitIfAlreadyRunning() -> Bool {
         guard let bid = Bundle.main.bundleIdentifier else { return false }
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid).filter { $0.processIdentifier != getpid() }
         guard let other = others.first else { return false }
+        if others.count == 1, isStale(other), other.terminate() {
+            // Block rather than spin the run loop, which would deliver the URL
+            // event that launched us before anything is set up. Hotkeys it
+            // still holds are retried when it quits (didTerminateApplication).
+            let pid = other.processIdentifier
+            for _ in 0..<50 where kill(pid, 0) == 0 { usleep(100_000) }
+            if kill(pid, 0) != 0 {
+                BentoLog.core.info("Took over from an older running Bento")
+                return false
+            }
+        }
         other.activate()
         NSApp.terminate(nil)
         return true
     }
 
-    // MARK: URL scheme: bento://action/<id>, bento://settings
+    private func isStale(_ other: NSRunningApplication) -> Bool {
+        guard let url = other.bundleURL, url.standardizedFileURL != Bundle.main.bundleURL.standardizedFileURL else { return false }
+        guard let plist = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")) else { return true }
+        return UpdateRules.isNewer(Updater.shared.currentVersion, than: plist["CFBundleShortVersionString"] as? String ?? "0")
+    }
+
+    // MARK: URL scheme: bento://action/<id>, bento://settings, bento://update[/install]
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
@@ -195,6 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             writeDiagnostics()
         case "settings":
             showSettings(page: path.isEmpty ? nil : path)
+        case "update":
+            // bento://update checks; bento://update/install installs a found update.
+            if path == "install", case .available = Updater.shared.state { Updater.shared.install() } else { Updater.shared.check(.url) }
         default:
             BentoLog.core.error("Unknown URL \(url.absoluteString, privacy: .public)")
         }
@@ -225,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
             "statusItem": statusItem != nil,
             "launchAtLogin": LaunchAtLogin.statusDescription,
+            "update": Updater.shared.diagnostics,
             "time": Date().timeIntervalSince1970,
         ]
         let url = AppPaths.supportDir.appendingPathComponent("diagnostics.json")
@@ -288,6 +316,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
         }
         if !menu.items.isEmpty { menu.addItem(.separator()) }
+        Updater.shared.refreshInstalled()
+        if let update = Updater.shared.menuItem(showSettings: { [weak self] in self?.showSettings(page: "general") }) {
+            menu.addItem(update)
+        }
         if !Permissions.accessibility || !Permissions.screenRecording {
             let warn = ClosureMenuItem(title: "Grant Permissions…") { [weak self] in self?.showSettings(nil) }
             warn.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)

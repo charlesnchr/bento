@@ -17,13 +17,15 @@ there is no Xcode project and no asset catalog.
 ```
 Package.swift
 Sources/BentoCore     shared foundation (do not edit from module work; see below)
-Sources/BentoShell    app delegate, menu bar, settings window, BentoApp.run(modules:)
+Sources/BentoShell    app delegate, menu bar, settings window, updater, BentoApp.run(modules:)
 Sources/Bento         main.swift for the real app (all modules)
 Sources/<Module>      one target per feature area
 Dev/Dev<Module>       single-module dev harness executables
 Tests/<Module>Tests   swift-testing tests per target (`import Testing`, `@Test`, `#expect`)
 server/               bento-sync (Rust) for notes and todo sync
 scripts/build.sh      release build -> dist/Bento.app, signed (see script header)
+scripts/release.sh    GitHub release + Homebrew formula (charlesnchr/homebrew-tap)
+packaging/bento.rb    the formula template release.sh fills in
 docs/                 this file, SYNC_PROTOCOL.md
 ```
 

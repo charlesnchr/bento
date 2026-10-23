@@ -21,15 +21,40 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 
-## Build and install
+## Install
+
+```sh
+brew install charlesnchr/tap/bento
+open /opt/homebrew/opt/bento/Bento.app
+```
+
+Apple Silicon, macOS 14+. The app lives in the Homebrew prefix
+(`/opt/homebrew/opt/bento/Bento.app`), so installing needs no admin rights and
+works on managed Macs that only run apps from `/opt/homebrew`. To find it in
+Spotlight or Raycast, link it: `ln -sfn /opt/homebrew/opt/bento/Bento.app
+~/Applications/Bento.app`. On first launch, grant **Accessibility** and
+**Screen Recording** from Settings → General.
+
+Bento checks for a new release once a day. When there is one, **Install Bento
+x.y.z and Restart** appears in its menu bar menu and under Settings → General →
+Updates; it runs `brew upgrade` and restarts into the new version.
+`brew upgrade` in a terminal works too: Bento then offers a restart, and the
+next launch replaces the old instance anyway. Releases are all signed with the
+same (self-signed) certificate, so the permission grants carry over. They aren't
+notarized, but Homebrew doesn't quarantine formula downloads, so Gatekeeper
+doesn't get in the way.
+
+## Build from source
 
 ```sh
 scripts/build.sh            # release build -> dist/Bento.app (signed)
-scripts/build.sh --install  # + install to /Applications (or $BENTO_INSTALL_DIR) and relaunch
+scripts/build.sh --install  # + install and relaunch (see below)
 ```
 
-`--install` removes the `dist` copy afterwards so Spotlight only finds the
-installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
+`--install` replaces the Homebrew install in place when bento is installed with
+brew (until the next `brew upgrade`), so each Mac has one Bento location;
+otherwise it installs to `/Applications`, or `$BENTO_INSTALL_DIR` if set. It
+removes the `dist` copy afterwards so Spotlight only finds the installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
 `/Applications`, it links `~/Applications/Bento.app` to the install and warns
 until `/Applications/Bento.app` is linked too (one `sudo ln`).
 
@@ -76,3 +101,18 @@ Each module has a `Dev<Module>` harness that runs only that module, with config
 and data isolated under `/tmp/bento-dev/<module>`. Layout and conventions:
 `docs/SPEC.md`. Sync protocol (notes and todos): `docs/SYNC_PROTOCOL.md`. Server:
 `server/README.md`.
+
+## Releasing
+
+```sh
+scripts/release.sh 0.2.0            # from a clean main that matches origin
+scripts/release.sh 0.2.0 --dry-run  # build, sign and render the formula into dist/ only
+```
+
+It builds and signs `Bento.app` with `BENTO_SIGN_IDENTITY` (required: every
+release must be signed with the same certificate, or updates would lose the
+permission grants), tags `v0.2.0`, uploads `Bento-0.2.0.zip` to a GitHub
+release, and publishes `packaging/bento.rb`, with the version and checksum
+filled in, as `Formula/bento.rb` in
+[charlesnchr/homebrew-tap](https://github.com/charlesnchr/homebrew-tap).
+Installed copies find it with their next daily check.
