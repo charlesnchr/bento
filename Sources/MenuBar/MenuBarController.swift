@@ -113,7 +113,7 @@ final class MenuBarController {
         guard started else { return }
         controls.expandedLength = MenuBarController.expandedLength()
         controls.create(showToggle: settings.showChevron, alwaysHiddenSection: settings.alwaysHiddenSection)
-        controls.apply(showHidden: true, showAlwaysHidden: true)
+        controls.apply(.shownAll, alwaysHiddenMisplaced: false)
         MenuBarLook.button = (controls.toggle ?? controls.hidden)?.button
         visibility = .shownAll
         // Everything is on screen right now: learn item names and owners
@@ -230,9 +230,8 @@ final class MenuBarController {
     private func applyVisibility() {
         MenuBarTrace.log("visibility \(visibility.rawValue)")
         // Expanded right of the hidden separator, the always-hidden one would
-        // hide the hidden items too: keep it collapsed until it's moved back.
-        let misplaced = alwaysHiddenMisplaced(scanner.snapshot())
-        controls.apply(showHidden: visibility != .hidden, showAlwaysHidden: visibility == .shownAll || misplaced)
+        // hide visible items too: it stays collapsed until it's moved back.
+        controls.apply(visibility, alwaysHiddenMisplaced: alwaysHiddenMisplaced(scanner.snapshot()))
         triggers.invalidateEmptySpace()
         syncChangeWatcher()
     }

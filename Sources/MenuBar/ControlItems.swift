@@ -86,16 +86,31 @@ final class ControlItems: NSObject {
         onClick?(kind, right, event?.modifierFlags.contains(.option) == true)
     }
 
-    /// Lays the items out for a state: `showHidden` collapses the hidden
-    /// separator, `showAlwaysHidden` the always-hidden one too.
-    func apply(showHidden: Bool, showAlwaysHidden: Bool) {
-        let expandHidden = !showHidden
-        let expandAlways = !(showHidden && showAlwaysHidden)
-        if let t = toggle { style(t, kind: .toggle, expanded: false, revealed: showHidden) }
-        if let h = hidden { style(h, kind: .hidden, expanded: expandHidden, revealed: showHidden) }
-        if let a = alwaysHidden { style(a, kind: .alwaysHidden, expanded: expandAlways, revealed: showHidden) }
-        hiddenExpanded = hidden != nil && expandHidden
-        alwaysHiddenExpanded = alwaysHidden != nil && expandAlways
+    /// Which separators are expanded (hiding everything left of them).
+    struct Expansion: Equatable {
+        var hidden: Bool
+        var alwaysHidden: Bool
+    }
+
+    /// The separators for a state. The always-hidden one hides its section
+    /// unless everything is shown. Misplaced (right of the hidden one) it
+    /// stays collapsed whatever the state: expanded there it would also hide
+    /// the visible items between the two, and the chevron or Bento's icon if
+    /// they're left of it.
+    static func expansion(_ visibility: MenuBarController.Visibility, alwaysHiddenMisplaced: Bool) -> Expansion {
+        Expansion(hidden: visibility == .hidden,
+                  alwaysHidden: visibility != .shownAll && !alwaysHiddenMisplaced)
+    }
+
+    /// Lays the items out for a state (see `expansion`).
+    func apply(_ visibility: MenuBarController.Visibility, alwaysHiddenMisplaced: Bool) {
+        let e = ControlItems.expansion(visibility, alwaysHiddenMisplaced: alwaysHiddenMisplaced)
+        let revealed = visibility != .hidden
+        if let t = toggle { style(t, kind: .toggle, expanded: false, revealed: revealed) }
+        if let h = hidden { style(h, kind: .hidden, expanded: e.hidden, revealed: revealed) }
+        if let a = alwaysHidden { style(a, kind: .alwaysHidden, expanded: e.alwaysHidden, revealed: revealed) }
+        hiddenExpanded = hidden != nil && e.hidden
+        alwaysHiddenExpanded = alwaysHidden != nil && e.alwaysHidden
     }
 
     private func style(_ item: NSStatusItem, kind: Kind, expanded: Bool, revealed: Bool) {
