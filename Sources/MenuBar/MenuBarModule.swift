@@ -111,7 +111,7 @@ public final class MenuBarModule: BentoModule {
         guard let controller else { return }
         HUD.show("Menu Bar: \(profile.name)", symbol: symbol)
         controller.apply(profile.layout) { result in
-            if case .failure(let f) = result { HUD.show(f.description, symbol: "exclamationmark.triangle") }
+            if case .failure(let f) = result, f != .cancelled { HUD.show(f.description, symbol: "exclamationmark.triangle") }
         }
     }
 

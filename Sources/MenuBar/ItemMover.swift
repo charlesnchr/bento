@@ -23,6 +23,7 @@ final class ItemMover {
         case itemGone
         case targetGone
         case notPlaced
+        case cancelled
 
         var description: String {
             switch self {
@@ -31,6 +32,7 @@ final class ItemMover {
             case .itemGone: "The item is no longer in the menu bar"
             case .targetGone: "The destination is no longer in the menu bar"
             case .notPlaced: "macOS didn’t accept the move"
+            case .cancelled: "Cancelled"
             }
         }
     }
@@ -52,20 +54,43 @@ final class ItemMover {
     /// True while events are being posted (main thread reads it to ignore them).
     private(set) var isBusy = false
     private var pending = 0
+    /// Bumped by `cancelAll()`; work queued under an older one stops.
+    private var generation = 0
+    private let generationLock = NSLock()
 
     init() {
         WindowServer.allowCursorControlInBackground()
     }
 
+    /// Drops the moves and clicks not posted yet, and stops the move under
+    /// way at its next step (a press already posted is always released).
+    /// Completions still run, with `.cancelled`. For stopping the module:
+    /// no input is posted for it after this.
+    func cancelAll() {
+        generationLock.lock()
+        generation += 1
+        generationLock.unlock()
+        MenuBarTrace.log("mover: cancelled pending work")
+    }
+
+    private var currentGeneration: Int {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation
+    }
+
+    private func isCancelled(_ g: Int) -> Bool { currentGeneration != g }
+
     /// Runs the moves one after the other; stops at the first failure.
     func move(_ requests: [Request], completion: @escaping (Result<Void, Failure>) -> Void) {
         guard Permissions.accessibility else { completion(.failure(.noAccessibility)); return }
         begin()
+        let g = currentGeneration
         queue.async { [self] in
             var result: Result<Void, Failure> = .success(())
             withCursorHidden {
                 for r in requests {
-                    if case .failure(let f) = perform(r) { result = .failure(f); break }
+                    if case .failure(let f) = perform(r, generation: g) { result = .failure(f); break }
                     usleep(30_000)
                 }
             }
@@ -76,28 +101,35 @@ final class ItemMover {
         }
     }
 
-    /// Runs the moves before returning, waiting at most `timeout` (for
-    /// quitting, when a completion would never run).
+    /// Runs the moves before returning, after the work queued before them,
+    /// waiting at most `timeout` (for quitting, when a completion would never
+    /// run). Moves that couldn't start by then are skipped, so nothing is
+    /// posted once this returns.
     func moveBlocking(_ requests: [Request], timeout: TimeInterval) {
         guard Permissions.accessibility, !requests.isEmpty else { return }
         let done = DispatchSemaphore(value: 0)
+        let deadline = DispatchTime.now() + timeout
+        let g = currentGeneration
         queue.async { [self] in
-            withCursorHidden {
-                for r in requests { _ = perform(r) }
+            if DispatchTime.now() < deadline {
+                withCursorHidden {
+                    for r in requests { _ = perform(r, generation: g) }
+                }
             }
             done.signal()
         }
-        _ = done.wait(timeout: .now() + timeout)
+        _ = done.wait(timeout: deadline)
     }
 
     /// Clicks an item (it must be on screen): left or right button.
     func click(_ item: CGWindowID, right: Bool = false, completion: @escaping (Result<Void, Failure>) -> Void) {
         guard Permissions.accessibility else { completion(.failure(.noAccessibility)); return }
         begin()
+        let g = currentGeneration
         queue.async { [self] in
             var result: Result<Void, Failure> = .success(())
-            if !waitForIdleInput() {
-                result = .failure(.userBusy)
+            if !waitForIdleInput(generation: g) {
+                result = .failure(isCancelled(g) ? .cancelled : .userBusy)
             } else if let frame = WindowServer.frame(of: item), ItemMover.onScreen(frame) {
                 postClick(at: CGPoint(x: frame.midX, y: frame.midY), window: item, right: right)
             } else {
@@ -117,12 +149,19 @@ final class ItemMover {
 
     private enum Strategy: String { case teleport, drag, edge }
 
-    private func perform(_ r: Request) -> Result<Void, Failure> {
+    private func perform(_ r: Request, generation g: Int) -> Result<Void, Failure> {
         for attempt in 0..<4 {
+            guard !isCancelled(g) else {
+                MenuBarTrace.log("move \(r.item) cancelled")
+                return .failure(.cancelled)
+            }
             guard let itemFrame = WindowServer.frame(of: r.item) else { return .failure(.itemGone) }
             guard let targetFrame = WindowServer.frame(of: r.target) else { return .failure(.targetGone) }
             if isPlaced(r) { return .success(()) }
-            guard waitForIdleInput() else { return .failure(.userBusy) }
+            guard waitForIdleInput(generation: g) else {
+                MenuBarTrace.log("move \(r.item) \(isCancelled(g) ? "cancelled" : "not started: input busy")")
+                return .failure(isCancelled(g) ? .cancelled : .userBusy)
+            }
             // A teleport first (nothing reorders on the way); then, with both
             // items on screen, a drag that releases once the item is in place;
             // the older edge-point teleport last.
@@ -138,7 +177,7 @@ final class ItemMover {
             switch strategy {
             case .teleport: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: true)
             case .edge: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: false)
-            case .drag: drag(r, from: CGPoint(x: itemFrame.midX, y: itemFrame.midY))
+            case .drag: drag(r, from: CGPoint(x: itemFrame.midX, y: itemFrame.midY), generation: g)
             }
             waitUntilSettled(r.item, from: itemFrame)
             let placed = isPlaced(r)
@@ -194,7 +233,7 @@ final class ItemMover {
     /// A real ⌘-drag: macOS reorders items live while one is dragged, so
     /// the pointer moves a few points at a time towards the target's near
     /// edge and lets go as soon as the item is on the requested side of it.
-    private func drag(_ r: Request, from: CGPoint) {
+    private func drag(_ r: Request, from: CGPoint, generation g: Int) {
         CGWarpMouseCursorPosition(from)
         usleep(15_000)
         commandKey(down: true)
@@ -203,7 +242,7 @@ final class ItemMover {
         usleep(50_000)
         var p = from
         for _ in 0..<200 {
-            if isPlaced(r) { break }
+            if isPlaced(r) || isCancelled(g) { break }
             guard let t = WindowServer.frame(of: r.target) else { break }
             let goal = MenuBarLayout.dropPoint(for: r.side == .left ? .leftOf("") : .rightOf(""), targetFrame: t)
             var dx = goal.x - p.x
@@ -286,15 +325,21 @@ final class ItemMover {
     }
 
     /// Waits (≤ 1 s) until no mouse button or modifier is held, so our events
-    /// don't mix with the user's.
-    private func waitForIdleInput() -> Bool {
+    /// don't mix with the user's. False when the time is up or it's cancelled.
+    private func waitForIdleInput(generation g: Int) -> Bool {
         for _ in 0..<50 {
-            let buttons = [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.combinedSessionState, button: $0) }
-            let mods = CGEventSource.flagsState(.combinedSessionState).intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
-            if !buttons && mods.isEmpty { return true }
+            if isCancelled(g) { return false }
+            if ItemMover.inputIsIdle() { return true }
             usleep(20_000)
         }
         return false
+    }
+
+    /// Whether no mouse button or modifier key is held right now.
+    static func inputIsIdle() -> Bool {
+        let buttons = [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.combinedSessionState, button: $0) }
+        let mods = CGEventSource.flagsState(.combinedSessionState).intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+        return !buttons && mods.isEmpty
     }
 
     /// Whether an item's window is on a display (see `MenuBarLayout.isOnDisplay`).

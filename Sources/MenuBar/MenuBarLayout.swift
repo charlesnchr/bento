@@ -216,6 +216,52 @@ enum MenuBarLayout {
         return false
     }
 
+    // MARK: Putting items back
+
+    /// The neighbours an item moved out of its place for a moment can go
+    /// back next to, nearest first: the ones on its right, then the ones on
+    /// its left. Each side ends at the first of `bounds` (the separators), so
+    /// a fallback never puts it in another section.
+    static func returnNeighbours(of key: String, in order: [String], bounds: Set<String>) -> (right: [String], left: [String]) {
+        guard let i = order.firstIndex(of: key) else { return ([], []) }
+        func upToBound(_ keys: [String]) -> [String] {
+            guard let b = keys.firstIndex(where: bounds.contains) else { return keys }
+            return Array(keys[...b])
+        }
+        return (upToBound(Array(order[(i + 1)...])), upToBound(order[..<i].reversed()))
+    }
+
+    /// Where it goes back to: left of the nearest right neighbour still
+    /// there, else right of the nearest left one.
+    static func returnDestination(right: [String], left: [String], present: Set<String>) -> MoveDestination? {
+        if let r = right.first(where: present.contains) { return .leftOf(r) }
+        if let l = left.first(where: present.contains) { return .rightOf(l) }
+        return nil
+    }
+
+    enum ReturnRetry: Equatable {
+        /// Nothing to put back: the item went away with its app.
+        case drop
+        /// Try again after a delay (seconds).
+        case after(TimeInterval)
+        /// Leave it for the next chance: hiding again, or quitting.
+        case later
+    }
+
+    /// What to do after putting an item back failed (`attempt` counts from 1).
+    /// The record of where it goes stays until it's back, so it's never lost.
+    static func retry(afterFailedReturn failure: ItemMover.Failure, attempt: Int) -> ReturnRetry {
+        switch failure {
+        case .itemGone: return .drop
+        // A key or button is held: wait for the user, however long that takes.
+        case .userBusy: return .after(0.5)
+        // Its neighbour went away: the next one is tried.
+        case .targetGone: return attempt < 8 ? .after(0.1) : .later
+        case .notPlaced: return attempt < 4 ? .after(0.5 * Double(attempt)) : .later
+        case .noAccessibility, .cancelled: return .later
+        }
+    }
+
     // MARK: Owners
 
     /// Whether an Accessibility frame and a window frame are the same item:
