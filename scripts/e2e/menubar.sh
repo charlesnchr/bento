@@ -243,17 +243,22 @@ release() { /tmp/bentoctl modifiers none --expect-pid "$HPID"; HELD=""; }
 
 log "a return held up by a held key waits and lands"
 setconf '.menubar.bar = "always"'   # a hidden item is moved into view for its click
+setconf ".menubar.showOnChange = [\"$P/BentoQAX\"]"
+expect "watcher running before temporary reveal" "$(state .changeWatcher)" true
 BEFORE=$(others); XID=$(wid X); MARK=$(lines)
 : > "$QALOG"
 perform menubar.click-menubar-items-bentoqax
 eventually 5 "X moved into view and its menu opened" opened X; check
 hold_opt || bad "couldn't hold ⌥"
-sleep 2.5
+sleep 4
+expect "watcher suspended while X is temporarily visible" "$(state .changeWatcher)" false
 expect "X's return waits while ⌥ is held" "$(state .temporarilyShown)" 1
 traced "return $XID waits: input busy" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
 release; check
 eventually 6 "X back once ⌥ is let go" settled
 expect "X hidden again" "$(section X)" hidden
+expect "watcher resumes after X returns" "$(state .changeWatcher)" true
+setconf '.menubar.showOnChange = []'
 same_order "nothing else moved" "$BEFORE" "$(others)"
 
 log "switching the module off during a move leaves the menu bar as it was"
