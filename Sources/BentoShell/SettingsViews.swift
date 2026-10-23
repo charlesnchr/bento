@@ -122,6 +122,8 @@ struct GeneralPane: View {
                 }
             }
 
+            UpdatesSection(general: general)
+
             Section {
                 LabeledContent("Config file") {
                     HStack {
@@ -137,6 +139,85 @@ struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct UpdatesSection: View {
+    @ObservedObject var general: ConfigSection<GeneralSettings>
+    @ObservedObject private var updater = Updater.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("Version") {
+                Text(updater.versionDescription).textSelection(.enabled)
+            }
+            Toggle("Check for updates automatically", isOn: $general.value.checkForUpdates)
+                .accessibilityIdentifier("check-for-updates")
+            HStack {
+                status
+                Spacer()
+                actions
+            }
+            .disabled(!updater.isAvailable)
+        } header: {
+            Text("Updates")
+        } footer: {
+            Group {
+                if !updater.isAvailable {
+                    Text("Only available in the installed app.")
+                } else if updater.isHomebrew {
+                    Text("Updates are installed with Homebrew (`brew upgrade \(Updater.formula)`) and keep the permission grants.")
+                } else {
+                    Text("This copy is a local build. Install it with `brew install \(Updater.formula)` to update from here.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+        .onAppear { updater.refreshInstalled() }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch updater.state {
+        case .idle:
+            if let last = updater.lastChecked {
+                Text("Last checked \(last.formatted(.relative(presentation: .named)))").foregroundStyle(.secondary)
+            }
+        case .checking:
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
+        case .upToDate:
+            Text("Bento is up to date.").foregroundStyle(.secondary)
+        case .available(let v):
+            Text("Bento \(v) is available.")
+        case .installing(let v):
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Installing \(v) with Homebrew…") }
+        case .restartNeeded(let v):
+            Text("Bento \(v) is installed.")
+        case .failed(let message):
+            Text(message).foregroundStyle(.orange).lineLimit(3).textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        switch updater.state {
+        case .available(let v):
+            Button("Release Notes") { NSWorkspace.shared.open(Updater.releaseURL(v)) }
+            if updater.isHomebrew {
+                Button("Install and Restart") { updater.install() }
+                    .accessibilityIdentifier("install-update")
+            }
+        case .restartNeeded:
+            Button("Restart") { updater.restart() }
+        case .checking, .installing:
+            EmptyView()
+        case .failed:
+            if FileManager.default.fileExists(atPath: updater.logURL.path) {
+                Button("Show Log") { NSWorkspace.shared.open(updater.logURL) }
+            }
+            Button("Check Again") { updater.check(.settings) }
+        default:
+            Button("Check Now") { updater.check(.settings) }
+                .accessibilityIdentifier("check-for-updates-now")
+        }
     }
 }
 

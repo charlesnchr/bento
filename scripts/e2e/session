@@ -9,8 +9,8 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/scripts/config.sh"
-# Exact path match; $INSTALLED_APP is not a regex.
-installed_running() { ps -axo command | grep -qxF "$INSTALLED_APP/Contents/MacOS/Bento"; }
+# Exact path match; $INSTALLED_APP_REAL is not a regex.
+installed_running() { ps -axo command | grep -qxF "$INSTALLED_APP_REAL/Contents/MacOS/Bento"; }
 FLAG=/tmp/bento-user-active
 idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
 build_tools() {
