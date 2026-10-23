@@ -8,6 +8,9 @@ import SwiftUI
 /// ~110 MB for 40 apps, never given back); a searchable grid would pile that up.
 final class IconCache {
     private var images: [String: NSImage] = [:]
+    /// Bumped by `removeAll()`, so a load still in flight when the pane goes
+    /// away doesn't refill the cache.
+    private var generation = 0
 
     func cached(_ url: URL, side: CGFloat) -> NSImage? { images[key(url, side)] }
 
@@ -17,13 +20,22 @@ final class IconCache {
         if let hit = images[k] { return hit }
         let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: side, height: side),
                                                    scale: 2, representationTypes: .icon)
-        guard let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) else { return nil }
+        let gen = generation
+        let rep = try? await withTaskCancellationHandler {
+            try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
+        } onCancel: {
+            QLThumbnailGenerator.shared.cancel(request)
+        }
+        guard let rep, gen == generation, !Task.isCancelled else { return nil }
         let image = IconCache.bitmap(rep.cgImage, side: side)
         images[k] = image
         return image
     }
 
-    func removeAll() { images = [:] }
+    func removeAll() {
+        images = [:]
+        generation += 1
+    }
 
     private func key(_ url: URL, _ side: CGFloat) -> String { "\(Int(side))@\(url.path)" }
 
@@ -66,7 +78,9 @@ struct FileIcon: View {
         .frame(width: side, height: side)
         .task(id: url) {
             guard cache.cached(url, side: side) == nil else { return }
-            if let image = await cache.load(url, side: side) { loaded = image } else { failed = true }
+            let image = await cache.load(url, side: side)
+            guard !Task.isCancelled else { return }
+            if let image { loaded = image } else { failed = true }
         }
     }
 }

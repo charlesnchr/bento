@@ -102,7 +102,7 @@ struct LauncherSettingsView: View {
     private func addMenu(_ proxy: ScrollViewProxy) -> some View {
         Menu {
             Button("Application…") { chooseApps(proxy) }
-            Button("File or Folder…") { chooseFile() }
+            Button("File or Folder…") { chooseFile(proxy) }
             Divider()
             Button("URL…") { adding = .url }
             Button("Shell Command…") { adding = .command }
@@ -193,12 +193,14 @@ struct LauncherSettingsView: View {
         if added.count == 1 { focus(added[0], proxy: proxy, returnToSearch: false) }
     }
 
-    private func chooseFile() {
+    private func chooseFile(_ proxy: ScrollViewProxy) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.prompt = "Add"
-        if panel.runModal() == .OK, let url = panel.url { _ = add(url: url) }
+        if panel.runModal() == .OK, let url = panel.url, let entry = add(url: url) {
+            focus(entry, proxy: proxy, returnToSearch: false)
+        }
     }
 }
 

@@ -145,15 +145,19 @@ struct BoundApps {
             let t = e.target.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { continue }
             let lower = t.lowercased()
-            if t.hasPrefix("/") || t.hasPrefix("~") {
+            let isPath = t.hasPrefix("/") || t.hasPrefix("~")
+            if isPath {
                 Self.add(e, AppPicker.pathKey(t), &byPath)
-            } else {
-                if lower.contains("."), !lower.hasSuffix(".app") { Self.add(e, lower, &byBundleID) }
-                Self.add(e, lower.hasSuffix(".app") ? String(lower.dropLast(4)) : lower, &byName)
+            } else if lower.contains("."), !lower.hasSuffix(".app") {
+                Self.add(e, lower, &byBundleID)
             }
             if let url = resolve(t) {
                 Self.add(e, AppPicker.pathKey(url.path), &byPath)
                 if let b = bundleID(url) { Self.add(e, b.lowercased(), &byBundleID) }
+            } else if !isPath {
+                // Only a name that opens no app is matched by name: one that does
+                // opens that app, not every app with the same name.
+                Self.add(e, lower.hasSuffix(".app") ? String(lower.dropLast(4)) : lower, &byName)
             }
         }
     }
@@ -198,6 +202,14 @@ enum GridNavigation {
 
 // MARK: - Installed apps
 
+/// Set on the main queue, read by a background scan between items.
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 /// Installed apps for the picker's search: the usual app folders, then
 /// whatever Spotlight knows about. Built when the picker appears and dropped
 /// with it, so nothing runs (or stays in memory) while it isn't on screen.
@@ -206,6 +218,8 @@ final class InstalledAppIndex {
     private var observer: NSObjectProtocol?
     /// Bumped on cancel, so late background results are dropped.
     private var generation = 0
+    /// Stops a scan that's still running when the picker goes away.
+    private var stop = StopFlag()
 
     deinit { stopQuery() }
 
@@ -213,23 +227,26 @@ final class InstalledAppIndex {
     /// again with Spotlight's apps added.
     func build(_ update: @escaping ([AppCandidate]) -> Void) {
         cancel()
-        let gen = generation
+        let gen = generation, stop = StopFlag()
+        self.stop = stop
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let apps = InstalledAppIndex.candidates(InstalledAppIndex.scanFolders())
+            let apps = InstalledAppIndex.candidates(InstalledAppIndex.scanFolders(stop: stop), stop: stop)
+            guard !stop.isSet else { return }
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
                 update(apps)
-                self.querySpotlight(gen: gen, known: apps, update: update)
+                self.querySpotlight(gen: gen, stop: stop, known: apps, update: update)
             }
         }
     }
 
     func cancel() {
         generation += 1
+        stop.set()
         stopQuery()
     }
 
-    private func querySpotlight(gen: Int, known: [AppCandidate], update: @escaping ([AppCandidate]) -> Void) {
+    private func querySpotlight(gen: Int, stop: StopFlag, known: [AppCandidate], update: @escaping ([AppCandidate]) -> Void) {
         let q = NSMetadataQuery()
         q.predicate = NSPredicate(format: "%K == 'com.apple.application-bundle'", NSMetadataItemContentTypeKey)
         q.searchScopes = [NSMetadataQueryLocalComputerScope]
@@ -243,7 +260,8 @@ final class InstalledAppIndex {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let knownPaths = Set(known.map(\.url.path))
                 let extra = paths.filter { !knownPaths.contains($0) && InstalledAppIndex.isUserFacing($0) }
-                let apps = InstalledAppIndex.dedup(known + InstalledAppIndex.candidates(extra.map { URL(fileURLWithPath: $0) }))
+                let apps = InstalledAppIndex.dedup(known + InstalledAppIndex.candidates(extra.map { URL(fileURLWithPath: $0) }, stop: stop))
+                guard !stop.isSet else { return }
                 DispatchQueue.main.async {
                     guard let self, gen == self.generation else { return }
                     update(apps)
@@ -270,12 +288,12 @@ final class InstalledAppIndex {
 
     /// Apps in the usual folders and one level of subfolders (e.g. "Setapp",
     /// "Chrome Apps"), plus Finder.
-    static func scanFolders() -> [URL] {
+    static func scanFolders(stop: StopFlag = StopFlag()) -> [URL] {
         let fm = FileManager.default
         var out: [URL] = [URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")]
         for dir in folders {
-            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for item in items.sorted() where !item.hasPrefix(".") {
+            guard !stop.isSet, let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for item in items.sorted() where !item.hasPrefix(".") && !stop.isSet {
                 let url = URL(fileURLWithPath: dir).appendingPathComponent(item)
                 if item.lowercased().hasSuffix(".app") {
                     out.append(url)
@@ -310,9 +328,10 @@ final class InstalledAppIndex {
 
     /// Reads names and bundle ids, skipping background-only apps. Finder
     /// aliases and symlinks (~/Applications often has them) stand for their app.
-    static func candidates(_ urls: [URL]) -> [AppCandidate] {
+    static func candidates(_ urls: [URL], stop: StopFlag = StopFlag()) -> [AppCandidate] {
         let fm = FileManager.default
         return dedup(urls.compactMap { link in
+            guard !stop.isSet else { return nil }
             var url = link
             if (try? link.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true {
                 guard let target = try? URL(resolvingAliasFileAt: link, options: [.withoutUI, .withoutMounting]),
@@ -334,7 +353,13 @@ final class InstalledAppIndex {
     static func dedup(_ apps: [AppCandidate]) -> [AppCandidate] {
         var seen = Set<String>()
         var names = Set<String>()
-        return apps.filter { names.insert($0.name.lowercased()).inserted && seen.insert($0.id).inserted }
+        return apps.filter {
+            let name = $0.name.lowercased()
+            guard !names.contains(name), !seen.contains($0.id) else { return false }
+            names.insert(name)
+            seen.insert($0.id)
+            return true
+        }
     }
 
     private static func flag(_ value: Any?) -> Bool {

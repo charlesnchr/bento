@@ -216,6 +216,26 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(bound.entry(for: app("Calendar", "com.apple.iCal")) == nil)
 }
 
+@Test func aNameThatOpensOneAppDoesNotBindAnotherWithTheSameName() {
+    // "Notes" opens Apple's Notes; a different app also called Notes isn't bound
+    // to it (picking it would otherwise record over Apple Notes' shortcut).
+    let entries = [LauncherEntry(kind: .app, target: "Notes", shortcut: "hyper+n"),
+                   LauncherEntry(kind: .app, target: "Ghost", shortcut: "hyper+g")]  // opens nothing installed
+    let resolve: (String) -> URL? = { $0 == "Notes" ? URL(fileURLWithPath: "/System/Applications/Notes.app") : nil }
+    let bundleID: (URL) -> String? = { $0.lastPathComponent == "Notes.app" ? "com.apple.Notes" : nil }
+    let bound = BoundApps(entries, resolve: resolve, bundleID: bundleID)
+    #expect(bound.entry(for: app("Notes", "com.apple.Notes", path: "/System/Applications/Notes.app"))?.shortcut == "hyper+n")
+    #expect(bound.entry(for: app("Notes", "com.example.notes", path: "/Applications/Notes.app")) == nil)
+    // A name that opens nothing can only be matched by name.
+    #expect(bound.entry(for: app("Ghost", "com.example.ghost"))?.shortcut == "hyper+g")
+}
+
+@Test func aRejectedCopyDoesNotHideAnotherAppWithItsName() {
+    // The renamed copy of Code is dropped as a duplicate; the unrelated Editor still gets a tile.
+    let apps = [app("Code", "id.a"), app("Editor", "id.a", path: "/Applications/Old/Editor.app"), app("Editor", "id.b")]
+    #expect(InstalledAppIndex.dedup(apps).map(\.id) == ["id.a", "id.b"])
+}
+
 @Test func gridColumnsFitTheWidth() {
     #expect(GridNavigation.columns(width: 0, minTile: 80, spacing: 8) == 1)
     #expect(GridNavigation.columns(width: 50, minTile: 80, spacing: 8) == 1)
