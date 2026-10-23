@@ -28,15 +28,20 @@ enum AppPicker {
     }
 
     /// Running apps first (they carry the live location), then installed ones
-    /// not already listed. The first of several copies of an app wins.
+    /// not already listed. The first of several copies of an app wins; an
+    /// installed app named like a running one is taken to be another copy.
     static func merge(running: [AppCandidate], installed: [AppCandidate]) -> [AppCandidate] {
         var seen = Set<String>()
+        var names = Set<String>()
         var out: [AppCandidate] = []
         for var app in running where seen.insert(app.id).inserted {
             app.isRunning = true
+            names.insert(app.name.lowercased())
             out.append(app)
         }
-        for app in installed where seen.insert(app.id).inserted { out.append(app) }
+        for app in installed where !names.contains(app.name.lowercased()) && seen.insert(app.id).inserted {
+            out.append(app)
+        }
         return out
     }
 
@@ -76,11 +81,15 @@ enum AppPicker {
         guard q.count > 1 else { return nil }
         if String(words.compactMap(\.first)).hasPrefix(q) { return 700 }       // "vsc" → Visual Studio Code
         if n.contains(q) { return 600 }
+        // Letters in order with a few skipped ("xcd" → Xcode); more is noise
+        // ("chess" isn't Keychain Access).
         let compact = q.filter { !$0.isWhitespace }
-        if let gaps = subsequenceGaps(compact, in: n) { return 400 + max(0, 99 - gaps) } // "xcd" → Xcode
+        if let gaps = subsequenceGaps(compact, in: n), gaps <= maxGaps { return 400 + maxGaps - gaps }
         if let b = bundleID.map(normalize), b.contains(q) { return 300 }       // "vscode" → com.microsoft.VSCode
         return nil
     }
+
+    static let maxGaps = 3
 
     /// Normalized words of a name, split at spaces/punctuation and camel case
     /// ("OmniFocus" → omni, focus; "iTerm" → i, term).
@@ -282,7 +291,7 @@ final class InstalledAppIndex {
     /// trash: keep the ones a person would launch.
     static func isUserFacing(_ path: String) -> Bool {
         let home = NSHomeDirectory()
-        for bad in ["/Volumes/", "/private/", "/Library/", home + "/Library/"] where path.hasPrefix(bad) { return false }
+        for bad in ["/Volumes/", "/private/", "/Library/", "/Users/Shared/", home + "/Library/"] where path.hasPrefix(bad) { return false }
         for bad in ["/.Trash/", "/DerivedData/", "/.build/"] where path.contains(bad) { return false }
         if path.hasPrefix("/System/"), !(path.hasPrefix("/System/Applications/")
             || path.hasPrefix("/System/Library/CoreServices/Applications/")
@@ -311,10 +320,14 @@ final class InstalledAppIndex {
         })
     }
 
-    /// One candidate per app: the first copy of a bundle id (or path) wins.
+    /// One candidate per app: the first copy of a bundle id (or path) wins,
+    /// and of several apps with the same name the one in the preferred place
+    /// (the folder scan comes before Spotlight) — Add Other → Application…
+    /// still reaches the others.
     static func dedup(_ apps: [AppCandidate]) -> [AppCandidate] {
         var seen = Set<String>()
-        return apps.filter { seen.insert($0.id).inserted }
+        var names = Set<String>()
+        return apps.filter { names.insert($0.name.lowercased()).inserted && seen.insert($0.id).inserted }
     }
 
     private static func flag(_ value: Any?) -> Bool {

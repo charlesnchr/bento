@@ -104,6 +104,7 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
         app("Tool", nil, path: "/tmp/x/../x/Tool.app"),                           // same path, spelled differently
         app("Notes", "com.apple.Notes"),
         app("Notes", "com.apple.Notes", path: "/System/Applications/Notes.app"),  // second copy is ignored
+        app("safari", "org.other.safari", path: "/Applications/CrossOver/Safari.app"), // named like a running app
     ]
     let merged = AppPicker.merge(running: running, installed: installed)
     #expect(merged.map(\.name) == ["Safari", "Tool", "Notes"])
@@ -112,6 +113,15 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(!merged[2].isRunning)
     // Installed apps are deduplicated the same way when the index is built.
     #expect(InstalledAppIndex.dedup(installed).map(\.name) == ["Safari", "Tool", "Notes"])
+}
+
+@Test func installedAppsWithTheSameNameKeepThePreferredCopy() {
+    // Folder scan order first (/Applications), then a CrossOver wrapper and a staging copy.
+    let apps = [app("Epic Games Launcher", "com.epicgames.EpicGamesLauncher"),
+                app("Epic Games Launcher", "com.codeweavers.epic", path: "/Users/x/Applications/CrossOver/Epic Games Launcher.app"),
+                app("epic games launcher", nil, path: "/Users/x/Elsewhere/Epic Games Launcher.app"),
+                app("Chess", "com.apple.Chess")]
+    #expect(InstalledAppIndex.dedup(apps).map(\.url.path) == ["/Applications/Epic Games Launcher.app", "/Applications/Chess.app"])
 }
 
 @Test func symlinkedAppIsTheSameAppAsItsTarget() throws {
@@ -150,6 +160,16 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(AppPicker.results(apps, query: "vscode", limit: 10).map(\.name) == ["Visual Studio Code"]) // bundle id / fuzzy
     #expect(AppPicker.results(apps, query: "CODE", limit: 2).map(\.name) == ["Code", "Codex"])  // case, limit
     #expect(AppPicker.results(apps, query: "nothing-like-it", limit: 10).isEmpty)
+}
+
+@Test func fuzzyMatchesSkipOnlyAFewLetters() {
+    let apps = [app("Chess", "com.apple.Chess"), app("Keychain Access", "com.apple.keychainaccess"),
+                app("Chrome Remote Desktop Host Uninstaller", "com.google.chromeremotedesktop.uninstaller")]
+    #expect(AppPicker.results(apps, query: "chess", limit: 10).map(\.name) == ["Chess"])
+    #expect(AppPicker.score("safr", name: "Safari", bundleID: nil) == 402)      // one letter skipped
+    #expect(AppPicker.score("sfri", name: "Safari", bundleID: nil) == 401)      // two
+    #expect(AppPicker.score("ka", name: "Keychain Access", bundleID: nil) == 700)  // initials
+    #expect(AppPicker.score("kcs", name: "Keychain Access", bundleID: nil) == nil) // too far apart
 }
 
 @Test func singleLetterOnlyMatchesWordStarts() {
@@ -246,6 +266,7 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(!InstalledAppIndex.isUserFacing("/Library/Application Support/Vendor/Updater.app"))
     #expect(!InstalledAppIndex.isUserFacing(home + "/Library/Caches/Thing/Installer.app"))
     #expect(!InstalledAppIndex.isUserFacing("/Volumes/Some Installer/Some.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/Users/Shared/UnrealEngine/Launcher/SelfUpdateStaging/Install/Epic Games Launcher.app"))
     #expect(!InstalledAppIndex.isUserFacing(home + "/.Trash/Old.app"))
     #expect(!InstalledAppIndex.isUserFacing(home + "/Library/Developer/Xcode/DerivedData/X/Build/Products/Debug/X.app"))
 }
