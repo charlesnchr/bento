@@ -42,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var running: Set<String> = []
     private var observers: [NSObjectProtocol] = []
     private let navigator = SettingsNavigator()
+    /// App-level actions (the keyboard overview); not a module the user sees.
+    private let appActions = AppActionsModule()
     private var signalSources: [DispatchSourceSignal] = []
     private var retryHotkeysWork: DispatchWorkItem?
     private var general: GeneralSettings { ConfigStore.shared.section("general", default: GeneralSettings()) }
@@ -78,9 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         ConfigStore.shared.materialize("general", default: GeneralSettings())
 
-        ActionRegistry.shared.isModuleEnabled = { [weak self] id in self?.running.contains(id) ?? false }
-        ActionRegistry.shared.setModules(modules)
+        ActionRegistry.shared.isModuleEnabled = { [weak self] id in
+            id == AppActionsModule.moduleID || (self?.running.contains(id) ?? false)
+        }
+        // App-level actions last: a module's or the user's binding of the same keys wins.
+        ActionRegistry.shared.setModules(modules + [appActions])
         syncModules()
+        KeyboardOverview.scheduleLaunchHint()
 
         observers.append(NotificationCenter.default.addObserver(forName: SettingsRouter.openRequest, object: nil, queue: .main) { [weak self] note in
             self?.showSettings(page: note.object as? String)
@@ -224,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case "debug":
             writeDiagnostics()
         case "settings":
-            showSettings(page: path.isEmpty ? nil : path)
+            showSettings(page: Self.settingsPage(url))
         case "update":
             // bento://update checks; bento://update/install installs a found update.
             if path == "install", case .available = Updater.shared.state { Updater.shared.install() } else { Updater.shared.check(.url) }
@@ -253,7 +259,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             "registry": reg.diagnostics(),
             "config": ["watching": ConfigStore.shared.isWatching, "pendingWrite": ConfigStore.shared.hasPendingWrite,
                        "problem": ConfigStore.shared.lastProblem ?? ""],
-            "settingsWindow": ["open": settingsWindow != nil, "opened": settingsOpened, "closed": settingsClosed],
+            "settingsWindow": ["open": settingsWindow != nil, "opened": settingsOpened, "closed": settingsClosed,
+                               "page": navigator.page.map { String(describing: $0) } ?? ""],
+            "keyboardOverview": KeyboardOverview.shared.diagnostics,
             "dockPresence": DockPresence.retainCount,
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
             "statusItem": statusItem != nil,
@@ -331,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             warn.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
             menu.addItem(warn)
         }
+        menu.addItem(KeyboardOverview.menuItem())
         let settings = ClosureMenuItem(title: "Settings…", keyEquivalent: ",") { [weak self] in self?.showSettings(nil) }
         menu.addItem(settings)
         menu.addItem(ClosureMenuItem(title: "Open Config File") { NSWorkspace.shared.open(ConfigStore.shared.url) })
@@ -379,9 +388,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     // MARK: Settings window
 
+    /// The page of a bento://settings/<page> link. A Shortcuts filter keeps its
+    /// own slashes (…/shortcuts/%2F filters to "/"), which `url.path` drops.
+    static func settingsPage(_ url: URL) -> String? {
+        let raw = String((URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? "").drop { $0 == "/" })
+        let page = raw.hasPrefix("shortcuts/") ? raw : raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return page.isEmpty ? nil : page
+    }
+
     func showSettings(page: String?) {
         // Unknown pages (typos in bento://settings/<id>) fall back to General.
-        let known = page.map { p in ["general", "shortcuts"].contains(p) || modules.contains { $0.id == p } } ?? true
+        // "shortcuts/<text>" is the Shortcuts page filtered to <text>.
+        let known = page.map { p in
+            ["general", "shortcuts"].contains(p) || p.hasPrefix("shortcuts/") || modules.contains { $0.id == p }
+        } ?? true
         navigator.select(known ? page : nil)
         showSettings(nil)
     }

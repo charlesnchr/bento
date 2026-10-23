@@ -18,7 +18,7 @@ there is no Xcode project and no asset catalog.
 ```
 Package.swift
 Sources/BentoCore     shared foundation (do not edit from module work; see below)
-Sources/BentoShell    app delegate, menu bar, settings window, updater, BentoApp.run(modules:)
+Sources/BentoShell    app delegate, menu bar, settings window, keyboard overview, updater, BentoApp.run(modules:)
 Sources/Bento         main.swift for the real app (all modules)
 Sources/<Module>      one target per feature area
 Dev/Dev<Module>       single-module dev harness executables
@@ -84,6 +84,8 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 7. Settings: each module provides `makeSettingsView()` (SwiftUI `Form { … }.formStyle(.grouped)`)
    with its options and a "Shortcuts" section listing its actions with `ShortcutRecorder(actionID:)`.
 8. Action ids are `<module>.<kebab-name>`. Titles are short ("Left Half", "Capture Area").
+   App-level actions (the keyboard overview) use `bento.`: `AppActionsModule` in
+   `Sources/BentoShell/KeyboardOverview.swift`, registered after the modules.
 
 ## Default shortcuts (avoid collisions)
 
@@ -97,6 +99,7 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
 | MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item click shortcuts are user-defined |
+| Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
 
 ## Sync
 

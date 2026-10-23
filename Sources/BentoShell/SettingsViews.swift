@@ -9,11 +9,21 @@ enum SettingsPage: Hashable {
 /// Selected settings page, shared so deep links can switch it while open.
 final class SettingsNavigator: ObservableObject {
     @Published var page: SettingsPage? = .general
+    /// Filter for the Shortcuts page from a "shortcuts/<text>" link (the
+    /// keyboard overview's Change Shortcut); the page takes it once. Plain
+    /// "shortcuts" clears a filter left from before.
+    @Published var shortcutsFilter: String?
 
     func select(_ id: String?) {
+        shortcutsFilter = nil
         switch id {
         case nil, "", "general": page = .general
-        case "shortcuts": page = .shortcuts
+        case "shortcuts":
+            shortcutsFilter = ""
+            page = .shortcuts
+        case let id? where id.hasPrefix("shortcuts/"):
+            shortcutsFilter = String(id.dropFirst("shortcuts/".count))
+            page = .shortcuts
         case let id?: page = .module(id)
         }
     }
@@ -48,7 +58,8 @@ struct SettingsRootView: View {
                 case .general:
                     GeneralPane(delegate: delegate, general: general)
                 case .shortcuts:
-                    ShortcutsPane(modules: delegate.modules)
+                    // The registry's modules: the feature modules plus app-level actions.
+                    ShortcutsPane(modules: ActionRegistry.shared.modules, navigator: navigator)
                 case .module(let id):
                     if let m = delegate.modules.first(where: { $0.id == id }) {
                         ModulePane(module: m, enabled: Binding(
@@ -274,6 +285,7 @@ struct PermissionsView: View {
 
 struct ShortcutsPane: View {
     let modules: [BentoModule]
+    @ObservedObject var navigator: SettingsNavigator
     @State private var search = ""
     @State private var revision = 0
 
@@ -295,6 +307,14 @@ struct ShortcutsPane: View {
         .formStyle(.grouped)
         .searchable(text: $search, placement: .toolbar, prompt: "Filter actions")
         .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
+        .onAppear(perform: takeFilter)
+        .onChange(of: navigator.shortcutsFilter) { _, _ in takeFilter() }
+    }
+
+    private func takeFilter() {
+        guard let filter = navigator.shortcutsFilter else { return }
+        search = filter
+        navigator.shortcutsFilter = nil
     }
 
     private func filtered(_ actions: [BentoAction]) -> [BentoAction] {

@@ -17,11 +17,18 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Capture + Editor | Shottr | frozen-screen area capture with loupe, window/fullscreen/repeat/delayed, scrolling capture, OCR + QR, colour picker, ruler, pins; editor with editable annotations (arrow, text, shapes, blur/pixelate, smart erase, counter, spotlight, crop, ruler…), **Esc copies and closes**, ⌘S save, drag out, history with re-editing | ⌘⇧2 area, ⌘⇧1 fullscreen, ⌃⌥⌘O copy text |
 | Windows | Rectangle Pro | every Rectangle action with cycling, gaps, snap areas, **⌘⌥-drag move / ⌘⌥⇧-drag resize**, displays, Spaces, layouts, launch positions, stash; imports your Rectangle (Pro) settings on first run | Rectangle's ⌃⌥ set (or your imported keys) |
 | Tiling (off by default) | AeroSpace | auto-tiling manager you toggle on/off: tiles/master-stack/columns/rows/monocle, gaps, float rules, mouse swap/resize | ⌃⌥⌘T toggle, ⌃⌥⌘ H/J/K/L focus, ⌃⌥⌘⇧ H/J/K/L move |
-| App Hotkeys | Raycast hotkeys | shortcut per app (toggle/focus/cycle windows), URL, file or shell command | your own |
+| App Hotkeys | Raycast hotkeys | shortcut per app (toggle/focus/cycle windows), URL, file or shell command; pick apps from a grid of running apps or type to search installed ones, then type the shortcut | your own |
 | Clipboard | Raycast/Alfred | text, rich text, images, files, links, colours; 30-day history, search incl. OCR of images, pins, paste/plain paste/⌘1–9 | ⌘⇧V |
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 | Menu Bar (off by default) | Bartender / Ice | Visible, Hidden and Always Hidden sections; show them with the chevron, a shortcut, or hover/click/scroll on the menu bar; they hide again after a delay, on a click elsewhere or when the item’s menu closes; arrange the real items by dragging their images in Settings (Bento ⌘-drags them and checks every move); Bento Bar below the menu bar for hidden items and items lost behind the notch; quick search; per-item click shortcuts; show an item when its icon changes; item spacing; tint, border, shadow; profiles per display or by URL (e.g. from a Focus automation) | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
+
+**Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
+module with its current shortcut. Type to filter by name, module or key (“left”
+finds Left Half, “⌘⇧” every ⌘⇧ shortcut). ↩ runs the selected action in the app
+you were in, ⌘E changes its shortcut in Settings, ⌘, opens Settings, and each
+module has a link to its own settings. The header shows whether Accessibility and
+Screen Recording are granted. A hint points to it once after launch.
 
 ## Install
 
@@ -37,7 +44,8 @@ look inside `/opt`, so on first launch Bento adds a Finder alias to itself at
 `~/Applications/Bento.app`; Spotlight, Raycast and Finder find it there. Then
 grant **Accessibility** and **Screen Recording** from Settings → General: each
 **Grant…** brings up the macOS prompt, whose **Open System Settings** button
-lists Bento ready to switch on.
+lists Bento ready to switch on. Press **⌃⌥/** any time for the list of
+shortcuts.
 
 Bento checks for a new release once a day. When there is one, **Install Bento
 x.y.z and Restart** appears in its menu bar menu and under Settings → General →
@@ -79,7 +87,9 @@ item names and images) from Settings → General.
 Everything lives in `~/.config/bento/config.json`, one section per module plus
 `shortcuts` (action id → shortcut). The settings window edits the same file and
 external edits apply live. Shortcut syntax: `ctrl+opt+cmd+left`, `cmd+shift+2`,
-`hyper+t` (⌃⌥⌘⇧), `meh+n` (⌃⌥⇧); `""` unbinds.
+`hyper+t` (⌃⌥⌘⇧), `meh+n` (⌃⌥⇧); `""` unbinds. Key names follow the US layout
+and mean a key's position: on a German or Nordic keyboard `ctrl+opt+slash` is ⌃⌥
+plus the key left of the right Shift (`-`), and the keyboard overview says so.
 
 Any action can be triggered from scripts, Karabiner, etc.:
 
@@ -87,6 +97,8 @@ Any action can be triggered from scripts, Karabiner, etc.:
 open "bento://action/shot.area"
 open "bento://action/windows.left-half"
 open "bento://settings"
+open "bento://settings/shortcuts/Left%20Half"    # the Shortcuts page, filtered
+open "bento://action/bento.keyboard-overview"
 ```
 
 Data (clipboard history, captures, notes and todo DBs) is in
