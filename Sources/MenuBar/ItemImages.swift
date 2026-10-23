@@ -54,8 +54,10 @@ enum ItemImages {
 /// Shows a hidden item for a few seconds when its icon changes (opt-in per
 /// item). There is no notification for another app's icon changing, so the
 /// chosen items are captured every 2 s while they're hidden: a capture of a
-/// 40 × 30 pt window, only for the items picked, and nothing while the items
-/// are shown (the controller pauses it).
+/// 40 × 30 pt window, only for the items picked. Nothing runs while the
+/// items are shown (the controller pauses it), or while no picked item is in
+/// a hidden section or running at all (looked at again on layout changes and
+/// when apps start or quit).
 final class ChangeWatcher {
     private weak var controller: MenuBarController?
     private var timer: Timer?
@@ -75,18 +77,29 @@ final class ChangeWatcher {
         syncTimer()
     }
 
-    /// Paused while the items are shown, arranged or in the Bento Bar.
+    /// Paused while the items are shown, arranged or in the Bento Bar. Each
+    /// call also looks again at which picked items are hidden.
     func setActive(_ on: Bool) {
-        guard on != active else { return }
         active = on
         syncTimer()
     }
 
+    /// The picked items worth watching: those in a hidden section (a change
+    /// to a visible one is already in view).
+    static func watched(_ items: [MenuBarItem], sections: [CGWindowID: MenuBarSection], keys: Set<String>) -> [MenuBarItem] {
+        items.filter { keys.contains($0.key) && (sections[$0.windowID] ?? .visible) != .visible }
+    }
+
+    /// The picked items to look at now: none unless active.
+    private func eligible() -> [MenuBarItem] {
+        guard active, !keys.isEmpty, let controller else { return [] }
+        let items = controller.scanner.snapshot()
+        return ChangeWatcher.watched(items, sections: controller.sections(items), keys: keys)
+    }
+
     private func syncTimer() {
-        guard active, !keys.isEmpty else {
-            timer?.invalidate()
-            timer = nil
-            fingerprints = [:]
+        guard !eligible().isEmpty else {
+            suspend()
             return
         }
         guard timer == nil else { return }
@@ -94,6 +107,12 @@ final class ChangeWatcher {
         t.tolerance = 1
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    private func suspend() {
+        timer?.invalidate()
+        timer = nil
+        fingerprints = [:]
     }
 
     func stop() {
@@ -108,10 +127,9 @@ final class ChangeWatcher {
             fingerprints = [:]
             return
         }
-        let items = controller.scanner.snapshot()
-        let sections = controller.sections(items)
-        let watched = items.filter { keys.contains($0.key) && (sections[$0.windowID] ?? .visible) != .visible }
-        guard !watched.isEmpty else { return }
+        let watched = eligible()
+        // Moved to Visible, or its app quit: nothing to look at until that changes.
+        guard !watched.isEmpty else { suspend(); return }
         let jobs = watched.map { ($0.windowID, $0.frame) }
         queue.async { [weak self] in
             var prints: [CGWindowID: UInt64] = [:]

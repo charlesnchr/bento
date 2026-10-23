@@ -22,3 +22,32 @@ import Testing
     #expect(ControlItems.expansion(.shown, alwaysHiddenMisplaced: true) == E(hidden: false, alwaysHidden: false))
     #expect(ControlItems.expansion(.shownAll, alwaysHiddenMisplaced: true) == E(hidden: false, alwaysHidden: false))
 }
+
+// MARK: - Show when the icon changes
+
+private func barItem(_ id: CGWindowID, _ name: String, x: CGFloat, owner: pid_t? = 42) -> MenuBarItem {
+    MenuBarItem(windowID: id, frame: CGRect(x: x, y: 0, width: 30, height: 24), windowName: name,
+                ownerPID: owner, bundleID: owner == nil ? nil : "app.\(name.lowercased())", appName: name, detail: nil)
+}
+
+@Test func watcherLooksOnlyAtPickedHiddenItems() {
+    let x = barItem(1, "X", x: -400), z = barItem(2, "Z", x: -900), v = barItem(3, "V", x: 700)
+    let sections: [CGWindowID: MenuBarSection] = [1: .hidden, 2: .alwaysHidden, 3: .visible]
+    let all = [x, z, v]
+    #expect(ChangeWatcher.watched(all, sections: sections, keys: [x.key, z.key, v.key]).map(\.windowID) == [1, 2])
+    // Only a visible item picked, or a picked app that isn't running: nothing to poll.
+    #expect(ChangeWatcher.watched(all, sections: sections, keys: [v.key]).isEmpty)
+    #expect(ChangeWatcher.watched(all, sections: sections, keys: ["app.gone/Gone"]).isEmpty)
+    #expect(ChangeWatcher.watched(all, sections: sections, keys: []).isEmpty)
+    // The picked item's app quit: its window is gone from the list.
+    #expect(ChangeWatcher.watched([z, v], sections: sections, keys: [x.key]).isEmpty)
+}
+
+@Test func watcherIgnoresItemsWithoutAnOwnerOrSection() {
+    // No owner yet: no stable key, so it can't be a picked item.
+    let unresolved = barItem(1, "X", x: -400, owner: nil)
+    #expect(ChangeWatcher.watched([unresolved], sections: [1: .hidden], keys: ["app.x/X"]).isEmpty)
+    // No section known counts as visible (in view).
+    let x = barItem(2, "X", x: 400)
+    #expect(ChangeWatcher.watched([x], sections: [:], keys: [x.key]).isEmpty)
+}

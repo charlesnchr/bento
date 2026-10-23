@@ -80,6 +80,9 @@ final class MenuBarController {
         workspaceObservers.append(ws.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self?.launchWork.removeValue(forKey: app.processIdentifier)?.cancel()
+            // A watched item may have gone with it (its window lingers a moment).
+            guard self?.changeWatcher?.isRunning == true else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.syncChangeWatcher() }
         })
     }
 
@@ -236,7 +239,8 @@ final class MenuBarController {
         syncChangeWatcher()
     }
 
-    /// Icon changes only matter while the items are hidden.
+    /// Icon changes only matter while the items are hidden. Called on every
+    /// layout change, so the watcher also looks again at what's hidden.
     func syncChangeWatcher() {
         changeWatcher?.setActive(visibility == .hidden && !bar.isOpen && !isArranging)
     }
@@ -697,15 +701,18 @@ final class MenuBarController {
         onSettingsChange(new)
     }
 
-    /// An app started: once its items appear, put them back where they were.
+    /// An app started: once its items appear, put them back where they were,
+    /// and watch them again if they're picked for "show when the icon changes".
     private func appLaunched(_ app: NSRunningApplication) {
-        guard settings.keepItemsInPlace, app.activationPolicy != .prohibited else { return }
+        guard settings.keepItemsInPlace || changeWatcher != nil, app.activationPolicy != .prohibited else { return }
         let pid = app.processIdentifier
         launchWork[pid]?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.started else { return }
             self.launchWork.removeValue(forKey: pid)
-            self.restorePlaces(of: pid, attempt: 0)
+            if self.settings.keepItemsInPlace { self.restorePlaces(of: pid, attempt: 0) }
+            // Its items need owners before they can be matched to the picked keys.
+            if self.changeWatcher != nil { self.refresh { [weak self] in self?.syncChangeWatcher() } }
         }
         launchWork[pid] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
