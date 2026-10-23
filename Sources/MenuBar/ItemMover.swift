@@ -110,15 +110,13 @@ final class ItemMover {
     private func move(_ requests: [Request], token: ItemWorkQueue.Token, bestEffort: Bool = false) -> Result<Void, Failure> {
         guard !token.isCancelled else { return .failure(.cancelled) }
         var result: Result<Void, Failure> = .success(())
-        withCursorHidden(token: token) {
-            for r in requests {
-                guard !token.isCancelled else { result = .failure(.cancelled); break }
-                if case .failure(let f) = perform(r, token: token) {
-                    result = .failure(f)
-                    if !bestEffort || f == .cancelled { break }
-                }
-                if !token.wait(0.03) { result = .failure(.cancelled); break }
+        for r in requests {
+            guard !token.isCancelled else { result = .failure(.cancelled); break }
+            if case .failure(let f) = perform(r, token: token) {
+                result = .failure(f)
+                if !bestEffort || f == .cancelled { break }
             }
+            if !token.wait(0.03) { result = .failure(.cancelled); break }
         }
         return result
     }
@@ -190,12 +188,16 @@ final class ItemMover {
             default: other
             }
             guard !token.isCancelled else { return .failure(.cancelled) }
-            switch strategy {
-            case .teleport: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: true, token: token)
-            case .edge: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: false, token: token)
-            case .drag: drag(r, from: CGPoint(x: itemFrame.midX, y: itemFrame.midY), token: token)
+            // Capture and hide only after input is idle, for this attempt.
+            // A busy return or retry must not restore an old cursor position.
+            withCursorHidden(token: token) {
+                switch strategy {
+                case .teleport: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: true, token: token)
+                case .edge: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: false, token: token)
+                case .drag: drag(r, from: CGPoint(x: itemFrame.midX, y: itemFrame.midY), token: token)
+                }
+                waitUntilSettled(r.item, from: itemFrame, token: token)
             }
-            waitUntilSettled(r.item, from: itemFrame, token: token)
             guard !token.isCancelled else { return .failure(.cancelled) }
             let placed = isPlaced(r)
             MenuBarTrace.log("move \(r.item) \(r.side == .left ? "left of" : "right of") \(r.target) by \(strategy.rawValue): \(placed ? "placed" : "missed") (item was x=\(Int(itemFrame.minX)), target x=\(Int(targetFrame.minX)), now x=\(Int(environment.frame(r.item)?.minX ?? -1)))")

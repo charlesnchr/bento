@@ -344,3 +344,19 @@ private func original() -> [MenuBarItem] {
     fake.permission = false
     controller.stop()
 }
+
+@Test @MainActor func busyReturnDoesNotCaptureHideOrRestoreCursor() async {
+    let fake = FakeMenuBar()
+    fake.idle = false
+    let cursorReads = Locked(0)
+    var environment = fake.environment
+    environment.cursor = { cursorReads.withValue { $0 += 1 }; return CGPoint(x: 400, y: 400) }
+    let mover = ItemMover(environment: environment)
+    let result = await withCheckedContinuation { continuation in
+        mover.move([.init(item: 1, target: 3, side: .left)]) { continuation.resume(returning: $0) }
+    }
+    guard case .failure(.userBusy) = result else { Issue.record("Busy return should wait without moving"); return }
+    #expect(cursorReads.get == 0)
+    #expect(fake.events.get.isEmpty)
+    mover.stop()
+}
