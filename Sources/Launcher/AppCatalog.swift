@@ -308,10 +308,17 @@ final class InstalledAppIndex {
         return true
     }
 
-    /// Reads names and bundle ids, skipping background-only apps.
+    /// Reads names and bundle ids, skipping background-only apps. Finder
+    /// aliases and symlinks (~/Applications often has them) stand for their app.
     static func candidates(_ urls: [URL]) -> [AppCandidate] {
         let fm = FileManager.default
-        return dedup(urls.compactMap { url in
+        return dedup(urls.compactMap { link in
+            var url = link
+            if (try? link.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true {
+                guard let target = try? URL(resolvingAliasFileAt: link, options: [.withoutUI, .withoutMounting]),
+                      target.pathExtension.lowercased() == "app" else { return nil }
+                url = target
+            }
             let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")) as? [String: Any]
             guard !flag(info?["LSBackgroundOnly"]), fm.fileExists(atPath: url.path) else { return nil }
             var name = fm.displayName(atPath: url.path)

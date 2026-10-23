@@ -293,6 +293,29 @@ private func app(_ name: String, _ bundleID: String?, path: String? = nil, runni
     #expect(apps[1].id == AppPicker.pathKey(bare.path))
 }
 
+@Test func aliasesAndSymlinksStandForTheirApp() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bento-alias-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let real = dir.appendingPathComponent("Real/Tool.app")
+    try FileManager.default.createDirectory(at: real.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+    try (["CFBundleIdentifier": "test.tool"] as NSDictionary).write(to: real.appendingPathComponent("Contents/Info.plist"))
+    let alias = dir.appendingPathComponent("Tool alias.app")
+    try URL.writeBookmarkData(try real.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+    let link = dir.appendingPathComponent("Tool link.app")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    let broken = dir.appendingPathComponent("Broken.app")
+    try FileManager.default.createSymbolicLink(at: broken, withDestinationURL: dir.appendingPathComponent("gone/Missing.app"))
+    let notAnApp = dir.appendingPathComponent("Notes alias.app")
+    try URL.writeBookmarkData(try dir.bookmarkData(options: .suitableForBookmarkFile), to: notAnApp)
+
+    let viaAlias = InstalledAppIndex.candidates([alias])
+    #expect(viaAlias.map(\.bundleID) == ["test.tool"])
+    #expect(viaAlias.first?.pathKey == AppPicker.pathKey(real.path))
+    #expect(InstalledAppIndex.candidates([link]).map(\.bundleID) == ["test.tool"])
+    #expect(InstalledAppIndex.candidates([broken, notAnApp]).isEmpty)
+    #expect(InstalledAppIndex.candidates([alias, link, real]).count == 1)
+}
+
 @Test func folderScanFindsSystemApps() {
     let apps = InstalledAppIndex.candidates(InstalledAppIndex.scanFolders())
     #expect(apps.contains { $0.bundleID == "com.apple.finder" })
