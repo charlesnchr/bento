@@ -344,17 +344,14 @@ phase_launcher() {
   start_bento || { end_session; return; }
   open_settings launcher || { end_session; return; }
 
-  # Add → Running App → Calculator, then record its hotkey in the row.
-  c press "$PID" "id=launcher.add"; sleep 0.6
-  c press "$PID" "role=AXMenuItem title=Running_App"; sleep 0.6
-  c press "$PID" "role=AXMenuItem id=menuAction: title=Calculator"; sleep 0.8
-  local KEY RC
+  # The Calculator tile in the app grid adds it and starts recording its hotkey.
+  c wait "$PID" "id=launcher.tile:com.apple.calculator" 5 >/dev/null
+  c press "$PID" "id=launcher.tile:com.apple.calculator"; sleep 0.8
+  local KEY
   KEY=$(cfg '[.launcher.entries[] | objects | select(.target == "com.apple.calculator")][0].key')
-  check "Add → Running App adds Calculator by bundle id" test -n "$KEY" -a "$KEY" != null
-  RC="id=recorder:launcher.$KEY"
-  c wait "$PID" "$RC" 3 >/dev/null
+  check "the Calculator tile adds it by bundle id" test -n "$KEY" -a "$KEY" != null
   c front "$PID" >/dev/null
-  c press "$PID" "$RC"; c key "$PID" ctrl+opt+cmd+6; sleep 0.5
+  c key "$PID" ctrl+opt+cmd+6; sleep 0.5
   eq "hotkey recorded in the row" "ctrl+opt+cmd+6" "$(cfg "[.launcher.entries[] | objects | select(.key == \"$KEY\")][0].shortcut")"
 
   # Toggle (default): launch/focus, hide when frontmost, show again.
