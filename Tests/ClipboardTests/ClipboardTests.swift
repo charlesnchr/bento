@@ -71,7 +71,7 @@ func pngData(width: Int, height: Int) -> Data {
 
     @Test func kinds() {
         #expect(ContentDetection.kind(forText: "#0A84FF") == .color)
-        #expect(ContentDetection.kind(forText: "https://bento.radian.dk") == .link)
+        #expect(ContentDetection.kind(forText: "https://sync.example.com") == .link)
         #expect(ContentDetection.kind(forText: "Just some words.") == .text)
     }
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Bento notes sync server (bento-sync)
-Documentation=https://bento.radian.dk/v1/health
+Documentation=https://github.com/charlesnchr/bento/tree/main/server
 After=network.target
 
 [Service]

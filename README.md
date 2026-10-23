@@ -85,8 +85,9 @@ open "bento://settings"
 ```
 
 Data (clipboard history, captures, notes and todo DBs) is in
-`~/Library/Application Support/Bento/`. The sync token (shared by Notes and Todo) is in
-`~/.config/bento/sync-token`.
+`~/Library/Application Support/Bento/`. Sync is optional and off by default: it needs your own
+`bento-sync` server (`server/README.md`), set under Settings → Notes and Todo, and its token in
+`~/.config/bento/sync-token` (shared by Notes and Todo).
 
 ## Development
 

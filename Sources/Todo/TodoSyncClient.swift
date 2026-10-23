@@ -6,11 +6,10 @@ import BentoCore
 
 /// Sync settings (`todo.sync` in config.json). Same server and token as Notes.
 struct TodoSyncSettings: Codable, Equatable {
-    var enabled = true
-    var server = "https://bento.radian.dk"
+    var enabled = false
+    /// The bento-sync server (`server/`), e.g. `https://sync.example.com`; none by default.
+    var server = ""
     var tokenFile = TodoSyncSettings.defaultTokenFile
-
-    static let liveHost = "bento.radian.dk"
 
     /// `~/.config/bento/sync-token`; an isolated instance (BENTO_HOME) looks inside its own
     /// home instead, so a test instance can never pick up the real token by default.
@@ -21,11 +20,15 @@ struct TodoSyncSettings: Codable, Equatable {
         return "~/.config/bento/sync-token"
     }
 
-    /// Isolated instances (BENTO_HOME) must not sync with the live server, which holds the
-    /// user's real notes and tasks, unless BENTO_ALLOW_LIVE_SYNC=1.
+    var hasServer: Bool { !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// Isolated instances (BENTO_HOME) only sync with a server on this Mac (the e2e suites
+    /// run one), never with a real one that holds the user's notes and tasks, unless
+    /// BENTO_ALLOW_LIVE_SYNC=1.
     static func isBlocked(serverHost: String?, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let home = environment["BENTO_HOME"], !home.isEmpty, environment["BENTO_ALLOW_LIVE_SYNC"] != "1" else { return false }
-        return serverHost?.lowercased() == liveHost
+        let host = (serverHost ?? "").lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return !(host == "localhost" || host == "::1" || host.hasPrefix("127."))
     }
 
     /// Largest body the server accepts (bytes of UTF-8), see server/src/store.rs.
@@ -38,6 +41,7 @@ struct TodoSyncSettings: Codable, Equatable {
 final class TodoSyncStatus: ObservableObject {
     enum State: Equatable {
         case disabled
+        case noServer
         case noToken
         case connecting
         case connected        // WebSocket live
@@ -59,6 +63,7 @@ final class TodoSyncStatus: ObservableObject {
         }
         switch state {
         case .disabled: return "Sync off"
+        case .noServer: return "No sync server"
         case .noToken: return "No sync token"
         case .connecting: return "Connecting…"
         case .connected: return pending > 0 ? "Syncing \(pending) change\(pending == 1 ? "" : "s")…" : "Synced"
@@ -70,7 +75,7 @@ final class TodoSyncStatus: ObservableObject {
 
     var symbol: String {
         switch state {
-        case .disabled: return "icloud.slash"
+        case .disabled, .noServer: return "icloud.slash"
         case .noToken, .unauthorized: return "exclamationmark.icloud"
         case .connecting: return "arrow.clockwise.icloud"
         case .connected, .polling:
@@ -142,9 +147,9 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
     func configure(_ s: TodoSyncSettings) {
         let changed = s != settings
         settings = s
-        if !s.enabled {
+        if !s.enabled || !s.hasServer {
             stop()
-            status.state = .disabled
+            status.state = s.enabled ? .noServer : .disabled
             return
         }
         if changed || !running { restart() }
@@ -152,6 +157,7 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
 
     func start() {
         guard settings.enabled else { status.state = .disabled; return }
+        guard settings.hasServer else { status.state = .noServer; return }
         guard !running else { return }
         running = true
         startMonitors()
@@ -254,8 +260,8 @@ final class TodoSyncClient: NSObject, URLSessionWebSocketDelegate {
             return
         }
         if TodoSyncSettings.isBlocked(serverHost: comps.host) {
-            log.error("Isolated instance (BENTO_HOME): not syncing with the live server")
-            status.state = .offline("live server blocked in isolated instance")
+            log.error("Isolated instance (BENTO_HOME): not syncing with a server outside this Mac")
+            status.state = .offline("isolated instance syncs with local servers only")
             return
         }
         guard collectionsOK else { verifyCollections(); return }

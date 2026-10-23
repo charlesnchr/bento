@@ -98,7 +98,7 @@ struct NotesSettingsView: View {
 
             Section {
                 Toggle("Sync notes", isOn: $model.value.sync.enabled)
-                TextField("Server", text: $model.value.sync.server)
+                TextField("Server", text: $model.value.sync.server, prompt: Text("https://sync.example.com"))
                     .textFieldStyle(.roundedBorder)
                 TextField("Token file", text: $model.value.sync.tokenFile)
                     .textFieldStyle(.roundedBorder)

@@ -6,7 +6,8 @@ The wire contract is **[docs/SYNC_PROTOCOL.md](../docs/SYNC_PROTOCOL.md)**.
 Documents live in **collections** (`notes`, `todos`, …) that share one table, one id
 space and one global `seq`; clients that predate collections only ever see `notes`.
 
-Live: `https://bento.radian.dk` (nginx → `127.0.0.1:8787` on the Hetzner box).
+Deployed behind nginx (→ `127.0.0.1:8787`) on a small Linux box by `scripts/deploy-server.sh`;
+Bento has no server by default (set `notes.sync.server` / `todo.sync.server`).
 
 ```
 server/
@@ -16,7 +17,7 @@ server/
   src/main.rs         CLI: serve | backup | purge
   tests/integration.rs  real server on an ephemeral port: REST + WebSocket clients, collections
   scripts/syncctl.py  stdlib-only CLI client (REST + WebSocket, TLS, proxies)
-  deploy/             systemd units, nginx site, remote install script
+  deploy/             systemd units, nginx site templates (@DOMAIN@), remote install script
 ../scripts/deploy-server.sh   build + deploy (idempotent)
 ```
 
@@ -49,7 +50,7 @@ cargo zigbuild --release --target aarch64-unknown-linux-musl
 ## Poking the server: `scripts/syncctl.py`
 
 Python 3 stdlib only. Reads `~/.config/bento/sync-token` (or `$BENTO_SYNC_TOKEN`);
-server from `--server` / `$BENTO_SYNC_SERVER` (default `https://bento.radian.dk`).
+server from `--server`, else `$BENTO_SYNC_SERVER`, else Bento's own `notes.sync.server`.
 
 ```sh
 scripts/syncctl.py health
@@ -75,6 +76,9 @@ REST goes to `/v1/c/<collection>` (`/v1/notes` for `notes`), WebSocket `hello` s
 module. Todo clients only sync once `/v1/health` reports `"collections": true`;
 until then they show “server needs an update” and keep tasks local.
 
+Set the server's public name first, in the environment or the untracked
+`scripts/config.local.sh`: `: "${BENTO_SYNC_DOMAIN:=sync.example.com}"`.
+
 ```sh
 scripts/deploy-server.sh                 # cargo test, cross-build, upload, install, verify
 scripts/deploy-server.sh --skip-tests
@@ -91,9 +95,9 @@ missing), uploads to a temp dir on `hetzner` (removed afterwards), and runs
 * atomically replaces `/opt/bento-sync/bento-sync`, installs the units, restarts, waits for `/v1/health`;
 * on first run, gets the certificate (`certbot certonly --nginx`, existing account,
   `--deploy-hook "systemctl reload nginx"`), then writes
-  `/etc/nginx/sites-available/bento.radian.dk` (+ `sites-enabled` symlink), runs
+  `/etc/nginx/sites-available/$BENTO_SYNC_DOMAIN` (+ `sites-enabled` symlink), runs
   `nginx -t` and reloads (restores the previous site file if the test fails);
-* checks `https://bento.radian.dk/v1/health` through nginx.
+* checks `https://$BENTO_SYNC_DOMAIN/v1/health` through nginx.
 
 On the server:
 
@@ -104,14 +108,14 @@ On the server:
 | backups | `/var/lib/bento-sync/backups/notes-YYYYMMDD-HHMMSS.db` (newest 14) |
 | token | `/etc/bento-sync/token` (root 0600, passed via `LoadCredential=`) |
 | units | `bento-sync.service`, `bento-sync-backup.service` + `.timer` (daily ~03:30 UTC) |
-| nginx | `/etc/nginx/sites-available/bento.radian.dk`, log `/var/log/nginx/bento.access.log` (no query strings) |
+| nginx | `/etc/nginx/sites-available/$BENTO_SYNC_DOMAIN`, log `/var/log/nginx/bento.access.log` (no query strings) |
 
 The service runs with `NoNewPrivileges`, `ProtectSystem=strict`,
 `ReadWritePaths=/var/lib/bento-sync`, no capabilities, syscall filter,
 `MemoryMax=64M`, `Restart=always` (`systemd-analyze security`: 1.4 "OK").
 
 Ops: `systemctl status bento-sync`, `journalctl -u bento-sync -f` (one line per
-WebSocket connect/hello/disconnect), `curl https://bento.radian.dk/v1/health`.
+WebSocket connect/hello/disconnect), `scripts/syncctl.py health`.
 
 ## Rotate the token
 

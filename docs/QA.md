@@ -37,7 +37,8 @@ single-instance clash):
   `$BENTO_HOME/support/…` files, AX (`bentoctl frame`, `bentoctl windows Bento`), the pasteboard
   (`osascript -e 'clipboard info'`), and screenshots of your own windows (`screencapture -l <id>`).
 - Notes sync: point `notes.sync.server` at a **local** `bento-sync` (`server/`, temp DB, own token);
-  never sync test instances with https://bento.radian.dk (it holds the user's real notes).
+  never sync test instances with the user's real server (it holds their real notes; isolated
+  instances refuse anything but a local server unless `BENTO_ALLOW_LIVE_SYNC=1`).
 - Kill your instance before `session end`.
 
 ## Regression scripts

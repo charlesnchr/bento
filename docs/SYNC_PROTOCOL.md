@@ -1,6 +1,6 @@
 # Bento sync protocol (v1, with collections)
 
-Server: `bento-sync` (Rust, `server/`), deployed at `https://bento.radian.dk` behind nginx.
+Server: `bento-sync` (Rust, `server/`), self-hosted behind nginx (`scripts/deploy-server.sh`).
 Single user, single shared bearer token. All timestamps are Unix **milliseconds**.
 
 ## Note object
@@ -155,10 +155,11 @@ so it can adopt it. `created_at` is kept from the first version.
 
 ## Config (client)
 
-Config section `notes.sync` in `~/.config/bento/config.json`:
+Config section `notes.sync` in `~/.config/bento/config.json` (`todo.sync` for Todo). Sync is
+off and there is no server by default:
 
 ```json
-"sync": { "enabled": true, "server": "https://bento.radian.dk", "tokenFile": "~/.config/bento/sync-token" }
+"sync": { "enabled": true, "server": "https://sync.example.com", "tokenFile": "~/.config/bento/sync-token" }
 ```
 
 The token file contains only the token (mode 600) and is never written into config.json.

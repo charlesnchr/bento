@@ -433,12 +433,22 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         _ = e.applyRemote(r) // must not trap on updatedAt + 1
     }
 
-    @Test func isolatedInstancesNeverUseTheLiveServer() {
-        #expect(SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
-        #expect(SyncSettings.isBlocked(serverHost: "BENTO.radian.dk", environment: ["BENTO_HOME": "/tmp/x"]))
-        #expect(!SyncSettings.isBlocked(serverHost: "127.0.0.1", environment: ["BENTO_HOME": "/tmp/x"]))
-        #expect(!SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: [:]))
-        #expect(!SyncSettings.isBlocked(serverHost: "bento.radian.dk", environment: ["BENTO_HOME": "/tmp/x", "BENTO_ALLOW_LIVE_SYNC": "1"]))
+    @Test func isolatedInstancesOnlySyncLocally() {
+        let isolated = ["BENTO_HOME": "/tmp/x"]
+        #expect(SyncSettings.isBlocked(serverHost: "sync.example.com", environment: isolated))
+        #expect(SyncSettings.isBlocked(serverHost: nil, environment: isolated))
+        for local in ["127.0.0.1", "LOCALHOST", "::1", "[::1]"] {
+            #expect(!SyncSettings.isBlocked(serverHost: local, environment: isolated))
+        }
+        #expect(!SyncSettings.isBlocked(serverHost: "sync.example.com", environment: [:]))
+        #expect(!SyncSettings.isBlocked(serverHost: "sync.example.com", environment: ["BENTO_HOME": "/tmp/x", "BENTO_ALLOW_LIVE_SYNC": "1"]))
+    }
+
+    @Test func syncIsOffWithoutAServer() {
+        let s = SyncSettings()
+        #expect(!s.enabled && s.server.isEmpty && !s.hasServer)
+        #expect(!SyncSettings(enabled: true, server: "  ").hasServer)
+        #expect(SyncSettings(enabled: true, server: "https://sync.example.com").hasServer)
     }
 }
 

@@ -295,3 +295,19 @@ struct SeededRNG: RandomNumberGenerator {
         return z ^ (z >> 31)
     }
 }
+
+@Suite struct TodoSyncSettingsTests {
+    @Test func isolatedInstancesOnlySyncLocally() {
+        let isolated = ["BENTO_HOME": "/tmp/x"]
+        #expect(TodoSyncSettings.isBlocked(serverHost: "sync.example.com", environment: isolated))
+        #expect(!TodoSyncSettings.isBlocked(serverHost: "127.0.0.1", environment: isolated))
+        #expect(!TodoSyncSettings.isBlocked(serverHost: "sync.example.com", environment: [:]))
+        #expect(!TodoSyncSettings.isBlocked(serverHost: "sync.example.com", environment: ["BENTO_HOME": "/tmp/x", "BENTO_ALLOW_LIVE_SYNC": "1"]))
+    }
+
+    @Test func syncIsOffWithoutAServer() {
+        let s = TodoSyncSettings()
+        #expect(!s.enabled && !s.hasServer)
+        #expect(TodoSyncSettings(enabled: true, server: "https://sync.example.com").hasServer)
+    }
+}
