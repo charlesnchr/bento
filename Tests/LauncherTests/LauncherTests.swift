@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 @testable import Launcher
 
@@ -89,4 +89,192 @@ import Testing
 @Test func entryWithEmptyTargetHasAUsableID() throws {
     let e = try JSONDecoder().decode(LauncherEntry.self, from: Data(#"{"target":""}"#.utf8))
     #expect(e.actionID == "launcher.entry")
+}
+
+// MARK: - App picker
+
+private func app(_ name: String, _ bundleID: String?, path: String? = nil, running: Bool = false) -> AppCandidate {
+    AppCandidate(url: URL(fileURLWithPath: path ?? "/Applications/\(name).app"), name: name, bundleID: bundleID, isRunning: running)
+}
+
+@Test func runningAndInstalledCopiesOfAnAppMergeIntoOneTile() {
+    let running = [app("Safari", "com.apple.Safari", running: true), app("Tool", nil, path: "/tmp/x/Tool.app", running: true)]
+    let installed = [
+        app("Safari", "COM.APPLE.SAFARI", path: "/Applications/Old/Safari.app"),   // same app, other copy
+        app("Tool", nil, path: "/tmp/x/../x/Tool.app"),                           // same path, spelled differently
+        app("Notes", "com.apple.Notes"),
+        app("Notes", "com.apple.Notes", path: "/System/Applications/Notes.app"),  // second copy is ignored
+    ]
+    let merged = AppPicker.merge(running: running, installed: installed)
+    #expect(merged.map(\.name) == ["Safari", "Tool", "Notes"])
+    #expect(merged[0].url.path == "/Applications/Safari.app")   // the running copy wins
+    #expect(merged.prefix(2).allSatisfy { $0.isRunning })
+    #expect(!merged[2].isRunning)
+    // Installed apps are deduplicated the same way when the index is built.
+    #expect(InstalledAppIndex.dedup(installed).map(\.name) == ["Safari", "Tool", "Notes"])
+}
+
+@Test func symlinkedAppIsTheSameAppAsItsTarget() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bento-link-\(UUID().uuidString)")
+    let real = dir.appendingPathComponent("Real.app")
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    let link = dir.appendingPathComponent("Link.app")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let merged = AppPicker.merge(running: [AppCandidate(url: real, name: "Real", bundleID: nil)],
+                                 installed: [AppCandidate(url: link, name: "Link", bundleID: nil)])
+    #expect(merged.count == 1)
+}
+
+@Test func emptyQueryShowsRunningAppsByName() {
+    let apps = [app("Zed", "dev.zed", running: true), app("Notes", "com.apple.Notes"), app("arc", "company.arc", running: true),
+                app("Mail", "com.apple.mail", running: true)]
+    #expect(AppPicker.results(apps, query: "", limit: 10).map(\.name) == ["arc", "Mail", "Zed"])
+    #expect(AppPicker.results(apps, query: "   ", limit: 10).map(\.name) == ["arc", "Mail", "Zed"])
+}
+
+@Test func searchRanksExactThenPrefixThenWordsThenInitialsThenSubstringThenFuzzy() {
+    let apps = [
+        app("Xcode", "com.apple.dt.Xcode"),
+        app("Visual Studio Code", "com.microsoft.VSCode"),
+        app("Code", "x.code"),
+        app("Codex", "com.openai.codex"),
+        app("Decoder", "y.decoder"),
+        app("Cyberduck", "ch.sudo.cyberduck"),
+        app("Safari", "com.apple.Safari"),
+    ]
+    #expect(AppPicker.results(apps, query: "code", limit: 10).map(\.name)
+            == ["Code", "Codex", "Visual Studio Code", "Xcode", "Decoder"])
+    #expect(AppPicker.results(apps, query: "vsc", limit: 10).first?.name == "Visual Studio Code")
+    #expect(AppPicker.results(apps, query: "xcd", limit: 10).map(\.name) == ["Xcode"])         // subsequence
+    #expect(AppPicker.results(apps, query: "vscode", limit: 10).map(\.name) == ["Visual Studio Code"]) // bundle id / fuzzy
+    #expect(AppPicker.results(apps, query: "CODE", limit: 2).map(\.name) == ["Code", "Codex"])  // case, limit
+    #expect(AppPicker.results(apps, query: "nothing-like-it", limit: 10).isEmpty)
+}
+
+@Test func singleLetterOnlyMatchesWordStarts() {
+    let apps = [app("Safari", "com.apple.Safari"), app("Notes", "com.apple.Notes"), app("System Settings", "com.apple.systempreferences")]
+    #expect(AppPicker.results(apps, query: "s", limit: 10).map(\.name) == ["Safari", "System Settings"])
+    #expect(AppPicker.results(apps, query: "e", limit: 10).isEmpty)
+}
+
+@Test func runningAppsComeFirstWithinAMatchTier() {
+    let apps = [app("Terminal", "com.apple.Terminal"), app("Telegram", "ru.keepcoder.Telegram", running: true),
+                app("Te", "x.te")]
+    // "Te" is an exact match: a tier above, so running doesn't beat it.
+    #expect(AppPicker.results(apps, query: "te", limit: 10).map(\.name) == ["Te", "Telegram", "Terminal"])
+}
+
+@Test func searchIgnoresDiacriticsAndSplitsCamelCase() {
+    #expect(AppPicker.words("OmniFocus 4") == ["omni", "focus", "4"])
+    #expect(AppPicker.words("iTerm") == ["i", "term"])
+    #expect(AppPicker.words("Microsoft Word") == ["microsoft", "word"])
+    #expect(AppPicker.score("focus", name: "OmniFocus", bundleID: nil) == 800)
+    #expect(AppPicker.score("cafe", name: "Café Menu", bundleID: nil) == 900)
+    #expect(AppPicker.score("menu", name: "Café Menu", bundleID: nil) == 800)
+    #expect(AppPicker.subsequenceGaps("xcd", in: "xcode") == 1)
+    #expect(AppPicker.subsequenceGaps("xz", in: "xcode") == nil)
+}
+
+@Test func boundAppsMatchEntriesByBundleIDPathOrName() {
+    let entries = [
+        LauncherEntry(kind: .app, target: "com.apple.Safari", shortcut: "hyper+s"),
+        LauncherEntry(kind: .app, target: "Notes.app"),
+        LauncherEntry(kind: .app, target: "/Applications/Tool.app"),
+        LauncherEntry(kind: .app, target: "Mail"),                       // resolved below to a bundle id
+        LauncherEntry(kind: .url, target: "com.apple.Music"),            // not an app entry
+        LauncherEntry(kind: .app, target: "com.apple.Safari", shortcut: "hyper+x"), // later duplicate loses
+    ]
+    let resolve: (String) -> URL? = { $0 == "Mail" ? URL(fileURLWithPath: "/System/Applications/Mail.app") : nil }
+    let bundleID: (URL) -> String? = { $0.lastPathComponent == "Mail.app" ? "com.apple.mail" : nil }
+    let bound = BoundApps(entries, resolve: resolve, bundleID: bundleID)
+    #expect(bound.entry(for: app("Safari", "com.apple.safari"))?.shortcut == "hyper+s")
+    #expect(bound.entry(for: app("Notes", "com.apple.Notes"))?.target == "Notes.app")
+    #expect(bound.entry(for: app("Tool", nil, path: "/Applications/Tool.app"))?.target == "/Applications/Tool.app")
+    #expect(bound.entry(for: app("Electronic Mail", "com.apple.mail", path: "/Other/Mail.app"))?.target == "Mail")
+    #expect(bound.entry(for: app("Music", "com.apple.Music")) == nil)
+    #expect(bound.entry(for: app("Calendar", "com.apple.iCal")) == nil)
+}
+
+@Test func gridColumnsFitTheWidth() {
+    #expect(GridNavigation.columns(width: 0, minTile: 80, spacing: 8) == 1)
+    #expect(GridNavigation.columns(width: 50, minTile: 80, spacing: 8) == 1)
+    #expect(GridNavigation.columns(width: 80, minTile: 80, spacing: 8) == 1)
+    #expect(GridNavigation.columns(width: 168, minTile: 80, spacing: 8) == 2)
+    #expect(GridNavigation.columns(width: 167, minTile: 80, spacing: 8) == 1)
+    #expect(GridNavigation.columns(width: 600, minTile: 80, spacing: 8) == 6)
+}
+
+@Test func arrowKeysMoveThroughTheGrid() {
+    // 10 tiles in 4 columns:  0 1 2 3 / 4 5 6 7 / 8 9
+    let move = { (i: Int?, m: GridMove) in GridNavigation.move(i, m, count: 10, columns: 4) }
+    #expect(move(nil, .down) == 0)          // nothing selected: any arrow selects the first
+    #expect(move(42, .left) == 0)           // stale index
+    #expect(move(0, .left) == 0)            // edges stop
+    #expect(move(0, .up) == 0)
+    #expect(move(9, .right) == 9)
+    #expect(move(3, .right) == 4)           // wraps to the next row
+    #expect(move(4, .left) == 3)
+    #expect(move(1, .down) == 5)
+    #expect(move(5, .down) == 9)
+    #expect(move(6, .down) == 9)            // short last row: the last tile
+    #expect(move(7, .down) == 9)
+    #expect(move(9, .down) == 9)
+    #expect(move(8, .up) == 4)
+    #expect(move(9, .up) == 5)
+    #expect(GridNavigation.move(0, .down, count: 0, columns: 4) == nil)
+    #expect(GridNavigation.move(2, .down, count: 3, columns: 1) == 2)
+    #expect(GridNavigation.move(0, .down, count: 3, columns: 1) == 1)
+    #expect(GridNavigation.move(0, .down, count: 3, columns: 0) == 1)   // bogus column count
+    #expect(GridNavigation.move(1, .down, count: 3, columns: 4) == 1)   // one row
+}
+
+@Test func spotlightResultsKeepOnlyAppsPeopleLaunch() {
+    let home = NSHomeDirectory()
+    #expect(InstalledAppIndex.isUserFacing("/Applications/Safari.app"))
+    #expect(InstalledAppIndex.isUserFacing("/Applications/Setapp/CleanShot X.app"))
+    #expect(InstalledAppIndex.isUserFacing(home + "/Applications/Chrome Apps.localized/YouTube.app"))
+    #expect(InstalledAppIndex.isUserFacing("/opt/homebrew/opt/bento/Bento.app"))
+    #expect(InstalledAppIndex.isUserFacing("/System/Applications/Utilities/Terminal.app"))
+    #expect(InstalledAppIndex.isUserFacing("/System/Library/CoreServices/Finder.app"))
+    #expect(InstalledAppIndex.isUserFacing("/System/Library/CoreServices/Applications/Screen Sharing.app"))
+    #expect(InstalledAppIndex.isUserFacing("/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app"))
+    #expect(InstalledAppIndex.isUserFacing("/Applications/Xcode.app/Contents/Applications/Instruments.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/Applications/Slack.app/Contents/Frameworks/Slack Helper.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/Applications/Xcode.app/Contents/Applications/X.app/Contents/Helper.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/System/Library/CoreServices/Dock.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/Library/Application Support/Vendor/Updater.app"))
+    #expect(!InstalledAppIndex.isUserFacing(home + "/Library/Caches/Thing/Installer.app"))
+    #expect(!InstalledAppIndex.isUserFacing("/Volumes/Some Installer/Some.app"))
+    #expect(!InstalledAppIndex.isUserFacing(home + "/.Trash/Old.app"))
+    #expect(!InstalledAppIndex.isUserFacing(home + "/Library/Developer/Xcode/DerivedData/X/Build/Products/Debug/X.app"))
+}
+
+@Test func installedIndexReadsBundlesAndSkipsBackgroundOnlyApps() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bento-apps-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    func make(_ name: String, _ info: [String: Any]) throws -> URL {
+        let url = dir.appendingPathComponent("\(name).app")
+        try FileManager.default.createDirectory(at: url.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try (info as NSDictionary).write(to: url.appendingPathComponent("Contents/Info.plist"))
+        return url
+    }
+    let visible = try make("Visible", ["CFBundleIdentifier": "test.visible"])
+    let agent = try make("Agent", ["CFBundleIdentifier": "test.agent", "LSBackgroundOnly": true])
+    let agent2 = try make("Agent2", ["CFBundleIdentifier": "test.agent2", "LSBackgroundOnly": "1"])
+    let bare = try make("Bare", [:])
+    let gone = dir.appendingPathComponent("Gone.app")
+    let apps = InstalledAppIndex.candidates([visible, agent, agent2, bare, gone, visible])
+    #expect(apps.map(\.name) == ["Visible", "Bare"])
+    #expect(apps[0].bundleID == "test.visible")
+    #expect(apps[0].id == "test.visible")
+    #expect(apps[1].bundleID == nil)
+    #expect(apps[1].id == AppPicker.pathKey(bare.path))
+}
+
+@Test func folderScanFindsSystemApps() {
+    let apps = InstalledAppIndex.candidates(InstalledAppIndex.scanFolders())
+    #expect(apps.contains { $0.bundleID == "com.apple.finder" })
+    #expect(apps.contains { $0.bundleID?.lowercased() == "com.apple.calculator" })
+    #expect(Set(apps.map(\.id)).count == apps.count)
 }
