@@ -16,12 +16,21 @@ final class BentoBar: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var clickMonitor: Any?
     private var closeTimer: Timer?
+    private var lastClosed = Date.distantPast
 
     init(controller: MenuBarController) {
         self.controller = controller
     }
 
     var isOpen: Bool { panel != nil }
+
+    /// For `bento://debug/state`: what the bar lists and which item Return opens.
+    var diagnostics: [String: Any] {
+        guard let model else { return ["open": false] }
+        let selected = model.items.indices.contains(model.selected) ? model.items[model.selected].key : ""
+        return ["open": true, "items": model.items.map(\.key), "labels": model.items.map { $0.subtitle ?? $0.name },
+                "selected": selected, "images": model.images.count]
+    }
 
     func show(all: Bool, closingAfter: TimeInterval? = nil) {
         if isOpen { close() }
@@ -89,6 +98,7 @@ final class BentoBar: NSObject, NSWindowDelegate {
             closeTimer = t
         }
         ItemImages.capture(entries) { [weak model] images in model?.images = images }
+        controller.syncChangeWatcher()
         controller.notify()
     }
 
@@ -119,8 +129,14 @@ final class BentoBar: NSObject, NSWindowDelegate {
         p.orderOut(nil)
         p.contentView = nil
         model = nil
+        lastClosed = Date()
+        controller.syncChangeWatcher()
         controller.notify()
     }
+
+    /// Closed a moment ago: a click on the chevron first takes the bar's key
+    /// status (closing it) and must not open it again on mouse-up.
+    var closedJustNow: Bool { Date().timeIntervalSince(lastClosed) < 0.4 }
 
     func windowDidResignKey(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in

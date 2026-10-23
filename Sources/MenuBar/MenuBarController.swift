@@ -13,7 +13,7 @@ final class MenuBarController {
 
     enum Visibility: String { case hidden, shown, shownAll }
 
-    enum Reason { case user, hover, activation, arranging, update }
+    enum Reason { case user, hover, activation, update }
 
     private(set) var visibility: Visibility = .hidden
     private(set) var items: [MenuBarItem] = []
@@ -86,7 +86,12 @@ final class MenuBarController {
     func stop() {
         guard started else { return }
         started = false
-        putBackTemporarilyShown()
+        // Before the separators go: an item moved into view for a click goes
+        // back to its section now, as there's no later when Bento quits.
+        if !temporarilyShown.isEmpty {
+            mover.moveBlocking(Array(temporarilyShown.values), timeout: 3)
+            temporarilyShown = [:]
+        }
         bar.close()
         stopShownState()
         triggers.stop()
@@ -153,6 +158,7 @@ final class MenuBarController {
         } else {
             if changeWatcher == nil { changeWatcher = ChangeWatcher(controller: self) }
             changeWatcher?.update(keys: Set(settings.showOnChange))
+            syncChangeWatcher()
         }
     }
 
@@ -175,7 +181,7 @@ final class MenuBarController {
 
     func show(all: Bool, reason: Reason) {
         guard started, controls.hidden != nil else { return }
-        if reason != .arranging, reason != .activation, shouldUseBar(all: all) {
+        if reason != .activation, shouldUseBar(all: all) {
             bar.show(all: all)
             return
         }
@@ -184,11 +190,7 @@ final class MenuBarController {
         if visibility == .shownAll && target == .shown && reason == .hover { scheduleRehide(); return }
         visibility = target
         applyVisibility()
-        if reason == .arranging {
-            stopShownState()
-        } else {
-            startShownState()
-        }
+        startShownState()
         // Names and owners of items that appeared while parked.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, self.visibility != .hidden else { return }
@@ -226,7 +228,18 @@ final class MenuBarController {
     }
 
     private func applyVisibility() {
-        controls.apply(showHidden: visibility != .hidden, showAlwaysHidden: visibility == .shownAll)
+        MenuBarTrace.log("visibility \(visibility.rawValue)")
+        // Expanded right of the hidden separator, the always-hidden one would
+        // hide the hidden items too: keep it collapsed until it's moved back.
+        let misplaced = alwaysHiddenMisplaced(scanner.snapshot())
+        controls.apply(showHidden: visibility != .hidden, showAlwaysHidden: visibility == .shownAll || misplaced)
+        triggers.invalidateEmptySpace()
+        syncChangeWatcher()
+    }
+
+    /// Icon changes only matter while the items are hidden.
+    func syncChangeWatcher() {
+        changeWatcher?.setActive(visibility == .hidden && !bar.isOpen && !isArranging)
     }
 
     private func controlClicked(_ kind: ControlItems.Kind, right: Bool, option: Bool) {
@@ -236,6 +249,8 @@ final class MenuBarController {
         }
         switch kind {
         case .toggle:
+            // Pressing the chevron took the open bar's key status and closed it.
+            if !bar.isOpen, bar.closedJustNow { return }
             if option { show(all: visibility != .shownAll, reason: .user) } else { toggle(all: false) }
         case .hidden, .alwaysHidden:
             hide()
@@ -341,8 +356,14 @@ final class MenuBarController {
         // No menu ever showed: leave it to the rehide timer.
         if menuWasOpen && (settings.rehideOnClickOutside || !temporarilyShown.isEmpty) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self, self.menuOwner == nil, RevealTriggers.menuBarScreen(at: NSEvent.mouseLocation) == nil else { return }
-                self.hide()
+                guard let self, self.menuOwner == nil, self.visibility != .hidden || !self.temporarilyShown.isEmpty else { return }
+                // The pointer is still on the menu bar (maybe heading for
+                // another item): hide once it leaves.
+                if RevealTriggers.menuBarScreen(at: NSEvent.mouseLocation) != nil {
+                    self.scheduleRehide(after: 2, force: true)
+                } else {
+                    self.hide()
+                }
             }
         }
     }
@@ -386,6 +407,17 @@ final class MenuBarController {
         }
     }
 
+    /// The always-hidden separator is right of the hidden one. macOS puts a
+    /// new item at the leftmost place that still fits, so in a full menu bar
+    /// it can be created there; the user can also ⌘-drag it there. The
+    /// section is then empty (`sections` ignores it) until an arrangement
+    /// moves the separator back.
+    func alwaysHiddenMisplaced(_ list: [MenuBarItem]) -> Bool {
+        guard let h = list.first(where: { $0.role == .control(.hidden) }),
+              let a = list.first(where: { $0.role == .control(.alwaysHidden) }) else { return false }
+        return a.frame.midX > h.frame.midX
+    }
+
     var hiddenSeparator: MenuBarItem? { items.first { $0.role == .control(.hidden) } }
     var alwaysHiddenSeparator: MenuBarItem? { items.first { $0.role == .control(.alwaysHidden) } }
 
@@ -416,10 +448,11 @@ final class MenuBarController {
     func item(forKey key: String) -> MenuBarItem? { items.first { $0.key == key } }
 
     /// Items that should be visible but don't fit (behind the notch or off-screen).
-    func overflowItems() -> [MenuBarItem] {
+    func overflowItems(_ list: [MenuBarItem]? = nil) -> [MenuBarItem] {
+        let items = list ?? self.items
         guard let screen = menuBarScreen() else { return [] }
         let area = statusArea(on: screen)
-        let s = sections()
+        let s = sections(items)
         let shown: Set<String> = Set(items.filter {
             guard $0.isMovable || $0.role == .fixed else { return false }
             switch s[$0.windowID] ?? .visible {
@@ -495,32 +528,55 @@ final class MenuBarController {
     // MARK: Arranging
 
     /// Moves items so the sections match `target` (window ids per section,
-    /// left to right; every item listed once). Shows everything while
-    /// moving, then goes back to the previous state.
+    /// left to right; every item listed once), then goes back to the
+    /// previous state.
+    ///
+    /// Arranges with the sections hidden: parked items have exact places
+    /// off-screen and moves reach them there, while showing everything in a
+    /// full menu bar pushes the leftmost items behind the notch, where macOS
+    /// reports no usable order. If that fails (macOS versions differ), it
+    /// tries once more with everything shown.
     func arrange(_ target: [MenuBarSection: [CGWindowID]], completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
         guard !isArranging else { completion(.failure(.userBusy)); return }
-        isArranging = true
         let previous = visibility
+        arrange(target, revealed: false) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let f) = result, f == .notPlaced, self.started {
+                self.arrange(target, revealed: true) { [weak self] result in self?.finishArranging(result, previous: previous, completion: completion) }
+            } else {
+                self.finishArranging(result, previous: previous, completion: completion)
+            }
+        }
+    }
+
+    private func arrange(_ target: [MenuBarSection: [CGWindowID]], revealed: Bool, done: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
+        isArranging = true
         bar.close()
-        show(all: true, reason: .arranging)
+        stopShownState()
+        visibility = revealed ? (controls.alwaysHidden != nil ? .shownAll : .shown) : .hidden
+        applyVisibility()
         notify()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self else { return }
             let current = self.scanner.snapshot()
             self.items = current
             let requests = self.plan(current: current, target: target)
-            self.log.info("Arranging menu bar: \(requests.count) move(s)")
-            self.mover.move(requests) { [weak self] result in
-                guard let self else { return }
-                self.items = self.scanner.snapshot()
-                self.isArranging = false
-                if case .failure(let f) = result { self.lastError = f.description } else { self.lastError = nil }
-                self.learnLayout()
-                if previous == .hidden { self.hide() } else { self.visibility = previous; self.applyVisibility(); self.startShownState() }
-                self.notify()
-                completion(result)
-            }
+            self.log.info("Arranging menu bar: \(requests.count) move(s)\(revealed ? " (shown)" : "")")
+            MenuBarTrace.log("arrange\(revealed ? " (shown)" : ""): order \(current.map { "\($0.name)#\($0.windowID)" }.joined(separator: " ")); target \(MenuBarSection.allCases.map { "\($0.rawValue)=\(target[$0] ?? [])" }.joined(separator: " ")); moves \(requests.map { "\($0.item)\($0.side == .left ? "<" : ">")\($0.target)" })")
+            self.mover.move(requests) { result in done(result) }
         }
+    }
+
+    private func finishArranging(_ result: Result<Void, ItemMover.Failure>, previous: Visibility,
+                                 completion: (Result<Void, ItemMover.Failure>) -> Void) {
+        items = scanner.snapshot()
+        isArranging = false
+        if case .failure(let f) = result { lastError = f.description } else { lastError = nil }
+        MenuBarTrace.log("arrange done: \(lastError ?? "ok")")
+        learnLayout()
+        if previous == .hidden { hide() } else { visibility = previous; applyVisibility(); startShownState() }
+        notify()
+        completion(result)
     }
 
     /// Mover requests turning the current order into the target.
@@ -538,7 +594,9 @@ final class MenuBarController {
         let targetOrder = MenuBarLayout.targetOrder(arrangement, hiddenSeparator: String(h.windowID),
                                                     alwaysHiddenSeparator: a.map { String($0.windowID) })
         let currentOrder = current.map { String($0.windowID) }
-        let anchors = Set(current.filter { !$0.isMovable }.map { String($0.windowID) })
+        // A misplaced always-hidden separator is moved like an item.
+        let misplaced = alwaysHiddenMisplaced(current) ? a?.windowID : nil
+        let anchors = Set(current.filter { !$0.isMovable && $0.windowID != misplaced }.map { String($0.windowID) })
         let moves = MenuBarLayout.planMoves(current: currentOrder, target: targetOrder, anchors: anchors)
         let zeroWidth = Set(current.filter { $0.frame.width < 1 }.map(\.windowID))
         return moves.compactMap { m in
@@ -562,37 +620,28 @@ final class MenuBarController {
     }
 
     /// Arranges the items to match a saved layout (a profile, or the
-    /// remembered places). Items it doesn't mention stay in their section.
+    /// remembered places). Items it doesn't mention stay where they are; the
+    /// ones it mentions go into their section after the item the layout has
+    /// before them (else at the section's left end).
     func apply(_ layout: SavedLayout, completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
         let current = arrangement()
         let all = MenuBarSection.allCases.flatMap { current[$0] ?? [] }
         let byKey = Dictionary(all.filter(\.hasStableKey).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
-        var target: [MenuBarSection: [CGWindowID]] = [:]
-        var placed = Set<CGWindowID>()
+        let mentioned = Set(MenuBarSection.allCases.flatMap { layout[$0] }.compactMap { byKey[$0] }
+            .filter { $0.isMovable && $0.role != .bentoIcon }.map(\.windowID))
+        var target = current.mapValues { $0.map(\.windowID).filter { !mentioned.contains($0) } }
         for s in MenuBarSection.allCases {
-            let wanted = layout[s].compactMap { byKey[$0] }.filter { $0.isMovable && $0.role != .bentoIcon }
-            target[s] = wanted.map(\.windowID)
-            placed.formUnion(target[s] ?? [])
-        }
-        // Unmentioned items keep their section, interleaved by current order.
-        for s in MenuBarSection.allCases {
-            let others = (current[s] ?? []).filter { !placed.contains($0.windowID) }
-            target[s] = MenuBarController.interleave(keep: others.map(\.windowID), into: target[s] ?? [],
-                                                     order: (current[s] ?? []).map(\.windowID))
+            let order = layout[s].compactMap { byKey[$0]?.windowID }
+            for id in order where mentioned.contains(id) {
+                target[s] = MenuBarController.inserting(id, into: target[s] ?? [], remembered: order)
+            }
         }
         arrange(target, completion: completion)
     }
 
-    /// Puts `keep` back among `placed` near where they were in `order`.
-    static func interleave(keep: [CGWindowID], into placed: [CGWindowID], order: [CGWindowID]) -> [CGWindowID] {
-        var out = placed
-        for id in keep {
-            guard let i = order.firstIndex(of: id) else { out.append(id); continue }
-            // After the nearest item before it (in the old order) that is in `out`.
-            let before = order[..<i].reversed().first { out.contains($0) }
-            if let before, let j = out.firstIndex(of: before) { out.insert(id, at: j + 1) } else { out.insert(id, at: 0) }
-        }
-        return out
+    static func inserting(_ id: CGWindowID, into list: [CGWindowID], remembered: [CGWindowID]) -> [CGWindowID] {
+        MenuBarLayout.inserting(String(id), into: list.map { String($0) }, remembered: remembered.map { String($0) })
+            .compactMap { CGWindowID($0) }
     }
 
     /// Remembers where items are now (for putting them back after a relaunch).
@@ -674,7 +723,8 @@ final class MenuBarController {
         }
         let section = sections()[live.windowID] ?? .visible
         let overflow = overflowItems().contains { $0.windowID == live.windowID }
-        if live.isOnScreen && !overflow {
+        // macOS keeps fixed items (the clock, Control Centre) in view.
+        if (live.isOnScreen && !overflow) || !live.isMovable {
             click(live, right: right)
             return
         }
@@ -684,11 +734,20 @@ final class MenuBarController {
             show(all: section == .alwaysHidden, reason: .activation)
             waitUntilOnScreen(live.windowID, tries: 25) { [weak self] onScreen in
                 guard let self else { return }
-                if onScreen { self.click(live, right: right) } else { self.temporarilyShow(live, right: right) }
+                if onScreen { self.click(live, right: right) } else { self.moveIntoViewForClick(live, right: right) }
             }
         } else {
-            temporarilyShow(live, right: right)
+            moveIntoViewForClick(live, right: right)
         }
+    }
+
+    /// Moves an item into view from the hidden state: the parked items leave
+    /// room there, where a full menu bar with everything shown keeps
+    /// shifting (and hides the leftmost items behind the notch).
+    private func moveIntoViewForClick(_ item: MenuBarItem, right: Bool) {
+        guard visibility != .hidden else { temporarilyShow(item, right: right); return }
+        hide()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.temporarilyShow(item, right: right) }
     }
 
     func activate(key: String) {
@@ -715,9 +774,13 @@ final class MenuBarController {
     private func click(_ item: MenuBarItem, right: Bool) {
         if visibility != .hidden || !temporarilyShown.isEmpty { watchMenu(of: item) }
         // AXPress opens the menu without moving the pointer.
-        if !right, let element = scanner.element(for: item), AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
-            return
+        guard !right, let element = scanner.element(for: item) else { postClick(item, right: right); return }
+        ItemScanner.press(element) { [weak self] pressed in
+            if !pressed { self?.postClick(item, right: right) }
         }
+    }
+
+    private func postClick(_ item: MenuBarItem, right: Bool) {
         mover.click(item.windowID, right: right) { [weak self] result in
             if case .failure(let f) = result {
                 self?.log.error("Clicking \(item.key, privacy: .public) failed: \(f.description, privacy: .public)")
@@ -729,6 +792,7 @@ final class MenuBarController {
     /// Moves a parked item into the visible part of the menu bar, clicks it,
     /// and puts it back once its menu closes.
     private func temporarilyShow(_ item: MenuBarItem, right: Bool) {
+        guard item.isMovable, item.role != .bentoIcon else { pressInPlace(item); return }
         items = scanner.snapshot()
         guard let screen = menuBarScreen() else { return }
         let area = statusArea(on: screen)
@@ -741,8 +805,16 @@ final class MenuBarController {
         } else if index > 0 {
             back = ItemMover.Request(item: item.windowID, target: order[index - 1].windowID, side: .right)
         } else { return }
-        // Into view: left of the leftmost visible item that leaves room for it.
-        guard let target = order.first(where: { $0.isOnScreen && $0.frame.minX - item.frame.width >= area.lowerBound + 2 && $0.frame.width < 1000 }) else {
+        // Into view: left of the leftmost visible item that leaves room for it
+        // (items further left move over; in a full menu bar the leftmost one
+        // goes behind the notch for the moment). Bento's chevron or an app's
+        // item: Control Centre's come and go (the screen recording indicator)
+        // and don't take drops.
+        let targets = order.filter {
+            $0.isOnScreen && $0.frame.width < 1000 && $0.windowID != item.windowID
+                && ($0.role == .control(.toggle) || ($0.role == .regular && $0.bundleID != "com.apple.controlcenter"))
+        }
+        guard let target = targets.first(where: { $0.frame.minX - item.frame.width >= area.lowerBound + 2 }) else {
             pressInPlace(item)
             return
         }
@@ -763,8 +835,14 @@ final class MenuBarController {
 
     /// Last resort: press it where it is (its menu may open at the screen edge).
     private func pressInPlace(_ item: MenuBarItem) {
-        if let element = scanner.element(for: item), AXUIElementPerformAction(element, kAXPressAction as CFString) == .success { return }
-        HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle")
+        guard let element = scanner.element(for: item) else {
+            HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle")
+            return
+        }
+        if visibility != .hidden || !temporarilyShown.isEmpty { watchMenu(of: item) }
+        ItemScanner.press(element) { pressed in
+            if !pressed { HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle") }
+        }
     }
 
     private func putBackTemporarilyShown() {
@@ -798,7 +876,8 @@ final class MenuBarController {
     }
 
     func diagnostics() -> [String: Any] {
-        let s = sections()
+        let items = scanner.snapshot()
+        let s = sections(items)
         return [
             "started": started,
             "visibility": visibility.rawValue,
@@ -809,16 +888,22 @@ final class MenuBarController {
                                   "x": Double($0.frame.minX), "width": Double($0.frame.width), "window": Int($0.windowID),
                                   "role": "\($0.role)"] },
             "arranging": isArranging,
+            "overflow": overflowItems(items).map(\.key),
+            "wouldUseBar": shouldUseBar(all: false),
             "barOpen": bar.isOpen,
+            "bar": bar.diagnostics,
             "triggers": triggers.isActive,
             "appMenuTracker": appMenus.isRunning,
             "rehideTimer": rehideTimer != nil,
+            "pointerOnMenuBar": RevealTriggers.menuBarScreen(at: NSEvent.mouseLocation) != nil,
+            "menuOpen": MenuBarController.isMenuOpen(owner: menuOwner),
             "clickMonitor": clickMonitor != nil,
             "menuWatch": menuWatch != nil,
             "temporarilyShown": temporarilyShown.count,
             "changeWatcher": changeWatcher?.isRunning ?? false,
             "privateWindowList": WindowServer.usesPrivateList,
             "hostedWindows": ItemScanner.windowsAreHosted,
+            "alwaysHiddenMisplaced": alwaysHiddenMisplaced(items),
             "lastError": lastError ?? "",
         ]
     }

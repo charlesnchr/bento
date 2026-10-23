@@ -68,10 +68,24 @@ final class RevealTriggers {
         }
     }
 
+    /// Empty space per screen, read once per visit of the pointer to the
+    /// menu bar (it reads the window list) and dropped when it leaves.
+    private var emptySpaceCache: (screen: CGDirectDisplayID, range: ClosedRange<CGFloat>?, at: Date)?
+
     private func inEmptySpace(_ p: NSPoint) -> Bool {
-        guard let screen = RevealTriggers.menuBarScreen(at: p), let range = emptySpace(screen) else { return false }
-        return range.contains(p.x)
+        guard let screen = RevealTriggers.menuBarScreen(at: p) else { emptySpaceCache = nil; return false }
+        let range: ClosedRange<CGFloat>?
+        if let c = emptySpaceCache, c.screen == screen.displayID, Date().timeIntervalSince(c.at) < 2 {
+            range = c.range
+        } else {
+            range = emptySpace(screen)
+            emptySpaceCache = (screen.displayID, range, Date())
+        }
+        return range?.contains(p.x) ?? false
     }
+
+    /// The items moved (shown, hidden, arranged): read the empty space again.
+    func invalidateEmptySpace() { emptySpaceCache = nil }
 
     private func moved(_ e: NSEvent) {
         guard !isPostingEvents() else { return }

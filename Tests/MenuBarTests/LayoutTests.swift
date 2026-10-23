@@ -204,9 +204,31 @@ private func apply(_ moves: [PlannedMove], to order: [String]) -> [String] {
     #expect(MenuBarLayout.inserting("b", into: ["b", "a"], remembered: ["a", "b"]) == ["a", "b"])
 }
 
-@Test func controllerInterleaveKeepsUnmentionedItemsNearby() {
-    // x and y weren't in the profile: they stay next to the item they followed.
-    let out = MenuBarController.interleave(keep: [2, 4], into: [3, 1], order: [1, 2, 3, 4])
-    #expect(out == [3, 4, 1, 2])
-    #expect(MenuBarController.interleave(keep: [9], into: [], order: [9]) == [9])
+@Test func profileItemsGoAfterTheirRememberedNeighbour() {
+    // Profile order 7, 8 in a section that holds 1, 2 (unmentioned) now:
+    // with no remembered neighbour present they go to the left end, in order.
+    #expect(MenuBarController.inserting(8, into: MenuBarController.inserting(7, into: [1, 2], remembered: [7, 8]), remembered: [7, 8]) == [7, 8, 1, 2])
+    // Remembered after 2: right after it.
+    #expect(MenuBarController.inserting(9, into: [1, 2, 3], remembered: [2, 9]) == [1, 2, 9, 3])
+}
+
+@Test func teleportReleaseDependsOnDirection() {
+    // Measured on macOS 26: only "move right, to just left of the target" needs
+    // the release a width before the target's edge.
+    #expect(MenuBarLayout.releasesBeforeEdge(itemMidX: -900, targetMidX: 950, destination: .leftOf("t")))
+    #expect(!MenuBarLayout.releasesBeforeEdge(itemMidX: 990, targetMidX: 950, destination: .leftOf("t")))
+    #expect(!MenuBarLayout.releasesBeforeEdge(itemMidX: 880, targetMidX: 950, destination: .rightOf("t")))
+    #expect(!MenuBarLayout.releasesBeforeEdge(itemMidX: 990, targetMidX: 950, destination: .rightOf("t")))
+}
+
+@Test func onDisplayToleratesTheClockPokingPastTheEdge() {
+    let display = [CGRect(x: 0, y: 0, width: 1512, height: 982)]
+    #expect(MenuBarLayout.isOnDisplay(CGRect(x: 1383, y: 0, width: 131, height: 33), displays: display))
+    #expect(MenuBarLayout.isOnDisplay(CGRect(x: 900, y: 0, width: 30, height: 33), displays: display))
+    // Parked off the left edge, or a zero-width item.
+    #expect(!MenuBarLayout.isOnDisplay(CGRect(x: -900, y: 0, width: 30, height: 33), displays: display))
+    #expect(!MenuBarLayout.isOnDisplay(CGRect(x: 900, y: 0, width: 0, height: 33), displays: display))
+    // A second display to the right.
+    #expect(MenuBarLayout.isOnDisplay(CGRect(x: 1600, y: 0, width: 30, height: 24),
+                                      displays: display + [CGRect(x: 1512, y: 0, width: 1920, height: 1080)]))
 }

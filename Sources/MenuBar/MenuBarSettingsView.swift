@@ -38,9 +38,18 @@ struct MenuBarSettingsView: View {
                 Text("Turn the module on to arrange menu bar items.").foregroundStyle(.secondary)
             } else {
                 if !Permissions.accessibility || !Permissions.screenRecording {
-                    Label("Arranging needs Accessibility (to move items) and Screen Recording (for their names and images).",
-                          systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                    HStack(spacing: 8) {
+                        Label("Arranging needs Accessibility (to move items) and Screen Recording (for their names and images).",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        if !Permissions.accessibility {
+                            Button("Grant Accessibility…") { Permissions.grant(.accessibility) }
+                        }
+                        if !Permissions.screenRecording {
+                            Button("Grant Screen Recording…") { Permissions.grant(.screenRecording) }
+                        }
+                    }
                 }
                 ForEach(MenuBarSection.allCases) { section in
                     if section != .alwaysHidden || model.value.alwaysHiddenSection {
@@ -54,7 +63,8 @@ struct MenuBarSettingsView: View {
                     } else if let message = arrange.message {
                         Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     } else if !arrange.overflow.isEmpty {
-                        Label("\(arrange.overflow.count) item\(arrange.overflow.count == 1 ? "" : "s") don’t fit next to the notch; they’re in the Bento Bar.",
+                        Label(arrange.overflow.count == 1 ? "1 item doesn’t fit beside the notch; it’s in the Bento Bar."
+                              : "\(arrange.overflow.count) items don’t fit beside the notch; they’re in the Bento Bar.",
                               systemImage: "rectangle.topthird.inset.filled")
                             .foregroundStyle(.secondary)
                     }
@@ -441,7 +451,7 @@ enum MenuBarLook {
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
-    static var barBackground: Color { isDark ? Color.black.opacity(0.55) : Color.white.opacity(0.7) }
+    static var barBackground: Color { isDark ? Color.black.opacity(0.62) : Color.white.opacity(0.8) }
 }
 
 private struct ItemChip: View {

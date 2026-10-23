@@ -65,9 +65,7 @@ struct MenuBarItem: Identifiable, Equatable {
 
     var isMovable: Bool { role == .regular || role == .bentoIcon }
 
-    var isOnScreen: Bool {
-        NSScreen.screens.contains { $0.axFrame.insetBy(dx: -0.5, dy: -0.5).contains(frame) }
-    }
+    var isOnScreen: Bool { ItemMover.onScreen(frame) }
 
     var layoutItem: LayoutItem { LayoutItem(key: key, minX: frame.minX, width: frame.width) }
 
@@ -111,9 +109,6 @@ final class ItemScanner {
     private let axQueue = DispatchQueue(label: "com.charles.bento.menubar.ax", qos: .userInitiated)
     private var resolving = false
     private var pendingResolves: [() -> Void] = []
-    /// Frames of this process's status item windows (Bento's icon and the
-    /// control items), in global top-left coordinates.
-    var ownFrames: () -> [CGRect] = { ItemScanner.ownStatusItemFrames() }
 
     /// macOS 26 hosts every status item window in Control Centre.
     static let windowsAreHosted: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
@@ -124,7 +119,6 @@ final class ItemScanner {
         let live = Set(windows.map(\.id))
         names = names.filter { live.contains($0.key) }
         owners = owners.filter { live.contains($0.key) }
-        let own = ownFrames()
         let myPID = getpid()
         let controlNames = Dictionary(ControlItems.autosaveNames.map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         var items: [MenuBarItem] = []
@@ -139,7 +133,9 @@ final class ItemScanner {
             }
             var item = MenuBarItem(windowID: w.id, frame: w.frame, windowName: name, ownerPID: owner?.pid,
                                    bundleID: owner?.bundleID, appName: owner?.appName ?? "", detail: owner?.detail)
-            let isOwn = owner?.pid == myPID || own.contains { ItemScanner.sameItem($0, w.frame) }
+            // On macOS 26 Bento's own icon is told apart through Accessibility
+            // like any other app's (its local window doesn't know where it is).
+            let isOwn = owner?.pid == myPID
             if let kind = controlNames[name], isOwn || ItemScanner.windowsAreHosted {
                 item.role = .control(kind)
             } else if isOwn {
@@ -157,19 +153,6 @@ final class ItemScanner {
             items.append(item)
         }
         return items.sorted { $0.frame.midX < $1.frame.midX }
-    }
-
-    /// This process's status item windows. On macOS 26 the window list says
-    /// they belong to Control Centre; their local windows still know where they are.
-    static func ownStatusItemFrames() -> [CGRect] {
-        NSApp.windows.filter { String(describing: type(of: $0)).contains("StatusBarWindow") && $0.frame.height > 0 }
-            .map { NSScreen.axRect(fromCocoa: $0.frame) }
-    }
-
-    /// Own items are matched by position: the window list has no other link
-    /// to them on macOS 26.
-    static func sameItem(_ a: CGRect, _ b: CGRect) -> Bool {
-        abs(a.midX - b.midX) <= 2 && abs(a.width - b.width) <= 24 && abs(a.minY - b.minY) <= 2
     }
 
     /// Items whose owner isn't known yet.
@@ -195,9 +178,12 @@ final class ItemScanner {
         // first); before that only the window owners, for their descriptions.
         let candidates: [NSRunningApplication]
         if hosted {
-            candidates = NSWorkspace.shared.runningApplications.filter {
+            // Bento itself too: that's how its own icon is found.
+            var apps = NSWorkspace.shared.runningApplications.filter {
                 !$0.isTerminated && $0.isFinishedLaunching && $0.activationPolicy != .prohibited && $0.processIdentifier != getpid()
-            }.sorted { known.contains($0.processIdentifier) && !known.contains($1.processIdentifier) }
+            }
+            apps.append(NSRunningApplication.current)
+            candidates = apps.sorted { known.contains($0.processIdentifier) && !known.contains($1.processIdentifier) }
         } else {
             let pids = Set(items.compactMap(\.ownerPID))
             candidates = NSWorkspace.shared.runningApplications.filter { pids.contains($0.processIdentifier) }
@@ -232,6 +218,17 @@ final class ItemScanner {
 
     /// The accessibility element of an item (for AXPress), if known.
     func element(for item: MenuBarItem) -> AXUIElement? { owners[item.windowID]?.element }
+
+    /// AXPress, off the main thread: an app answers only once the menu it
+    /// opened closes, so the call times out while the menu is up. That
+    /// counts as pressed (a click on top would close the menu again).
+    static func press(_ element: AXUIElement, completion: @escaping (_ pressed: Bool) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+            let pressed = result == .success || result == .cannotComplete
+            DispatchQueue.main.async { completion(pressed) }
+        }
+    }
 
     static func owner(pid: pid_t, fallbackName: String) -> Owner {
         let app = NSRunningApplication(processIdentifier: pid)

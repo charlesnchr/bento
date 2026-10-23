@@ -206,6 +206,26 @@ enum MenuBarLayout {
         }
     }
 
+    /// How to release a teleported item next to its target. Moving right to
+    /// just left of the target, macOS goes by where the item's left edge
+    /// lands, so the release goes a width before the target's edge; every
+    /// other way, a release inside the target's near half works
+    /// (`dropPoint`). Measured on macOS 26.
+    static func releasesBeforeEdge(itemMidX: CGFloat, targetMidX: CGFloat, destination: MoveDestination) -> Bool {
+        if case .leftOf = destination { return itemMidX < targetMidX }
+        return false
+    }
+
+    /// Whether an item's window is on one of the displays. The clock's
+    /// window pokes a little past the right edge of the screen, so only the
+    /// left edge and the centre count horizontally.
+    static func isOnDisplay(_ frame: CGRect, displays: [CGRect]) -> Bool {
+        displays.contains { d in
+            frame.width > 0 && frame.minX >= d.minX - 0.5 && frame.midX < d.maxX
+                && frame.minY >= d.minY - 0.5 && frame.maxY <= d.maxY + 0.5
+        }
+    }
+
     // MARK: Notch and overflow
 
     /// The x range of the status item area on a screen (global coordinates):

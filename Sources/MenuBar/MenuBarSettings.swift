@@ -57,7 +57,9 @@ struct MenuBarSettings: Codable, Equatable {
     var appearance = MenuBarAppearance()
 
     // MARK: Profiles
-    /// Named layouts; a profile can switch automatically per display or Focus.
+    /// Named layouts. One tied to a display applies when that display becomes
+    /// the main one; any profile can be applied from a URL (e.g. by a Focus
+    /// automation in Shortcuts).
     var profiles: [LayoutProfile] = []
 
     init() {}
@@ -261,7 +263,7 @@ struct SavedLayout: Codable, Equatable {
     }
 }
 
-/// A named layout. `displays` / `focusModes` switch to it automatically.
+/// A named layout. `displays` switch to it automatically.
 struct LayoutProfile: Codable, Equatable, Identifiable {
     var id = UUID().uuidString
     var name = "Profile"
@@ -269,8 +271,6 @@ struct LayoutProfile: Codable, Equatable, Identifiable {
     /// Display names (NSScreen.localizedName) that activate this profile when
     /// they are the main display.
     var displays: [String] = []
-    /// Focus mode names that activate this profile while on.
-    var focusModes: [String] = []
 
     init(name: String = "Profile", layout: SavedLayout = SavedLayout()) {
         self.name = name
@@ -283,7 +283,6 @@ struct LayoutProfile: Codable, Equatable, Identifiable {
         name = (try? c.decode(String.self, forKey: .name)) ?? "Profile"
         layout = (try? c.decode(SavedLayout.self, forKey: .layout)) ?? SavedLayout()
         displays = (try? c.decode([String].self, forKey: .displays)) ?? []
-        focusModes = (try? c.decode([String].self, forKey: .focusModes)) ?? []
     }
 }
 

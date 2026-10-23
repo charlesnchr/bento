@@ -54,11 +54,13 @@ enum ItemImages {
 /// Shows a hidden item for a few seconds when its icon changes (opt-in per
 /// item). There is no notification for another app's icon changing, so the
 /// chosen items are captured every 2 s while they're hidden: a capture of a
-/// 40 × 30 pt window, a few times a minute, only for the items picked.
+/// 40 × 30 pt window, only for the items picked, and nothing while the items
+/// are shown (the controller pauses it).
 final class ChangeWatcher {
     private weak var controller: MenuBarController?
     private var timer: Timer?
     private var keys: Set<String> = []
+    private var active = true
     private var fingerprints: [CGWindowID: UInt64] = [:]
     private let queue = DispatchQueue(label: "com.charles.bento.menubar.watch", qos: .utility)
 
@@ -70,7 +72,23 @@ final class ChangeWatcher {
 
     func update(keys new: Set<String>) {
         keys = new
-        if keys.isEmpty { stop(); return }
+        syncTimer()
+    }
+
+    /// Paused while the items are shown, arranged or in the Bento Bar.
+    func setActive(_ on: Bool) {
+        guard on != active else { return }
+        active = on
+        syncTimer()
+    }
+
+    private func syncTimer() {
+        guard active, !keys.isEmpty else {
+            timer?.invalidate()
+            timer = nil
+            fingerprints = [:]
+            return
+        }
         guard timer == nil else { return }
         let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.tick() }
         t.tolerance = 1
@@ -79,9 +97,8 @@ final class ChangeWatcher {
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        fingerprints = [:]
+        keys = []
+        syncTimer()
     }
 
     private func tick() {

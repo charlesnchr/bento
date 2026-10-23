@@ -55,9 +55,13 @@ final class ControlItems: NSObject {
     }
 
     private func remove(_ item: NSStatusItem) {
-        // removeStatusItem forgets the item; its preferred position stays in
-        // the defaults, so it comes back in the same place.
+        // removeStatusItem also deletes the item's remembered position, so a
+        // separator would come back at the far left (nothing hidden, the
+        // arrangement gone) after quitting or switching the module off. Keep it.
+        let key = "NSStatusItem Preferred Position \(item.autosaveName ?? "")"
+        let saved = item.autosaveName == nil ? nil : UserDefaults.standard.object(forKey: key)
         NSStatusBar.system.removeStatusItem(item)
+        if let saved { UserDefaults.standard.set(saved, forKey: key) }
     }
 
     private func make(_ kind: Kind) -> NSStatusItem {

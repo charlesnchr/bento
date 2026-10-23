@@ -93,7 +93,12 @@ enum WindowServer {
 
     private static func publicMenuBarItemWindows() -> [WindowInfo] {
         guard let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return [] }
-        let tops = Set(NSScreen.screens.map { $0.axFrame.minY })
+        // CGDisplay, not NSScreen: this runs off the main thread too.
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &displays, &count)
+        let tops = Set(displays.map { CGDisplayBounds($0).minY })
         return all.compactMap { d -> WindowInfo? in
             guard (d[kCGWindowLayer as String] as? Int) == Int(statusLevel) else { return nil }
             let info = windowInfo(d)

@@ -19,6 +19,13 @@ final class ItemSearch: NSObject, NSWindowDelegate {
 
     var isOpen: Bool { panel != nil }
 
+    /// For `bento://debug/state`: the query and the item Return would open.
+    var diagnostics: [String: Any] {
+        guard let model else { return ["open": false] }
+        let selected = model.results.indices.contains(model.selected) ? model.results[model.selected].key : ""
+        return ["open": true, "query": model.query, "selected": selected, "results": model.results.count]
+    }
+
     func toggle() {
         if isOpen { close() } else { show() }
     }
@@ -255,7 +262,7 @@ private struct SearchView: View {
             .padding(.horizontal, 14)
             .frame(height: 30)
         }
-        .frame(width: ItemSearch.size.width, height: ItemSearch.size.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { focused = true }
     }
 
@@ -310,6 +317,7 @@ struct ItemThumbnail: View {
             }
         }
         .padding(.horizontal, 2)
-        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.primary.opacity(0.08)))
+        // Images are drawn for the menu bar, not this window: use its colours.
+        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(MenuBarLook.barBackground))
     }
 }

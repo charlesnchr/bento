@@ -223,6 +223,7 @@ public final class MenuBarModule: BentoModule {
     public func diagnostics() -> [String: Any] {
         var d = controller?.diagnostics() ?? ["started": false]
         d["searchOpen"] = search?.isOpen ?? false
+        d["search"] = search?.diagnostics ?? ["open": false]
         d["overlay"] = overlay != nil
         return d
     }

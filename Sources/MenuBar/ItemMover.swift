@@ -76,6 +76,20 @@ final class ItemMover {
         }
     }
 
+    /// Runs the moves before returning, waiting at most `timeout` (for
+    /// quitting, when a completion would never run).
+    func moveBlocking(_ requests: [Request], timeout: TimeInterval) {
+        guard Permissions.accessibility, !requests.isEmpty else { return }
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [self] in
+            withCursorHidden {
+                for r in requests { _ = perform(r) }
+            }
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + timeout)
+    }
+
     /// Clicks an item (it must be on screen): left or right button.
     func click(_ item: CGWindowID, right: Bool = false, completion: @escaping (Result<Void, Failure>) -> Void) {
         guard Permissions.accessibility else { completion(.failure(.noAccessibility)); return }
@@ -101,22 +115,35 @@ final class ItemMover {
 
     // MARK: One move
 
+    private enum Strategy: String { case teleport, drag, edge }
+
     private func perform(_ r: Request) -> Result<Void, Failure> {
         for attempt in 0..<4 {
             guard let itemFrame = WindowServer.frame(of: r.item) else { return .failure(.itemGone) }
             guard let targetFrame = WindowServer.frame(of: r.target) else { return .failure(.targetGone) }
             if isPlaced(r) { return .success(()) }
             guard waitForIdleInput() else { return .failure(.userBusy) }
-            let drop = MenuBarLayout.dropPoint(for: r.side == .left ? .leftOf("") : .rightOf(""), targetFrame: targetFrame)
-            // Alternate strategies on retries; parked items can only teleport.
+            // A teleport first (nothing reorders on the way); then, with both
+            // items on screen, a drag that releases once the item is in place;
+            // the older edge-point teleport last.
             let onScreen = ItemMover.onScreen(itemFrame) && ItemMover.onScreen(targetFrame)
-            if onScreen && attempt % 2 == 0 {
-                drag(from: CGPoint(x: itemFrame.midX, y: itemFrame.midY), to: drop, window: r.item, target: r.target)
-            } else {
-                teleport(item: r.item, itemFrame: itemFrame, target: r.target, targetFrame: targetFrame, side: r.side)
+            let first: Strategy = MenuBarLayout.releasesBeforeEdge(itemMidX: itemFrame.midX, targetMidX: targetFrame.midX,
+                                                                   destination: r.side == .left ? .leftOf("") : .rightOf("")) ? .edge : .teleport
+            let other: Strategy = first == .edge ? .teleport : .edge
+            let strategy: Strategy = switch attempt {
+            case 0, 2: first
+            case 1: onScreen ? .drag : other
+            default: other
+            }
+            switch strategy {
+            case .teleport: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: true)
+            case .edge: teleport(r, itemFrame: itemFrame, targetFrame: targetFrame, inside: false)
+            case .drag: drag(r, from: CGPoint(x: itemFrame.midX, y: itemFrame.midY))
             }
             waitUntilSettled(r.item, from: itemFrame)
-            if isPlaced(r) { return .success(()) }
+            let placed = isPlaced(r)
+            MenuBarTrace.log("move \(r.item) \(r.side == .left ? "left of" : "right of") \(r.target) by \(strategy.rawValue): \(placed ? "placed" : "missed") (item was x=\(Int(itemFrame.minX)), target x=\(Int(targetFrame.minX)), now x=\(Int(WindowServer.frame(of: r.item)?.minX ?? -1)))")
+            if placed { return .success(()) }
             log.info("Menu bar move attempt \(attempt + 1) didn't land (window \(r.item, privacy: .public))")
             usleep(UInt32(60_000 * (attempt + 1)))
         }
@@ -164,48 +191,71 @@ final class ItemMover {
         e.post(tap: .cghidEventTap)
     }
 
-    private func drag(from: CGPoint, to: CGPoint, window: CGWindowID, target: CGWindowID) {
+    /// A real ⌘-drag: macOS reorders items live while one is dragged, so
+    /// the pointer moves a few points at a time towards the target's near
+    /// edge and lets go as soon as the item is on the requested side of it.
+    private func drag(_ r: Request, from: CGPoint) {
         CGWarpMouseCursorPosition(from)
         usleep(15_000)
         commandKey(down: true)
         usleep(15_000)
-        event(.leftMouseDown, at: from, window: window, flags: .maskCommand)?.post(tap: .cghidEventTap)
+        event(.leftMouseDown, at: from, window: r.item, flags: .maskCommand)?.post(tap: .cghidEventTap)
         usleep(50_000)
-        let steps = 10
-        for s in 1...steps {
-            let t = CGFloat(s) / CGFloat(steps)
-            let p = CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
-            event(.leftMouseDragged, at: p, window: window, flags: .maskCommand)?.post(tap: .cghidEventTap)
-            usleep(10_000)
+        var p = from
+        for _ in 0..<200 {
+            if isPlaced(r) { break }
+            guard let t = WindowServer.frame(of: r.target) else { break }
+            let goal = MenuBarLayout.dropPoint(for: r.side == .left ? .leftOf("") : .rightOf(""), targetFrame: t)
+            var dx = goal.x - p.x
+            // At the goal but not placed yet: nudge on past it.
+            if abs(dx) < 1 { dx = r.side == .left ? -2 : 2 }
+            p = CGPoint(x: p.x + max(-6, min(6, dx)), y: goal.y)
+            event(.leftMouseDragged, at: p, window: r.item, flags: .maskCommand)?.post(tap: .cghidEventTap)
+            usleep(16_000)
         }
-        usleep(40_000)
-        event(.leftMouseUp, at: to, window: target, flags: .maskCommand)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        event(.leftMouseUp, at: p, window: r.item, flags: .maskCommand)?.post(tap: .cghidEventTap)
         usleep(20_000)
         commandKey(down: false)
     }
 
-    private func teleport(item: CGWindowID, itemFrame: CGRect, target: CGWindowID, targetFrame: CGRect, side: Side) {
-        // Press on the target's edge where the item should end up; release
-        // where the item's own edge will be once it's there.
-        var start = CGPoint(x: side == .left ? targetFrame.minX : targetFrame.maxX, y: targetFrame.minY + 1)
-        var end = start
-        if itemFrame.midX < targetFrame.midX {
-            end.x = start.x - itemFrame.width
+    /// Moves an item without dragging it there: a ⌘-press that names the
+    /// item's window (the window server routes it to the item wherever it
+    /// is, parked off-screen too) and a release on the target. `inside`
+    /// presses and releases in the target's near half, where macOS inserts
+    /// on that side of it; otherwise at the target's edge, offset by the
+    /// item's width when it comes from the left.
+    private func teleport(_ r: Request, itemFrame: CGRect, targetFrame: CGRect, inside: Bool) {
+        var start: CGPoint, end: CGPoint
+        if inside {
+            start = MenuBarLayout.dropPoint(for: r.side == .left ? .leftOf("") : .rightOf(""), targetFrame: targetFrame)
+            end = start
         } else {
-            start.x += side == .left ? -1 : 1
+            start = CGPoint(x: r.side == .left ? targetFrame.minX : targetFrame.maxX, y: targetFrame.minY + 1)
+            end = start
+            if itemFrame.midX < targetFrame.midX {
+                end.x = start.x - itemFrame.width
+            } else {
+                start.x += r.side == .left ? -1 : 1
+                end = start
+            }
         }
         commandKey(down: true)
         usleep(15_000)
-        let down = event(.leftMouseDown, at: start, window: item, flags: .maskCommand)
-        down?.setIntegerValueField(CGEventField(rawValue: 0x33)!, value: Int64(item))
+        let down = event(.leftMouseDown, at: start, window: r.item, flags: .maskCommand)
+        down?.setIntegerValueField(ItemMover.windowField, value: Int64(r.item))
         down?.post(tap: .cghidEventTap)
         usleep(80_000)
-        let up = event(.leftMouseUp, at: end, window: target, flags: .maskCommand)
-        up?.setIntegerValueField(CGEventField(rawValue: 0x33)!, value: Int64(item))
+        let up = event(.leftMouseUp, at: end, window: r.target, flags: .maskCommand)
+        up?.setIntegerValueField(ItemMover.windowField, value: Int64(r.item))
         up?.post(tap: .cghidEventTap)
         usleep(30_000)
         commandKey(down: false)
     }
+
+    /// An undocumented mouse event field holding the window the event is
+    /// for; with it the press reaches an item that isn't under the pointer.
+    private static let windowField = CGEventField(rawValue: 0x33)!
 
     private func postClick(at p: CGPoint, window: CGWindowID, right: Bool) {
         let saved = CGEvent(source: nil)?.location
@@ -247,12 +297,13 @@ final class ItemMover {
         return false
     }
 
+    /// Whether an item's window is on a display (see `MenuBarLayout.isOnDisplay`).
+    /// Thread-safe: CGDisplay bounds, not NSScreen.
     static func onScreen(_ frame: CGRect) -> Bool {
-        // Thread-safe: CGDisplay bounds, not NSScreen.
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         CGGetActiveDisplayList(count, &ids, &count)
-        return ids.contains { CGDisplayBounds($0).insetBy(dx: -0.5, dy: -0.5).contains(frame) }
+        return MenuBarLayout.isOnDisplay(frame, displays: ids.map { CGDisplayBounds($0) })
     }
 }
