@@ -150,13 +150,13 @@ private func frame(_ x: CGFloat, _ w: CGFloat = 30) -> CGRect { CGRect(x: x, y: 
     let trip = MenuBarController.PendingReturn(item: 4, order: order)
     #expect(trip.right == [5, 6])
     #expect(trip.left == [3, 2])
-    let all = Set(order.map(\.windowID))
-    let first = trip.request(present: all)
+    let first = trip.request(in: order, excluding: [4])
     #expect(first?.target == 5 && first?.side == .left)
     // h2 quit while X was in view: X goes left of the hidden separator instead.
-    let fallback = trip.request(present: all.subtracting([5]))
+    let fallback = trip.request(in: order.filter { $0.windowID != 5 }, excluding: [4])
     #expect(fallback?.target == 6 && fallback?.side == .left)
-    let leftOnly = trip.request(present: [3])
-    #expect(leftOnly?.target == 3 && leftOnly?.side == .right)
-    #expect(trip.request(present: [1, 8]) == nil)
+    // Without a section boundary a surviving neighbour cannot prove that X
+    // will return to Hidden; keep the record rather than accepting Visible.
+    #expect(trip.request(in: order.filter { [3, 4].contains($0.windowID) }, excluding: [4]) == nil)
+    #expect(trip.request(in: order.filter { [1, 4, 8].contains($0.windowID) }, excluding: [4]) == nil)
 }

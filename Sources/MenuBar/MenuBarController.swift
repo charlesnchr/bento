@@ -23,8 +23,8 @@ final class MenuBarController {
     private(set) var lastError: String?
 
     let controls = ControlItems()
-    let scanner = ItemScanner()
-    let mover = ItemMover()
+    let scanner: ItemScanner
+    let mover: ItemMover
     let triggers = RevealTriggers()
     let appMenus = AppMenuTracker()
     private(set) lazy var bar = BentoBar(controller: self)
@@ -41,18 +41,20 @@ final class MenuBarController {
     /// Items moved into view for a click, to put back afterwards: window →
     /// where it goes. Recorded before the move starts and kept until the item
     /// is back (or gone with its app), so a failed return is tried again.
-    private var temporarilyShown: [CGWindowID: PendingReturn] = [:]
+    private(set) var temporarilyShown: [CGWindowID: PendingReturn] = [:]
     /// A return under way, and the next try at a failed one.
     private var returning = false
     private var returnRetry: DispatchWorkItem?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var screenObserver: NSObjectProtocol?
     private var launchWork: [pid_t: DispatchWorkItem] = [:]
-    private(set) var changeWatcher: ChangeWatcher?
+    var changeWatcher: ChangeWatcher?
     var onSettingsChange: (MenuBarSettings) -> Void = { _ in }
 
-    init(settings: MenuBarSettings) {
+    init(settings: MenuBarSettings, scanner: ItemScanner = ItemScanner(), mover: ItemMover = ItemMover()) {
         self.settings = settings
+        self.scanner = scanner
+        self.mover = mover
         controls.onClick = { [weak self] kind, right, option in self?.controlClicked(kind, right: right, option: option) }
         triggers.onReveal = { [weak self] all in self?.show(all: all, reason: .hover) }
         triggers.onHide = { [weak self] in self?.hide() }
@@ -67,9 +69,16 @@ final class MenuBarController {
 
     // MARK: Lifecycle
 
-    func start() {
-        guard !started else { return }
+    /// Begins input handling independently of installing controls and observers.
+    @discardableResult
+    func beginSession() -> Bool {
+        guard !started else { return false }
         started = true
+        return true
+    }
+
+    func start() {
+        guard beginSession() else { return }
         // Bento's own icon is made after the modules start; create ours after
         // it, so it keeps its place (and on a first run ends up right of ours).
         DispatchQueue.main.async { [weak self] in self?.createControls() }
@@ -94,9 +103,11 @@ final class MenuBarController {
     func stop() {
         guard started else { return }
         started = false
-        // No input is posted for the module after this: queued moves and
-        // clicks are dropped, the move under way stops at its next step.
+        // Cancel both input paths before taking a restoration snapshot. AX
+        // actions already sent must finish before any separators are removed.
         mover.cancelAll()
+        scanner.stop()
+        mover.cancelAndDrain()
         returnRetry?.cancel()
         returnRetry = nil
         // Before the separators go: items moved into view for a click (one
@@ -104,7 +115,7 @@ final class MenuBarController {
         // the move under way stops, as there's no later when Bento quits.
         let returns = returnRequests()
         MenuBarTrace.log("stop: putting back \(returns.count) item(s)")
-        if !returns.isEmpty { mover.moveBlocking(returns, timeout: 4) }
+        mover.stop(restoring: returns, timeout: 4)
         temporarilyShown = [:]
         bar.close()
         stopShownState()
@@ -253,7 +264,7 @@ final class MenuBarController {
     /// Icon changes only matter while the items are hidden. Called on every
     /// layout change, so the watcher also looks again at what's hidden.
     func syncChangeWatcher() {
-        changeWatcher?.setActive(visibility == .hidden && !bar.isOpen && !isArranging)
+        changeWatcher?.setActive(started && visibility == .hidden && !bar.isOpen && !isArranging)
     }
 
     private func controlClicked(_ kind: ControlItems.Kind, right: Bool, option: Bool) {
@@ -412,9 +423,10 @@ final class MenuBarController {
 
     /// Re-reads the items (and their owners when unknown), then notifies.
     func refresh(details: Bool = false, completion: (() -> Void)? = nil) {
+        guard started else { return }
         items = scanner.snapshot()
         scanner.resolveOwners(items, details: details) { [weak self] in
-            guard let self else { return }
+            guard let self, self.started else { return }
             self.items = self.scanner.snapshot()
             self.notify()
             completion?()
@@ -554,6 +566,7 @@ final class MenuBarController {
     /// where they are unless listed in `explicit`.
     func arrange(_ target: [MenuBarSection: [CGWindowID]], explicit: Set<CGWindowID> = [],
                  completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
+        guard started else { completion(.failure(.cancelled)); return }
         guard !isArranging else { completion(.failure(.userBusy)); return }
         let previous = visibility
         arrange(target, explicit: explicit, revealed: false) { [weak self] result in
@@ -819,9 +832,13 @@ final class MenuBarController {
     }
 
     private func waitUntilOnScreen(_ id: CGWindowID, tries: Int, _ done: @escaping (Bool) -> Void) {
+        guard started else { return }
         if let f = WindowServer.frame(of: id), ItemMover.onScreen(f), f.minX >= (menuBarScreen().map { statusArea(on: $0).lowerBound } ?? 0) - 1 {
             // Let it settle one more frame.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { done(true) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard self?.started == true else { return }
+                done(true)
+            }
             return
         }
         guard tries > 0 else { done(false); return }
@@ -834,12 +851,15 @@ final class MenuBarController {
         // AXPress opens the menu without moving the pointer.
         guard !right, scanner.canPress(item) else { postClick(item, right: right); return }
         scanner.press(item) { [weak self] pressed in
+            guard self?.started == true else { return }
             if !pressed { self?.postClick(item, right: right) }
         }
     }
 
     private func postClick(_ item: MenuBarItem, right: Bool) {
+        guard started else { return }
         mover.click(item.windowID, right: right) { [weak self] result in
+            guard self?.started == true else { return }
             if case .failure(let f) = result, f != .cancelled {
                 self?.log.error("Clicking \(item.key, privacy: .public) failed: \(f.description, privacy: .public)")
                 HUD.show(f.description, symbol: "exclamationmark.triangle")
@@ -875,10 +895,11 @@ final class MenuBarController {
         }
         // Recorded before any input is posted: if the module stops during the
         // move, stop() still knows to put it back.
-        temporarilyShown[item.windowID] = back
+        recordReturn(back)
         MenuBarTrace.log("into view: \(item.windowID) left of \(target.windowID)")
         mover.move([ItemMover.Request(item: item.windowID, target: target.windowID, side: .left)]) { [weak self] result in
             guard let self, self.started else { return }
+            self.syncChangeWatcher()
             switch result {
             case .success:
                 self.waitUntilOnScreen(item.windowID, tries: 15) { _ in
@@ -896,12 +917,14 @@ final class MenuBarController {
 
     /// Last resort: press it where it is (its menu may open at the screen edge).
     private func pressInPlace(_ item: MenuBarItem) {
+        guard started else { return }
         guard scanner.canPress(item) else {
             HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle")
             return
         }
         if visibility != .hidden || !temporarilyShown.isEmpty { watchMenu(of: item) }
-        scanner.press(item) { pressed in
+        scanner.press(item) { [weak self] pressed in
+            guard self?.started == true else { return }
             if !pressed { HUD.show("Can’t reach “\(item.name)”: the menu bar is full", symbol: "menubar.rectangle") }
         }
     }
@@ -914,73 +937,102 @@ final class MenuBarController {
         var right: [CGWindowID]
         var left: [CGWindowID]
         var attempts = 0
+        let section: MenuBarSection
 
         init(item: CGWindowID, order: [MenuBarItem]) {
             self.item = item
+            section = Self.section(of: item, in: order) ?? .visible
             let bounds = Set(order.filter { if case .control = $0.role { return true } else { return false } }.map { String($0.windowID) })
             let n = MenuBarLayout.returnNeighbours(of: String(item), in: order.map { String($0.windowID) }, bounds: bounds)
             right = n.right.compactMap { CGWindowID($0) }
             left = n.left.compactMap { CGWindowID($0) }
         }
 
-        /// The move back, next to the nearest neighbour still in `present`.
-        func request(present: Set<CGWindowID>) -> ItemMover.Request? {
-            let p = Set(present.map { String($0) })
-            switch MenuBarLayout.returnDestination(right: right.map { String($0) }, left: left.map { String($0) }, present: p) {
-            case .leftOf(let t): return CGWindowID(t).map { ItemMover.Request(item: item, target: $0, side: .left) }
-            case .rightOf(let t): return CGWindowID(t).map { ItemMover.Request(item: item, target: $0, side: .right) }
-            case nil: return nil
+        private static func section(of id: CGWindowID, in order: [MenuBarItem]) -> MenuBarSection? {
+            guard let i = order.firstIndex(where: { $0.windowID == id }) else { return nil }
+            guard let h = order.firstIndex(where: { $0.role == .control(.hidden) }), i < h else { return .visible }
+            if let a = order.firstIndex(where: { $0.role == .control(.alwaysHidden) }), a < h, i < a { return .alwaysHidden }
+            return .hidden
+        }
+
+        private func expectedSection(in order: [MenuBarItem]) -> MenuBarSection {
+            // Turning off the optional section folds it into Hidden.
+            section == .alwaysHidden && !order.contains(where: { $0.role == .control(.alwaysHidden) }) ? .hidden : section
+        }
+
+        /// A neighbour is legitimate only if inserting beside it would return
+        /// to the original section. Another unresolved trip is never an anchor.
+        func request(in order: [MenuBarItem], excluding unresolved: Set<CGWindowID>) -> ItemMover.Request? {
+            guard let moving = order.first(where: { $0.windowID == item }) else { return nil }
+            func valid(_ id: CGWindowID, side: ItemMover.Side) -> ItemMover.Request? {
+                guard id != item, !unresolved.contains(id) else { return nil }
+                var placed = order.filter { $0.windowID != item }
+                guard let target = placed.firstIndex(where: { $0.windowID == id }) else { return nil }
+                placed.insert(moving, at: target + (side == .right ? 1 : 0))
+                guard Self.section(of: item, in: placed) == expectedSection(in: order) else { return nil }
+                return ItemMover.Request(item: item, target: id, side: side)
             }
+            for id in right { if let r = valid(id, side: .left) { return r } }
+            for id in left { if let r = valid(id, side: .right) { return r } }
+            // A separator may have been recreated since activation.
+            let boundary: ControlItems.Kind = expectedSection(in: order) == .alwaysHidden ? .alwaysHidden : .hidden
+            if let id = order.first(where: { $0.role == .control(boundary) })?.windowID {
+                return valid(id, side: expectedSection(in: order) == .visible ? .right : .left)
+            }
+            return nil
+        }
+
+        func isBack(in order: [MenuBarItem], excluding unresolved: Set<CGWindowID>) -> Bool {
+            guard Self.section(of: item, in: order) == expectedSection(in: order),
+                  let r = request(in: order, excluding: unresolved) else { return false }
+            return MenuBarLayout.isPlaced(String(item), r.side == .left ? .leftOf(String(r.target)) : .rightOf(String(r.target)),
+                                          in: order.map { String($0.windowID) })
         }
     }
 
-    /// The moves putting every item moved into view back.
+    /// The moves putting every item moved into view back. Pending items may
+    /// still be visible, so none may anchor another return at shutdown.
     private func returnRequests() -> [ItemMover.Request] {
-        let present = Set(scanner.snapshot().map(\.windowID))
-        return temporarilyShown.values.compactMap { present.contains($0.item) ? $0.request(present: present) : nil }
+        let order = scanner.snapshot()
+        let unresolved = Set(temporarilyShown.keys)
+        return temporarilyShown.values.compactMap { $0.request(in: order, excluding: unresolved) }
     }
 
-    /// Whether an item moved for a click is back next to its old neighbours.
     private func isBack(_ id: CGWindowID) -> Bool {
         guard let trip = temporarilyShown[id] else { return true }
-        let order = scanner.snapshot().map(\.windowID)
-        guard let r = trip.request(present: Set(order)) else { return false }
-        return MenuBarLayout.isPlaced(String(id), r.side == .left ? .leftOf(String(r.target)) : .rightOf(String(r.target)),
-                                      in: order.map { String($0) })
+        return trip.isBack(in: scanner.snapshot(), excluding: Set(temporarilyShown.keys))
     }
 
-    /// Puts the items moved into view for a click back, one at a time. A
-    /// record goes only once its item is back or gone with its app; a failed
-    /// return is tried again (`MenuBarLayout.retry(afterFailedReturn:attempt:)`).
-    private func putBackTemporarilyShown() {
+    /// Repeated activation must not replace an item's original return address.
+    func recordReturn(_ trip: PendingReturn) {
+        if temporarilyShown[trip.item] == nil { temporarilyShown[trip.item] = trip }
+    }
+
+    /// Puts moved items back one at a time; failed returns keep their records.
+    func putBackTemporarilyShown() {
         returnRetry?.cancel()
         returnRetry = nil
         guard started, !returning, !temporarilyShown.isEmpty else { return }
         putBack(Array(temporarilyShown.keys))
     }
 
-    private func putBack(_ queue: [CGWindowID]) {
-        guard started, let id = queue.first else {
+    func putBack(_ queue: [CGWindowID]) {
+        guard started else { return }
+        guard let id = queue.first else {
             items = scanner.snapshot()
+            syncChangeWatcher()
             notify()
             return
         }
         let rest = Array(queue.dropFirst())
         guard let trip = temporarilyShown[id] else { putBack(rest); return }
-        let present = Set(scanner.snapshot().map(\.windowID))
-        guard present.contains(id) else {
+        let order = scanner.snapshot()
+        guard order.contains(where: { $0.windowID == id }) else {
             temporarilyShown[id] = nil
             putBack(rest)
             return
         }
-        // A key or button held: our events would mix with the user's. Wait
-        // until they let go, however long that takes.
-        guard ItemMover.inputIsIdle() else {
-            MenuBarTrace.log("return \(id) waits: input busy")
-            retryReturn(after: 0.5)
-            return
-        }
-        guard let request = trip.request(present: present) else {
+        guard let request = trip.request(in: order, excluding: Set(temporarilyShown.keys)) else {
             log.error("No neighbour left to put window \(id, privacy: .public) back next to")
             putBack(rest)
             return
@@ -990,7 +1042,10 @@ final class MenuBarController {
             guard let self else { return }
             self.returning = false
             guard self.started else { return }
-            switch result {
+            // Adjacency alone can be in Visible if an anchor moved meanwhile.
+            let verified: Result<Void, ItemMover.Failure>
+            if case .success = result, !self.isBack(id) { verified = .failure(.notPlaced) } else { verified = result }
+            switch verified {
             case .success:
                 self.temporarilyShown[id] = nil
             case .failure(let f):
@@ -1005,6 +1060,7 @@ final class MenuBarController {
                 case .later: break
                 }
             }
+            self.syncChangeWatcher()
             self.putBack(rest)
         }
     }

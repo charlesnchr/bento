@@ -66,8 +66,11 @@ final class ChangeWatcher {
     private var fingerprints: [CGWindowID: UInt64] = [:]
     private let queue = DispatchQueue(label: "com.charles.bento.menubar.watch", qos: .utility)
 
-    init(controller: MenuBarController) {
+    private let canCaptureImages: () -> Bool
+
+    init(controller: MenuBarController, canCaptureImages: @escaping () -> Bool = { WindowServer.canCaptureImages }) {
         self.controller = controller
+        self.canCaptureImages = canCaptureImages
     }
 
     var isRunning: Bool { timer != nil }
@@ -121,7 +124,7 @@ final class ChangeWatcher {
     }
 
     private func tick() {
-        guard let controller, WindowServer.canCaptureImages else { return }
+        guard let controller, canCaptureImages() else { return }
         // Only while hidden: a shown item is already visible.
         guard controller.visibility == .hidden, !controller.isArranging, !controller.bar.isOpen else {
             fingerprints = [:]

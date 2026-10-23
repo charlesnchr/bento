@@ -109,12 +109,42 @@ final class ItemScanner {
     private let axQueue = DispatchQueue(label: "com.charles.bento.menubar.ax", qos: .userInitiated)
     private var resolving = false
     private var pendingResolves: [() -> Void] = []
+    private var stopped = false
+    private let actions = ItemWorkQueue(label: "com.charles.bento.menubar.press")
+
+    struct PressEnvironment {
+        var axFrame: (AXUIElement) -> CGRect?
+        var windowFrame: (CGWindowID) -> CGRect?
+        var perform: (AXUIElement) -> AXError
+
+        static var live: PressEnvironment {
+            PressEnvironment(axFrame: ItemScanner.axFrame, windowFrame: WindowServer.frame,
+                             perform: { AXUIElementPerformAction($0, kAXPressAction as CFString) })
+        }
+    }
+
+    private let pressEnvironment: PressEnvironment
+    private let snapshotOverride: (() -> [MenuBarItem])?
+
+    init(owners: [CGWindowID: Owner] = [:], pressEnvironment: PressEnvironment = .live,
+         snapshot: (() -> [MenuBarItem])? = nil) {
+        self.owners = owners
+        self.pressEnvironment = pressEnvironment
+        self.snapshotOverride = snapshot
+    }
+
+    func stop() {
+        stopped = true
+        pendingResolves = []
+        actions.finish()
+    }
 
     /// macOS 26 hosts every status item window in Control Centre.
     static let windowsAreHosted: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
 
     /// The current items, left to right. Owners not yet known are filled in by `resolveOwners`.
     func snapshot() -> [MenuBarItem] {
+        if let snapshotOverride { return snapshotOverride() }
         let windows = WindowServer.menuBarItemWindows()
         let live = Set(windows.map(\.id))
         names = names.filter { live.contains($0.key) }
@@ -165,6 +195,7 @@ final class ItemScanner {
     /// owner is already known. Also refreshes the accessibility descriptions
     /// when `details` is set (used when Settings opens).
     func resolveOwners(_ items: [MenuBarItem], details: Bool = false, completion: @escaping () -> Void) {
+        guard !stopped else { return }
         let missing = items.filter { $0.ownerPID == nil && $0.role == .regular }
         let wantDetails = details && Permissions.accessibility
         guard (!missing.isEmpty || wantDetails), Permissions.accessibility else { completion(); return }
@@ -179,6 +210,7 @@ final class ItemScanner {
     /// shifts the ones left of it): a window that moved isn't matched, and if
     /// one still without an owner did, it looks again from a new snapshot.
     private func scan(_ items: [MenuBarItem], retries: Int) {
+        guard !stopped else { return }
         let tracked = items.filter { $0.role == .regular || $0.role == .fixed || $0.role == .bentoIcon }
         // Where the windows are as the scan starts (`items` may be older).
         let before = ItemScanner.frames(of: tracked.map(\.windowID))
@@ -206,14 +238,14 @@ final class ItemScanner {
         axQueue.async { [weak self] in
             let extras = ItemScanner.extras(of: candidates)
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, !self.stopped else { return }
                 let after = ItemScanner.frames(of: Array(before.keys))
                 let moved = self.apply(extras, before: before, after: after, windowOwners: windowOwners, apps: candidates)
                 let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
                 self.log.debug("Resolved menu bar owners in \(ms, format: .fixed(precision: 0), privacy: .public) ms (\(candidates.count) apps, \(moved.count) moved)")
                 if retries > 0, moved.contains(where: { self.owners[$0] == nil }) {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                        guard let self else { return }
+                        guard let self, !self.stopped else { return }
                         self.scan(self.snapshot(), retries: retries - 1)
                     }
                     return
@@ -256,25 +288,38 @@ final class ItemScanner {
     /// it opened closes, so the call times out while the menu is up: that
     /// counts as pressed (a click on top would close the menu again).
     /// `completion(false)` when it wasn't pressed; the caller clicks instead.
+    /// Stopped work is drained and its callback discarded.
     func press(_ item: MenuBarItem, completion: @escaping (_ pressed: Bool) -> Void) {
+        guard !stopped else { return }
         let id = item.windowID
         guard let element = owners[id]?.element else { completion(false); return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let ax = ItemScanner.axFrame(element), let window = WindowServer.frame(of: id), MenuBarLayout.sameItem(ax, window) else {
+        let environment = pressEnvironment
+        actions.submit { [weak self] token in
+            guard !token.isCancelled else { return }
+            let ax = environment.axFrame(element)
+            guard !token.isCancelled else { return }
+            let window = environment.windowFrame(id)
+            guard !token.isCancelled else { return }
+            guard let ax, let window, MenuBarLayout.sameItem(ax, window) else {
                 DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
+                    guard let self, !self.stopped, !token.isCancelled else { return }
                     self.log.info("Menu bar item element no longer matches window \(id, privacy: .public)")
                     MenuBarTrace.log("press \(id): element doesn't match the window, not pressed")
-                    // Before macOS 26 the app is still right (from the window list).
                     if ItemScanner.windowsAreHosted { self.owners[id] = nil } else { self.owners[id]?.element = nil }
                     completion(false)
                     self.resolveOwners(self.snapshot()) {}
                 }
                 return
             }
-            let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+            // AX frame reads can time out. Cancellation is checked after them,
+            // immediately before the only action; stop drains any action begun.
+            guard !token.isCancelled else { return }
+            let result = environment.perform(element)
             let pressed = result == .success || result == .cannotComplete
-            DispatchQueue.main.async { completion(pressed) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.stopped, !token.isCancelled else { return }
+                completion(pressed)
+            }
         }
     }
 
