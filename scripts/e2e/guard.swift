@@ -9,7 +9,7 @@ import Foundation
 
 let flag = "/tmp/bento-user-active"
 let ours: Set<String> = ["bentoctl", "Bento", "DevShot", "DevWindows", "DevTiling", "DevLauncher", "DevClipboard",
-                         "DevNotes", "osascript", "swift-frontend", "swift", "guard", "srcpid", "click", "drag", "front"]
+                         "DevNotes", "DevTodo", "DevMenuBar", "osascript", "swift-frontend", "swift", "guard", "srcpid", "click", "drag", "front"]
 unlink(flag)
 
 func name(of pid: Int64) -> String? {

@@ -6,6 +6,7 @@ import Launcher
 import Clipboard
 import Notes
 import Todo
+import MenuBar
 
 BentoApp.run(modules: [
     ShotModule(),
@@ -15,4 +16,5 @@ BentoApp.run(modules: [
     ClipboardModule(),
     NotesModule(),
     TodoModule(),
+    MenuBarModule(),
 ])
