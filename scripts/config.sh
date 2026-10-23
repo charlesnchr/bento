@@ -26,3 +26,6 @@ fi
 BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR:-/Applications}"
 BENTO_INSTALL_DIR="${BENTO_INSTALL_DIR%/}"
 INSTALLED_APP="$BENTO_INSTALL_DIR/Bento.app"
+# The path its process runs from: Launch Services resolves links (a Homebrew
+# install runs from Cellar/bento/<version>/Bento.app).
+INSTALLED_APP_REAL="$( (cd "$INSTALLED_APP" 2>/dev/null && pwd -P) || echo "$INSTALLED_APP")"

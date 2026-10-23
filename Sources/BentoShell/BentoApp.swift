@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         installMainMenu()
         AXDefaults.install()
+        LaunchAtLogin.restoreAfterMove()
         ConfigStore.shared.problemHandler = { HUD.show($0, symbol: "exclamationmark.triangle", duration: 4) }
         if let problem = ConfigStore.shared.lastProblem {
             HUD.show(problem, symbol: "exclamationmark.triangle", duration: 4)
@@ -183,14 +184,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard let other = others.first else { return false }
         if others.count == 1, isStale(other), other.terminate() {
             // Block rather than spin the run loop, which would deliver the URL
-            // event that launched us before anything is set up. Hotkeys it
-            // still holds are retried when it quits (didTerminateApplication).
+            // event that launched us before anything is set up. Once it has
+            // been asked to quit, never hand back (it would quit later and
+            // leave nothing running): force it after 5 s. Hotkeys it still
+            // holds are retried when it quits (didTerminateApplication).
             let pid = other.processIdentifier
             for _ in 0..<50 where kill(pid, 0) == 0 { usleep(100_000) }
-            if kill(pid, 0) != 0 {
-                BentoLog.core.info("Took over from an older running Bento")
-                return false
+            if kill(pid, 0) == 0 {
+                other.forceTerminate()
+                for _ in 0..<10 where kill(pid, 0) == 0 { usleep(100_000) }
             }
+            BentoLog.core.info("Took over from an older running Bento")
+            return false
         }
         other.activate()
         NSApp.terminate(nil)
@@ -448,10 +453,33 @@ enum LaunchAtLogin {
         }
     }
 
+    /// The user's choice, kept apart from the system state: a Homebrew update
+    /// moves the app to a new keg (…/Cellar/bento/<version>), and the login
+    /// item has to be registered again from there.
+    private static let wantedKey = "LaunchAtLoginWanted"
+
+    /// Registers the login item again if it was wanted but this copy isn't
+    /// registered (it moved). Leaves it alone when the user switched it off in
+    /// System Settings (that reads as requiresApproval).
+    static func restoreAfterMove() {
+        guard isAvailable else { return }
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: wantedKey) == nil, isEnabled { defaults.set(true, forKey: wantedKey) }
+        guard defaults.bool(forKey: wantedKey) else { return }
+        switch SMAppService.mainApp.status {
+        case .notRegistered, .notFound:
+            do { try SMAppService.mainApp.register() } catch {
+                BentoLog.core.error("Restoring launch at login failed: \(String(describing: error), privacy: .public)")
+            }
+        default: break
+        }
+    }
+
     /// Returns the resulting state (which may differ from `on` if the system refused).
     @discardableResult
     static func set(_ on: Bool) -> Bool {
         guard isAvailable else { return false }
+        UserDefaults.standard.set(on, forKey: wantedKey)
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {

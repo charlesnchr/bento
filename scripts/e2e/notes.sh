@@ -415,7 +415,7 @@ close_scratch() {
 }
 
 other_instances() {
-  ps -axo pid,command | grep -E "/(Bento|DevNotes)$" | grep -v "$WORK/" | grep -vF "$INSTALLED_APP/" | grep -v grep
+  ps -axo pid,command | grep -E "/(Bento|DevNotes)$" | grep -v "$WORK/" | grep -vF "$INSTALLED_APP_REAL/" | grep -v grep
 }
 
 gui_session_1() {

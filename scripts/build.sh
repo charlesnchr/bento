@@ -33,7 +33,10 @@ for arg in "$@"; do
 done
 
 echo "==> swift build (release)"
-swift build -c release --product Bento 2>&1 | grep -E "error|warning: |Compiling|Build complete" | grep -v "^warning: unhandled" || true
+# pipefail: the status is swift build's, so a failed build can't sign an old binary.
+if ! swift build -c release --product Bento 2>&1 | { grep -E "error|warning: |Compiling|Build complete" | grep -v "^warning: unhandled" || true; }; then
+  echo "build failed" >&2; exit 1
+fi
 BIN="$(swift build -c release --product Bento --show-bin-path)/Bento"
 [ -x "$BIN" ] || { echo "build failed" >&2; exit 1; }
 

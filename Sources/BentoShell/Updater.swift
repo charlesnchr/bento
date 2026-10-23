@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 import BentoCore
 
 /// Version and install-location rules for the updater, kept pure for tests.
@@ -89,7 +88,6 @@ final class Updater: ObservableObject {
     private var started = false
     private static let checkInterval: TimeInterval = 24 * 3600
     private static let notifiedKey = "UpdaterNotifiedVersion"
-    private static let reRegisterLoginKey = "UpdaterReRegisterLoginItem"
 
     private init() {
         // Launched through /Applications/Bento.app or opt/bento: match the keg itself.
@@ -106,7 +104,6 @@ final class Updater: ObservableObject {
     func start(automatic: Bool) {
         guard isAvailable, !started else { return }
         started = true
-        refreshLoginItemAfterUpdate()
         refreshInstalled()
         setAutomatic(automatic)
     }
@@ -147,6 +144,8 @@ final class Updater: ObservableObject {
             let latest = data.flatMap { String(data: $0, encoding: .utf8) }.flatMap(UpdateRules.formulaVersion)
             DispatchQueue.main.async {
                 guard let self else { return }
+                // An automatic check that was in flight when Install was clicked.
+                if case .installing = self.state { return }
                 guard let latest, status == 200 else {
                     let why = error?.localizedDescription ?? (status == 200 ? "no version in the formula" : "HTTP \(status)")
                     BentoLog.core.error("Update check failed: \(why, privacy: .public)")
@@ -199,9 +198,11 @@ final class Updater: ObservableObject {
 
     // MARK: Installing
 
-    /// `brew update` (for the tap) and `brew upgrade` through the login shell, so
-    /// brew sees the same environment (PATH, proxies) as in a terminal. Restarts
-    /// into the new version when it's in place.
+    /// `brew update` (for the tap) and `brew upgrade` through a login shell, so
+    /// brew gets PATH and whatever the login profile (~/.zprofile) sets. Not
+    /// ~/.zshrc: an interactive shell can block on prompts or start tmux.
+    /// Proxy settings brew needs belong in ~/.homebrew/brew.env, which brew
+    /// reads itself. Restarts into the new version when it's in place.
     func install() {
         guard case .available(let version) = state else { return }
         guard let prefix = homebrewPrefix else {
@@ -248,6 +249,7 @@ final class Updater: ObservableObject {
     private func finishInstall(version: String, status: Int32) {
         if let v = installedVersion, UpdateRules.isNewer(v, than: currentVersion) {
             BentoLog.core.info("Updated to \(v, privacy: .public), restarting")
+            state = .restartNeeded(v)
             restart()
             return
         }
@@ -264,7 +266,6 @@ final class Updater: ObservableObject {
     /// (BENTO_HOME…) carry over, so an isolated copy stays isolated.
     func restart() {
         guard let app = installedApp else { return }
-        if LaunchAtLogin.isEnabled { UserDefaults.standard.set(true, forKey: Self.reRegisterLoginKey) }
         let carried = Self.env.filter { $0.key.hasPrefix("BENTO_") }.sorted { $0.key < $1.key }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -281,16 +282,6 @@ final class Updater: ObservableObject {
             return
         }
         NSApp.terminate(nil)
-    }
-
-    /// Each version lives in its own keg (…/Cellar/bento/<version>), so the
-    /// login item is registered again from the running copy. Quietly: it is
-    /// usually registered already.
-    private func refreshLoginItemAfterUpdate() {
-        let wanted = UserDefaults.standard.bool(forKey: Self.reRegisterLoginKey)
-        UserDefaults.standard.removeObject(forKey: Self.reRegisterLoginKey)
-        guard isHomebrew, LaunchAtLogin.isAvailable, wanted || LaunchAtLogin.isEnabled else { return }
-        try? SMAppService.mainApp.register()
     }
 
     // MARK: Menu and diagnostics
