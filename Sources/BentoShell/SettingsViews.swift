@@ -10,13 +10,17 @@ enum SettingsPage: Hashable {
 final class SettingsNavigator: ObservableObject {
     @Published var page: SettingsPage? = .general
     /// Filter for the Shortcuts page from a "shortcuts/<text>" link (the
-    /// keyboard overview's Change Shortcut); the page takes it once.
+    /// keyboard overview's Change Shortcut); the page takes it once. Plain
+    /// "shortcuts" clears a filter left from before.
     @Published var shortcutsFilter: String?
 
     func select(_ id: String?) {
+        shortcutsFilter = nil
         switch id {
         case nil, "", "general": page = .general
-        case "shortcuts": page = .shortcuts
+        case "shortcuts":
+            shortcutsFilter = ""
+            page = .shortcuts
         case let id? where id.hasPrefix("shortcuts/"):
             shortcutsFilter = String(id.dropFirst("shortcuts/".count))
             page = .shortcuts

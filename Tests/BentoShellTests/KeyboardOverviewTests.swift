@@ -157,10 +157,24 @@ private func ids(_ sections: [OverviewSection]) -> [String] { sections.flatMap(\
     #expect(nav.shortcutsFilter == "Left Half")
     nav.select("windows")
     #expect(nav.page == .module("windows"))
+    #expect(nav.shortcutsFilter == nil)   // a filter not taken yet doesn't outlive other navigation
     nav.select("shortcuts")
     #expect(nav.page == .shortcuts)
+    #expect(nav.shortcutsFilter == "")    // plain Shortcuts clears a filter from before
     nav.select(nil)
     #expect(nav.page == .general)
+}
+
+@Test func settingsLinksKeepTheFiltersSlashes() {
+    func page(_ s: String) -> String? { AppDelegate.settingsPage(URL(string: s)!) }
+    #expect(page("bento://settings") == nil)
+    #expect(page("bento://settings/") == nil)
+    #expect(page("bento://settings/windows") == "windows")
+    #expect(page("bento://settings/windows/") == "windows")
+    #expect(page("bento://settings/shortcuts/Left%20Half") == "shortcuts/Left Half")
+    #expect(page("bento://settings/shortcuts/%2F") == "shortcuts//")
+    #expect(page("bento://settings/shortcuts/Left%2F") == "shortcuts/Left/")
+    #expect(page("bento://settings/shortcuts/") == "shortcuts/")
 }
 
 // MARK: - The default shortcut
@@ -185,7 +199,7 @@ private let overview = Shortcut(KeyboardOverview.defaultShortcut)!
     let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
         .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" && $0.lastPathComponent != "KeyboardOverview.swift" }
     #expect(files.count > 50)
-    let literal = try NSRegularExpression(pattern: #""((?:(?:ctrl|control|opt|option|alt|cmd|command|shift|fn|hyper|meh)\+)+[^"\s]+)""#,
+    let literal = try NSRegularExpression(pattern: #""((?:(?:ctrl|control|ctl|⌃|opt|option|alt|⌥|cmd|command|⌘|super|win|shift|⇧|fn|function|hyper|meh)\+)+[^"\s]+)""#,
                                           options: .caseInsensitive)
     var seen = 0
     var collisions: [String] = []

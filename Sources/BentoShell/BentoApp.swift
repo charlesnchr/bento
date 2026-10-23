@@ -230,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case "debug":
             writeDiagnostics()
         case "settings":
-            showSettings(page: path.isEmpty ? nil : path)
+            showSettings(page: Self.settingsPage(url))
         case "update":
             // bento://update checks; bento://update/install installs a found update.
             if path == "install", case .available = Updater.shared.state { Updater.shared.install() } else { Updater.shared.check(.url) }
@@ -387,6 +387,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     // MARK: Settings window
+
+    /// The page of a bento://settings/<page> link. A Shortcuts filter keeps its
+    /// own slashes (…/shortcuts/%2F filters to "/"), which `url.path` drops.
+    static func settingsPage(_ url: URL) -> String? {
+        let raw = String((URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? "").drop { $0 == "/" })
+        let page = raw.hasPrefix("shortcuts/") ? raw : raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return page.isEmpty ? nil : page
+    }
 
     func showSettings(page: String?) {
         // Unknown pages (typos in bento://settings/<id>) fall back to General.
