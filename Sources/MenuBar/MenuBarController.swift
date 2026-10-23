@@ -536,20 +536,26 @@ final class MenuBarController {
     /// full menu bar pushes the leftmost items behind the notch, where macOS
     /// reports no usable order. If that fails (macOS versions differ), it
     /// tries once more with everything shown.
-    func arrange(_ target: [MenuBarSection: [CGWindowID]], completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
+    /// Items that aren't named yet (a new item, a transient indicator) stay
+    /// where they are unless listed in `explicit`.
+    func arrange(_ target: [MenuBarSection: [CGWindowID]], explicit: Set<CGWindowID> = [],
+                 completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
         guard !isArranging else { completion(.failure(.userBusy)); return }
         let previous = visibility
-        arrange(target, revealed: false) { [weak self] result in
+        arrange(target, explicit: explicit, revealed: false) { [weak self] result in
             guard let self else { return }
             if case .failure(let f) = result, f == .notPlaced, self.started {
-                self.arrange(target, revealed: true) { [weak self] result in self?.finishArranging(result, previous: previous, completion: completion) }
+                self.arrange(target, explicit: explicit, revealed: true) { [weak self] result in
+                    self?.finishArranging(result, previous: previous, completion: completion)
+                }
             } else {
                 self.finishArranging(result, previous: previous, completion: completion)
             }
         }
     }
 
-    private func arrange(_ target: [MenuBarSection: [CGWindowID]], revealed: Bool, done: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
+    private func arrange(_ target: [MenuBarSection: [CGWindowID]], explicit: Set<CGWindowID>, revealed: Bool,
+                         done: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
         isArranging = true
         bar.close()
         stopShownState()
@@ -560,7 +566,7 @@ final class MenuBarController {
             guard let self else { return }
             let current = self.scanner.snapshot()
             self.items = current
-            let requests = self.plan(current: current, target: target)
+            let requests = self.plan(current: current, target: target, explicit: explicit)
             self.log.info("Arranging menu bar: \(requests.count) move(s)\(revealed ? " (shown)" : "")")
             MenuBarTrace.log("arrange\(revealed ? " (shown)" : ""): order \(current.map { "\($0.name)#\($0.windowID)" }.joined(separator: " ")); target \(MenuBarSection.allCases.map { "\($0.rawValue)=\(target[$0] ?? [])" }.joined(separator: " ")); moves \(requests.map { "\($0.item)\($0.side == .left ? "<" : ">")\($0.target)" })")
             self.mover.move(requests) { result in done(result) }
@@ -580,7 +586,7 @@ final class MenuBarController {
     }
 
     /// Mover requests turning the current order into the target.
-    func plan(current: [MenuBarItem], target: [MenuBarSection: [CGWindowID]]) -> [ItemMover.Request] {
+    func plan(current: [MenuBarItem], target: [MenuBarSection: [CGWindowID]], explicit: Set<CGWindowID> = []) -> [ItemMover.Request] {
         let byID = Dictionary(current.map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
         guard let h = current.first(where: { $0.role == .control(.hidden) }) else { return [] }
         let a = current.first { $0.role == .control(.alwaysHidden) }
@@ -596,7 +602,9 @@ final class MenuBarController {
         let currentOrder = current.map { String($0.windowID) }
         // A misplaced always-hidden separator is moved like an item.
         let misplaced = alwaysHiddenMisplaced(current) ? a?.windowID : nil
-        let anchors = Set(current.filter { !$0.isMovable && $0.windowID != misplaced }.map { String($0.windowID) })
+        let anchors = Set(current.filter {
+            (!$0.isMovable && $0.windowID != misplaced) || ($0.role == .regular && !$0.hasStableKey && !explicit.contains($0.windowID))
+        }.map { String($0.windowID) })
         let moves = MenuBarLayout.planMoves(current: currentOrder, target: targetOrder, anchors: anchors)
         let zeroWidth = Set(current.filter { $0.frame.width < 1 }.map(\.windowID))
         return moves.compactMap { m in
@@ -608,15 +616,31 @@ final class MenuBarController {
         }
     }
 
-    /// Moves one item into a section, before `beforeID` (nil: at the right end).
+    /// Moves one item into a section, before `beforeID`; without one, at the
+    /// section's right end (next to its separator), or for Visible at its
+    /// left end (next to the chevron: the clock and Control Centre stay last).
     func move(_ item: MenuBarItem, to section: MenuBarSection, before beforeID: CGWindowID? = nil,
               completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
-        var target = arrangement().mapValues { $0.map(\.windowID) }
+        var target = freshArrangement().mapValues { $0.map(\.windowID) }
         for s in MenuBarSection.allCases { target[s]?.removeAll { $0 == item.windowID } }
         var list = target[section] ?? []
-        if let beforeID, let i = list.firstIndex(of: beforeID) { list.insert(item.windowID, at: i) } else { list.append(item.windowID) }
+        if let beforeID, let i = list.firstIndex(of: beforeID) {
+            list.insert(item.windowID, at: i)
+        } else if section == .visible {
+            list.insert(item.windowID, at: 0)
+        } else {
+            list.append(item.windowID)
+        }
         target[section] = list
-        arrange(target, completion: completion)
+        arrange(target, explicit: [item.windowID], completion: completion)
+    }
+
+    /// The arrangement from a new snapshot: a target built from older
+    /// positions would move items macOS has moved since (a new item, the
+    /// screen recording indicator coming and going).
+    private func freshArrangement() -> [MenuBarSection: [MenuBarItem]] {
+        items = scanner.snapshot()
+        return arrangement()
     }
 
     /// Arranges the items to match a saved layout (a profile, or the
@@ -624,7 +648,7 @@ final class MenuBarController {
     /// ones it mentions go into their section after the item the layout has
     /// before them (else at the section's left end).
     func apply(_ layout: SavedLayout, completion: @escaping (Result<Void, ItemMover.Failure>) -> Void) {
-        let current = arrangement()
+        let current = freshArrangement()
         let all = MenuBarSection.allCases.flatMap { current[$0] ?? [] }
         let byKey = Dictionary(all.filter(\.hasStableKey).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         let mentioned = Set(MenuBarSection.allCases.flatMap { layout[$0] }.compactMap { byKey[$0] }

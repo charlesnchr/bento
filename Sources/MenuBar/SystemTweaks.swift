@@ -84,7 +84,7 @@ final class MenuBarOverlay {
     }
 
     private func makeWindow() -> NSWindow {
-        let w = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        let w = OverlayWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         w.isOpaque = false
         w.backgroundColor = .clear
         w.ignoresMouseEvents = true
@@ -95,6 +95,11 @@ final class MenuBarOverlay {
         w.contentView = OverlayView()
         return w
     }
+}
+
+/// AppKit keeps windows clear of the menu bar; this one belongs behind it.
+private final class OverlayWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 private final class OverlayView: NSView {
