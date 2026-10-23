@@ -227,13 +227,19 @@ struct PermissionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            row("Accessibility", granted: ax) {
-                Permissions.requestAccessibility()
-                Permissions.open(.accessibility)
-            }
-            row("Screen Recording", granted: screen) {
-                Permissions.requestScreenRecording()
-                Permissions.open(.screenRecording)
+            row("Accessibility", granted: ax) { Permissions.grant(.accessibility) }
+            row("Screen Recording", granted: screen) { Permissions.grant(.screenRecording) }
+            if !(ax && screen) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Bento not in the list? Drag it in from Finder, or click + and pick Bento in the Applications folder in your home folder.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Show Bento in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+                    }
+                    .controlSize(.small)
+                }
             }
         }
         // No notification exists for permission changes: poll, but only while

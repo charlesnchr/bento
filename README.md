@@ -30,10 +30,12 @@ open /opt/homebrew/opt/bento/Bento.app
 
 Apple Silicon, macOS 14+. The app lives in the Homebrew prefix
 (`/opt/homebrew/opt/bento/Bento.app`), so installing needs no admin rights and
-works on managed Macs that only run apps from `/opt/homebrew`. To find it in
-Spotlight or Raycast, link it: `ln -sfn /opt/homebrew/opt/bento/Bento.app
-~/Applications/Bento.app`. On first launch, grant **Accessibility** and
-**Screen Recording** from Settings → General.
+works on managed Macs that only run apps from `/opt/homebrew`. Spotlight doesn't
+look inside `/opt`, so on first launch Bento adds a Finder alias to itself at
+`~/Applications/Bento.app`; Spotlight, Raycast and Finder find it there. Then
+grant **Accessibility** and **Screen Recording** from Settings → General: each
+**Grant…** brings up the macOS prompt, whose **Open System Settings** button
+lists Bento ready to switch on.
 
 Bento checks for a new release once a day. When there is one, **Install Bento
 x.y.z and Restart** appears in its menu bar menu and under Settings → General →
@@ -54,9 +56,9 @@ scripts/build.sh --install  # + install and relaunch (see below)
 `--install` replaces the Homebrew install in place when bento is installed with
 brew (until the next `brew upgrade`), so each Mac has one Bento location;
 otherwise it installs to `/Applications`, or `$BENTO_INSTALL_DIR` if set. It
-removes the `dist` copy afterwards so Spotlight only finds the installed app. With `BENTO_INSTALL_DIR` set to somewhere other than
-`/Applications`, it links `~/Applications/Bento.app` to the install and warns
-until `/Applications/Bento.app` is linked too (one `sudo ln`).
+removes the `dist` copy afterwards so Spotlight only finds the installed app.
+Installed anywhere but `/Applications` or `~/Applications`, the app keeps the
+`~/Applications/Bento.app` alias pointing at itself.
 
 To keep Accessibility and Screen Recording grants across rebuilds, sign with a
 persistent code-signing identity: set `BENTO_SIGN_IDENTITY` to its SHA-1 or
