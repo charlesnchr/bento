@@ -1,7 +1,7 @@
 // swift-tools-version:5.10
 // Bento: one menu-bar app for capture, window management, tiling, app hotkeys,
-// clipboard history, floating notes and a todo list. Built with SwiftPM only (no Xcode);
-// scripts/build.sh assembles and signs the .app bundle.
+// clipboard history, floating notes, a todo list and menu bar item management.
+// Built with SwiftPM only (no Xcode); scripts/build.sh assembles and signs the .app bundle.
 import PackageDescription
 import Foundation
 
@@ -15,7 +15,7 @@ let testSwiftSettings: [SwiftSetting] = testingFix
 let testLinkerSettings: [LinkerSetting] = testingFix
     ? [.unsafeFlags(["-F", cltFrameworks, "-Xlinker", "-rpath", "-Xlinker", cltFrameworks])] : []
 
-let modules = ["Shot", "ShotEditor", "Windows", "Tiling", "Launcher", "Clipboard", "Notes", "Todo"]
+let modules = ["Shot", "ShotEditor", "Windows", "Tiling", "Launcher", "Clipboard", "Notes", "Todo", "MenuBar"]
 
 let package = Package(
     name: "Bento",
@@ -38,6 +38,7 @@ let package = Package(
         .target(name: "Clipboard", dependencies: ["BentoCore"]),
         .target(name: "Notes", dependencies: ["BentoCore"]),
         .target(name: "Todo", dependencies: ["BentoCore"]),
+        .target(name: "MenuBar", dependencies: ["BentoCore"]),
 
         .executableTarget(
             name: "Bento",
@@ -54,6 +55,7 @@ let package = Package(
         .executableTarget(name: "DevClipboard", dependencies: ["BentoShell", "Clipboard"], path: "Dev/DevClipboard"),
         .executableTarget(name: "DevNotes", dependencies: ["BentoShell", "Notes"], path: "Dev/DevNotes"),
         .executableTarget(name: "DevTodo", dependencies: ["BentoShell", "Todo"], path: "Dev/DevTodo"),
+        .executableTarget(name: "DevMenuBar", dependencies: ["BentoShell", "MenuBar"], path: "Dev/DevMenuBar"),
 
         .testTarget(name: "BentoCoreTests", dependencies: ["BentoCore"],
                     swiftSettings: testSwiftSettings, linkerSettings: testLinkerSettings),

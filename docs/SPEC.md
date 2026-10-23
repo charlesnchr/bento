@@ -2,7 +2,8 @@
 
 Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI, no third-party
 dependencies) that replaces Shottr, Rectangle Pro, Raycast app hotkeys, a tiling
-window manager (AeroSpace-lite), a clipboard manager, Raycast Notes and Todoist.
+window manager (AeroSpace-lite), a clipboard manager, Raycast Notes, Todoist and
+Bartender.
 
 Priorities, in order: **correct, low resource use, neat**. It runs all day:
 idle CPU must be ~0 %, memory small, nothing polls when an event or notification
@@ -30,7 +31,8 @@ docs/                 this file, SYNC_PROTOCOL.md
 ```
 
 Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
-`Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`.
+`Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`,
+`MenuBar` (Bartender: hidden menu bar items).
 
 ## BentoCore API (read the sources, they are short)
 
@@ -73,8 +75,9 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
    management: prefer testing on a window you open yourself (e.g. `open -a TextEdit` new doc,
    or a window from your harness) and restore what you move.
 5. Idle cost: no timers that fire when nothing happens, except the clipboard changeCount poll
-   (≤ 2 Hz with tolerance). Event taps only while their feature is enabled. AX observers only while
-   needed. Release big images when windows close.
+   (≤ 2 Hz with tolerance) and MenuBar's opt-in "show when the icon changes" check (0.5 Hz, only
+   for the items picked, only while they're hidden). Event taps only while their feature is
+   enabled. AX observers only while needed. Release big images when windows close.
 6. Look and feel: native macOS — SF Symbols, system materials (NSVisualEffectView / SwiftUI
    materials), system accent colour, light + dark mode, 8-pt spacing, no custom chrome unless the
    reference app has it. Keyboard-first: every panel fully usable without the mouse.
@@ -95,6 +98,7 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 | Notes | `ctrl+opt+n` toggle notes window, other notes shortcuts are local to its window |
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
+| MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item click shortcuts are user-defined |
 | Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
 
 ## Sync

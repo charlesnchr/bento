@@ -1,10 +1,11 @@
 # Bento
 
-One small native macOS menu-bar app instead of six: screenshots and annotation
+One small native macOS menu-bar app instead of seven: screenshots and annotation
 (Shottr), window management with snapping and modifier-drag (Rectangle Pro),
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
-synced in real time through a tiny Rust server.
+synced in real time through a tiny Rust server, and hidden menu bar items
+(Bartender).
 
 Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 ~0 % CPU with a ~16 MB footprint; the bundle is 6.5 MB.
@@ -20,6 +21,7 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Clipboard | Raycast/Alfred | text, rich text, images, files, links, colours; 30-day history, search incl. OCR of images, pins, paste/plain paste/⌘1–9 | ⌘⇧V |
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
+| Menu Bar (off by default) | Bartender / Ice | Visible, Hidden and Always Hidden sections; show them with the chevron, a shortcut, or hover/click/scroll on the menu bar; they hide again after a delay, on a click elsewhere or when the item’s menu closes; arrange the real items by dragging their images in Settings (Bento ⌘-drags them and checks every move); Bento Bar below the menu bar for hidden items and items lost behind the notch; quick search; per-item click shortcuts; show an item when its icon changes; item spacing; tint, border, shadow; profiles per display or by URL (e.g. from a Focus automation) | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
 
 **Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
 module with its current shortcut. Type to filter by name, module or key (“left”
@@ -77,7 +79,8 @@ Mac, so each machine can use its own identity. Without an identity, or with
 `--adhoc`, builds are signed ad hoc and grants reset on every build.
 
 On first launch, grant **Accessibility** (window management, modifier-drag,
-pasting) and **Screen Recording** (screenshots) from Settings → General.
+pasting, moving menu bar items) and **Screen Recording** (screenshots, menu bar
+item names and images) from Settings → General.
 
 ## Configuration
 
