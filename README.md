@@ -21,6 +21,13 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 
+**Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
+module with its current shortcut. Type to filter by name, module or key (“left”
+finds Left Half, “⌘⇧” every ⌘⇧ shortcut). ↩ runs the selected action in the app
+you were in, ⌘E changes its shortcut in Settings, ⌘, opens Settings, and each
+module has a link to its own settings. The header shows whether Accessibility and
+Screen Recording are granted. A hint points to it once after launch.
+
 ## Install
 
 ```sh
@@ -35,7 +42,8 @@ look inside `/opt`, so on first launch Bento adds a Finder alias to itself at
 `~/Applications/Bento.app`; Spotlight, Raycast and Finder find it there. Then
 grant **Accessibility** and **Screen Recording** from Settings → General: each
 **Grant…** brings up the macOS prompt, whose **Open System Settings** button
-lists Bento ready to switch on.
+lists Bento ready to switch on. Press **⌃⌥/** any time for the list of
+shortcuts.
 
 Bento checks for a new release once a day. When there is one, **Install Bento
 x.y.z and Restart** appears in its menu bar menu and under Settings → General →
@@ -76,7 +84,9 @@ pasting) and **Screen Recording** (screenshots) from Settings → General.
 Everything lives in `~/.config/bento/config.json`, one section per module plus
 `shortcuts` (action id → shortcut). The settings window edits the same file and
 external edits apply live. Shortcut syntax: `ctrl+opt+cmd+left`, `cmd+shift+2`,
-`hyper+t` (⌃⌥⌘⇧), `meh+n` (⌃⌥⇧); `""` unbinds.
+`hyper+t` (⌃⌥⌘⇧), `meh+n` (⌃⌥⇧); `""` unbinds. Key names follow the US layout
+and mean a key's position: on a German or Nordic keyboard `ctrl+opt+slash` is ⌃⌥
+plus the key left of the right Shift (`-`), and the keyboard overview says so.
 
 Any action can be triggered from scripts, Karabiner, etc.:
 
@@ -84,6 +94,8 @@ Any action can be triggered from scripts, Karabiner, etc.:
 open "bento://action/shot.area"
 open "bento://action/windows.left-half"
 open "bento://settings"
+open "bento://settings/shortcuts/Left%20Half"    # the Shortcuts page, filtered
+open "bento://action/bento.keyboard-overview"
 ```
 
 Data (clipboard history, captures, notes and todo DBs) is in
