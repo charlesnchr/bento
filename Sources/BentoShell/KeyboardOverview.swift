@@ -375,6 +375,7 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
     var diagnostics: [String: Any] {
         ["open": isVisible, "opened": opened, "closed": closed, "modelAlive": lastModel != nil,
          "query": model?.query ?? "", "selected": model?.selectedID ?? "", "listed": model?.items.map(\.id) ?? [],
+         "problems": model?.items.filter { $0.problem != nil }.map(\.id) ?? [],
          "hintSeen": UserDefaults.standard.bool(forKey: Self.hintKey)]
     }
 }
@@ -621,25 +622,27 @@ struct OverviewSectionHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: section.symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 16)
-            Text(section.title)
-                .font(.system(size: 11, weight: .semibold))
-            if !section.isEnabled {
-                Text("Off")
-                    .font(.system(size: 10, weight: .medium))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            Group {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 16)
+                Text(section.title)
+                    .font(.system(size: 11, weight: .semibold))
+                if !section.isEnabled {
+                    Text("Off")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
             }
+            .foregroundStyle(.secondary)
             Spacer()
             Button(linkTitle, action: openSettings)
                 .buttonStyle(.link)
                 .font(.system(size: 11))
                 .help(section.isEnabled ? "\(linkTitle) (⇧⌘, for the selected action’s module)" : "Turn \(section.title) on")
         }
-        .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
         .padding(.top, first ? 6 : 14)
         .padding(.bottom, 4)
@@ -661,7 +664,7 @@ struct OverviewRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
                     .font(.system(size: 13))
-                    .foregroundStyle(item.shortcut == nil ? .secondary : .primary)
+                    .foregroundStyle(item.shortcut == nil && !selected ? .secondary : .primary)
                     .lineLimit(1)
                 if let problem = item.problem {
                     Text(problem)
