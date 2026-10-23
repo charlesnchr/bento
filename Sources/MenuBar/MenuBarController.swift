@@ -579,7 +579,16 @@ final class MenuBarController {
         if case .failure(let f) = result { lastError = f.description } else { lastError = nil }
         MenuBarTrace.log("arrange done: \(lastError ?? "ok")")
         learnLayout()
-        if previous == .hidden { hide() } else { visibility = previous; applyVisibility(); startShownState() }
+        if previous == .hidden && visibility != .hidden {
+            hide()
+        } else {
+            // Also when it stays hidden (hide() does nothing then): the
+            // separators for where they are now (an arrangement moves a
+            // misplaced one back), and the icon watcher resumes.
+            visibility = previous
+            applyVisibility()
+            if previous != .hidden { startShownState() }
+        }
         notify()
         completion(result)
     }
