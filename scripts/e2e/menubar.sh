@@ -236,36 +236,38 @@ same_order() { # same_order <description> <before> <after>: the items both have 
   local a b; a=$(common "$2" "$3"); b=$(common "$3" "$2")
   if [ -n "$a" ] && [ "$a" = "$b" ]; then ok "$1"; else bad "$1: before '$2', after '$3'"; fi
 }
+traced() { tail -n +$(( MARK + 1 )) "$TRACE" | grep -q "$1"; }   # in the trace since MARK=$(lines)
+lines() { wc -l < "$TRACE" | tr -d ' '; }
 hold_opt() { /tmp/bentoctl modifiers opt --expect-pid "$HPID" && HELD=1; }
 release() { /tmp/bentoctl modifiers none --expect-pid "$HPID"; HELD=""; }
 
 log "a return held up by a held key waits and lands"
 setconf '.menubar.bar = "always"'   # a hidden item is moved into view for its click
-BEFORE=$(others); XID=$(wid X)
+BEFORE=$(others); XID=$(wid X); MARK=$(lines)
 : > "$QALOG"
 perform menubar.click-menubar-items-bentoqax
 eventually 5 "X moved into view and its menu opened" opened X; check
 hold_opt || bad "couldn't hold ⌥"
 sleep 2.5
 expect "X's return waits while ⌥ is held" "$(state .temporarilyShown)" 1
-grep -q "return $XID waits: input busy" "$TRACE" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
+traced "return $XID waits: input busy" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
 release; check
 eventually 6 "X back once ⌥ is let go" settled
 expect "X hidden again" "$(section X)" hidden
 same_order "nothing else moved" "$BEFORE" "$(others)"
 
 log "switching the module off during a move leaves the menu bar as it was"
-BEFORE=$(others)
+BEFORE=$(others); MARK=$(lines)
 hold_opt || bad "couldn't hold ⌥"   # holds the move back before its first event
 perform menubar.click-menubar-items-bentoqax
-for _ in $(seq 1 60); do grep -q "into view: $XID " "$TRACE" && break; sleep 0.05; done
+for _ in $(seq 1 60); do traced "into view: $XID " && break; sleep 0.05; done
 jq '.general.enabledModules.menubar = false' "$BENTO_HOME/config/config.json" > "$OUT/c.json" && mv "$OUT/c.json" "$BENTO_HOME/config/config.json"
 sleep 0.45
 release
 sleep 1.5; check   # past the mover's wait for the key: a move not cancelled would go ahead now
 expect "module off" "$(state .started)" false
-grep -q "move $XID cancelled" "$TRACE" && ok "the move was cancelled before any input" || bad "the module didn't stop during the move"
-grep -q "stop: putting back 1 item" "$TRACE" && ok "stopping knew X was on its way" || bad "stopping didn't know X was on its way"
+traced "move $XID cancelled" && ok "the move was cancelled before any input" || bad "the module didn't stop during the move"
+traced "stop: putting back 1 item" && ok "stopping knew X was on its way" || bad "stopping didn't know X was on its way"
 shot 13-module-off
 setconf '.general.enabledModules.menubar = true'
 eventually 10 "module back on, hidden" hidden_ready; check
