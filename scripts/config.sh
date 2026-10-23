@@ -12,7 +12,8 @@
 #                        install (/opt/homebrew/opt/bento) if bento is installed
 #                        with brew, so a local build replaces it in place (until
 #                        the next brew upgrade); otherwise /Applications.
-#                        Any directory but /Applications is linked from ~/Applications.
+#                        Installed elsewhere, the app adds a Finder alias to
+#                        itself in ~/Applications so Spotlight finds it.
 #   BENTO_SYNC_DOMAIN    public name of your bento-sync server, for
 #                        deploy-server.sh (e.g. sync.example.com).
 CONFIG_LOCAL="$(dirname "${BASH_SOURCE[0]}")/config.local.sh"

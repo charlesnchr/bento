@@ -26,9 +26,8 @@ class Bento < Formula
     <<~EOS
       Start Bento with:
         open #{opt_prefix}/Bento.app
-      and grant Accessibility and Screen Recording when it asks. To find it in
-      Spotlight or Raycast:
-        mkdir -p ~/Applications && ln -sfn #{opt_prefix}/Bento.app ~/Applications/Bento.app
+      and grant Accessibility and Screen Recording when it asks. It adds an
+      alias to itself in ~/Applications, so Spotlight and Raycast find it.
       Updates: Bento checks daily and installs them from its menu bar menu.
       After a brew upgrade in a terminal, restart Bento from that menu.
       Permission grants carry over.

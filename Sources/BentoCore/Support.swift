@@ -70,6 +70,46 @@ public enum Permissions {
             NSWorkspace.shared.open(url)
         }
     }
+
+    /// Asks for the permission, then gets the user to its switch. The request is what
+    /// adds Bento to the System Settings list, but the entry lands a moment later and an
+    /// open pane never reloads its list: opening the pane in the same instant leaves
+    /// Bento missing from it. The request's own prompt (shown once per app) opens the
+    /// pane after the entry exists, but it's an ordinary window that appears behind
+    /// everything else, so bring it forward. Without a prompt Bento was asked before
+    /// and is already listed: open the pane.
+    public static func grant(_ pane: Pane) {
+        switch pane {
+        case .accessibility: requestAccessibility()
+        case .screenRecording: requestScreenRecording()
+        default: open(pane); return
+        }
+        waitForPrompt(tries: 12) { prompt in
+            if let prompt {
+                NSApp.yieldActivation(to: prompt)
+                prompt.activate()
+            } else {
+                open(pane)
+            }
+        }
+    }
+
+    private static func waitForPrompt(tries: Int, _ done: @escaping (NSRunningApplication?) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if let prompt = visiblePrompt() { done(prompt) }
+            else if tries > 1 { waitForPrompt(tries: tries - 1, done) }
+            else { done(nil) }
+        }
+    }
+
+    /// The system's permission prompt, if it's on screen.
+    private static func visiblePrompt() -> NSRunningApplication? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.accessibility.universalAccessAuthWarn").first,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
+        let pid = app.processIdentifier
+        return windows.contains { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid } ? app : nil
+    }
 }
 
 // MARK: - Keyboard synthesis

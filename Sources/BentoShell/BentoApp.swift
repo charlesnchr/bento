@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         updateStatusItem()
         Updater.shared.start(automatic: general.checkForUpdates)
+        ApplicationsAlias.ensure()
         if !Permissions.accessibility || ProcessInfo.processInfo.environment["BENTO_SHOW_SETTINGS"] != nil {
             showSettings(nil)
         }
