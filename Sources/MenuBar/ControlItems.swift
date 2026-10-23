@@ -54,6 +54,9 @@ final class ControlItems: NSObject {
         alwaysHiddenExpanded = false
     }
 
+    /// Removed items, kept for the life of the process (a few bytes each).
+    private static var retired: [NSStatusItem] = []
+
     private func remove(_ item: NSStatusItem) {
         // removeStatusItem also deletes the item's remembered position, so a
         // separator would come back at the far left (nothing hidden, the
@@ -62,6 +65,9 @@ final class ControlItems: NSObject {
         let saved = item.autosaveName == nil ? nil : UserDefaults.standard.object(forKey: key)
         NSStatusBar.system.removeStatusItem(item)
         if let saved { UserDefaults.standard.set(saved, forKey: key) }
+        // Deallocating it deletes the position again (measured on macOS 26):
+        // switched off and on, the separators came back at the far left.
+        ControlItems.retired.append(item)
     }
 
     private func make(_ kind: Kind) -> NSStatusItem {
