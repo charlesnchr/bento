@@ -3,7 +3,7 @@ import QuickLookThumbnailing
 import SwiftUI
 
 /// App and file icons, drawn by the Quick Look thumbnail service and kept as
-/// small bitmaps while the settings pane is open. `NSWorkspace.icon(forFile:)`
+/// small 8-bit bitmaps while the settings pane is open. `NSWorkspace.icon(forFile:)`
 /// decodes each icon at full size inside the process and keeps it (measured:
 /// ~110 MB for 40 apps, never given back); a searchable grid would pile that up.
 final class IconCache {
@@ -27,13 +27,14 @@ final class IconCache {
 
     private func key(_ url: URL, _ side: CGFloat) -> String { "\(Int(side))@\(url.path)" }
 
-    /// The service hands back 256 px or more: keep 2× the drawn size.
+    /// The service hands back 256 px in 16-bit extended sRGB (512 KB, which
+    /// CoreAnimation then keeps a copy of per icon): redraw it as 8-bit sRGB at
+    /// 2× the drawn size (36 KB). Never scales up.
     static func bitmap(_ image: CGImage, side: CGFloat) -> NSImage {
-        let px = Int(side * 2)
+        let px = min(Int(side * 2), max(image.width, image.height))
         let size = NSSize(width: side, height: side)
-        guard image.width > px,
-              let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+        guard px > 0, let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0, space: srgb,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             return NSImage(cgImage: image, size: size)
         }
@@ -43,15 +44,14 @@ final class IconCache {
     }
 }
 
-/// An app or file icon from the cache: a quiet placeholder until it's drawn,
-/// then a short fade.
+/// An app or file icon from the cache, with a quiet placeholder for the few
+/// milliseconds until it's drawn.
 struct FileIcon: View {
     let url: URL
     let side: CGFloat
     let cache: IconCache
     @State private var loaded: NSImage?
     @State private var failed = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -66,10 +66,7 @@ struct FileIcon: View {
         .frame(width: side, height: side)
         .task(id: url) {
             guard cache.cached(url, side: side) == nil else { return }
-            let image = await cache.load(url, side: side)
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-                if let image { loaded = image } else { failed = true }
-            }
+            if let image = await cache.load(url, side: side) { loaded = image } else { failed = true }
         }
     }
 }

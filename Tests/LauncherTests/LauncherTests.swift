@@ -328,6 +328,13 @@ private func blank(_ px: Int) -> CGImage {
               space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
 }
 
+/// What Quick Look hands back for icons: 16 bits per component, extended sRGB.
+private func wide(_ px: Int) -> CGImage {
+    let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder16Little.rawValue
+    return CGContext(data: nil, width: px, height: px, bitsPerComponent: 16, bytesPerRow: 0,
+                     space: CGColorSpace(name: CGColorSpace.extendedSRGB)!, bitmapInfo: info)!.makeImage()!
+}
+
 @Test func iconBitmapsAreKeptAtTwiceTheDrawnSize() {
     func pixels(_ image: NSImage) -> Int? { image.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width }
     let big = IconCache.bitmap(blank(256), side: 48)
@@ -335,6 +342,13 @@ private func blank(_ px: Int) -> CGImage {
     #expect(pixels(big) == 96)
     let small = IconCache.bitmap(blank(64), side: 48)   // never scaled up
     #expect(pixels(small) == 64)
+    // Quick Look's 16-bit extended-sRGB icons become small 8-bit sRGB bitmaps.
+    let source = wide(256)
+    #expect(source.bitsPerComponent == 16)
+    let converted = IconCache.bitmap(source, side: 48).cgImage(forProposedRect: nil, context: nil, hints: nil)
+    #expect(converted?.width == 96)
+    #expect(converted?.bitsPerComponent == 8)
+    #expect(converted?.colorSpace?.name == CGColorSpace.sRGB)
 }
 
 @Test @MainActor func iconCacheLoadsIconsThroughQuickLook() async {
@@ -342,6 +356,9 @@ private func blank(_ px: Int) -> CGImage {
     let finder = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
     let image = await cache.load(finder, side: 48)
     #expect(image?.size == NSSize(width: 48, height: 48))
+    let pixels = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    #expect(pixels?.width == 96)                 // not the service's 256 px
+    #expect(pixels?.bitsPerComponent == 8)       // nor its 16-bit components
     #expect(cache.cached(finder, side: 48) != nil)
     #expect(cache.cached(finder, side: 24) == nil)
     cache.removeAll()
