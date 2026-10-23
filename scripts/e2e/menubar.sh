@@ -7,7 +7,9 @@
 # arranges and reorders items through profiles (real ⌘-drags), clicks a hidden item
 # from its shortcut action, the Bento Bar and search (each item logs when its menu
 # opens), crowds the menu bar to check notch overflow, measures idle CPU, and puts
-# everything back.
+# everything back. Also: a return held up by a held ⌥ (bentoctl modifiers) waits and
+# lands; switching the module off while a move waits for that key cancels it; a
+# misplaced always-hidden separator (planted right of Bento's icon) stays collapsed.
 #
 # Safety: only the test items are moved. The menu bar is recorded first and must be
 # exactly the same at the end (window ids, names, positions). The installed Bento
@@ -81,6 +83,7 @@ check() { "$ROOT/scripts/e2e/session" check >/dev/null || { log "user came back:
 
 finish() {
   local code=$?
+  [ -n "${HELD:-}" ] && /tmp/bentoctl modifiers none >/dev/null 2>&1
   [ -n "${HPID:-}" ] && kill "$HPID" 2>/dev/null
   for _ in $(seq 1 20); do kill -0 "${HPID:-0}" 2>/dev/null || break; sleep 0.2; done
   [ -n "${HPID:-}" ] && kill -9 "$HPID" 2>/dev/null
@@ -222,6 +225,57 @@ eventually 6 "X shown after its icon changed" is_shown
 eventually 8 "hidden again after the alert" is_hidden
 setconf '.menubar.showOnChange = []'
 
+TRACE="$BENTO_HOME/support/menubar/trace.log"
+wid() { state ".items[] | select(.key == \"$P/BentoQA$1\") | .window"; }
+# Every item but the module's own, left to right, by window id.
+others() { state '[.items[] | select(.role | contains("control") | not) | .window | tostring] | join(" ")'; }
+common() { # the ids of list $1 that are also in list $2, in $1's order
+  local x out=""; for x in $1; do case " $2 " in *" $x "*) out="$out $x" ;; esac; done; echo "${out# }"
+}
+same_order() { # same_order <description> <before> <after>: the items both have are in the same order
+  local a b; a=$(common "$2" "$3"); b=$(common "$3" "$2")
+  if [ -n "$a" ] && [ "$a" = "$b" ]; then ok "$1"; else bad "$1: before '$2', after '$3'"; fi
+}
+hold_opt() { /tmp/bentoctl modifiers opt --expect-pid "$HPID" && HELD=1; }
+release() { /tmp/bentoctl modifiers none --expect-pid "$HPID"; HELD=""; }
+
+log "a return held up by a held key waits and lands"
+setconf '.menubar.bar = "always"'   # a hidden item is moved into view for its click
+BEFORE=$(others); XID=$(wid X)
+: > "$QALOG"
+perform menubar.click-menubar-items-bentoqax
+eventually 5 "X moved into view and its menu opened" opened X; check
+hold_opt || bad "couldn't hold ⌥"
+sleep 2.5
+expect "X's return waits while ⌥ is held" "$(state .temporarilyShown)" 1
+grep -q "return $XID waits: input busy" "$TRACE" && ok "the return was held up by ⌥" || bad "the return wasn't held up by ⌥"
+release; check
+eventually 6 "X back once ⌥ is let go" settled
+expect "X hidden again" "$(section X)" hidden
+same_order "nothing else moved" "$BEFORE" "$(others)"
+
+log "switching the module off during a move leaves the menu bar as it was"
+BEFORE=$(others)
+hold_opt || bad "couldn't hold ⌥"   # holds the move back before its first event
+perform menubar.click-menubar-items-bentoqax
+for _ in $(seq 1 60); do grep -q "into view: $XID " "$TRACE" && break; sleep 0.05; done
+jq '.general.enabledModules.menubar = false' "$BENTO_HOME/config/config.json" > "$OUT/c.json" && mv "$OUT/c.json" "$BENTO_HOME/config/config.json"
+sleep 0.45
+release
+sleep 1.5; check   # past the mover's wait for the key: a move not cancelled would go ahead now
+expect "module off" "$(state .started)" false
+grep -q "move $XID cancelled" "$TRACE" && ok "the move was cancelled before any input" || bad "the module didn't stop during the move"
+grep -q "stop: putting back 1 item" "$TRACE" && ok "stopping knew X was on its way" || bad "stopping didn't know X was on its way"
+shot 13-module-off
+setconf '.general.enabledModules.menubar = true'
+eventually 10 "module back on, hidden" hidden_ready; check
+expect "X hidden" "$(section X)" hidden
+expect "Y hidden" "$(section Y)" hidden
+expect "Z always hidden" "$(section Z)" alwaysHidden
+expect "order Z Y X" "$(qaorder)" ZYX
+same_order "nothing else moved" "$BEFORE" "$(others)"
+setconf '.menubar.bar = "never"'
+
 log "idle CPU (20 s, hidden)"
 is_hidden || perform menubar.toggle-hidden
 sleep 2
@@ -260,3 +314,35 @@ shot 12-crowded
 perform menubar.toggle-hidden; sleep 0.8
 kill "$WPID" 2>/dev/null; WPID=""; sleep 1.5; check
 expect "hidden at the end" "$(state .visibility)" hidden
+
+log "a misplaced always-hidden separator never hides visible items or Bento's icon"
+# Planted right of the installed Bento's icon (or of X): where macOS puts a new
+# item in a full menu bar, or a ⌘-drag can. Expanded there, it hid them all.
+kill "$HPID"; for _ in $(seq 1 25); do kill -0 "$HPID" 2>/dev/null || break; sleep 0.2; done
+POS=$(defaults read com.charles.bento "NSStatusItem Preferred Position Item-0" 2>/dev/null)
+[ -n "$POS" ] || POS=$(defaults read menubar-items "NSStatusItem Preferred Position BentoQAX" 2>/dev/null)
+defaults write DevMenuBar "NSStatusItem Preferred Position BentoDevMenuBarAlwaysHidden" -float "$(echo "${POS:-0} - 6" | bc)"
+"$HARNESS" 2>>"$OUT/harness.log" & HPID=$!
+echo "$HPID" >> /tmp/bento-e2e-pids
+eventually 10 "harness back, hidden" hidden_ready; check
+expect "the always-hidden separator is right of the hidden one" "$(state .alwaysHiddenMisplaced)" true
+misplaced_ok() { # nothing it's right of is hidden by it
+  [ "$(state .controls.alwaysHiddenExpanded)" = false ] || { bad "$1: the misplaced separator expanded"; return; }
+  local i; for i in X Y Z; do [ "$(onscreen $i)" = yes ] || { bad "$1: $i hidden"; return; }; done
+  local bx cx; bx=$(state '.items[] | select(.key == "com.charles.bento/Item-0") | .x')
+  cx=$(state '.items[] | select(.role | contains("toggle")) | .x')
+  [ -n "$bx" ] && [ "${bx%.*}" -ge 0 ] || { bad "$1: Bento's icon hidden or not found (x=$bx)"; return; }
+  [ "${cx%.*}" -ge 0 ] 2>/dev/null || { bad "$1: the chevron hidden (x=$cx)"; return; }
+  ok "$1: collapsed; X Y Z, the chevron and Bento's icon on screen"
+}
+AX=$(state '.items[] | select(.role | contains("Kind.alwaysHidden")) | .x')
+BX=$(state '.items[] | select(.key == "com.charles.bento/Item-0") | .x')
+log "    always-hidden separator x=$AX, Bento's icon x=${BX:-?}"
+misplaced_ok "hidden"
+shot 14-misplaced-hidden
+perform menubar.toggle-hidden; sleep 0.8; check
+expect "shown" "$(state .visibility)" shown
+misplaced_ok "shown"
+perform menubar.toggle-hidden; sleep 0.8; check
+expect "hidden again" "$(state .visibility)" hidden
+misplaced_ok "hidden again"

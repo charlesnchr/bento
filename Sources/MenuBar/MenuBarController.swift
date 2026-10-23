@@ -42,7 +42,7 @@ final class MenuBarController {
     /// where it goes. Recorded before the move starts and kept until the item
     /// is back (or gone with its app), so a failed return is tried again.
     private var temporarilyShown: [CGWindowID: PendingReturn] = [:]
-    /// A return is being moved; another try is scheduled.
+    /// A return under way, and the next try at a failed one.
     private var returning = false
     private var returnRetry: DispatchWorkItem?
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -876,6 +876,7 @@ final class MenuBarController {
         // Recorded before any input is posted: if the module stops during the
         // move, stop() still knows to put it back.
         temporarilyShown[item.windowID] = back
+        MenuBarTrace.log("into view: \(item.windowID) left of \(target.windowID)")
         mover.move([ItemMover.Request(item: item.windowID, target: target.windowID, side: .left)]) { [weak self] result in
             guard let self, self.started else { return }
             switch result {
