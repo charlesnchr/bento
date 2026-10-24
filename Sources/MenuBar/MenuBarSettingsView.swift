@@ -45,7 +45,11 @@ struct MenuBarSettingsView: View {
                         Button("Arrange in Menu Bar") { arrange.begin() }
                     }
                 }
-                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")
+                if arrange.compactControls {
+                    Label("Space is limited, so Bento is using narrow dividers without a chevron. Use Bento’s main icon menu to show or hide items.", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and any chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !Permissions.accessibility || !Permissions.screenRecording {
                     HStack(spacing: 8) {
@@ -110,7 +114,7 @@ struct MenuBarSettingsView: View {
                 Text("Items left of the dashed separator show with Show All Items, ⌥-click or Arrange in Menu Bar.")
             }
             if arrange.compactControls {
-                Text("Compact controls are active because space is limited. Dividers are narrower and the chevron is temporarily omitted. Use Bento’s menu to show or hide items. Your section preferences are unchanged; compact controls stay active until this module is turned off.")
+                Text("Compact controls are active until this module is turned off. Your section preferences are unchanged.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         } header: {
