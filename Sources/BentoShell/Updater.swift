@@ -274,7 +274,8 @@ final class Updater: ObservableObject {
             pid=$1; shift
             i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.2; i=$((i+1)); done
             kill -0 "$pid" 2>/dev/null || exec /usr/bin/open "$@"
-            """, "bento-relaunch", String(getpid())] + carried.flatMap { ["--env", "\($0.key)=\($0.value)"] } + [app.path]
+            """, "bento-relaunch", String(getpid())] + carried.flatMap { ["--env", "\($0.key)=\($0.value)"] }
+                + ["-g", app.path, "--args", "--background"]
         do {
             try p.run()
         } catch {

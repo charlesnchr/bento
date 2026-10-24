@@ -151,7 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     /// AppKit calls this for a cold open-application event before didFinishLaunching.
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        if let request = LaunchLifecycle.Request.applicationOpen(NSAppleEventManager.shared().currentAppleEvent) {
+        if let request = LaunchLifecycle.Request.applicationOpen(NSAppleEventManager.shared().currentAppleEvent,
+                                                                background: CommandLine.arguments.contains("--background")) {
             perform(launch.receive(request))
         }
         return false

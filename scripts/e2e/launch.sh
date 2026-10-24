@@ -42,6 +42,10 @@ launch() {
   check_session
   open "$@" "$APP" --env BENTO_DEV=1 --env "BENTO_HOME=$H"
 }
+launch_background() {
+  check_session
+  open -n -g "$APP" --env BENTO_DEV=1 --env "BENTO_HOME=$H" --args --background
+}
 diag() {
   rm -f "$DIAG"
   "$CTL" url "$H" bento://debug/state
@@ -86,16 +90,16 @@ assert_window yes
 echo 'PASS: foreground cold launch opens Settings with the status icon disabled'
 stop_test
 
-launch -n -g
+launch_background
 ready
 assert_window no
 launch
 sleep 0.5
 assert_window yes
-echo 'PASS: background launch stays quiet, normal reopen shows Settings'
+echo 'PASS: explicit background launch stays quiet, normal reopen shows Settings'
 stop_test
 
-launch -n -g
+launch_background
 ready
 assert_window no
 launch -n
@@ -108,6 +112,12 @@ stop_test
 
 check_session
 open -n -g -a "$APP" bento://debug/state --env BENTO_DEV=1 --env "BENTO_HOME=$H"
+for _ in $(seq 1 60); do
+  check_session
+  [ -s "$DIAG" ] && break
+  sleep 0.1
+done
+[ -s "$DIAG" ] || { echo 'cold URL was not delivered' >&2; exit 1; }
 ready
 assert_window no
 echo 'PASS: cold action URL stays quiet and reaches the running app'

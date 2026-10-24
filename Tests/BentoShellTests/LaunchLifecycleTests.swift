@@ -46,6 +46,11 @@ import Testing
         #expect(LaunchLifecycle.Request.applicationOpen(appEvent(AEEventID(kAEReopenApplication), activates: true)) == .settings)
     }
 
+    @Test func quietRestartDoesNotSuppressLaterUserReopen() {
+        #expect(LaunchLifecycle.Request.applicationOpen(appEvent(), background: true) == nil)
+        #expect(LaunchLifecycle.Request.applicationOpen(appEvent(AEEventID(kAEReopenApplication)), background: true) == .settings)
+    }
+
     @Test func otherNativeEventsDoNotBecomeAppOpens() {
         for id in [kAEOpenDocuments, kAEPrintDocuments, kAEOpenContents, kAEQuitApplication] {
             #expect(LaunchLifecycle.Request.applicationOpen(appEvent(AEEventID(id))) == nil)

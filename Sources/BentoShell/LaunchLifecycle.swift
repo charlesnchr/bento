@@ -11,11 +11,12 @@ final class LaunchLifecycle {
 
         /// Cocoa's open-application event is distinct from a URL launch. Login
         /// and service launches put their reason in the keyAEPropData parameter.
-        static func applicationOpen(_ event: NSAppleEventDescriptor?) -> Request? {
+        static func applicationOpen(_ event: NSAppleEventDescriptor?, background: Bool = false) -> Request? {
             guard let event, event.eventClass == kCoreEventClass,
                   event.eventID == kAEOpenApplication || event.eventID == kAEReopenApplication else { return nil }
             let reason = event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
             guard reason != keyAELaunchedAsLogInItem, reason != keyAELaunchedAsServiceItem else { return nil }
+            if event.eventID == kAEOpenApplication && background { return nil }
             // AppleEvents.h documents this Boolean for reopen/document events,
             // not cold oapp events. Do not infer a cold-launch flag from it.
             if event.eventID == kAEReopenApplication,

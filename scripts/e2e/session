@@ -47,7 +47,7 @@ case "${1:-}" in
   end)
     who="${2:-unknown}"
     [ -f /tmp/bento-guard.pid ] && kill "$(cat /tmp/bento-guard.pid)" 2>/dev/null; rm -f /tmp/bento-guard.pid
-    if [ -f /tmp/bento-e2e-restore ]; then rm -f /tmp/bento-e2e-restore; open -g "$INSTALLED_APP"; fi
+    if [ -f /tmp/bento-e2e-restore ]; then rm -f /tmp/bento-e2e-restore; open -g "$INSTALLED_APP" --args --background; fi
     "$ROOT/scripts/gui-lock" release "$who" >/dev/null
     [ -f "$FLAG" ] && echo "session ended early: $(cat $FLAG)" || echo "session ended" ;;
   *) echo "usage: $0 start|check|end <who> [idle-seconds]" >&2; exit 2 ;;

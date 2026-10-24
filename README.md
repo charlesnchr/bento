@@ -67,6 +67,10 @@ grant **Accessibility** and **Screen Recording** from Settings → General: each
 lists Bento ready to switch on. Press **⌃⌥/** any time for the list of
 shortcuts.
 
+Opening Bento normally shows Settings. For a quiet scripted launch, use
+`open -g /opt/homebrew/opt/bento/Bento.app --args --background`. Launch at login
+and the updater restart quietly.
+
 Bento checks for a new release once a day. When there is one, **Install Bento
 x.y.z and Restart** appears in its menu bar menu and under Settings → General →
 Updates; it runs `brew upgrade` and restarts into the new version.
