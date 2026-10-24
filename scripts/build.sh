@@ -134,10 +134,15 @@ codesign -dvv "$APP" 2>&1 | grep -E "^(Identifier|Authority)=" || true
 codesign -d -r- "$APP" 2>&1 | grep designated || true
 
 quit_running() {
-  if pgrep -f "Bento.app/Contents/MacOS/Bento$" >/dev/null; then
-    osascript -e 'tell application id "com.charles.bento" to quit' >/dev/null 2>&1 || true
-    for _ in $(seq 1 20); do pgrep -f "Bento.app/Contents/MacOS/Bento$" >/dev/null || break; sleep 0.25; done
-    pkill -f "Bento.app/Contents/MacOS/Bento$" 2>/dev/null || true
+  local pids
+  pids="$(bento_installed_pids)"
+  if [ -n "$pids" ]; then
+    kill -TERM $pids 2>/dev/null || true
+    for _ in $(seq 1 20); do [ -z "$(bento_installed_pids)" ] && break; sleep 0.25; done
+    if [ -n "$(bento_installed_pids)" ]; then
+      echo 'Bento did not quit; refusing to replace the running app' >&2
+      exit 1
+    fi
   fi
 }
 

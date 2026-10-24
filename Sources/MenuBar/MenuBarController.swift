@@ -34,6 +34,8 @@ final class MenuBarController {
         var usesSystemUI = true
         var canActivate: ((MenuBarItem) -> Bool)?
         var reportError: (String) -> Void = { HUD.show($0, symbol: "exclamationmark.triangle") }
+        var recoveryDisplays: (() -> [MenuBarLayout.RecoveryDisplay])?
+        var applyControls: ((Visibility, ControlItems.Expansion) -> Void)?
     }
     private let environment: Environment
     private var arrangementVisibility: Visibility?
@@ -71,7 +73,7 @@ final class MenuBarController {
     func start() {
         guard !started else { return }
         started = true
-        guard environment.usesSystemUI else { refresh(); return }
+        guard environment.usesSystemUI else { readInitialLayout(); return }
         // Bento's own icon is made after the modules start; create ours after
         // it, so it keeps its place (and on a first run ends up right of ours).
         DispatchQueue.main.async { [weak self] in self?.createControls() }
@@ -128,24 +130,29 @@ final class MenuBarController {
         // them once with sections revealed so later section checks are safe.
         // Keep the requested visibility unchanged: any manual request made
         // during this read (including Arrange) is what we apply afterwards.
-        controls.apply(.shownAll, alwaysHiddenMisplaced: false)
+        controls.apply(.shownAll, expansion: .init(hidden: false, alwaysHidden: false))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self, self.started else { return }
-            self.refresh { [weak self] in
-                guard let self, self.started else { return }
-                self.applyVisibility()
-                self.notify()
-            }
+            self?.readInitialLayout()
         }
         applyOptions()
+    }
+
+    private func readInitialLayout() {
+        refresh { [weak self] in
+            guard let self, self.started else { return }
+            self.applyVisibility()
+            self.notify()
+        }
     }
 
     func update(settings new: MenuBarSettings) {
         let old = settings
         settings = new
         guard started else { return }
-        if environment.usesSystemUI, new.showChevron != old.showChevron || new.alwaysHiddenSection != old.alwaysHiddenSection {
-            controls.create(showToggle: new.showChevron, alwaysHiddenSection: new.alwaysHiddenSection)
+        if new.showChevron != old.showChevron || new.alwaysHiddenSection != old.alwaysHiddenSection {
+            if environment.usesSystemUI {
+                controls.create(showToggle: new.showChevron, alwaysHiddenSection: new.alwaysHiddenSection)
+            }
             applyVisibility()
         }
         applyOptions()
@@ -171,10 +178,9 @@ final class MenuBarController {
 
     private func screensChanged() {
         let length = MenuBarController.expandedLength()
-        if length != controls.expandedLength {
-            controls.expandedLength = length
-            applyVisibility()
-        }
+        controls.expandedLength = length
+        applyVisibility()
+        notify()
     }
 
     /// Long enough to push everything off the widest display (macOS 26 caps
@@ -237,12 +243,26 @@ final class MenuBarController {
 
     private func applyVisibility() {
         MenuBarTrace.log("visibility \(visibility.rawValue)")
-        // Expanded right of the hidden separator, the always-hidden one would
-        // hide visible items too: it stays collapsed until it's moved back.
-        controls.apply(visibility, alwaysHiddenMisplaced: alwaysHiddenMisplaced(scanner.snapshot()))
+        let displays = environment.recoveryDisplays?() ?? (environment.usesSystemUI
+            ? NSScreen.screens.map { MenuBarLayout.RecoveryDisplay(frame: $0.axFrame, statusArea: statusArea(on: $0)) } : [])
+        var allowed = MenuBarLayout.safeExpansion(items: scanner.snapshot(), displays: displays,
+                                                  showChevron: settings.showChevron, ownPID: getpid())
+        allowed.alwaysHidden = allowed.alwaysHidden && settings.alwaysHiddenSection
+        let expansion = ControlItems.expansion(visibility, allowed: allowed)
+        let blocked = (visibility == .hidden && !allowed.hidden)
+            || (visibility != .shownAll && settings.alwaysHiddenSection && !allowed.alwaysHidden)
+        if blocked {
+            lastError = Self.recoveryMessage
+        } else if lastError == Self.recoveryMessage {
+            lastError = nil
+        }
+        if let applyControls = environment.applyControls { applyControls(visibility, expansion) }
+        else if environment.usesSystemUI { controls.apply(visibility, expansion: expansion) }
         triggers.invalidateEmptySpace()
         syncChangeWatcher()
     }
+
+    private static let recoveryMessage = "Some sections stay revealed because Bento cannot safely hide them while keeping its icon and chevron accessible. Choose Arrange in Menu Bar, then hold ⌘ and drag Bento’s icon and chevron to the right of both separators. Keep the dashed separator left of the solid one, make room beside the notch, then click Done."
 
     /// Icon changes only matter while the items are hidden. Called on every
     /// layout change, so the watcher also looks again at what's hidden.

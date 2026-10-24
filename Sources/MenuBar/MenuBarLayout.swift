@@ -38,6 +38,59 @@ struct LayoutItem: Equatable {
 
 /// Pure section geometry, owner matching and notch overflow.
 enum MenuBarLayout {
+    /// Both the display and item frames use global top-left coordinates.
+    struct RecoveryDisplay {
+        var frame: CGRect
+        var statusArea: ClosedRange<CGFloat>
+    }
+
+    /// Status items grow to the left, with their right edge anchored. Never
+    /// infer safety from separator centres (expanded widths can span displays).
+    static func safeExpansion(items: [MenuBarItem], displays: [RecoveryDisplay],
+                              showChevron: Bool, ownPID: pid_t) -> ControlItems.Expansion {
+        let collapsed = ControlItems.Expansion(hidden: false, alwaysHidden: false)
+        func valid(_ f: CGRect) -> Bool {
+            f.origin.x.isFinite && f.origin.y.isFinite && f.width.isFinite && f.height.isFinite
+                && f.size.width > 0 && f.size.height > 0 && f.maxX.isFinite && f.maxY.isFinite
+        }
+        func controls(_ kind: ControlItems.Kind) -> [MenuBarItem] {
+            items.filter { $0.role == .control(kind) }
+        }
+        let solid = controls(.hidden), dashed = controls(.alwaysHidden), chevrons = controls(.toggle)
+        // The shell icon may have no stable autosave name. On macOS 26 its
+        // owner is learned through AX; an unresolved shell keeps hiding off.
+        let shell = items.filter {
+            if case .control = $0.role { return false }
+            return $0.role == .bentoIcon || $0.ownerPID == ownPID
+        }
+        let recovery = shell + chevrons
+        guard solid.count == 1, !shell.isEmpty, !showChevron || chevrons.count == 1,
+              recovery.allSatisfy({ valid($0.frame) }), valid(solid[0].frame) else { return collapsed }
+        // Require one unambiguous display containing every known recovery
+        // control. A missing, parked, notched or split-display control fails closed.
+        let candidates = displays.filter { d in
+            valid(d.frame) && d.statusArea.lowerBound.isFinite && d.statusArea.upperBound.isFinite
+                && d.statusArea.lowerBound >= d.frame.minX && d.statusArea.upperBound <= d.frame.maxX
+                && recovery.allSatisfy { item in
+                    let f = item.frame
+                    return abs(f.minY - d.frame.minY) <= 1 && f.maxY <= d.frame.maxY
+                        && f.minX >= d.statusArea.lowerBound && f.maxX <= d.statusArea.upperBound
+                }
+        }
+        guard candidates.count == 1 else { return collapsed }
+        let display = candidates[0], h = solid[0].frame
+        guard abs(h.minY - display.frame.minY) <= 1, h.maxY <= display.frame.maxY,
+              h.maxX > display.frame.minX, h.maxX <= display.frame.maxX else { return collapsed }
+        let hiddenSafe = recovery.allSatisfy { $0.frame.minX >= h.maxX }
+        // The dashed separator may already be parked to the left by an
+        // expanded solid separator. Compare full edges on the same menu row.
+        let alwaysSafe = dashed.count == 1 && valid(dashed[0].frame)
+            && abs(dashed[0].frame.minY - h.minY) <= 1 && dashed[0].frame.maxY <= display.frame.maxY
+            && dashed[0].frame.maxX <= h.minX
+            && recovery.allSatisfy { $0.frame.minX >= dashed[0].frame.maxX }
+        return .init(hidden: hiddenSafe, alwaysHidden: alwaysSafe)
+    }
+
     /// Items sorted left to right. Expanded separators are thousands of points
     /// wide, so comparisons use centres: an item is left of a separator when
     /// its centre is left of the separator's centre.

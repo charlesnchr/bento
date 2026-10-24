@@ -2,9 +2,9 @@ import AppKit
 import BentoCore
 
 /// Keeps a Finder alias to Bento at ~/Applications/Bento.app when Bento runs from
-/// somewhere Spotlight can't see. Spotlight skips /opt (it has the hidden flag), so
-/// a Homebrew install is invisible to it, and it never indexes symlinks. It does
-/// index aliases, and Raycast and the "+" picker in System Settings follow them.
+/// the Homebrew prefix. Finder and the "+" picker in System Settings can follow
+/// the alias. Spotlight can index it as a file, but may omit it from application
+/// results because the real bundle is under the hidden /opt directory.
 enum ApplicationsAlias {
     enum Existing: Equatable {
         case none
@@ -53,7 +53,7 @@ enum ApplicationsAlias {
             if action == .replace { try FileManager.default.removeItem(at: url) }
             let data = try target.bookmarkData(options: .suitableForBookmarkFile, includingResourceValuesForKeys: nil, relativeTo: nil)
             try URL.writeBookmarkData(data, to: url)
-            BentoLog.core.info("Alias for Spotlight: \(url.path, privacy: .public) -> \(target.path, privacy: .public)")
+            BentoLog.core.info("Finder alias: \(url.path, privacy: .public) -> \(target.path, privacy: .public)")
         } catch {
             BentoLog.core.error("Couldn't write \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }

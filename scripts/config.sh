@@ -13,7 +13,7 @@
 #                        with brew, so a local build replaces it in place (until
 #                        the next brew upgrade); otherwise /Applications.
 #                        Installed elsewhere, the app adds a Finder alias to
-#                        itself in ~/Applications so Spotlight finds it.
+#                        itself in ~/Applications for Finder access.
 #   BENTO_SYNC_DOMAIN    public name of your bento-sync server, for
 #                        deploy-server.sh (e.g. sync.example.com).
 CONFIG_LOCAL="$(dirname "${BASH_SOURCE[0]}")/config.local.sh"
@@ -33,3 +33,10 @@ INSTALLED_APP="$BENTO_INSTALL_DIR/Bento.app"
 # The path its process runs from: Launch Services resolves links (a Homebrew
 # install runs from Cellar/bento/<version>/Bento.app).
 INSTALLED_APP_REAL="$( (cd "$INSTALLED_APP" 2>/dev/null && pwd -P) || echo "$INSTALLED_APP")"
+
+# Match the executable, independently of launch arguments such as --background.
+bento_installed_pids() {
+  ps -axo pid=,comm= | awk -v exe="$INSTALLED_APP_REAL/Contents/MacOS/Bento" '
+    { pid=$1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == exe) print pid }
+  '
+}
