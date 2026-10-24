@@ -46,6 +46,15 @@ single-instance clash):
 Each module keeps `scripts/e2e/<module>.sh`: runs inside a session (it may call start/end itself),
 asserts outcomes, exits non-zero on failure, cleans up after itself.
 
+`scripts/e2e/launch.sh /path/to/Bento.app` checks foreground cold launch,
+background launch and reopen, duplicate launch, and cold action-URL delivery.
+Run it inside a session against a separate copy signed with the installed app's
+identity, so Accessibility is already granted. The test requires that grant,
+disables every module and the status icon in an isolated config, and checks
+both fresh diagnostics and actual Settings window visibility. It sends no
+keyboard or mouse events. Unregister the test bundle from Launch Services and
+register the installed bundle again when the session ends.
+
 ## MenuBar corrective regression checks
 
 `swift build --scratch-path .build-menubar --target MenuBar` and

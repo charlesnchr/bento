@@ -65,6 +65,7 @@ ready() {
 assert_window() {
   local expected="$1"
   diag
+  cp "$DIAG" "$H/last-diagnostics.json"
   python3 - "$DIAG" "$expected" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
