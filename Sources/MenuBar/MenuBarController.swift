@@ -46,8 +46,13 @@ final class MenuBarController {
         var afterControlRelayout: ((@escaping () -> Void) -> Void)?
         var controlRelayoutNow: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var resolveControlOwners: (([MenuBarItem], @escaping () -> Void) -> Void)?
+        /// Tests may inject an isolated request without touching the live shell.
+        var statusItemSizing: StatusItemSizing?
     }
     private let environment: Environment
+    private var statusItemSizing: StatusItemSizing? {
+        environment.statusItemSizing ?? (environment.usesSystemUI ? .shared : nil)
+    }
     private var arrangementVisibility: Visibility?
     private var activationGeneration = 0
     private var started = false
@@ -82,6 +87,10 @@ final class MenuBarController {
             self.hide()
         }
         triggers.emptySpace = { [weak self] screen in self?.emptySpace(on: screen) }
+    }
+
+    deinit {
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
     }
 
     // MARK: Lifecycle
@@ -120,6 +129,7 @@ final class MenuBarController {
         controlRelayoutPending = false
         controlLayoutSample = nil
         controlOwnerReadPending = false
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
         compactControls = false
         cancelActivation()
         // Drain any AX action already begun before removing the separators.
@@ -202,6 +212,7 @@ final class MenuBarController {
             controlRelayoutPending = false
             controlLayoutSample = nil
             controlOwnerReadPending = false
+            if expired, compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
             applyVisibility(current: items, displays: displays, settled: settled)
             notify()
             return
@@ -339,6 +350,7 @@ final class MenuBarController {
         if settled, !compactControls, MenuBarLayout.needsCompactControls(items: current, displays: displays,
                 showChevron: effectiveShowChevron, alwaysHiddenSection: settings.alwaysHiddenSection, ownPID: getpid()) {
             compactControls = true
+            statusItemSizing?.setCompactShellIconRequested(true)
             relayoutControls()
             return
         }

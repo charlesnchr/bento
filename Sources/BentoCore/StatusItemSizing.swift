@@ -4,9 +4,25 @@ import Foundation
 /// once at process startup, then preserve normal icons' padding explicitly.
 public final class StatusItemSizing {
     public static let shared = StatusItemSizing()
+    public static let didChange = Notification.Name("BentoStatusItemSizingDidChange")
     private(set) var originalSpacing: CGFloat?
+    public private(set) var compactShellIconRequested = false
 
     public init() {}
+
+    public var shellImageSize: CGFloat { compactShellIconRequested ? 14 : 18 }
+
+    public func shellLength(thickness: CGFloat, fallback: CGFloat) -> CGFloat {
+        compactShellIconRequested ? 16 : normalLength(contentWidth: thickness, fallback: fallback)
+    }
+
+    /// Main-thread, process-local request from the live Menu Bar controller.
+    /// Observers resize synchronously before it starts sampling the new layout.
+    public func setCompactShellIconRequested(_ requested: Bool) {
+        guard compactShellIconRequested != requested else { return }
+        compactShellIconRequested = requested
+        NotificationCenter.default.post(name: Self.didChange, object: self)
+    }
 
     /// Unconfigured dev/test entrypoints keep AppKit's automatic sizing.
     public func normalLength(contentWidth: CGFloat, fallback: CGFloat) -> CGFloat {

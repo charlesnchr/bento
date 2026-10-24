@@ -89,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         // App-level actions last: a module's or the user's binding of the same keys wins.
         ActionRegistry.shared.setModules(modules + [appActions])
+        observers.append(NotificationCenter.default.addObserver(
+            forName: StatusItemSizing.didChange, object: StatusItemSizing.shared, queue: nil) { [weak self] _ in
+            self?.updateStatusItem()
+        })
         syncModules()
         KeyboardOverview.scheduleLaunchHint()
 
@@ -340,16 +344,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func updateStatusItem() {
         if general.showMenuBarIcon {
+            let bar = NSStatusBar.system
+            let sizing = StatusItemSizing.shared
+            let length = sizing.shellLength(thickness: bar.thickness, fallback: NSStatusItem.squareLength)
             if statusItem == nil {
-                let bar = NSStatusBar.system
-                let item = bar.statusItem(withLength: StatusItemSizing.shared.normalLength(
-                    contentWidth: bar.thickness, fallback: NSStatusItem.squareLength))
-                item.button?.image = BentoIcon.menuBarImage()
+                let item = bar.statusItem(withLength: length)
                 let menu = NSMenu()
                 menu.delegate = self
                 item.menu = menu
                 statusItem = item
             }
+            statusItem?.length = length
+            statusItem?.button?.image = BentoIcon.menuBarImage(size: sizing.shellImageSize)
         } else if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil

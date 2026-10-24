@@ -3,7 +3,7 @@ import AppKit
 /// The bento-box glyph: a rounded box split into one tall and two short
 /// compartments. Drawn in code so there are no asset catalogs to build.
 public enum BentoIcon {
-    public static func menuBarImage() -> NSImage {
+    public static func menuBarImage(size: CGFloat = 18) -> NSImage {
         let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
             let box = rect.insetBy(dx: 2, dy: 3)
             NSColor.black.setStroke()
@@ -23,6 +23,13 @@ public enum BentoIcon {
             return true
         }
         img.isTemplate = true
-        return img
+        guard size != 18 else { return img }
+        // Scale the complete original glyph, including strokes and insets.
+        let scaled = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            img.draw(in: rect, from: NSRect(origin: .zero, size: img.size), operation: .sourceOver, fraction: 1)
+            return true
+        }
+        scaled.isTemplate = true
+        return scaled
     }
 }

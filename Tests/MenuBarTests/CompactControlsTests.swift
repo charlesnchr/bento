@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+import BentoCore
 @testable import MenuBar
 
 private let gskDisplay = MenuBarLayout.RecoveryDisplay(
@@ -162,25 +163,86 @@ private func needsCompact(_ items: [MenuBarItem], displays: [MenuBarLayout.Recov
 @MainActor private final class CompactHarness {
     var items = gskItems()
     var displays = [gskDisplay]
-    var configurations: [(chevron: Bool, alwaysHidden: Bool, compact: Bool)] = []
+    var configurations: [(chevron: Bool, alwaysHidden: Bool, compact: Bool, compactShell: Bool?)] = []
     var expansions: [ControlItems.Expansion] = []
     var pending: [() -> Void] = []
     var now: TimeInterval = 0
     let settings: MenuBarSettings
+    let sizing: StatusItemSizing?
     lazy var controller = MenuBarController(settings: settings, scanner: ItemScanner(snapshot: { [unowned self] in items }),
         environment: .init(usesSystemUI: false, reportError: { _ in Issue.record("Unexpected HUD") },
             recoveryDisplays: { [unowned self] in displays },
             applyControls: { [unowned self] _, e in expansions.append(e) },
-            configureControls: { [unowned self] in configurations.append(($0, $1, $2)) },
+            configureControls: { [unowned self] in configurations.append(($0, $1, $2, sizing?.compactShellIconRequested)) },
             afterControlRelayout: { [unowned self] in pending.append($0) },
-            controlRelayoutNow: { [unowned self] in now }))
+            controlRelayoutNow: { [unowned self] in now }, statusItemSizing: sizing))
 
-    init(settings: MenuBarSettings = .init()) { self.settings = settings }
+    init(settings: MenuBarSettings = .init(), sizing: StatusItemSizing? = nil) {
+        self.settings = settings
+        self.sizing = sizing
+    }
     func sample() { now += 0.1; pending.removeFirst()() }
     func settle() {
         for _ in 0..<25 where !pending.isEmpty { sample() }
         #expect(pending.isEmpty)
     }
+}
+
+@Test @MainActor func compactShellRequestPrecedesRelayoutAndStopRestoresIt() {
+    let sizing = StatusItemSizing(), h = CompactHarness(sizing: sizing)
+    let c = h.controller
+    c.start()
+    #expect(h.configurations.first?.compactShell == true)
+    #expect(sizing.compactShellIconRequested && h.pending.count == 1)
+    h.items = gskItems(compact: true)
+    // Predicted native response to a 38 -> 16 point shell, anchored at its right edge.
+    for i in h.items.indices { h.items[i].frame.origin.x += 22 }
+    h.items[h.items.firstIndex { $0.role == .bentoIcon }!].frame.size.width = 16
+    h.sample()
+    #expect(h.expansions == [revealed])
+    h.sample()
+    #expect(h.expansions == [revealed, hidden] && h.pending.isEmpty)
+    #expect(sizing.compactShellIconRequested)
+    c.stop()
+    #expect(!sizing.compactShellIconRequested && sizing.shellImageSize == 18)
+}
+
+@Test @MainActor func interruptedOrFailedCompactRelayoutReleasesShellRequest() {
+    for fail in [false, true] {
+        let sizing = StatusItemSizing(), h = CompactHarness(sizing: sizing)
+        let c = h.controller
+        c.start()
+        #expect(sizing.compactShellIconRequested)
+        if fail {
+            h.settle() // unchanged old controls never form a valid compact sample
+            #expect(c.lastError != nil && h.expansions.last == revealed)
+            #expect(!sizing.compactShellIconRequested)
+        }
+        c.stop()
+        h.settle() // queued samples cannot reinstate the request
+        #expect(!sizing.compactShellIconRequested)
+    }
+}
+
+@Test @MainActor func desktopFreeCompactControllerDoesNotRequestSharedShellChanges() {
+    let before = StatusItemSizing.shared.compactShellIconRequested
+    let h = CompactHarness(), c = h.controller
+    c.start()
+    #expect(c.compactControls && StatusItemSizing.shared.compactShellIconRequested == before)
+    c.stop()
+    #expect(StatusItemSizing.shared.compactShellIconRequested == before)
+}
+
+@Test @MainActor func discardedCompactControllerReleasesShellRequest() {
+    let sizing = StatusItemSizing()
+    weak var retired: MenuBarController?
+    do {
+        let h = CompactHarness(sizing: sizing)
+        h.controller.start()
+        retired = h.controller
+        #expect(sizing.compactShellIconRequested)
+    }
+    #expect(retired == nil && !sizing.compactShellIconRequested)
 }
 
 @Test @MainActor func compactRelayoutWaitsForFreshGeometryAndKeepsFirstSetupSectionsEmpty() {

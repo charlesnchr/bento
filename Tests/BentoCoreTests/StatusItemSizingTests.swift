@@ -93,3 +93,40 @@ private final class InheritedSpacingDefaults: UserDefaults {
         }
     }
 }
+
+@Test @MainActor func compactShellSizingRestoresNormalPaddingAndImage() {
+    for spacing: CGFloat? in [nil, 0, 6, 16, 24] {
+        let sizing = StatusItemSizing()
+        if let spacing {
+            sizing.configure(defaults: InheritedSpacingDefaults(spacing: spacing), currentHostSpacing: { nil })
+        }
+        let normalLength = spacing.map { 22 + $0 } ?? NSStatusItem.squareLength
+        #expect(sizing.shellLength(thickness: 22, fallback: NSStatusItem.squareLength) == normalLength)
+        #expect(sizing.shellImageSize == 18)
+        sizing.setCompactShellIconRequested(true)
+        #expect(sizing.shellLength(thickness: 22, fallback: NSStatusItem.squareLength) == 16)
+        #expect(sizing.shellImageSize == 14)
+        #expect(sizing.normalLength(contentWidth: 22, fallback: NSStatusItem.squareLength) == normalLength)
+        sizing.setCompactShellIconRequested(false)
+        #expect(sizing.shellLength(thickness: 22, fallback: NSStatusItem.squareLength) == normalLength)
+        #expect(sizing.shellImageSize == 18)
+    }
+}
+
+@Test @MainActor func compactShellSizingNotifiesSynchronouslyOnlyWhenChanged() {
+    let sizing = StatusItemSizing()
+    var requests: [Bool] = []
+    let token = NotificationCenter.default.addObserver(
+        forName: StatusItemSizing.didChange, object: sizing, queue: nil) { note in
+        if let sender = note.object as? StatusItemSizing { requests.append(sender.compactShellIconRequested) }
+    }
+    defer { NotificationCenter.default.removeObserver(token) }
+    sizing.setCompactShellIconRequested(false)
+    #expect(requests.isEmpty)
+    sizing.setCompactShellIconRequested(true)
+    #expect(requests == [true])
+    sizing.setCompactShellIconRequested(true)
+    #expect(requests == [true])
+    sizing.setCompactShellIconRequested(false)
+    #expect(requests == [true, false])
+}
