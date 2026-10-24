@@ -15,9 +15,26 @@ import AppKit
 import ApplicationServices
 
 let args = Array(CommandLine.arguments.dropFirst())
+let checksUserActivity = ["press", "menu", "status-menu"].contains(args.first ?? "")
 func fail(_ s: String) -> Never { FileHandle.standardError.write((s + "\n").data(using: .utf8)!); exit(1) }
 
+func checkUserActivity() {
+    if FileManager.default.fileExists(atPath: "/tmp/bento-user-active") {
+        FileHandle.standardError.write(Data("user activity detected; stopping AX actions\n".utf8))
+        exit(75)
+    }
+}
+
+@discardableResult
+func guardedAction(_ element: AXUIElement, _ action: CFString) -> AXError {
+    checkUserActivity()
+    let result = AXUIElementPerformAction(element, action)
+    checkUserActivity()
+    return result
+}
+
 func attr<T>(_ el: AXUIElement, _ name: String) -> T? {
+    if checksUserActivity { checkUserActivity() }
     var v: CFTypeRef?
     guard AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success, let v else { return nil }
     if T.self == AXUIElement.self { return (v as! T) }
@@ -26,6 +43,7 @@ func attr<T>(_ el: AXUIElement, _ name: String) -> T? {
 
 /// Depth-first search through an element's descendants.
 func find(_ el: AXUIElement, depth: Int = 0, _ match: (AXUIElement) -> Bool) -> AXUIElement? {
+    if checksUserActivity { checkUserActivity() }
     if match(el) { return el }
     guard depth < 40, let kids: [AXUIElement] = attr(el, kAXChildrenAttribute) else { return nil }
     for k in kids { if let hit = find(k, depth: depth + 1, match) { return hit } }
@@ -82,7 +100,7 @@ case "press":
             return title == args[2] || desc == args[2]
         }
         if let hit {
-            let err = AXUIElementPerformAction(hit, kAXPressAction as CFString)
+            let err = guardedAction(hit, kAXPressAction as CFString)
             if err != .success { fail("AXPress failed: \(err.rawValue)") }
             exit(0)
         }
@@ -124,24 +142,25 @@ case "menu", "status-menu":
     guard matches.count == 1, let status = matches.first else { fail("no unique matching status item") }
     // The app tracks the menu inside the press: don't wait for it to close.
     AXUIElementSetMessagingTimeout(status, 0.5)
-    _ = AXUIElementPerformAction(status, kAXPressAction as CFString)
+    guardedAction(status, kAXPressAction as CFString)
     if targeted {
         guard let parent = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenuItem" && (attr($0, kAXTitleAttribute) as String?) == args[3] }) else {
-            if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+            if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { guardedAction(menu, kAXCancelAction as CFString) }
             fail("no submenu '\(args[3])'")
         }
         AXUIElementSetMessagingTimeout(parent, 0.5)
-        _ = AXUIElementPerformAction(parent, kAXPressAction as CFString)
+        guardedAction(parent, kAXPressAction as CFString)
     }
     let title = targeted ? args[4] : args[2]
     var item: AXUIElement?
     for _ in 0..<20 {
+        checkUserActivity()
         item = find(status) { (attr($0, kAXRoleAttribute) as String?) == "AXMenuItem" && (attr($0, kAXTitleAttribute) as String?) == title }
         if item != nil { break }
         usleep(100_000)
     }
     guard let item else {
-        if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+        if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { guardedAction(menu, kAXCancelAction as CFString) }
         fail("no menu item '\(title)'")
     }
     let char: String = attr(item, kAXMenuItemCmdCharAttribute) ?? ""
@@ -153,7 +172,7 @@ case "menu", "status-menu":
     if mods & 1 != 0 { s += "⇧" }
     if mods & 8 == 0 { s += "⌘" }
     print(char.isEmpty ? "" : s + char)
-    AXUIElementPerformAction(item, kAXPressAction as CFString)
+    guardedAction(item, kAXPressAction as CFString)
 case "spawn-disclaimed":
     guard args.count >= 3 else { fail("spawn-disclaimed <log> <cmd…>") }
     var attrs: posix_spawnattr_t?
