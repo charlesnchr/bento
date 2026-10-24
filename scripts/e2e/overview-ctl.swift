@@ -8,6 +8,7 @@
 //   overview-ctl search-value <pid> <window>     value of the search field in the window whose title contains <window>
 //   overview-ctl menu <pid> <title>              open the process's menu bar (status item) menu, print the item's
 //                                                shortcut ("⌃⌥/") and choose it
+//   overview-ctl status-menu <pid> <x> <submenu> <title> choose an item in the known status icon's submenu
 //   overview-ctl spawn-disclaimed <log> <cmd…>   start <cmd> as its own TCC responsible process (so it runs without
 //                                                this shell's Accessibility/Screen Recording grants); prints the pid
 import AppKit
@@ -97,23 +98,39 @@ case "search-value":
     }
     guard let field else { fail("no search field") }
     print((attr(field, kAXValueAttribute) as String?) ?? "")
-case "menu":
-    guard args.count == 3, let pid = pid_t(args[1]) else { fail("menu <pid> <title>") }
+case "menu", "status-menu":
+    let targeted = cmd == "status-menu"
+    guard args.count == (targeted ? 5 : 3), let pid = pid_t(args[1]) else { fail("menu <pid> <title> or status-menu <pid> <x> <submenu> <title>") }
     let app = AXUIElementCreateApplication(pid)
     guard let extras: AXUIElement = attr(app, "AXExtrasMenuBar"),
-          let status = (attr(extras, kAXChildrenAttribute) as [AXUIElement]?)?.first else { fail("no status item") }
+          let children: [AXUIElement] = attr(extras, kAXChildrenAttribute) else { fail("no status items") }
+    let matches = targeted ? children.filter { child in
+        guard let x = Double(args[2]), let value: AXValue = attr(child, kAXPositionAttribute) else { return false }
+        var point = CGPoint.zero
+        return AXValueGetValue(value, .cgPoint, &point) && abs(point.x - x) <= 1
+    } : Array(children.prefix(1))
+    guard matches.count == 1, let status = matches.first else { fail("no unique matching status item") }
     // The app tracks the menu inside the press: don't wait for it to close.
     AXUIElementSetMessagingTimeout(status, 0.5)
     _ = AXUIElementPerformAction(status, kAXPressAction as CFString)
+    if targeted {
+        guard let parent = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenuItem" && (attr($0, kAXTitleAttribute) as String?) == args[3] }) else {
+            if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+            fail("no submenu '\(args[3])'")
+        }
+        AXUIElementSetMessagingTimeout(parent, 0.5)
+        _ = AXUIElementPerformAction(parent, kAXPressAction as CFString)
+    }
+    let title = targeted ? args[4] : args[2]
     var item: AXUIElement?
     for _ in 0..<20 {
-        item = find(status) { (attr($0, kAXRoleAttribute) as String?) == "AXMenuItem" && (attr($0, kAXTitleAttribute) as String?) == args[2] }
+        item = find(status) { (attr($0, kAXRoleAttribute) as String?) == "AXMenuItem" && (attr($0, kAXTitleAttribute) as String?) == title }
         if item != nil { break }
         usleep(100_000)
     }
     guard let item else {
         if let menu = find(status, { (attr($0, kAXRoleAttribute) as String?) == "AXMenu" }) { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
-        fail("no menu item '\(args[2])'")
+        fail("no menu item '\(title)'")
     }
     let char: String = attr(item, kAXMenuItemCmdCharAttribute) ?? ""
     let mods = (attr(item, kAXMenuItemCmdModifiersAttribute) as NSNumber?)?.intValue ?? 0

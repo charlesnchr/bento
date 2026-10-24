@@ -194,3 +194,25 @@ assert not s['arranging']
 assert s['controls']['hiddenExpanded'], s['lastError']
 PY
 echo 'PASS: Arrange exposes actual controls clear of the notch; Done resumes hiding'
+
+icon_x="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["modules"]["menubar"]["state"]; print(next(i["x"] for i in s["items"] if i["role"]=="bentoIcon"))' "$DIAG")"
+check_session
+"$CTL" status-menu "$PID" "$icon_x" 'Menu Bar' 'Show All Items'
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['visibility'] == 'shownAll' and not s['barOpen'], s
+assert not s['controls']['hiddenExpanded'] and not s['controls']['alwaysHiddenExpanded']
+PY
+check_session
+"$CTL" status-menu "$PID" "$icon_x" 'Menu Bar' 'Hide Items'
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['visibility'] == 'hidden' and s['controls']['hiddenExpanded'], s
+PY
+echo 'PASS: Bento’s main status menu can show all items and hide them again'
