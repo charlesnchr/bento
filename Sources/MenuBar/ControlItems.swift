@@ -101,19 +101,14 @@ final class ControlItems: NSObject {
         var alwaysHidden: Bool
     }
 
-    /// The separators for a state. The always-hidden one hides its section
-    /// unless everything is shown. Misplaced (right of the hidden one) it
-    /// stays collapsed whatever the state: expanded there it would also hide
-    /// the visible items between the two, and the chevron or Bento's icon if
-    /// they're left of it.
-    static func expansion(_ visibility: MenuBarController.Visibility, alwaysHiddenMisplaced: Bool) -> Expansion {
-        Expansion(hidden: visibility == .hidden,
-                  alwaysHidden: visibility != .shownAll && !alwaysHiddenMisplaced)
+    /// Only expand boundaries whose current geometry keeps recovery controls visible.
+    static func expansion(_ visibility: MenuBarController.Visibility, allowed: Expansion) -> Expansion {
+        Expansion(hidden: visibility == .hidden && allowed.hidden,
+                  alwaysHidden: visibility != .shownAll && allowed.alwaysHidden)
     }
 
     /// Lays the items out for a state (see `expansion`).
-    func apply(_ visibility: MenuBarController.Visibility, alwaysHiddenMisplaced: Bool) {
-        let e = ControlItems.expansion(visibility, alwaysHiddenMisplaced: alwaysHiddenMisplaced)
+    func apply(_ visibility: MenuBarController.Visibility, expansion e: Expansion) {
         let revealed = visibility != .hidden
         if let t = toggle { style(t, kind: .toggle, expanded: false, revealed: revealed) }
         if let h = hidden { style(h, kind: .hidden, expanded: e.hidden, revealed: revealed) }

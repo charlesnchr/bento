@@ -45,7 +45,7 @@ struct MenuBarSettingsView: View {
                         Button("Arrange in Menu Bar") { arrange.begin() }
                     }
                 }
-                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep the dashed separator left of the solid one; you can Command-drag the separators too.")
+                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !Permissions.accessibility || !Permissions.screenRecording {
                     HStack(spacing: 8) {
