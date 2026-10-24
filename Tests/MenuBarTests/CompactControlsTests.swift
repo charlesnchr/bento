@@ -224,6 +224,33 @@ private func needsCompact(_ items: [MenuBarItem], displays: [MenuBarLayout.Recov
     }
 }
 
+@Test @MainActor func compactShellRequestReturnsAfterDisplayTimeoutRecovery() {
+    let sizing = StatusItemSizing(), h = CompactHarness(sizing: sizing)
+    let c = h.controller
+    c.start()
+    defer { c.stop() }
+    h.items = gskItems(compact: true)
+    for i in h.items.indices { h.items[i].frame.origin.x += 22 }
+    h.items[h.items.firstIndex { $0.role == .bentoIcon }!].frame.size.width = 16
+    h.settle()
+    #expect(sizing.compactShellIconRequested && h.expansions.last == hidden)
+
+    h.displays = []
+    c.screensChanged()
+    h.settle()
+    #expect(c.compactControls && !sizing.compactShellIconRequested)
+    #expect(h.expansions.last == revealed && h.configurations.count == 2)
+    #expect(h.pending.isEmpty) // timeout does not schedule automatic retries
+
+    h.displays = [gskDisplay]
+    c.screensChanged()
+    #expect(sizing.compactShellIconRequested)
+    #expect(h.configurations.last?.compactShell == true)
+    h.settle()
+    #expect(sizing.compactShellIconRequested && h.expansions.last == hidden)
+    #expect(c.lastError == nil && h.pending.isEmpty && h.configurations.count == 3)
+}
+
 @Test @MainActor func desktopFreeCompactControllerDoesNotRequestSharedShellChanges() {
     let before = StatusItemSizing.shared.compactShellIconRequested
     let h = CompactHarness(), c = h.controller

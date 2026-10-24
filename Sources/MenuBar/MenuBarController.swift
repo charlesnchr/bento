@@ -165,6 +165,7 @@ final class MenuBarController {
     /// agree. Settings/display changes supersede it; show/hide only changes the
     /// target state. Never recreate items just because their animation is slow.
     private func relayoutControls() {
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(true) }
         controlLayoutGeneration += 1
         let generation = controlLayoutGeneration
         controlRelayoutWork?.cancel()
@@ -350,7 +351,6 @@ final class MenuBarController {
         if settled, !compactControls, MenuBarLayout.needsCompactControls(items: current, displays: displays,
                 showChevron: effectiveShowChevron, alwaysHiddenSection: settings.alwaysHiddenSection, ownPID: getpid()) {
             compactControls = true
-            statusItemSizing?.setCompactShellIconRequested(true)
             relayoutControls()
             return
         }
