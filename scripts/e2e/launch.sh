@@ -148,7 +148,7 @@ assert d['accessibility'] and d['screenRecording'], 'native menu check needs exi
 assert d['statusItem'] and d['settingsWindow']['open']
 assert d['modules']['menubar']['running'] and s['started']
 assert any(i['role'] == 'bentoIcon' for i in s['items']), 'real app did not identify its recovery icon'
-assert s['controls']['hidden']
+assert s['controls']['hidden'] and s['controls']['alwaysHidden']
 assert s['controls']['hiddenExpanded'], s['lastError']
 assert not s['lastError'], s['lastError']
 PY
