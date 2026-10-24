@@ -23,6 +23,11 @@ import Testing
     NSApp.setActivationPolicy(.accessory)
     let cursor = try #require(CGEvent(source: nil)?.location)
     let before = Dictionary(uniqueKeysWithValues: WindowServer.menuBarItemWindows().map { ($0.id, $0.frame) })
+    // The shell normally creates Bento's recovery icon before these controls.
+    var recovery: NSStatusItem? = NSStatusBar.system.statusItem(withLength: 24)
+    recovery?.autosaveName = "BentoQARecoveryIcon"
+    recovery?.button?.title = "B"
+    defer { if let recovery { NSStatusBar.system.removeStatusItem(recovery) } }
     var settings = MenuBarSettings()
     settings.bar = .never
     settings.autoRehide = true
@@ -55,6 +60,8 @@ import Testing
     controller.stop()
     #expect(!controller.isArranging)
     #expect(controller.controls.hidden == nil && controller.controls.alwaysHidden == nil && controller.controls.toggle == nil)
+    if let recovery { NSStatusBar.system.removeStatusItem(recovery) }
+    recovery = nil
     try await settle(0.5)
     let after = Dictionary(uniqueKeysWithValues: WindowServer.menuBarItemWindows().map { ($0.id, $0.frame) })
     for (id, frame) in before where after[id] != nil {
