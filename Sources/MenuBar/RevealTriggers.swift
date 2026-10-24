@@ -22,7 +22,6 @@ final class RevealTriggers {
     /// The x range (global coordinates) of empty menu bar space on a screen,
     /// between the app menus and the status items. Nil when unknown.
     var emptySpace: (_ screen: NSScreen) -> ClosedRange<CGFloat>? = { _ in nil }
-    var isPostingEvents: () -> Bool = { false }
 
     private var options = Options()
     private var moveMonitor: Any?
@@ -88,7 +87,6 @@ final class RevealTriggers {
     func invalidateEmptySpace() { emptySpaceCache = nil }
 
     private func moved(_ e: NSEvent) {
-        guard !isPostingEvents() else { return }
         let p = NSEvent.mouseLocation
         let onBar = RevealTriggers.menuBarScreen(at: p) != nil
         if hoverRevealed {
@@ -121,12 +119,11 @@ final class RevealTriggers {
     }
 
     private func clicked(_ e: NSEvent) {
-        guard !isPostingEvents(), e.cgEvent?.getIntegerValueField(.eventSourceUserData) != ItemMover.eventMarker else { return }
         if inEmptySpace(NSEvent.mouseLocation) { onToggle() }
     }
 
     private func scrolled(_ e: NSEvent) {
-        guard !isPostingEvents(), RevealTriggers.menuBarScreen(at: NSEvent.mouseLocation) != nil else { return }
+        guard RevealTriggers.menuBarScreen(at: NSEvent.mouseLocation) != nil else { return }
         // One gesture fires many events: act once per 0.6 s.
         guard Date().timeIntervalSince(lastScroll) > 0.6 else { return }
         var dy = e.scrollingDeltaY

@@ -45,3 +45,45 @@ single-instance clash):
 
 Each module keeps `scripts/e2e/<module>.sh`: runs inside a session (it may call start/end itself),
 asserts outcomes, exits non-zero on failure, cleans up after itself.
+
+## MenuBar corrective regression checks
+
+`swift build --scratch-path .build-menubar --target MenuBar` and
+`scripts/test MenuBarTests` are desktop-free. The tests inject snapshots, AX
+reads/actions and a controller environment without system UI. Structural tests
+reject cursor APIs, input synthesis, movement UI and runtime consumers of
+legacy layout/profile settings. Keep the AX cancellation/drain tests.
+
+`scripts/e2e/menubar.sh` is obsolete and exits 2 without side effects. It formerly
+synthesized moves through profile actions that no longer exist. Do not revive
+that script to validate the manual arrangement workflow.
+
+The opt-in `nativeManualArrangementSmoke` test creates only Bento's own status
+items and exercises Arrange/Done and stop against native AppKit. It checks that
+existing menu-item frames and the pointer position are unchanged after cleanup.
+Run it only inside a guarded session, after building the tests:
+
+    BENTO_DEV=1 BENTO_NATIVE_MENUBAR_SMOKE=1 swift test --skip-build --filter nativeManualArrangementSmoke -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+
+It does not test a person's Command-drag gesture or move any other app's items.
+
+Optional manual macOS smoke (release owner; not part of the unit suite):
+
+1. Use the GUI session protocol above, an isolated DevMenuBar configuration and
+   disposable status items. Do not rearrange the user's existing items.
+2. Open Menu Bar Settings while the module is disabled, then enable it. Confirm
+   the item list and Arrange in Menu Bar button attach to the new controller.
+3. Choose Arrange in Menu Bar. Confirm both separators are revealed. Manually
+   Command-drag only disposable items across the solid/dashed boundaries.
+   Sections must stay revealed past the configured hide delay and when the
+   pointer leaves the menu bar or a reveal trigger requests hiding.
+4. Choose Done. Confirm the prior visibility returns and the refreshed section
+   labels match native positions. Repeat by leaving Settings instead of Done.
+5. Check Show/Hide and Show All. Search/Bar opening should use Accessibility in
+   place; unsupported or crowded/notch items must explain manual activation,
+   with no cursor movement or synthetic click fallback.
+6. With legacy profiles and `keepItemsInPlace: true` in the isolated config,
+   restart a disposable item or change displays. Bento must not reorder items.
+7. Disable during arrangement and during an AX request. Confirm controls go away,
+   queued AX actions do not run, and no cursor or restoration work occurs. End
+   the session and remove the disposable items.

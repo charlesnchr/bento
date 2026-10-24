@@ -2,8 +2,8 @@
 
 Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI, no third-party
 dependencies) that replaces Shottr, Rectangle Pro, Raycast app hotkeys, a tiling
-window manager (AeroSpace-lite), a clipboard manager, Raycast Notes, Todoist and
-Bartender.
+window manager (AeroSpace-lite), a clipboard manager, Raycast Notes and Todoist. It also shows and hides manually
+arranged menu bar sections.
 
 Priorities, in order: **correct, low resource use, neat**. It runs all day:
 idle CPU must be ~0 %, memory small, nothing polls when an event or notification
@@ -32,7 +32,7 @@ docs/                 this file, SYNC_PROTOCOL.md
 
 Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 `Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`,
-`MenuBar` (Bartender: hidden menu bar items).
+`MenuBar` (manually arranged hidden menu bar sections).
 
 ## BentoCore API (read the sources, they are short)
 
@@ -98,8 +98,23 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 | Notes | `ctrl+opt+n` toggle notes window, other notes shortcuts are local to its window |
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
-| MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item click shortcuts are user-defined |
+| MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item Accessibility open shortcuts are user-defined |
 | Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
+
+## MenuBar behavior
+
+MenuBar only changes section visibility. Arrange in Menu Bar holds the sections
+revealed while the user Command-drags native items or separators. The dashed
+Always Hidden separator belongs left of the solid Hidden separator. Done, or
+leaving Settings, restores the previous visibility and refreshes the snapshot.
+No cursor control, input synthesis, automatic ordering, profile application or
+relaunch/display restoration is supported. Saved layout/profile fields are
+compatibility data only.
+
+Search and Bento Bar reveal in place and request a cancellable, validated
+AXPress. There is no synthetic click fallback or temporary relocation. Crowded
+and notched displays can leave items inaccessible; the user must make space,
+click or reposition them manually. See QA.md for safe validation.
 
 ## Sync
 

@@ -143,7 +143,4 @@ private func decode(_ json: String) throws -> MenuBarSettings {
 @Test func actionIDsAreKebabCase() {
     #expect(MenuBarModule.itemActionID("com.google.Chrome/Item-0") == "menubar.click-com-google-chrome-item-0")
     #expect(MenuBarModule.slug("  Désk / Work  ") == "d-sk-work")
-    var p = LayoutProfile(name: "")
-    p.id = "ABC-123"
-    #expect(MenuBarModule.profileActionID(p) == "menubar.profile-abc-123")
 }

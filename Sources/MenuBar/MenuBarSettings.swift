@@ -17,13 +17,11 @@ struct MenuBarSettings: Codable, Equatable {
     /// The chevron that shows and hides the hidden section. Without it, use the
     /// shortcut, Bento's menu or one of the reveal options below.
     var showChevron = true
-    /// Where each item belongs, left to right per section. Kept up to date when
-    /// items are arranged in Settings; used to put an item back where it belongs
-    /// when its app relaunches (`keepItemsInPlace`).
+    /// Deprecated saved arrangement, retained only for config compatibility.
+    /// Native macOS positions are authoritative; Bento never applies this data.
     var layout = SavedLayout()
-    /// Move items back to their section when their app relaunches and macOS
-    /// puts them somewhere else (new items stay where macOS puts them).
-    var keepItemsInPlace = true
+    /// Deprecated and ignored, including when an older config stores true.
+    var keepItemsInPlace = false
 
     // MARK: Reveal
     /// Show hidden items while the pointer rests on an empty part of the menu bar.
@@ -47,7 +45,7 @@ struct MenuBarSettings: Codable, Equatable {
     var bar: BarMode = .whenCrowded
 
     // MARK: Per item
-    /// Item key → shortcut that clicks the item (opens its menu).
+    /// Item key → shortcut that requests Accessibility opening in place.
     var itemHotkeys: [String: String] = [:]
     /// Hidden items that show for a few seconds when their icon changes.
     var showOnChange: [String] = []
@@ -57,9 +55,7 @@ struct MenuBarSettings: Codable, Equatable {
     var appearance = MenuBarAppearance()
 
     // MARK: Profiles
-    /// Named layouts. One tied to a display applies when that display becomes
-    /// the main one; any profile can be applied from a URL (e.g. by a Focus
-    /// automation in Shortcuts).
+    /// Deprecated profiles retained for decoding and round-tripping only.
     var profiles: [LayoutProfile] = []
 
     init() {}
@@ -263,13 +259,12 @@ struct SavedLayout: Codable, Equatable {
     }
 }
 
-/// A named layout. `displays` switch to it automatically.
+/// Legacy named layout data. No runtime action applies it.
 struct LayoutProfile: Codable, Equatable, Identifiable {
     var id = UUID().uuidString
     var name = "Profile"
     var layout = SavedLayout()
-    /// Display names (NSScreen.localizedName) that activate this profile when
-    /// they are the main display.
+    /// Legacy display names (NSScreen.localizedName), retained without execution.
     var displays: [String] = []
 
     init(name: String = "Profile", layout: SavedLayout = SavedLayout()) {

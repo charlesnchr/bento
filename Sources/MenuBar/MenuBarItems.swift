@@ -65,7 +65,7 @@ struct MenuBarItem: Identifiable, Equatable {
 
     var isMovable: Bool { role == .regular || role == .bentoIcon }
 
-    var isOnScreen: Bool { ItemMover.onScreen(frame) }
+    var isOnScreen: Bool { WindowServer.onScreen(frame) }
 
     var layoutItem: LayoutItem { LayoutItem(key: key, minX: frame.minX, width: frame.width) }
 
@@ -139,6 +139,8 @@ final class ItemScanner {
         actions.finish()
     }
 
+    func cancelPresses() { actions.cancelAll() }
+
     /// macOS 26 hosts every status item window in Control Centre.
     static let windowsAreHosted: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
 
@@ -196,20 +198,21 @@ final class ItemScanner {
     /// when `details` is set (used when Settings opens).
     func resolveOwners(_ items: [MenuBarItem], details: Bool = false, completion: @escaping () -> Void) {
         guard !stopped else { return }
+        if snapshotOverride != nil { completion(); return }
         let missing = items.filter { $0.ownerPID == nil && $0.role == .regular }
         let wantDetails = details && Permissions.accessibility
         guard (!missing.isEmpty || wantDetails), Permissions.accessibility else { completion(); return }
         pendingResolves.append(completion)
         guard !resolving else { return }
         resolving = true
-        scan(items, retries: 2)
+        scan(items)
     }
 
     /// One look at every candidate app's menu bar extras, matched to the
     /// windows by position. Items move while it runs (an item changing width
-    /// shifts the ones left of it): a window that moved isn't matched, and if
-    /// one still without an owner did, it looks again from a new snapshot.
-    private func scan(_ items: [MenuBarItem], retries: Int) {
+    /// shifts the ones left of it): a window that moved is left unmatched
+    /// until the next requested refresh.
+    private func scan(_ items: [MenuBarItem]) {
         guard !stopped else { return }
         let tracked = items.filter { $0.role == .regular || $0.role == .fixed || $0.role == .bentoIcon }
         // Where the windows are as the scan starts (`items` may be older).
@@ -243,13 +246,6 @@ final class ItemScanner {
                 let moved = self.apply(extras, before: before, after: after, windowOwners: windowOwners, apps: candidates)
                 let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
                 self.log.debug("Resolved menu bar owners in \(ms, format: .fixed(precision: 0), privacy: .public) ms (\(candidates.count) apps, \(moved.count) moved)")
-                if retries > 0, moved.contains(where: { self.owners[$0] == nil }) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                        guard let self, !self.stopped else { return }
-                        self.scan(self.snapshot(), retries: retries - 1)
-                    }
-                    return
-                }
                 self.resolving = false
                 let done = self.pendingResolves
                 self.pendingResolves = []
@@ -278,16 +274,13 @@ final class ItemScanner {
         Dictionary(ids.compactMap { id in WindowServer.frame(of: id).map { (id, $0) } }, uniquingKeysWith: { a, _ in a })
     }
 
-    /// Whether an item can be pressed through Accessibility (its element is known).
-    func canPress(_ item: MenuBarItem) -> Bool { owners[item.windowID]?.element != nil }
-
     /// AXPress on an item's element, off the main thread. The element is
     /// checked against the item's window first, as pressing a stale match
     /// would open another item's menu; one that isn't there any more is
     /// forgotten and looked up again later. An app answers only once the menu
     /// it opened closes, so the call times out while the menu is up: that
     /// counts as pressed (a click on top would close the menu again).
-    /// `completion(false)` when it wasn't pressed; the caller clicks instead.
+    /// `completion(false)` when unavailable; the caller explains manual activation.
     /// Stopped work is drained and its callback discarded.
     func press(_ item: MenuBarItem, completion: @escaping (_ pressed: Bool) -> Void) {
         guard !stopped else { return }

@@ -79,7 +79,10 @@ final class ControlItems: NSObject {
             button.action = #selector(clicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
-            button.setAccessibilityLabel(kind == .toggle ? "Show Hidden Menu Bar Items" : "Menu Bar Separator")
+            button.setAccessibilityLabel(kind == .toggle ? "Show Hidden Menu Bar Items" :
+                kind == .hidden ? "Hidden Section Separator (solid)" : "Always Hidden Section Separator (dashed)")
+            button.toolTip = kind == .toggle ? "Show or hide menu bar items" :
+                kind == .hidden ? "Solid separator: Hidden items go to its left" : "Dashed separator: Always Hidden items go to its left; keep it left of the solid separator"
         }
         style(item, kind: kind, expanded: false, revealed: true)
         return item

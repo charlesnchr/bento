@@ -31,71 +31,6 @@ private func item(_ id: CGWindowID, role: MenuBarItem.Role = .regular) -> MenuBa
                 bundleID: "test.app", appName: "Test", role: role)
 }
 
-/// Only fake windows and an event log. No system queries, cursor control,
-/// status items, AX actions, settings, image capture, or app launches.
-private final class FakeMenuBar: @unchecked Sendable {
-    let state: Locked<[MenuBarItem]>
-    let events = Locked<[ItemMover.Input]>([])
-    var acceptMoves = false
-    var onPost: ((ItemMover.Input) -> Void)?
-    var onFrame: ((CGWindowID) -> Void)?
-    var idle = true
-    var permission = true
-
-    init(_ items: [MenuBarItem] = [item(1), item(2), item(3)]) { state = Locked(items) }
-
-    func snapshot() -> [MenuBarItem] {
-        state.get.enumerated().map { index, item in
-            var i = item
-            i.frame = CGRect(x: 100 + index * 30, y: 0, width: 30, height: 24)
-            return i
-        }
-    }
-
-    func place(_ id: CGWindowID, before target: CGWindowID) {
-        state.withValue { items in
-            guard let i = items.firstIndex(where: { $0.windowID == id }) else { return }
-            let moved = items.remove(at: i)
-            guard let t = items.firstIndex(where: { $0.windowID == target }) else { items.append(moved); return }
-            items.insert(moved, at: t)
-        }
-    }
-
-    var environment: ItemMover.Environment {
-        .init(accessibility: { self.permission }, frame: { id in
-            self.onFrame?(id)
-            return self.snapshot().first { $0.windowID == id }?.frame
-        }, windows: {
-            self.snapshot().map { .init(id: $0.windowID, frame: $0.frame, name: $0.windowName,
-                                      ownerPID: 42, ownerName: "Test", isOnScreen: true) }
-        }, inputIsIdle: { self.idle }, onScreen: { _ in true }, cursor: { .zero }, post: { input in
-            self.events.withValue { $0.append(input) }
-            if self.acceptMoves, case let .mouse(.leftMouseUp, _, target, _, _, moving?, _) = input {
-                self.place(moving, before: target)
-            }
-            self.onPost?(input)
-        })
-    }
-
-    var downs: Int {
-        events.get.filter { if case .mouse(.leftMouseDown, _, _, _, _, _, _) = $0 { return true }; return false }.count
-    }
-
-    func expectReleased() {
-        var mouse = false, command = false, hidden = false
-        for e in events.get {
-            switch e {
-            case .command(let down): command = down
-            case .cursorHidden(let on, _): hidden = on
-            case .mouse(.leftMouseDown, _, _, _, _, _, _): mouse = true
-            case .mouse(.leftMouseUp, _, _, _, _, _, _): mouse = false
-            default: break
-            }
-        }
-        #expect(!mouse && !command && !hidden)
-    }
-}
-
 private func wait(_ semaphore: DispatchSemaphore) {
     #expect(semaphore.wait(timeout: .now() + 3) == .success)
 }
@@ -104,86 +39,10 @@ private func mainTurn() async {
     await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
 }
 
-@Test @MainActor func deadlineReleasesHeldInputAndSkipsRestOfBatch() {
-    let fake = FakeMenuBar()
-    let mover = ItemMover(environment: fake.environment)
-    let start = Date()
-    mover.stop(restoring: [.init(item: 1, target: 3, side: .left), .init(item: 2, target: 1, side: .left)], timeout: 0.05)
-    #expect(Date().timeIntervalSince(start) < 0.5)
-    #expect(fake.downs == 1)
-    fake.expectReleased()
-    let before = fake.events.get.count
-    mover.click(2) { result in
-        guard case .failure(.cancelled) = result else { Issue.record("Stopped mover accepted a click"); return }
-    }
-    #expect(fake.events.get.count == before)
-}
-
-@Test @MainActor func stopWithoutReturnsDrainsHeldInputAndCancelsQueuedClick() async {
-    let fake = FakeMenuBar()
-    let gate = Gate()
-    fake.onPost = { input in if case .mouse(.leftMouseDown, _, _, _, _, _, _) = input { gate.block() } }
-    let mover = ItemMover(environment: fake.environment)
-    var cancelled = 0
-    let completion: (Result<Void, ItemMover.Failure>) -> Void = { result in
-        if case .failure(.cancelled) = result { cancelled += 1 }
-    }
-    mover.move([.init(item: 1, target: 3, side: .left)], completion: completion)
-    mover.click(2, completion: completion)
-    gate.waitForEntry()
-    gate.releaseSoon()
-    mover.stop()
-    fake.expectReleased()
-    #expect(fake.downs == 1)
-    let before = fake.events.get.count
-    await mainTurn()
-    #expect(cancelled == 2)
-    #expect(fake.events.get.count == before)
-}
-
-@Test @MainActor func clickFrameLookupCannotPostAfterCancellation() async {
-    let fake = FakeMenuBar()
-    let gate = Gate()
-    fake.onFrame = { _ in gate.block() }
-    let mover = ItemMover(environment: fake.environment)
-    mover.click(1) { _ in }
-    gate.waitForEntry()
-    gate.releaseSoon()
-    mover.stop()
-    await mainTurn()
-    #expect(fake.events.get.isEmpty)
-}
-
-@Test @MainActor func stopDeadlineInterruptsIdleWait() {
-    let fake = FakeMenuBar()
-    fake.idle = false
-    let mover = ItemMover(environment: fake.environment)
-    let start = Date()
-    mover.stop(restoring: [.init(item: 1, target: 3, side: .left)], timeout: 0.03)
-    #expect(Date().timeIntervalSince(start) < 0.5)
-    #expect(fake.downs == 0)
-    fake.expectReleased()
-}
-
-@Test @MainActor func cancellationDuringDragReleasesInput() {
-    let fake = FakeMenuBar()
-    let gate = Gate()
-    fake.onPost = { input in if case .mouse(.leftMouseDragged, _, _, _, _, _, _) = input { gate.block() } }
-    let mover = ItemMover(environment: fake.environment)
-    mover.move([.init(item: 1, target: 3, side: .left)]) { _ in }
-    gate.waitForEntry()
-    gate.releaseSoon()
-    let start = Date()
-    mover.stop()
-    #expect(Date().timeIntervalSince(start) < 0.5)
-    fake.expectReleased()
-    #expect(fake.downs == 2) // missed teleport, then cancelled drag
-}
-
 private func scanner(environment: ItemScanner.PressEnvironment) -> ItemScanner {
     // Creating a reference performs no IPC. Every read/action is a fake below.
     let element = AXUIElementCreateApplication(42)
-    return ItemScanner(owners: [1: .init(pid: 42, appName: "Test", element: element)], pressEnvironment: environment)
+    return ItemScanner(owners: [1: .init(pid: 42, appName: "Test", element: element)], pressEnvironment: environment, snapshot: { [] })
 }
 
 @Test @MainActor func cancelledAXFrameLookupNeverPressesOrFallsBack() async {
@@ -239,124 +98,267 @@ private func scanner(environment: ItemScanner.PressEnvironment) -> ItemScanner {
     #expect(!fallback)
 }
 
-// A X Y H T. X is moved before T, then Y before X: A H Y X T.
-private func original() -> [MenuBarItem] {
-    [item(10, role: .control(.alwaysHidden)), item(1), item(2), item(20, role: .control(.hidden)), item(30, role: .control(.toggle))]
+
+/// The controller sees only this in-memory snapshot. No controls, desktop
+/// observers, permission checks, image capture or real Accessibility calls.
+private func controller(_ state: Locked<[MenuBarItem]>, settings: MenuBarSettings = .init()) -> MenuBarController {
+    MenuBarController(settings: settings, scanner: ItemScanner(snapshot: { state.get }),
+                      environment: .init(usesSystemUI: false, reportError: { _ in }))
 }
 
-@Test @MainActor func multipleReturnsRestoreOriginalSectionInEitherOrder() async {
-    for returnOrder: [CGWindowID] in [[1, 2], [2, 1]] {
-        let fake = FakeMenuBar(original())
-        fake.acceptMoves = true
-        let mover = ItemMover(environment: fake.environment)
-        let controller = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: fake.snapshot), mover: mover)
-        controller.beginSession() // exercise input lifecycle without installing GUI controls/observers
-        controller.recordReturn(.init(item: 1, order: fake.snapshot()))
-        fake.place(1, before: 30)
-        controller.recordReturn(.init(item: 2, order: fake.snapshot()))
-        fake.place(2, before: 1)
-        #expect(fake.snapshot().map(\.windowID) == [10, 20, 2, 1, 30])
-        #expect(controller.temporarilyShown[1]?.isBack(in: fake.snapshot(), excluding: [1, 2]) == false)
-        #expect(controller.temporarilyShown[1]?.request(in: fake.snapshot(), excluding: [1, 2])?.target == 20)
-        // Repeated activation cannot overwrite X's original section.
-        controller.recordReturn(.init(item: 1, order: fake.snapshot()))
-        #expect(controller.temporarilyShown[1]?.section == .hidden)
-        controller.putBack(returnOrder)
-        for _ in 0..<150 where !controller.temporarilyShown.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-        #expect(controller.temporarilyShown.isEmpty)
-        #expect(fake.snapshot().map(\.windowID) == [10, 1, 2, 20, 30])
-        controller.stop()
-        fake.expectReleased()
+private func sectionItems() -> [MenuBarItem] {
+    [item(1), item(10, role: .control(.alwaysHidden)), item(2), item(20, role: .control(.hidden)), item(3)]
+        .enumerated().map { i, item in
+            var copy = item
+            copy.frame = CGRect(x: 100 + i * 30, y: 0, width: 30, height: 24)
+            return copy
+        }
+}
+
+@Test @MainActor func manualArrangementHoldsSectionsOpenAndRestoresPreviousVisibility() {
+    for previous: MenuBarController.Visibility in [.hidden, .shown, .shownAll] {
+        let state = Locked(sectionItems())
+        let c = controller(state)
+        c.start()
+        if previous != .hidden { c.show(all: previous == .shownAll, reason: .user) }
+        c.beginArrangement()
+        c.beginArrangement() // repeated entry must not overwrite the saved visibility
+        #expect(c.isArranging && c.visibility == .shownAll)
+        c.hide()
+        c.toggle(all: false)
+        c.triggers.onHoverExit()
+        c.triggers.onHide()
+        c.show(all: false, reason: .hover)
+        c.showForChange(state.get[0])
+        c.update(settings: MenuBarSettings())
+        #expect(c.isArranging && c.visibility == .shownAll)
+        #expect(c.controls.hidden == nil && !c.triggers.isActive)
+        c.finishArrangement()
+        #expect(!c.isArranging && c.visibility == previous)
+        c.finishArrangement()
+        #expect(c.visibility == previous)
+        c.stop()
     }
 }
 
-@Test @MainActor func watcherResumesAfterOnlyWatchedItemReturns() async {
-    let fake = FakeMenuBar(original().filter { $0.windowID != 2 })
-    fake.acceptMoves = true
-    let controller = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: fake.snapshot),
-                                       mover: ItemMover(environment: fake.environment))
-    controller.beginSession()
-    let watcher = ChangeWatcher(controller: controller, canCaptureImages: { false })
-    controller.changeWatcher = watcher
-    watcher.update(keys: [item(1).key])
+@Test @MainActor func doneRefreshesSectionsFromNativePositions() {
+    let state = Locked(sectionItems())
+    let c = controller(state)
+    c.start()
+    #expect(c.sections()[2] == .hidden)
+    c.beginArrangement()
+    // Represents a user's native Command-drag; Bento only reads the result.
+    state.withValue { items in
+        let i = items.firstIndex { $0.windowID == 2 }!
+        items[i].frame.origin.x = 300
+        items.sort { $0.frame.midX < $1.frame.midX }
+    }
+    c.finishArrangement()
+    #expect(c.sections()[2] == .visible)
+    #expect(c.items == state.get)
+    #expect(c.settings.layout == SavedLayout())
+    c.stop()
+}
+
+@Test @MainActor func settingsCanAttachAfterEnableAndReplaceStoppedController() {
+    let model = ArrangeModel(capture: { _, done in done([:]) })
+    model.attach(nil) // Settings was already open with the module disabled.
+    let first = controller(Locked(sectionItems()))
+    first.start()
+    model.attach(first)
+    #expect(model.allItems.count == 3)
+    model.begin()
+    #expect(model.arranging)
+    first.stop()
+    #expect(!model.arranging && model.allItems.isEmpty)
+    model.attach(nil)
+    let second = controller(Locked([item(9)]))
+    second.start()
+    model.attach(second)
+    model.begin()
+    first.notify() // a retired controller must not overwrite the current view
+    #expect(model.arranging && model.allItems.map(\.windowID) == [9])
+    model.detach()
+    #expect(!second.isArranging && second.visibility == .hidden)
+    #expect(model.allItems.isEmpty && model.images.isEmpty)
+    second.stop()
+}
+
+@Test @MainActor func replacingSettingsControllerFinishesOldArrangement() {
+    let first = controller(Locked(sectionItems()))
+    let second = controller(Locked([]))
+    first.start(); second.start()
+    let model = ArrangeModel(capture: { _, done in done([:]) })
+    model.attach(first)
+    model.begin()
+    model.attach(second)
+    #expect(!first.isArranging && first.visibility == .hidden)
+    #expect(!model.arranging && model.allItems.isEmpty)
+    model.detach()
+    first.stop(); second.stop()
+}
+
+@Test @MainActor func stopDuringManualArrangementClearsStateWithoutRestorationWork() {
+    let state = Locked(sectionItems())
+    let c = controller(state)
+    c.start()
+    c.beginArrangement()
+    c.stop()
+    c.finishArrangement()
+    c.beginArrangement()
+    c.activate(state.get[0])
+    #expect(!c.isArranging && c.visibility == .hidden && c.items.isEmpty)
+    #expect(state.get == sectionItems())
+}
+
+@Test @MainActor func legacyMovementSettingsCannotChangeNativeOrder() throws {
+    let legacy = try JSONDecoder().decode(MenuBarSettings.self, from: Data(#"""
+    {"keepItemsInPlace":true,"layout":{"hidden":["test.app/Item-3"]},
+     "profiles":[{"name":"Work","displays":["Built-in Retina Display"],"layout":{"alwaysHidden":["test.app/Item-3"]}}]}
+    """#.utf8))
+    #expect(legacy.keepItemsInPlace && legacy.profiles.count == 1)
+    let original = sectionItems()
+    let state = Locked(original)
+    let c = controller(state, settings: legacy)
+    c.start()
+    c.update(settings: legacy)
+    c.refresh(details: true)
+    c.beginArrangement()
+    c.finishArrangement()
+    c.show(all: true, reason: .user)
+    c.hide()
+    #expect(c.sections()[3] == .visible) // both saved layouts request a different section
+    #expect(c.items == original && state.get == original)
+    #expect(c.settings.layout == legacy.layout && c.settings.profiles == legacy.profiles)
+    c.stop()
+    #expect(state.get == original)
+}
+
+@Test @MainActor func mismatchedAXElementReportsUnavailableWithoutPerformingAction() async {
+    let calls = Locked(0)
+    let s = scanner(environment: .init(axFrame: { _ in CGRect(x: 1, y: 0, width: 30, height: 24) },
+                                      windowFrame: { _ in CGRect(x: 100, y: 0, width: 30, height: 24) },
+                                      perform: { _ in calls.withValue { $0 += 1 }; return .success }))
+    let pressed = await withCheckedContinuation { continuation in
+        s.press(item(1)) { continuation.resume(returning: $0) }
+    }
+    #expect(!pressed && calls.get == 0)
+    s.stop()
+}
+
+@Test @MainActor func cancellingAXWorkStillAllowsNextExplicitPress() async {
+    let gate = Gate()
+    let reads = Locked(0), calls = Locked(0)
+    let frame = CGRect(x: 100, y: 0, width: 30, height: 24)
+    let s = scanner(environment: .init(axFrame: { _ in
+        let first = reads.withValue { n in n += 1; return n == 1 }
+        if first { gate.block() }
+        return frame
+    }, windowFrame: { _ in frame }, perform: { _ in calls.withValue { $0 += 1 }; return .success }))
+    var staleCallback = false
+    s.press(item(1)) { _ in staleCallback = true }
+    gate.waitForEntry()
+    s.cancelPresses()
+    gate.release.signal()
+    let pressed = await withCheckedContinuation { continuation in
+        s.press(item(1)) { continuation.resume(returning: $0) }
+    }
+    #expect(pressed && calls.get == 1 && !staleCallback)
+    s.stop()
+}
+
+@Test @MainActor func activationRevealsInPlaceAndReportsAXFailureOnce() async {
+    let all = sectionItems(), frame = sectionItems()[0].frame
+    let calls = Locked(0)
+    let element = AXUIElementCreateApplication(42)
+    let s = ItemScanner(owners: [1: .init(pid: 42, appName: "Test", element: element)],
+                        pressEnvironment: .init(axFrame: { _ in frame }, windowFrame: { _ in frame },
+                                                perform: { _ in calls.withValue { $0 += 1 }; return .actionUnsupported }),
+                        snapshot: { all })
+    var checked = false
+    let c = MenuBarController(settings: .init(), scanner: s, environment: .init(usesSystemUI: false,
+        canActivate: { _ in checked = true; return true }, reportError: { _ in }))
+    c.start()
+    c.activate(all[0])
+    #expect(c.visibility == .shownAll && checked)
+    // Wait only on injected state; no desktop queries or input.
+    for _ in 0..<100 where c.lastError == nil { try? await Task.sleep(for: .milliseconds(5)) }
+    #expect(c.lastError?.contains("manually") == true)
+    #expect(calls.get == 1 && c.items == all)
+    c.stop()
+}
+
+@Test @MainActor func overflowActivationNeverPressesOrChangesOrder() {
+    let all = sectionItems()
+    let c = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: { all }),
+                             environment: .init(usesSystemUI: false, canActivate: { _ in false }, reportError: { _ in }))
+    c.start()
+    c.activate(all[0])
+    #expect(c.visibility == .shownAll)
+    #expect(c.items == all && c.lastError?.contains("notch") == true)
+    c.stop()
+}
+
+@Test @MainActor func beginningArrangementCancelsPendingAXActivation() async {
+    let all = sectionItems(), frame = sectionItems()[0].frame
+    let calls = Locked(0), gate = Gate()
+    let s = ItemScanner(owners: [1: .init(pid: 42, appName: "Test", element: AXUIElementCreateApplication(42))],
+                        pressEnvironment: .init(axFrame: { _ in gate.block(); return frame }, windowFrame: { _ in frame },
+                                                perform: { _ in calls.withValue { $0 += 1 }; return .success }), snapshot: { all })
+    let c = MenuBarController(settings: .init(), scanner: s,
+                             environment: .init(usesSystemUI: false, canActivate: { _ in true }, reportError: { _ in }))
+    c.start()
+    c.activate(all[0])
+    gate.waitForEntry()
+    c.beginArrangement()
+    gate.release.signal()
+    c.stop() // drains the cancelled frame lookup
+    await mainTurn()
+    #expect(calls.get == 0 && c.lastError == nil)
+}
+
+@Test @MainActor func validatedAXPressSucceedsWithoutAdditionalActions() async {
+    for result: AXError in [.success, .cannotComplete] {
+        let frame = CGRect(x: 100, y: 0, width: 30, height: 24)
+        let calls = Locked(0)
+        let s = scanner(environment: .init(axFrame: { _ in frame }, windowFrame: { _ in frame },
+                                          perform: { _ in calls.withValue { $0 += 1 }; return result }))
+        let pressed = await withCheckedContinuation { continuation in
+            s.press(item(1)) { continuation.resume(returning: $0) }
+        }
+        #expect(pressed && calls.get == 1)
+        s.stop()
+    }
+}
+
+@Test @MainActor func staleItemCannotActivateAReusedWindowID() {
+    var replacement = item(1)
+    replacement.ownerPID = 100
+    replacement.bundleID = "another.app"
+    let c = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: { [replacement] }),
+                             environment: .init(usesSystemUI: false, canActivate: { _ in
+        Issue.record("Reused window should be rejected before activation")
+        return true
+    }, reportError: { _ in }))
+    c.start()
+    c.activate(item(1))
+    #expect(c.lastError != nil)
+    #expect(c.items == [replacement])
+    c.stop()
+}
+
+@Test @MainActor func manualArrangementSuspendsAndResumesIconWatcher() {
+    let all = sectionItems()
+    let c = controller(Locked(all))
+    c.start()
+    let watcher = ChangeWatcher(controller: c, canCaptureImages: { false })
+    c.changeWatcher = watcher
+    watcher.update(keys: [all[0].key])
     #expect(watcher.isRunning)
-    controller.recordReturn(.init(item: 1, order: fake.snapshot()))
-    fake.place(1, before: 30)
-    controller.syncChangeWatcher()
+    c.beginArrangement()
     #expect(!watcher.isRunning)
-    controller.putBackTemporarilyShown()
-    for _ in 0..<150 where !controller.temporarilyShown.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-    #expect(controller.temporarilyShown.isEmpty)
+    c.finishArrangement()
     #expect(watcher.isRunning)
-    controller.stop()
+    c.stop()
     #expect(!watcher.isRunning)
-}
-
-@Test func returnRejectsMovedAnchorsAndUsesReplacementSeparator() {
-    let trip = MenuBarController.PendingReturn(item: 1, order: original())
-    let visible = [item(10, role: .control(.alwaysHidden)), item(20, role: .control(.hidden)), item(1), item(2), item(30, role: .control(.toggle))]
-    #expect(!trip.isBack(in: visible, excluding: [])) // adjacent to Y, but both visible
-    #expect(trip.request(in: visible, excluding: [])?.target == 20)
-    let replacement = [item(21, role: .control(.hidden)), item(1), item(30, role: .control(.toggle))]
-    #expect(trip.request(in: replacement, excluding: [1])?.target == 21)
-}
-
-@Test @MainActor func returnFailureAndDisappearanceResyncWatcher() async {
-    for gone in [false, true] {
-        let fake = FakeMenuBar(original().filter { $0.windowID != 2 })
-        fake.permission = false
-        let controller = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: fake.snapshot),
-                                           mover: ItemMover(environment: fake.environment))
-        controller.beginSession()
-        let watcher = ChangeWatcher(controller: controller, canCaptureImages: { false })
-        controller.changeWatcher = watcher
-        watcher.update(keys: [item(1).key])
-        #expect(watcher.isRunning)
-        controller.recordReturn(.init(item: 1, order: fake.snapshot()))
-        fake.place(1, before: 30)
-        if gone { fake.state.withValue { $0.removeAll { $0.windowID == 1 } } }
-        // Leave the old hidden-item timer running; every return outcome must
-        // re-evaluate it, even a failed move or a window that disappeared.
-        controller.putBackTemporarilyShown()
-        #expect(!watcher.isRunning)
-        #expect(controller.temporarilyShown.isEmpty == gone)
-        #expect(fake.events.get.isEmpty)
-        controller.stop()
-    }
-}
-
-@Test @MainActor func successfulAdjacencyInWrongSectionKeepsReturnRecord() async {
-    let fake = FakeMenuBar(original().filter { $0.windowID != 2 })
-    fake.acceptMoves = true
-    let controller = MenuBarController(settings: .init(), scanner: ItemScanner(snapshot: fake.snapshot),
-                                       mover: ItemMover(environment: fake.environment))
-    controller.beginSession()
-    controller.recordReturn(.init(item: 1, order: fake.snapshot()))
-    fake.place(1, before: 30)
-    fake.onPost = { input in
-        // The worker has checked placement, but another layout change occurs
-        // before the main-thread completion accepts the result.
-        if case .cursorHidden(false, _) = input { fake.place(1, before: 30) }
-    }
-    controller.putBackTemporarilyShown()
-    for _ in 0..<100 where controller.temporarilyShown[1]?.attempts == 0 { try? await Task.sleep(for: .milliseconds(10)) }
-    #expect(controller.temporarilyShown[1]?.attempts == 1)
-    fake.permission = false
-    controller.stop()
-}
-
-@Test @MainActor func busyReturnDoesNotCaptureHideOrRestoreCursor() async {
-    let fake = FakeMenuBar()
-    fake.idle = false
-    let cursorReads = Locked(0)
-    var environment = fake.environment
-    environment.cursor = { cursorReads.withValue { $0 += 1 }; return CGPoint(x: 400, y: 400) }
-    let mover = ItemMover(environment: environment)
-    let result = await withCheckedContinuation { continuation in
-        mover.move([.init(item: 1, target: 3, side: .left)]) { continuation.resume(returning: $0) }
-    }
-    guard case .failure(.userBusy) = result else { Issue.record("Busy return should wait without moving"); return }
-    #expect(cursorReads.get == 0)
-    #expect(fake.events.get.isEmpty)
-    mover.stop()
 }

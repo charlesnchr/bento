@@ -3,11 +3,11 @@ import SwiftUI
 import BentoCore
 
 /// The Bento Bar: a strip just below the menu bar with the hidden items'
-/// images. Clicking one opens the real item's menu in the menu bar (Bento
-/// shows the item in place, or moves it into view for the click and back).
+/// images. Opening reveals the item in place and attempts Accessibility press.
+/// Unavailable items require a manual click or repositioning in the menu bar.
 /// Items that don't fit next to the notch are listed too.
 ///
-/// Keyboard: ←/→ select, Return opens, ⇧Return right-clicks, Esc closes.
+/// Keyboard: ←/→ select, Return opens, Esc closes.
 /// Created on show and released on close, images included.
 final class BentoBar: NSObject, NSWindowDelegate {
     private unowned let controller: MenuBarController
@@ -38,6 +38,7 @@ final class BentoBar: NSObject, NSWindowDelegate {
     }
 
     private func open(all: Bool, closingAfter: TimeInterval?) {
+        guard !controller.isArranging else { return }
         let sections = controller.sections()
         let overflow = Set(controller.overflowItems().map(\.windowID))
         let entries = controller.items.filter { item in
@@ -49,15 +50,10 @@ final class BentoBar: NSObject, NSWindowDelegate {
             }
         }
         let model = BarModel(items: entries)
-        model.activate = { [weak self] item, right in
+        model.activate = { [weak self] item in
             guard let self else { return }
             self.close()
-            self.controller.activate(item, right: right)
-        }
-        model.moveToVisible = { [weak self] item in
-            guard let self else { return }
-            self.close()
-            self.controller.move(item, to: .visible) { _ in }
+            self.controller.activate(item)
         }
         self.model = model
 
@@ -151,8 +147,7 @@ final class BentoBar: NSObject, NSWindowDelegate {
         switch (e.keyCode, mods) {
         case (123, _), (48, [.shift]): model.select(-1)               // ← ⇧⇥
         case (124, _), (48, []): model.select(1)                      // → ⇥
-        case (36, []), (76, []), (49, []): model.activateSelected(right: false)
-        case (36, [.shift]), (76, [.shift]): model.activateSelected(right: true)
+        case (36, []), (76, []), (49, []): model.activateSelected()
         case (53, _), (13, [.command]): close()                       // Esc ⌘W
         default: return false
         }
@@ -164,8 +159,7 @@ final class BarModel: ObservableObject {
     let items: [MenuBarItem]
     @Published var images: [CGWindowID: NSImage] = [:]
     @Published var selected = 0
-    var activate: (MenuBarItem, Bool) -> Void = { _, _ in }
-    var moveToVisible: (MenuBarItem) -> Void = { _ in }
+    var activate: (MenuBarItem) -> Void = { _ in }
 
     init(items: [MenuBarItem]) {
         self.items = items
@@ -177,9 +171,9 @@ final class BarModel: ObservableObject {
         selected = (selected + delta + items.count) % items.count
     }
 
-    func activateSelected(right: Bool) {
+    func activateSelected() {
         guard items.indices.contains(selected) else { return }
-        activate(items[selected], right)
+        activate(items[selected])
     }
 }
 
@@ -195,11 +189,9 @@ private struct BarView: View {
                     .padding(.horizontal, 10)
             }
             ForEach(Array(model.items.enumerated()), id: \.element.windowID) { index, item in
-                BarItemButton(item: item, image: model.images[item.windowID], selected: index == model.selected) { right in
+                BarItemButton(item: item, image: model.images[item.windowID], selected: index == model.selected) {
                     model.selected = index
-                    model.activate(item, right)
-                } moveToVisible: {
-                    model.moveToVisible(item)
+                    model.activate(item)
                 }
             }
         }
@@ -216,8 +208,7 @@ private struct BarItemButton: View {
     let item: MenuBarItem
     let image: NSImage?
     let selected: Bool
-    let action: (_ right: Bool) -> Void
-    let moveToVisible: () -> Void
+    let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -230,14 +221,8 @@ private struct BarItemButton: View {
                 .strokeBorder(Color.accentColor.opacity(selected ? 0.8 : 0), lineWidth: 1.5))
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
-            .onTapGesture { action(false) }
+            .onTapGesture { action() }
             .help(item.subtitle.map { "\(item.name) — \($0)" } ?? item.name)
-            .contextMenu {
-                Button("Open") { action(false) }
-                Button("Right-Click") { action(true) }
-                Divider()
-                Button("Move to Visible Section", action: moveToVisible)
-            }
             .accessibilityElement()
             .accessibilityLabel(item.name)
             .accessibilityAddTraits(.isButton)
