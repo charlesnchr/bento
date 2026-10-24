@@ -813,6 +813,7 @@ final class MenuBarController {
                          "expandedLength": Double(controls.expandedLength)],
             "items": items.map { ["key": $0.key, "name": $0.name, "section": (s[$0.windowID] ?? .visible).rawValue,
                                   "x": Double($0.frame.minX), "width": Double($0.frame.width), "window": Int($0.windowID),
+                                  "windowOnScreen": $0.windowIsOnScreen.map { $0 as Any } ?? NSNull(),
                                   "role": "\($0.role)"] },
             "arranging": isArranging,
             "overflow": overflowItems(items).map(\.key),

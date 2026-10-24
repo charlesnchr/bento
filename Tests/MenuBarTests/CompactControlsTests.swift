@@ -76,6 +76,21 @@ private func needsCompact(_ items: [MenuBarItem], displays: [MenuBarLayout.Recov
     #expect(needsCompact(items))
 }
 
+@Test func nativeHiddenCollapsedControlsTriggerCompactModeDespiteClearGeometry() {
+    var items = gskItems(compact: true)
+    items[0].windowIsOnScreen = false // measured at x958 on macOS 15
+    items[1].windowIsOnScreen = false // measured at x966 on macOS 15
+    #expect(needsCompact(items, showChevron: false))
+    items[0].windowIsOnScreen = true
+    #expect(needsCompact(items, showChevron: false))
+    items[1].windowIsOnScreen = true
+    #expect(!needsCompact(items, showChevron: false))
+    // Parked dividers remain an expected part of hiding, not crowding evidence.
+    items[0].windowIsOnScreen = false
+    items[0].frame = frame(-1000, 1928)
+    #expect(!needsCompact(items, showChevron: false))
+}
+
 @Test func expandedFramesNeverMasqueradeAsCollapsedOverflow() {
     for expandedIndex in [0, 1] {
         var items = gskItems()

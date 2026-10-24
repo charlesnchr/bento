@@ -102,6 +102,7 @@ enum MenuBarLayout {
         let kinds: [ControlItems.Kind] = [.hidden] + (alwaysHiddenSection ? [.alwaysHidden] : [])
             + (showChevron ? [.toggle] : [])
         var frames: [CGRect] = []
+        var nativeOverflow = false
         for kind in kinds {
             let matches = items.filter { $0.role == .control(kind) }
             guard matches.count == 1 else { return false }
@@ -112,8 +113,11 @@ enum MenuBarLayout {
                   abs(f.minY - display.frame.minY) <= 1, f.maxY <= display.frame.maxY,
                   f.maxX <= display.frame.maxX else { return false }
             frames.append(f)
+            nativeOverflow = nativeOverflow || matches[0].windowIsOnScreen == false
         }
-        return frames.contains { $0.minX < display.statusArea.lowerBound }
+        // macOS can reserve more room beside the notch than the auxiliary
+        // screen geometry reports. Its on-screen flag catches that culling.
+        return nativeOverflow || frames.contains { $0.minX < display.statusArea.lowerBound }
     }
 
     private static func validFrame(_ f: CGRect) -> Bool {
@@ -152,7 +156,8 @@ enum MenuBarLayout {
         let shell = recoveryShell(items, ownPID: ownPID)
         let recovery = shell + chevrons
         guard solid.count == 1, !shell.isEmpty, !showChevron || chevrons.count == 1,
-              recovery.allSatisfy({ validFrame($0.frame) }), validFrame(solid[0].frame) else { return collapsed }
+              recovery.allSatisfy({ validFrame($0.frame) && $0.windowIsOnScreen != false }),
+              validFrame(solid[0].frame) else { return collapsed }
         // Require one unambiguous display containing every known recovery
         // control. A missing, parked, notched or split-display control fails closed.
         let candidates = displays.filter { d in
