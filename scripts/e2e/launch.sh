@@ -148,6 +148,14 @@ launch -n
 ready
 for _ in $(seq 1 40); do
   check_session
+  diag
+  if python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+ready = s['controls']['hidden'] and not s['controlRelayoutPending'] and any(i['role'] == 'bentoIcon' for i in s['items'])
+sys.exit(0 if ready else 1)
+PY
+  then break; fi
   sleep 0.1
 done
 diag
