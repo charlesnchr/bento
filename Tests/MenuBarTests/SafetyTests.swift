@@ -92,71 +92,34 @@ private func frame(_ x: CGFloat, _ w: CGFloat = 30) -> CGRect { CGRect(x: x, y: 
     #expect(!MenuBarLayout.sameItem(frame(100), frame(100).offsetBy(dx: 0, dy: 4)))
 }
 
-// MARK: - Putting back an item moved into view for a click
+// MARK: - Structural boundary: MenuBar has no cursor or synthetic input API
 
-@Test func returnNeighboursStayInTheItemsSection() {
-    // Left to right: always hidden a1, A, hidden h1 X h2, H, chevron, visible v1.
-    let order = ["a1", "A", "h1", "X", "h2", "H", "T", "v1"]
-    let bounds: Set<String> = ["A", "H", "T"]
-    let n = MenuBarLayout.returnNeighbours(of: "X", in: order, bounds: bounds)
-    #expect(n.right == ["h2", "H"])
-    #expect(n.left == ["h1", "A"])
-    // At the left end of the always hidden section: nothing on its left.
-    let far = MenuBarLayout.returnNeighbours(of: "a1", in: order, bounds: bounds)
-    #expect(far.right == ["A"])
-    #expect(far.left.isEmpty)
-    #expect(MenuBarLayout.returnNeighbours(of: "gone", in: order, bounds: bounds) == ([], []))
+private func menuBarSources() throws -> [(URL, String)] {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("Sources/MenuBar")
+    return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        .filter { $0.pathExtension == "swift" }
+        .map { ($0, try String(contentsOf: $0)) }
 }
 
-@Test func returnFallsBackToTheNextNeighbour() {
-    let right = ["h2", "H"], left = ["h1", "A"]
-    #expect(MenuBarLayout.returnDestination(right: right, left: left, present: ["h2", "H", "h1", "A"]) == .leftOf("h2"))
-    // Its right neighbour's app quit: left of the next one (the separator).
-    #expect(MenuBarLayout.returnDestination(right: right, left: left, present: ["H", "h1", "A"]) == .leftOf("H"))
-    // Nothing on the right (module stopping): right of its left neighbour.
-    #expect(MenuBarLayout.returnDestination(right: right, left: left, present: ["h1"]) == .rightOf("h1"))
-    #expect(MenuBarLayout.returnDestination(right: right, left: left, present: []) == nil)
-}
-
-@Test func failedReturnsAreRetriedNotDropped() {
-    typealias R = MenuBarLayout.ReturnRetry
-    // A held key or button: wait for the user however long it takes.
-    for attempt in [1, 2, 10, 100] {
-        #expect(MenuBarLayout.retry(afterFailedReturn: .userBusy, attempt: attempt) == R.after(0.5))
+@Test func menuBarHasNoCursorOrSyntheticInputPath() throws {
+    let sources = try menuBarSources()
+    #expect(!sources.isEmpty)
+    let forbidden = ["ItemMover", "CGEvent", "CGPost", "CGWarp", "CGDisplayHideCursor", "CGDisplayShowCursor",
+                     "CGAssociateMouse", "NSCursor", "SetsCursorInBackground", "CGSSetConnectionProperty",
+                     "CGSPost", "IOHIDPostEvent", "Keyboard.", "NSEvent.mouseEvent", "NSEvent.keyEvent",
+                     "AXUIElementSetAttributeValue", "osascript", "Process("]
+    for (file, source) in sources {
+        for api in forbidden { #expect(!source.contains(api), "\(file.lastPathComponent) contains \(api)") }
     }
-    // Its neighbour went away: the next one, a few times; then the next chance.
-    #expect(MenuBarLayout.retry(afterFailedReturn: .targetGone, attempt: 1) == R.after(0.1))
-    #expect(MenuBarLayout.retry(afterFailedReturn: .targetGone, attempt: 8) == R.later)
-    // macOS didn't take the move: backing off, then the next chance (the record stays).
-    #expect(MenuBarLayout.retry(afterFailedReturn: .notPlaced, attempt: 1) == R.after(0.5))
-    #expect(MenuBarLayout.retry(afterFailedReturn: .notPlaced, attempt: 3) == R.after(1.5))
-    #expect(MenuBarLayout.retry(afterFailedReturn: .notPlaced, attempt: 4) == R.later)
-    #expect(MenuBarLayout.retry(afterFailedReturn: .noAccessibility, attempt: 1) == R.later)
-    #expect(MenuBarLayout.retry(afterFailedReturn: .cancelled, attempt: 1) == R.later)
-    // Only an item that's gone (its app quit) has nothing to go back to.
-    #expect(MenuBarLayout.retry(afterFailedReturn: .itemGone, attempt: 1) == R.drop)
 }
 
-@Test func pendingReturnRecordsNeighboursAndFallsBack() {
-    func control(_ id: CGWindowID, _ kind: ControlItems.Kind, x: CGFloat) -> MenuBarItem {
-        var i = barItem(id, kind.rawValue, x: x)
-        i.role = .control(kind)
-        return i
+@Test func legacyLayoutsHaveNoRuntimeConsumerOrMovementUI() throws {
+    for (file, source) in try menuBarSources() where file.lastPathComponent != "MenuBarSettings.swift" {
+        for removed in ["keepItemsInPlace", ".profiles", "settings.layout", "applyProfile", "applyDisplayProfile",
+                        "planMoves", "PendingReturn", "temporarilyShow", "restorePlaces", "learnLayout",
+                        ".draggable(", ".dropDestination(", "Move to ", "Right-Click", "menubar.profile-"] {
+            #expect(!source.contains(removed), "\(file.lastPathComponent) still contains \(removed)")
+        }
     }
-    // a1 A | h1 X h2 H | T v1
-    let order = [barItem(1, "a1", x: -900), control(2, .alwaysHidden, x: -800), barItem(3, "h1", x: -500),
-                 barItem(4, "X", x: -470), barItem(5, "h2", x: -440), control(6, .hidden, x: -410),
-                 control(7, .toggle, x: 600), barItem(8, "v1", x: 640)]
-    let trip = MenuBarController.PendingReturn(item: 4, order: order)
-    #expect(trip.right == [5, 6])
-    #expect(trip.left == [3, 2])
-    let first = trip.request(in: order, excluding: [4])
-    #expect(first?.target == 5 && first?.side == .left)
-    // h2 quit while X was in view: X goes left of the hidden separator instead.
-    let fallback = trip.request(in: order.filter { $0.windowID != 5 }, excluding: [4])
-    #expect(fallback?.target == 6 && fallback?.side == .left)
-    // Without a section boundary a surviving neighbour cannot prove that X
-    // will return to Hidden; keep the record rather than accepting Visible.
-    #expect(trip.request(in: order.filter { [3, 4].contains($0.windowID) }, excluding: [4]) == nil)
-    #expect(trip.request(in: order.filter { [1, 4, 8].contains($0.windowID) }, excluding: [4]) == nil)
 }

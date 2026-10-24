@@ -4,8 +4,8 @@ One small native macOS menu-bar app instead of seven: screenshots and annotation
 (Shottr), window management with snapping and modifier-drag (Rectangle Pro),
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
-synced in real time through a tiny Rust server, and hidden menu bar items
-(Bartender).
+synced in real time through a tiny Rust server, and manually arranged menu bar
+sections that Bento shows and hides.
 
 Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 ~0 % CPU with a ~16 MB footprint; the bundle is 6.5 MB.
@@ -21,7 +21,7 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Clipboard | Raycast/Alfred | text, rich text, images, files, links, colours; 30-day history, search incl. OCR of images, pins, paste/plain paste/⌘1–9 | ⌘⇧V |
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
-| Menu Bar (off by default) | Bartender / Ice | Visible, Hidden and Always Hidden sections; show them with the chevron, a shortcut, or hover/click/scroll on the menu bar; they hide again after a delay, on a click elsewhere or when the item’s menu closes; arrange the real items by dragging their images in Settings (Bento ⌘-drags them and checks every move); Bento Bar below the menu bar for hidden items and items lost behind the notch; quick search; per-item click shortcuts; show an item when its icon changes; item spacing; tint, border, shadow; profiles per display or by URL (e.g. from a Focus automation) | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
+| Menu Bar (off by default) | — | Visible, Hidden and Always Hidden sections; native manual Command-drag arrangement; chevron, shortcuts and optional hover/click/scroll reveal; automatic hiding; search and Bento Bar with Accessibility opening in place; per-item shortcuts and icon-change alerts; spacing and appearance | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
 
 **Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
 module with its current shortcut. Type to filter by name, module or key (“left”
@@ -29,6 +29,24 @@ finds Left Half, “⌘⇧” every ⌘⇧ shortcut). ↩ runs the selected acti
 you were in, ⌘E changes its shortcut in Settings, ⌘, opens Settings, and each
 module has a link to its own settings. The header shows whether Accessibility and
 Screen Recording are granted. A hint points to it once after launch.
+
+## Menu bar arrangement
+
+In Settings → Menu Bar, choose **Arrange in Menu Bar**, then hold **⌘** and drag
+items directly in the macOS menu bar. The solid separator bounds Hidden on its
+left; the dashed separator bounds Always Hidden on its left. Keep the dashed
+separator left of the solid one: items between them are Hidden, and items right
+of the solid separator are Visible. **Done** (or leaving the Settings page)
+reapplies the previous visibility and refreshes the item list. macOS remembers
+positions; Bento never controls the pointer, posts clicks, or reorders items.
+
+On crowded or notched displays, revealing a section may still leave items out
+of view. Search and Bento Bar can list them, but cannot create more menu bar
+space or relocate an item for a click. Opening uses a validated Accessibility
+press after revealing the item in place; if unavailable, click or reposition
+it manually, making space first if needed. Right-click the native item itself
+for its context menu. Legacy saved layouts, profiles and `keepItemsInPlace`
+remain readable for compatibility and have no effect on item positions.
 
 ## Install
 
@@ -79,7 +97,7 @@ Mac, so each machine can use its own identity. Without an identity, or with
 `--adhoc`, builds are signed ad hoc and grants reset on every build.
 
 On first launch, grant **Accessibility** (window management, modifier-drag,
-pasting, moving menu bar items) and **Screen Recording** (screenshots, menu bar
+pasting, opening menu bar items through search/shortcuts) and **Screen Recording** (screenshots, menu bar
 item names and images) from Settings → General.
 
 ## Configuration

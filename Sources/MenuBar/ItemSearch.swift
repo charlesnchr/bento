@@ -3,7 +3,7 @@ import SwiftUI
 import BentoCore
 
 /// Quick search for menu bar items (`menubar.search`): type part of an item's
-/// or app's name, ↑/↓ to pick, Return to open its menu (⇧Return right-clicks).
+/// or app's name, ↑/↓ to pick, Return to request Accessibility opening in place.
 /// A non-activating panel, so the frontmost app stays active; torn down on close.
 final class ItemSearch: NSObject, NSWindowDelegate {
     private unowned let controller: MenuBarController
@@ -34,11 +34,12 @@ final class ItemSearch: NSObject, NSWindowDelegate {
         guard panel == nil else { return }
         let sections = controller.sections()
         let model = SearchModel()
-        model.activate = { [weak self] item, right in
+        model.activate = { [weak self] item in
             guard let self else { return }
             self.close()
             // Let the panel go before the click, so focus returns first.
-            DispatchQueue.main.async { self.controller.activate(item, right: right) }
+            let controller = self.controller
+            DispatchQueue.main.async { [weak controller] in controller?.activate(item) }
         }
         self.model = model
 
@@ -122,8 +123,7 @@ final class ItemSearch: NSObject, NSWindowDelegate {
         switch (e.keyCode, mods) {
         case (125, []), (45, [.control]), (38, [.control]): model.move(1)     // ↓ ⌃N ⌃J
         case (126, []), (35, [.control]), (40, [.control]): model.move(-1)    // ↑ ⌃P ⌃K
-        case (36, []), (76, []): model.activateSelected(right: false)
-        case (36, [.shift]), (76, [.shift]): model.activateSelected(right: true)
+        case (36, []), (76, []): model.activateSelected()
         case (53, []): if model.query.isEmpty { close() } else { model.query = "" }
         case (13, [.command]): close()
         default: return false
@@ -171,7 +171,7 @@ final class SearchModel: ObservableObject {
     @Published var images: [CGWindowID: NSImage] = [:]
     private(set) var sections: [CGWindowID: MenuBarSection] = [:]
     private var all: [MenuBarItem] = []
-    var activate: (MenuBarItem, Bool) -> Void = { _, _ in }
+    var activate: (MenuBarItem) -> Void = { _ in }
 
     func set(items: [MenuBarItem], sections: [CGWindowID: MenuBarSection]) {
         let selectedID = results.indices.contains(selected) ? results[selected].windowID : nil
@@ -207,9 +207,9 @@ final class SearchModel: ObservableObject {
         selected = min(max(selected + delta, 0), results.count - 1)
     }
 
-    func activateSelected(right: Bool) {
+    func activateSelected() {
         guard results.indices.contains(selected) else { return }
-        activate(results[selected], right)
+        activate(results[selected])
     }
 }
 
@@ -225,7 +225,7 @@ private struct SearchView: View {
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .focused($focused)
-                    .onSubmit { model.activateSelected(right: false) }
+                    .onSubmit { model.activateSelected() }
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
@@ -236,7 +236,7 @@ private struct SearchView: View {
                         ForEach(Array(model.results.enumerated()), id: \.element.windowID) { index, item in
                             row(item, selected: index == model.selected)
                                 .id(item.windowID)
-                                .onTapGesture { model.selected = index; model.activateSelected(right: false) }
+                                .onTapGesture { model.selected = index; model.activateSelected() }
                         }
                     }
                     .padding(6)
@@ -253,7 +253,6 @@ private struct SearchView: View {
             Divider()
             HStack(spacing: 14) {
                 hint("↩", "Open")
-                hint("⇧↩", "Right-Click")
                 hint("esc", "Close")
                 Spacer()
             }

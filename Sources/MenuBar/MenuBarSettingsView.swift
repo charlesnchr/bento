@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 import BentoCore
 
 struct MenuBarSettingsView: View {
-    let module: MenuBarModule
+    @ObservedObject var module: MenuBarModule
     @StateObject private var model = ConfigSection("menubar", default: MenuBarSettings())
     @StateObject private var arrange = ArrangeModel()
     @State private var revision = 0
@@ -19,7 +18,6 @@ struct MenuBarSettingsView: View {
             rehideSection
             barSection
             changeSection
-            profilesSection
             spacingSection
             appearanceSection
             shortcutsSection
@@ -27,6 +25,7 @@ struct MenuBarSettingsView: View {
         .formStyle(.grouped)
         .onAppear { arrange.attach(module.controller) }
         .onDisappear { arrange.detach() }
+        .onChange(of: module.controller.map(ObjectIdentifier.init)) { _, _ in arrange.attach(module.controller) }
         .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
     }
 
@@ -37,11 +36,21 @@ struct MenuBarSettingsView: View {
             if module.controller == nil {
                 Text("Turn the module on to arrange menu bar items.").foregroundStyle(.secondary)
             } else {
+                HStack {
+                    if arrange.arranging {
+                        Text("Hold ⌘ and drag items in the native menu bar.")
+                        Spacer()
+                        Button("Done") { arrange.finish() }.keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("Arrange in Menu Bar") { arrange.begin() }
+                    }
+                }
+                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep the dashed separator left of the solid one; you can Command-drag the separators too.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !Permissions.accessibility || !Permissions.screenRecording {
                     HStack(spacing: 8) {
-                        Label("Arranging needs Accessibility (to move items) and Screen Recording (for their names and images).",
-                              systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
+                        Text("Accessibility enables opening items from search or shortcuts; Screen Recording supplies item names and images. Manual Command-drag needs neither.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if !Permissions.accessibility {
                             Button("Grant Accessibility…") { Permissions.grant(.accessibility) }
@@ -58,35 +67,31 @@ struct MenuBarSettingsView: View {
                 }
                 HStack(spacing: 8) {
                     if arrange.arranging {
-                        ProgressView().controlSize(.small)
-                        Text("Moving items…").foregroundStyle(.secondary)
+                        Text("Sections stay revealed until Done or you leave this page.").foregroundStyle(.secondary)
                     } else if let message = arrange.message {
                         Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     } else if !arrange.overflow.isEmpty {
-                        Label(arrange.overflow.count == 1 ? "1 item doesn’t fit beside the notch; it’s in the Bento Bar."
-                              : "\(arrange.overflow.count) items don’t fit beside the notch; they’re in the Bento Bar.",
+                        Label(arrange.overflow.count == 1 ? "1 item doesn’t fit in the menu bar. Make space or reposition it manually."
+                              : "\(arrange.overflow.count) items don’t fit in the menu bar. Make space or reposition them manually.",
                               systemImage: "rectangle.topthird.inset.filled")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Refresh") { arrange.load() }
-                        .disabled(arrange.arranging)
                 }
                 .font(.callout)
             }
         } header: {
             Text("Items")
         } footer: {
-            Text("Drag items between sections, or pick a section from an item’s menu. Bento moves the real items by ⌘-dragging them, as you would; the pointer is put back afterwards. ⌘-dragging items in the menu bar yourself works too.")
+            Text("Bento only shows and hides sections. Arrange items yourself with macOS Command-drag. A crowded or notched menu bar may not have room to reveal every item; Bento cannot bring overflow items into view for a click.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         if module.controller != nil, !arrange.allItems.isEmpty {
             Section("Item Shortcuts and Alerts") {
                 ForEach(arrange.allItems.filter { $0.hasStableKey && $0.role == .regular }) { item in
                     ItemRow(item: item, image: arrange.images[item.windowID], section: arrange.section(of: item),
-                            settings: $model.value, module: module, revision: revision) { section in
-                        arrange.move(item, to: section)
-                    }
+                            settings: $model.value, revision: revision)
                 }
             }
         }
@@ -102,11 +107,7 @@ struct MenuBarSettingsView: View {
             }
             Toggle(isOn: $model.value.alwaysHiddenSection) {
                 Text("Always Hidden section")
-                Text("Items left of the dashed separator only show with Show All Items or ⌥-click.")
-            }
-            Toggle(isOn: $model.value.keepItemsInPlace) {
-                Text("Keep items in their sections")
-                Text("When an app restarts and macOS puts its item somewhere else, move it back.")
+                Text("Items left of the dashed separator show with Show All Items, ⌥-click or Arrange in Menu Bar.")
             }
         } header: {
             Text("Sections")
@@ -157,7 +158,7 @@ struct MenuBarSettingsView: View {
         } header: {
             Text("Bento Bar")
         } footer: {
-            Text("The Bento Bar is a strip below the menu bar. Click an item there to open its menu in the menu bar. On a MacBook with a notch, items that don’t fit beside it show up there too.")
+            Text("The Bento Bar lists hidden and overflow items. Opening reveals an item in place and uses Accessibility when available. If it cannot open, click or reposition it manually in the menu bar; the strip does not provide extra menu bar space.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -190,34 +191,6 @@ struct MenuBarSettingsView: View {
         } footer: {
             Text("A watched hidden item shows for a few seconds when its icon changes. Watched items are looked at every 2 seconds while hidden.")
                 .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: Profiles
-
-    private var profilesSection: some View {
-        Section {
-            ForEach($model.value.profiles) { $profile in
-                ProfileRow(profile: $profile, module: module) {
-                    model.value.profiles.removeAll { $0.id == profile.id }
-                }
-            }
-            HStack {
-                Button("Save Current Layout as Profile") {
-                    module.controller?.learnLayout()
-                    let layout = ConfigStore.shared.section("menubar", default: MenuBarSettings()).layout
-                    var p = LayoutProfile(name: "Profile \(model.value.profiles.count + 1)", layout: layout)
-                    p.layout = layout
-                    model.value.profiles.append(p)
-                }
-                .disabled(module.controller == nil)
-                Spacer()
-            }
-        } header: {
-            Text("Profiles")
-        } footer: {
-            Text("A profile is a saved arrangement. Apply it from Bento’s menu, a shortcut, `open bento://action/<id>`, or a Focus automation in Shortcuts (Open URL). A profile tied to a display applies when that display becomes the main one.")
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
     }
 
@@ -317,38 +290,56 @@ final class ArrangeModel: ObservableObject {
     @Published private(set) var sections: [MenuBarSection: [MenuBarItem]] = [:]
     @Published var images: [CGWindowID: NSImage] = [:]
     @Published private(set) var arranging = false
-    @Published var message: String?
+    @Published private(set) var message: String?
     @Published private(set) var overflow: Set<CGWindowID> = []
     private weak var controller: MenuBarController?
     private var observer: NSObjectProtocol?
 
     var allItems: [MenuBarItem] { MenuBarSection.allCases.flatMap { sections[$0] ?? [] } }
 
+    private let capture: ([MenuBarItem], @escaping ([CGWindowID: NSImage]) -> Void) -> Void
+
+    init(capture: @escaping ([MenuBarItem], @escaping ([CGWindowID: NSImage]) -> Void) -> Void = ItemImages.capture) {
+        self.capture = capture
+    }
+
     func attach(_ controller: MenuBarController?) {
+        guard self.controller !== controller else { return }
+        detach()
         guard let controller else { return }
         self.controller = controller
-        if observer == nil {
-            observer = NotificationCenter.default.addObserver(forName: MenuBarController.didChange, object: controller, queue: .main) { [weak self] _ in
-                self?.reload()
-            }
+        observer = NotificationCenter.default.addObserver(forName: MenuBarController.didChange, object: nil, queue: .main) { [weak self, weak controller] note in
+            guard let controller, note.object as? MenuBarController === controller else { return }
+            self?.reload()
         }
         load()
     }
 
-    /// Settings closed or switched page: drop the images.
+    /// Leaving Settings finishes manual arrangement and releases item images.
     func detach() {
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
+        controller?.finishArrangement()
+        controller = nil
         images = [:]
         sections = [:]
+        overflow = []
+        arranging = false
+        message = nil
     }
 
+    func begin() { controller?.beginArrangement() }
+    func finish() { controller?.finishArrangement(); load() }
+
     func load() {
-        controller?.refresh(details: true) { [weak self] in
-            guard let self else { return }
-            self.controller?.learnLayout()
+        guard let controller else { return }
+        controller.refresh(details: true) { [weak self, weak controller] in
+            guard let self, let controller, self.controller === controller else { return }
             self.reload()
-            self.captureImages()
+            self.capture(self.allItems) { [weak self, weak controller] images in
+                guard let self, let controller, self.controller === controller else { return }
+                self.images = images
+            }
         }
     }
 
@@ -357,46 +348,20 @@ final class ArrangeModel: ObservableObject {
         sections = controller.arrangement()
         overflow = Set(controller.overflowItems().map(\.windowID))
         arranging = controller.isArranging
-    }
-
-    private func captureImages() {
-        ItemImages.capture(allItems) { [weak self] images in
-            guard let self, self.observer != nil else { return }
-            self.images.merge(images) { _, new in new }
-        }
+        message = controller.lastError
     }
 
     func section(of item: MenuBarItem) -> MenuBarSection {
         MenuBarSection.allCases.first { sections[$0]?.contains { $0.windowID == item.windowID } == true } ?? .visible
     }
 
-    func move(_ item: MenuBarItem, to section: MenuBarSection, before: CGWindowID? = nil) {
-        guard let controller, !controller.isArranging, item.isMovable else { return }
-        if item.role == .bentoIcon && section != .visible {
-            message = "Bento’s own icon stays in the visible section."
-            return
-        }
-        message = nil
-        arranging = true
-        controller.move(item, to: section, before: before) { [weak self] result in
-            guard let self else { return }
-            self.arranging = false
-            if case .failure(let f) = result { self.message = f.description }
-            self.reload()
-            self.captureImages()
-        }
-    }
-
-    func item(_ id: CGWindowID) -> MenuBarItem? { allItems.first { $0.windowID == id } }
-
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 }
 
-/// One section as a strip of item images, laid out like the menu bar.
+/// Read-only snapshot of each section; arrangement happens in the native menu bar.
 private struct SectionStrip: View {
     let section: MenuBarSection
     @ObservedObject var arrange: ArrangeModel
-    @State private var targeted = false
 
     var body: some View {
         let items = arrange.sections[section] ?? []
@@ -409,14 +374,10 @@ private struct SectionStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
                     ForEach(items) { item in
-                        ItemChip(item: item, image: arrange.images[item.windowID], overflow: arrange.overflow.contains(item.windowID),
-                                 arrange: arrange)
-                            .dropDestination(for: String.self) { ids, _ in
-                                drop(ids, before: item.windowID)
-                            }
+                        ItemChip(item: item, image: arrange.images[item.windowID], overflow: arrange.overflow.contains(item.windowID), arrange: arrange)
                     }
                     if items.isEmpty {
-                        Text("Drop items here").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 10)
+                        Text("No items").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 10)
                     }
                     Spacer(minLength: 40)
                 }
@@ -424,19 +385,9 @@ private struct SectionStrip: View {
                 .frame(minHeight: 34)
             }
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(MenuBarLook.barBackground))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.accentColor.opacity(targeted ? 0.9 : 0), lineWidth: 2))
-            .dropDestination(for: String.self) { ids, _ in drop(ids, before: nil) } isTargeted: { targeted = $0 }
             .environment(\.colorScheme, MenuBarLook.isDark ? .dark : .light)
         }
         .padding(.vertical, 2)
-    }
-
-    private func drop(_ ids: [String], before: CGWindowID?) -> Bool {
-        guard let raw = ids.first, let id = CGWindowID(raw), let item = arrange.item(id) else { return false }
-        if before == id { return false }
-        arrange.move(item, to: section, before: before)
-        return true
     }
 }
 
@@ -474,14 +425,8 @@ private struct ItemChip: View {
             .opacity(item.isMovable ? 1 : 0.55)
             .onHover { hovering = $0 }
             .help(help)
-            .modifier(Draggable(item: item))
             .contextMenu {
-                ForEach(MenuBarSection.allCases) { s in
-                    Button("Move to \(s.title)") { arrange.move(item, to: s) }
-                        .disabled(!item.isMovable || arrange.section(of: item) == s || (item.role == .bentoIcon && s != .visible))
-                }
-                Divider()
-                Button("Open") { arrange.open(item) }
+                Button("Open") { arrange.open(item) }.disabled(arrange.arranging)
             }
             .accessibilityElement()
             .accessibilityLabel(item.name)
@@ -515,18 +460,6 @@ private struct ItemChip: View {
     }
 }
 
-private struct Draggable: ViewModifier {
-    let item: MenuBarItem
-
-    func body(content: Content) -> some View {
-        if item.isMovable && item.role != .bentoIcon {
-            content.draggable(String(item.windowID))
-        } else {
-            content
-        }
-    }
-}
-
 extension ArrangeModel {
     func open(_ item: MenuBarItem) {
         controller?.activate(item)
@@ -539,9 +472,7 @@ private struct ItemRow: View {
     let image: NSImage?
     let section: MenuBarSection
     @Binding var settings: MenuBarSettings
-    let module: MenuBarModule
     let revision: Int
-    let move: (MenuBarSection) -> Void
 
     var body: some View {
         let _ = revision
@@ -559,11 +490,7 @@ private struct ItemRow: View {
                 }
             }
             Spacer()
-            Picker("Section", selection: Binding(get: { section }, set: { move($0) })) {
-                ForEach(MenuBarSection.allCases.filter { $0 != .alwaysHidden || settings.alwaysHiddenSection }) { Text($0.title).tag($0) }
-            }
-            .labelsHidden()
-            .frame(width: 130)
+            Text(section.title).foregroundStyle(.secondary).frame(width: 130)
             Toggle(isOn: Binding(
                 get: { settings.showOnChange.contains(item.key) },
                 set: { on in
@@ -580,44 +507,7 @@ private struct ItemRow: View {
                 set: { sc in
                     if let sc { settings.itemHotkeys[item.key] = sc.configString } else { settings.itemHotkeys.removeValue(forKey: item.key) }
                 }
-            ), placeholder: "Click Shortcut")
-        }
-    }
-}
-
-private struct ProfileRow: View {
-    @Binding var profile: LayoutProfile
-    let module: MenuBarModule
-    let delete: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                TextField("Name", text: $profile.name).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                Spacer()
-                Button("Apply") { module.applyProfile(profile) }
-                Menu("Display") {
-                    ForEach(NSScreen.screens.map(\.localizedName), id: \.self) { name in
-                        Toggle(name, isOn: Binding(
-                            get: { profile.displays.contains(name) },
-                            set: { on in
-                                if on { profile.displays.append(name) } else { profile.displays.removeAll { $0 == name } }
-                            }
-                        ))
-                    }
-                }
-                .fixedSize()
-                Button(role: .destructive, action: delete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-                    .help("Delete profile")
-            }
-            HStack(spacing: 12) {
-                Text("\(profile.layout.hidden.count) hidden, \(profile.layout.alwaysHidden.count) always hidden")
-                if !profile.displays.isEmpty { Text("On \(profile.displays.joined(separator: ", "))") }
-                Spacer()
-                Text("bento://action/\(MenuBarModule.profileActionID(profile))").textSelection(.enabled)
-            }
-            .font(.caption).foregroundStyle(.secondary)
+            ), placeholder: "Open Shortcut")
         }
     }
 }

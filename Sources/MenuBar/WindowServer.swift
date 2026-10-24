@@ -21,7 +21,6 @@ enum WindowServer {
     private typealias WindowList = @convention(c) (ConnectionID, ConnectionID, Int32, UnsafeMutablePointer<CGWindowID>, UnsafeMutablePointer<Int32>) -> CGError
     private typealias ScreenRect = @convention(c) (ConnectionID, CGWindowID, UnsafeMutablePointer<CGRect>) -> CGError
     private typealias WindowLevel = @convention(c) (ConnectionID, CGWindowID, UnsafeMutablePointer<CGWindowLevel>) -> CGError
-    private typealias SetProperty = @convention(c) (ConnectionID, ConnectionID, CFString, CFTypeRef) -> CGError
     private typealias ImageFromArray = @convention(c) (CGRect, CFArray, CGWindowImageOption) -> Unmanaged<CGImage>?
 
     private static let mainConnection = symbol("CGSMainConnectionID", as: MainConnection.self)
@@ -29,7 +28,6 @@ enum WindowServer {
     private static let menuBarWindowList = symbol("CGSGetProcessMenuBarWindowList", as: WindowList.self)
     private static let screenRect = symbol("CGSGetScreenRectForWindow", as: ScreenRect.self)
     private static let windowLevel = symbol("CGSGetWindowLevel", as: WindowLevel.self)
-    private static let setConnectionProperty = symbol("CGSSetConnectionProperty", as: SetProperty.self)
     // Obsoleted in the macOS 15 SDK, still the only way to capture items that
     // are parked off-screen (ScreenCaptureKit refuses those windows).
     private static let imageFromArray = symbol("CGWindowListCreateImageFromArray", as: ImageFromArray.self)
@@ -132,12 +130,13 @@ enum WindowServer {
         return windowInfo(d).frame
     }
 
-    /// Lets a background app hide and show the cursor (needed while posting
-    /// ⌘-drags, so the pointer doesn't visibly jump).
-    static func allowCursorControlInBackground() {
-        guard let mainConnection, let setConnectionProperty else { return }
-        let cid = mainConnection()
-        _ = setConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+    /// Read-only display geometry used to reject off-screen activation.
+    static func onScreen(_ frame: CGRect) -> Bool {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        return MenuBarLayout.isOnDisplay(frame, displays: ids.map { CGDisplayBounds($0) })
     }
 
     // MARK: Images

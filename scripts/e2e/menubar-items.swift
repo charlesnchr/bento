@@ -1,4 +1,5 @@
-// Helper for scripts/e2e/menubar.sh.
+// Optional native fixtures for the manual MenuBar smoke in docs/QA.md.
+// The old menubar.sh automation is obsolete. This helper has no pointer controls.
 // Build: swiftc -O scripts/e2e/menubar-items.swift -o /tmp/menubar-items
 //   menubar-items items <log> X Y Z   throwaway status items, one per title (autosave name
 //                                     BentoQA<title>); each logs "open <title>" to <log> when its
@@ -9,13 +10,11 @@
 //                                     (names are blank while an item is parked off-screen)
 //   menubar-items url <home> <url>    sends a bento:// URL to the dev instance with that BENTO_HOME
 //   menubar-items perform <action>    runs an action in running dev instances (scripts/perform)
-//   menubar-items pointer             prints the pointer position "x y" (top-left origin)
-//   menubar-items warp <x> <y>        puts the pointer there (no events posted)
 import AppKit
 
 let args = Array(CommandLine.arguments.dropFirst())
 func usage() -> Never {
-    FileHandle.standardError.write("usage: menubar-items items <log> TITLE... | order | url <home> <url> | perform <action> | pointer | warp <x> <y>\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: menubar-items items <log> TITLE... | order | url <home> <url> | perform <action>\n".data(using: .utf8)!)
     exit(2)
 }
 
@@ -56,14 +55,6 @@ case "perform":
     guard args.count == 2 else { usage() }
     DistributedNotificationCenter.default().postNotificationName(Notification.Name("com.charles.bento.dev.perform"), object: args[1],
                                                                  userInfo: nil, deliverImmediately: true)
-    exit(0)
-case "pointer":
-    let p = CGEvent(source: nil)?.location ?? .zero
-    print(Int(p.x), Int(p.y))
-    exit(0)
-case "warp":
-    guard args.count == 3, let x = Double(args[1]), let y = Double(args[2]) else { usage() }
-    CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
     exit(0)
 case "items":
     break
