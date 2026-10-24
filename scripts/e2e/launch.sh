@@ -121,3 +121,36 @@ done
 ready
 assert_window no
 echo 'PASS: cold action URL stays quiet and reaches the running app'
+stop_test
+
+python3 - "$H/config/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d['general']['showMenuBarIcon'] = True
+d['general']['enabledModules']['menubar'] = True
+with open(p, 'w') as f:
+    json.dump(d, f)
+PY
+launch -n
+ready
+for _ in $(seq 1 40); do
+  check_session
+  sleep 0.1
+done
+diag
+cp "$DIAG" "$H/menu-diagnostics.json"
+python3 - "$DIAG" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d['modules']['menubar']['state']
+assert d['accessibility'] and d['screenRecording'], 'native menu check needs existing grants'
+assert d['statusItem'] and d['settingsWindow']['open']
+assert d['modules']['menubar']['running'] and s['started']
+assert any(i['role'] == 'bentoIcon' for i in s['items']), 'real app did not identify its recovery icon'
+assert s['controls']['toggle'] and s['controls']['hidden']
+assert s['controls']['hiddenExpanded'], s['lastError']
+assert not s['lastError'], s['lastError']
+PY
+"$CTL" windows "$PID" | grep -q 'Bento Settings'
+echo 'PASS: signed app identifies its recovery icon and safely hides the section'

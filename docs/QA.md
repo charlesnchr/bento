@@ -54,6 +54,8 @@ disables every module and the status icon in an isolated config, and checks
 both fresh diagnostics and actual Settings window visibility. It sends no
 keyboard or mouse events. Unregister the test bundle from Launch Services and
 register the installed bundle again when the session ends.
+The final case enables Menu Bar only in that isolated config and checks the
+signed app's real recovery-icon ownership and initial safe expansion.
 
 ## MenuBar corrective regression checks
 
