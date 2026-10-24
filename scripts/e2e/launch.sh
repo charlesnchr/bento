@@ -195,9 +195,9 @@ assert s['controls']['hiddenExpanded'], s['lastError']
 PY
 echo 'PASS: Arrange exposes actual controls clear of the notch; Done resumes hiding'
 
-icon_x="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["modules"]["menubar"]["state"]; print(next(i["x"] for i in s["items"] if i["role"]=="bentoIcon"))' "$DIAG")"
+icon_window="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["modules"]["menubar"]["state"]; print(next(i["window"] for i in s["items"] if i["role"]=="bentoIcon"))' "$DIAG")"
 check_session
-"$CTL" status-menu "$PID" "$icon_x" 'Menu Bar' 'Show All Items'
+"$CTL" status-menu "$PID" "$icon_window" 'Menu Bar' 'Show All Items'
 sleep 0.5
 diag
 python3 - "$DIAG" <<'PY'
@@ -207,7 +207,7 @@ assert s['visibility'] == 'shownAll' and not s['barOpen'], s
 assert not s['controls']['hiddenExpanded'] and not s['controls']['alwaysHiddenExpanded']
 PY
 check_session
-"$CTL" status-menu "$PID" "$icon_x" 'Menu Bar' 'Hide Items'
+"$CTL" status-menu "$PID" "$icon_window" 'Menu Bar' 'Hide Items'
 sleep 0.5
 diag
 python3 - "$DIAG" <<'PY'

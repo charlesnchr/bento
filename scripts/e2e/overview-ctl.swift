@@ -8,7 +8,7 @@
 //   overview-ctl search-value <pid> <window>     value of the search field in the window whose title contains <window>
 //   overview-ctl menu <pid> <title>              open the process's menu bar (status item) menu, print the item's
 //                                                shortcut ("⌃⌥/") and choose it
-//   overview-ctl status-menu <pid> <x> <submenu> <title> choose an item in the known status icon's submenu
+//   overview-ctl status-menu <pid> <window-id> <submenu> <title> choose an item in the known status icon's submenu
 //   overview-ctl spawn-disclaimed <log> <cmd…>   start <cmd> as its own TCC responsible process (so it runs without
 //                                                this shell's Accessibility/Screen Recording grants); prints the pid
 import AppKit
@@ -100,14 +100,26 @@ case "search-value":
     print((attr(field, kAXValueAttribute) as String?) ?? "")
 case "menu", "status-menu":
     let targeted = cmd == "status-menu"
-    guard args.count == (targeted ? 5 : 3), let pid = pid_t(args[1]) else { fail("menu <pid> <title> or status-menu <pid> <x> <submenu> <title>") }
+    guard args.count == (targeted ? 5 : 3), let pid = pid_t(args[1]) else { fail("menu <pid> <title> or status-menu <pid> <window-id> <submenu> <title>") }
     let app = AXUIElementCreateApplication(pid)
     guard let extras: AXUIElement = attr(app, "AXExtrasMenuBar"),
           let children: [AXUIElement] = attr(extras, kAXChildrenAttribute) else { fail("no status items") }
+    var targetFrame = CGRect.zero
+    if targeted {
+        guard let wid = UInt32(args[2]),
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let window = list.first(where: { ($0[kCGWindowNumber as String] as? UInt32) == wid }),
+              let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+              let frame = CGRect(dictionaryRepresentation: bounds) else { fail("target status window is not visible") }
+        targetFrame = frame
+    }
     let matches = targeted ? children.filter { child in
-        guard let x = Double(args[2]), let value: AXValue = attr(child, kAXPositionAttribute) else { return false }
-        var point = CGPoint.zero
-        return AXValueGetValue(value, .cgPoint, &point) && abs(point.x - x) <= 1
+        guard let position: AXValue = attr(child, kAXPositionAttribute),
+              let sizeValue: AXValue = attr(child, kAXSizeAttribute) else { return false }
+        var point = CGPoint.zero, size = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(sizeValue, .cgSize, &size) else { return false }
+        let frame = CGRect(origin: point, size: size)
+        return abs(frame.midX - targetFrame.midX) <= 2 && abs(frame.midY - targetFrame.midY) <= 3
     } : Array(children.prefix(1))
     guard matches.count == 1, let status = matches.first else { fail("no unique matching status item") }
     // The app tracks the menu inside the press: don't wait for it to close.
