@@ -39,9 +39,52 @@ struct LayoutItem: Equatable {
 /// Pure section geometry, owner matching and notch overflow.
 enum MenuBarLayout {
     /// Both the display and item frames use global top-left coordinates.
-    struct RecoveryDisplay {
+    struct RecoveryDisplay: Equatable {
         var frame: CGRect
         var statusArea: ClosedRange<CGFloat>
+    }
+
+    /// Only recovery/control geometry participates in settling; another app's
+    /// changing title or icon must not keep Bento's relayout alive.
+    struct ControlLayoutSample: Equatable {
+        struct Window: Equatable {
+            var id: CGWindowID
+            var frame: CGRect
+            var role: MenuBarItem.Role
+            var ownerPID: pid_t?
+        }
+        var display: RecoveryDisplay
+        var windows: [Window]
+    }
+
+    /// A complete, collapsed menu row, including controls behind the notch.
+    /// This establishes readiness only; safeExpansion still authorizes hiding.
+    static func controlLayoutSample(items: [MenuBarItem], displays: [RecoveryDisplay],
+                                    showChevron: Bool, alwaysHiddenSection: Bool, ownPID: pid_t) -> ControlLayoutSample? {
+        let shell = recoveryShell(items, ownPID: ownPID)
+        guard !shell.isEmpty else { return nil }
+        let candidates = displays.filter { d in
+            validDisplay(d) && shell.allSatisfy { fitsStatusArea($0.frame, display: d) }
+        }
+        guard candidates.count == 1 else { return nil }
+        let display = candidates[0]
+        let kinds: [ControlItems.Kind] = [.hidden] + (alwaysHiddenSection ? [.alwaysHidden] : [])
+            + (showChevron ? [.toggle] : [])
+        let controls = items.filter { if case .control = $0.role { return true }; return false }
+        guard controls.count == kinds.count,
+              kinds.allSatisfy({ kind in controls.filter { $0.role == .control(kind) }.count == 1 }),
+              let rowBottom = shell.map({ $0.frame.maxY }).max(),
+              controls.allSatisfy({ item in
+                  let f = item.frame
+                  return validFrame(f) && f.width <= 200
+                      && abs(f.minY - display.frame.minY) <= 1 && abs(f.maxY - rowBottom) <= 1
+                      && f.maxY <= display.frame.maxY && f.maxX <= display.frame.maxX
+              }) else { return nil }
+        let windows = (shell + controls).sorted { $0.windowID < $1.windowID }.map {
+            ControlLayoutSample.Window(id: $0.windowID, frame: $0.frame, role: $0.role, ownerPID: $0.ownerPID)
+        }
+        guard Set(windows.map(\.id)).count == windows.count else { return nil }
+        return ControlLayoutSample(display: display, windows: windows)
     }
 
     /// Try smaller controls only with a known, accessible shell and complete

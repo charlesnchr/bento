@@ -150,16 +150,22 @@ private func needsCompact(_ items: [MenuBarItem], displays: [MenuBarLayout.Recov
     var configurations: [(chevron: Bool, alwaysHidden: Bool, compact: Bool)] = []
     var expansions: [ControlItems.Expansion] = []
     var pending: [() -> Void] = []
+    var now: TimeInterval = 0
     let settings: MenuBarSettings
     lazy var controller = MenuBarController(settings: settings, scanner: ItemScanner(snapshot: { [unowned self] in items }),
         environment: .init(usesSystemUI: false, reportError: { _ in Issue.record("Unexpected HUD") },
             recoveryDisplays: { [unowned self] in displays },
             applyControls: { [unowned self] _, e in expansions.append(e) },
             configureControls: { [unowned self] in configurations.append(($0, $1, $2)) },
-            afterControlRelayout: { [unowned self] in pending.append($0) }))
+            afterControlRelayout: { [unowned self] in pending.append($0) },
+            controlRelayoutNow: { [unowned self] in now }))
 
     init(settings: MenuBarSettings = .init()) { self.settings = settings }
-    func settle() { pending.removeFirst()() }
+    func sample() { now += 0.1; pending.removeFirst()() }
+    func settle() {
+        for _ in 0..<25 where !pending.isEmpty { sample() }
+        #expect(pending.isEmpty)
+    }
 }
 
 @Test @MainActor func compactRelayoutWaitsForFreshGeometryAndKeepsFirstSetupSectionsEmpty() {
@@ -218,8 +224,8 @@ private func needsCompact(_ items: [MenuBarItem], displays: [MenuBarLayout.Recov
     #expect(h.configurations.allSatisfy { !$0.chevron && $0.compact })
     #expect(!h.configurations.last!.alwaysHidden)
     h.items = gskItems(compact: true).filter { $0.role != .control(.alwaysHidden) }
-    h.settle() // superseded startup relayout
-    h.settle() // superseded Settings relayout
+    h.sample() // superseded startup relayout
+    h.sample() // superseded Settings relayout
     #expect(h.expansions.allSatisfy { $0 == revealed })
     c.beginArrangement()
     h.settle()
