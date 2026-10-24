@@ -109,6 +109,10 @@ struct MenuBarSettingsView: View {
                 Text("Always Hidden section")
                 Text("Items left of the dashed separator show with Show All Items, ⌥-click or Arrange in Menu Bar.")
             }
+            if arrange.compactControls {
+                Text("Compact controls are active because space is limited. Dividers are narrower and the chevron is temporarily omitted. Use Bento’s menu to show or hide items. Your section preferences are unchanged; compact controls stay active until this module is turned off.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         } header: {
             Text("Sections")
         }
@@ -291,6 +295,7 @@ final class ArrangeModel: ObservableObject {
     @Published var images: [CGWindowID: NSImage] = [:]
     @Published private(set) var arranging = false
     @Published private(set) var message: String?
+    @Published private(set) var compactControls = false
     @Published private(set) var overflow: Set<CGWindowID> = []
     private weak var controller: MenuBarController?
     private var observer: NSObjectProtocol?
@@ -326,6 +331,7 @@ final class ArrangeModel: ObservableObject {
         overflow = []
         arranging = false
         message = nil
+        compactControls = false
     }
 
     func begin() { controller?.beginArrangement() }
@@ -349,6 +355,7 @@ final class ArrangeModel: ObservableObject {
         overflow = Set(controller.overflowItems().map(\.windowID))
         arranging = controller.isArranging
         message = controller.lastError
+        compactControls = controller.compactControls
     }
 
     func section(of item: MenuBarItem) -> MenuBarSection {
