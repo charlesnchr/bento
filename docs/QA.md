@@ -56,6 +56,11 @@ keyboard or mouse events. Unregister the test bundle from Launch Services and
 register the installed bundle again when the session ends.
 The final case enables Menu Bar only in that isolated config and checks the
 signed app's real recovery-icon ownership and initial safe expansion.
+It then uses Bento's Arrange/Done buttons to check that both dividers and its
+recovery icon have actual on-screen windows clear of the notch. Set
+`BENTO_EXPECT_COMPACT=1` on a crowded layout to require compact mode, and
+`BENTO_QA_CAPTURE_CONTROLS=1` to capture only those known Bento status windows
+for visual inspection. These checks still require a guarded session.
 
 ## MenuBar corrective regression checks
 

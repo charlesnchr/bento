@@ -758,6 +758,8 @@ final class MenuBarController {
         return [
             "started": started,
             "visibility": visibility.rawValue,
+            "compactControls": compactControls,
+            "controlRelayoutPending": controlRelayoutPending,
             "controls": ["toggle": controls.toggle != nil, "hidden": controls.hidden != nil, "alwaysHidden": controls.alwaysHidden != nil,
                          "hiddenExpanded": controls.hiddenExpanded, "alwaysHiddenExpanded": controls.alwaysHiddenExpanded,
                          "expandedLength": Double(controls.expandedLength)],

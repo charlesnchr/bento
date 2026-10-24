@@ -141,7 +141,7 @@ done
 diag
 cp "$DIAG" "$H/menu-diagnostics.json"
 python3 - "$DIAG" <<'PY'
-import json, sys
+import json, os, sys
 d = json.load(open(sys.argv[1]))
 s = d['modules']['menubar']['state']
 assert d['accessibility'] and d['screenRecording'], 'native menu check needs existing grants'
@@ -151,6 +151,9 @@ assert any(i['role'] == 'bentoIcon' for i in s['items']), 'real app did not iden
 assert s['controls']['hidden'] and s['controls']['alwaysHidden']
 assert s['controls']['hiddenExpanded'], s['lastError']
 assert not s['lastError'], s['lastError']
+assert not s['controlRelayoutPending']
+if os.environ.get('BENTO_EXPECT_COMPACT') == '1':
+    assert s['compactControls'] and not s['controls']['toggle'], s['controls']
 PY
 "$CTL" windows "$PID" | grep -q 'Bento Settings'
 echo 'PASS: signed app identifies its recovery icon and safely hides the section'
@@ -176,6 +179,9 @@ PY
 while read -r wid; do
   check_session
   "$CTL" visible-status-window "$wid"
+  if [ "${BENTO_QA_CAPTURE_CONTROLS:-0}" = 1 ]; then
+    screencapture -x -l "$wid" "$H/status-$wid.png"
+  fi
 done < "$H/arrange-window-ids"
 check_session
 "$CTL" press "$PID" Done
