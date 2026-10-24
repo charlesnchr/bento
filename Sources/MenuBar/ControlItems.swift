@@ -121,22 +121,30 @@ final class ControlItems: NSObject {
         alwaysHiddenExpanded = alwaysHidden != nil && e.alwaysHidden
     }
 
+    static func length(kind: Kind, imageWidth: CGFloat, compact: Bool, expandedLength: CGFloat?,
+                       sizing: StatusItemSizing = .shared) -> CGFloat {
+        if kind != .toggle {
+            if let expandedLength { return expandedLength }
+            if compact { return compactDividerLength }
+        }
+        return sizing.normalLength(contentWidth: imageWidth, fallback: NSStatusItem.variableLength)
+    }
+
     private func style(_ item: NSStatusItem, kind: Kind, expanded: Bool, revealed: Bool) {
         guard let button = item.button else { return }
         switch kind {
         case .toggle:
-            item.length = NSStatusItem.variableLength
             button.image = ControlItems.chevron(pointingLeft: !revealed)
             button.setAccessibilityLabel(revealed ? "Hide Menu Bar Items" : "Show Hidden Menu Bar Items")
         case .hidden, .alwaysHidden:
             if expanded {
                 button.image = nil
-                item.length = expandedLength
             } else {
                 button.image = ControlItems.divider(dashed: kind == .alwaysHidden, compact: compact)
-                item.length = compact ? Self.compactDividerLength : NSStatusItem.variableLength
             }
         }
+        item.length = Self.length(kind: kind, imageWidth: button.image?.size.width ?? 0,
+                                  compact: compact, expandedLength: expanded ? expandedLength : nil)
     }
 
     // MARK: Images

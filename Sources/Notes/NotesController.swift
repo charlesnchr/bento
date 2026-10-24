@@ -810,7 +810,9 @@ final class NotesController {
     private func updateStatusItem() {
         if settings.showMenuBarButton && running {
             guard statusItem == nil else { return }
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            let bar = NSStatusBar.system
+            let item = bar.statusItem(withLength: StatusItemSizing.shared.normalLength(
+                contentWidth: bar.thickness, fallback: NSStatusItem.squareLength))
             item.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Notes")
             item.button?.target = self
             item.button?.action = #selector(statusClicked)

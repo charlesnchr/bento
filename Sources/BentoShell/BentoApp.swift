@@ -340,7 +340,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func updateStatusItem() {
         if general.showMenuBarIcon {
             if statusItem == nil {
-                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+                let bar = NSStatusBar.system
+                let item = bar.statusItem(withLength: StatusItemSizing.shared.normalLength(
+                    contentWidth: bar.thickness, fallback: NSStatusItem.squareLength))
                 item.button?.image = BentoIcon.menuBarImage()
                 let menu = NSMenu()
                 menu.delegate = self
