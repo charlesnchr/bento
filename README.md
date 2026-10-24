@@ -57,9 +57,11 @@ open /opt/homebrew/opt/bento/Bento.app
 
 Apple Silicon, macOS 14+. The app lives in the Homebrew prefix
 (`/opt/homebrew/opt/bento/Bento.app`), so installing needs no admin rights and
-works on managed Macs that only run apps from `/opt/homebrew`. Spotlight doesn't
-look inside `/opt`, so on first launch Bento adds a Finder alias to itself at
-`~/Applications/Bento.app`; Spotlight, Raycast and Finder find it there. Then
+works on managed Macs that allow apps from `/opt/homebrew`. On first launch
+Bento adds a Finder alias at `~/Applications/Bento.app`. Spotlight may index
+that alias as a file without offering Bento in application results, because
+the app itself is inside the hidden `/opt` directory. Open the path above, or
+run `open 'bento://settings'` after the first launch, to reach Settings. Then
 grant **Accessibility** and **Screen Recording** from Settings → General: each
 **Grant…** brings up the macOS prompt, whose **Open System Settings** button
 lists Bento ready to switch on. Press **⌃⌥/** any time for the list of

@@ -26,8 +26,9 @@ class Bento < Formula
     <<~EOS
       Start Bento with:
         open #{opt_prefix}/Bento.app
-      and grant Accessibility and Screen Recording when it asks. It adds an
-      alias to itself in ~/Applications, so Spotlight and Raycast find it.
+      and grant Accessibility and Screen Recording when it asks. It adds a
+      Finder alias in ~/Applications; Spotlight may omit it from app results.
+      To open Settings directly after first launch: open 'bento://settings'
       Updates: Bento checks daily and installs them from its menu bar menu.
       After a brew upgrade in a terminal, restart Bento from that menu.
       Permission grants carry over.
