@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// Number of times the settings window was created / torn down (diagnostics).
     private var settingsOpened = 0
     private var settingsClosed = 0
+    private let launch = LaunchLifecycle()
 
     init(modules: [BentoModule]) {
         self.modules = modules
@@ -61,6 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["BENTO_SHOW_SETTINGS"] != nil {
+            _ = launch.receive(.settings)
+        }
         if exitIfAlreadyRunning() { return }
         // `kill`/logout/`pkill` send SIGTERM: quit through AppKit so modules stop
         // and pending saves (notes, config) are flushed instead of lost.
@@ -137,9 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         updateStatusItem()
         Updater.shared.start(automatic: general.checkForUpdates)
         ApplicationsAlias.ensure()
-        if !Permissions.accessibility || ProcessInfo.processInfo.environment["BENTO_SHOW_SETTINGS"] != nil {
-            showSettings(nil)
-        }
+        perform(launch.finishLaunching(showSettings: !Permissions.accessibility))
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -147,10 +149,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         ConfigStore.shared.flush()
     }
 
-    /// Reopening the app (e.g. double-clicking it in Finder) opens settings.
+    /// AppKit calls this for a cold open-application event before didFinishLaunching.
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        if let request = LaunchLifecycle.Request.applicationOpen(NSAppleEventManager.shared().currentAppleEvent) {
+            perform(launch.receive(request))
+        }
+        return false
+    }
+
+    /// Reopening the app preserves the last selected Settings page.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showSettings(nil)
-        return true
+        if let request = LaunchLifecycle.Request.applicationOpen(NSAppleEventManager.shared().currentAppleEvent) {
+            perform(launch.receive(request))
+        }
+        return false
     }
 
     // MARK: Modules
@@ -187,8 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// terminal deletes the old keg). Then this launch asks it to quit and takes over.
     private func exitIfAlreadyRunning() -> Bool {
         guard let bid = Bundle.main.bundleIdentifier else { return false }
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid).filter { $0.processIdentifier != getpid() }
-        guard let other = others.first else { return false }
+        let peers = NSRunningApplication.runningApplications(withBundleIdentifier: bid).filter { !$0.isTerminated }
+        let others = peers.filter { $0.processIdentifier != getpid() }
+        let candidates = others + [NSRunningApplication.current]
+        guard let owner = LaunchPeer.owner(in: candidates.map { LaunchPeer(pid: $0.processIdentifier, launched: $0.launchDate) }),
+              owner != getpid(), let other = others.first(where: { $0.processIdentifier == owner }) else { return false }
         if others.count == 1, isStale(other), other.terminate() {
             // Block rather than spin the run loop, which would deliver the URL
             // event that launched us before anything is set up. Once it has
@@ -204,7 +219,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             BentoLog.core.info("Took over from an older running Bento")
             return false
         }
-        other.activate()
+        do {
+            try launch.handOff { request in
+                let reply = try request.event(to: other.processIdentifier).sendEvent(options: [.waitForReply, .canInteract], timeout: 2)
+                if let error = reply.paramDescriptor(forKeyword: keyErrorNumber)?.int32Value, error != 0 {
+                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(error))
+                }
+            }
+        } catch {
+            // Keep unaccepted requests here. Activation alone is not delivery.
+            BentoLog.core.error("Could not hand off launch: \(String(describing: error), privacy: .public)")
+            return false
+        }
         NSApp.terminate(nil)
         return true
     }
@@ -219,7 +245,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
-        open(url)
+        perform(launch.receive(.url(url)))
+    }
+
+    private func perform(_ requests: [LaunchLifecycle.Request]) {
+        for request in requests {
+            switch request {
+            case .settings: showSettings(nil)
+            case .url(let url): open(url)
+            }
+        }
     }
 
     private func open(_ url: URL) {
