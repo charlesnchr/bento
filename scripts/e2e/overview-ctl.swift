@@ -94,7 +94,7 @@ case "press":
     for w in appWindows(pid) {
         let hit = find(w) { el in
             let role: String = attr(el, kAXRoleAttribute) ?? ""
-            guard ["AXButton", "AXLink"].contains(role) else { return false }
+            guard ["AXButton", "AXLink", "AXCheckBox", "AXSwitch"].contains(role) else { return false }
             let title: String = attr(el, kAXTitleAttribute) ?? ""
             let desc: String = attr(el, kAXDescriptionAttribute) ?? ""
             return title == args[2] || desc == args[2]

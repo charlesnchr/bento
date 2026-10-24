@@ -63,6 +63,10 @@ recovery icon have actual on-screen windows clear of the notch. Set
 for visual inspection. These checks still require a guarded session.
 For shorter sessions, `BENTO_LAUNCH_CASE=cold|warm|duplicate|url|menu` selects
 one case; the default runs all five. Passing one case does not validate the rest.
+The additional `enable` case begins with Menu Bar disabled and uses its actual
+Settings toggle to enable it, then runs the menu checks and disables it again.
+Compact dividers must measure 8 points in the native window snapshot, including
+any padding AppKit adds. Optional captures also include the test's own Settings window.
 
 ## MenuBar corrective regression checks
 
