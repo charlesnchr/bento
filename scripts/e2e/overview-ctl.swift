@@ -3,6 +3,7 @@
 //   overview-ctl perform <action-id>             trigger an action in running dev instances (BENTO_DEV)
 //   overview-ctl url <bento-home> <url>          open a bento:// URL in the dev instance with that BENTO_HOME
 //   overview-ctl windows <pid>                   on-screen windows of a process: id layer x y w h title
+//   overview-ctl visible-status-window <id>      verify a known status window is on screen and clear of the notch
 //   overview-ctl press <pid> <title>             AXPress the first button/link titled <title> in its windows
 //   overview-ctl search-value <pid> <window>     value of the search field in the window whose title contains <window>
 //   overview-ctl menu <pid> <title>              open the process's menu bar (status item) menu, print the item's
@@ -54,6 +55,21 @@ case "windows":
         let title = w[kCGWindowName as String] as? String ?? ""
         print(id, layer, Int(b["X"] ?? 0), Int(b["Y"] ?? 0), Int(b["Width"] ?? 0), Int(b["Height"] ?? 0), title)
     }
+case "visible-status-window":
+    guard args.count == 2, let id = UInt32(args[1]) else { fail("visible-status-window <id>") }
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    guard let window = list.first(where: { ($0[kCGWindowNumber as String] as? UInt32) == id }),
+          let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+          let frame = CGRect(dictionaryRepresentation: bounds) else { fail("status window \(id) is not on screen") }
+    let top = NSScreen.screens.first?.frame.maxY ?? 0
+    let fits = NSScreen.screens.contains { screen in
+        let left = screen.safeAreaInsets.top > 0
+            ? (screen.auxiliaryTopRightArea?.minX ?? screen.frame.minX) : screen.frame.minX
+        return abs(frame.minY - (top - screen.frame.maxY)) <= 1
+            && frame.minX >= left && frame.maxX <= screen.frame.maxX && frame.width > 0
+    }
+    guard fits else { fail("status window \(id) overlaps the notch or screen edge: \(frame)") }
+    print("visible status window", id, frame)
 case "press":
     guard args.count == 3, let pid = pid_t(args[1]) else { fail("press <pid> <title>") }
     for w in appWindows(pid) {

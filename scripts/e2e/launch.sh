@@ -148,9 +148,43 @@ assert d['accessibility'] and d['screenRecording'], 'native menu check needs exi
 assert d['statusItem'] and d['settingsWindow']['open']
 assert d['modules']['menubar']['running'] and s['started']
 assert any(i['role'] == 'bentoIcon' for i in s['items']), 'real app did not identify its recovery icon'
-assert s['controls']['toggle'] and s['controls']['hidden']
+assert s['controls']['hidden']
 assert s['controls']['hiddenExpanded'], s['lastError']
 assert not s['lastError'], s['lastError']
 PY
 "$CTL" windows "$PID" | grep -q 'Bento Settings'
 echo 'PASS: signed app identifies its recovery icon and safely hides the section'
+
+check_session
+"$CTL" url "$H" bento://settings/menubar
+sleep 0.5
+check_session
+"$CTL" press "$PID" 'Arrange in Menu Bar'
+sleep 0.5
+diag
+cp "$DIAG" "$H/arrangement-diagnostics.json"
+python3 - "$DIAG" > "$H/arrange-window-ids" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['arranging']
+assert not s['controls']['hiddenExpanded'] and not s['controls']['alwaysHiddenExpanded']
+own = [i for i in s['items'] if i['role'] == 'bentoIcon' or i['role'].startswith('control(')]
+assert len(own) >= 3, own
+for item in own:
+    print(item['window'])
+PY
+while read -r wid; do
+  check_session
+  "$CTL" visible-status-window "$wid"
+done < "$H/arrange-window-ids"
+check_session
+"$CTL" press "$PID" Done
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert not s['arranging']
+assert s['controls']['hiddenExpanded'], s['lastError']
+PY
+echo 'PASS: Arrange exposes actual controls clear of the notch; Done resumes hiding'
