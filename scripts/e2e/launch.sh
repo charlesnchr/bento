@@ -214,14 +214,14 @@ while read -r wid; do
   check_session
   "$CTL" visible-status-window "$wid"
   if [ "${BENTO_QA_CAPTURE_CONTROLS:-0}" = 1 ]; then
-    screencapture -x -l "$wid" "$H/status-$wid.png"
+    /usr/sbin/screencapture -x -l "$wid" "$H/status-$wid.png"
   fi
 done < "$H/arrange-window-ids"
 if [ "${BENTO_QA_CAPTURE_CONTROLS:-0}" = 1 ]; then
   check_session
   settings_window="$("$CTL" windows "$PID" | awk '/Bento Settings/ {print $1; exit}')"
   [ -n "$settings_window" ]
-  screencapture -x -l "$settings_window" "$H/arrange-settings.png"
+  /usr/sbin/screencapture -x -l "$settings_window" "$H/arrange-settings.png"
 fi
 check_session
 "$CTL" press "$PID" Done
