@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Exact path match; $INSTALLED_APP_REAL is not a regex.
 installed_running() { ps -axo command | grep -qxF "$INSTALLED_APP_REAL/Contents/MacOS/Bento"; }
 FLAG=/tmp/bento-user-active
-idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
+idle() { /usr/sbin/ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
 build_tools() {
   [ /tmp/bentoctl -nt "$ROOT/scripts/e2e/bentoctl.swift" ] || swiftc -O "$ROOT/scripts/e2e/bentoctl.swift" -o /tmp/bentoctl
   [ /tmp/bento-guard -nt "$ROOT/scripts/e2e/guard.swift" ] || swiftc -O "$ROOT/scripts/e2e/guard.swift" -o /tmp/bento-guard

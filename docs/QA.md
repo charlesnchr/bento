@@ -58,6 +58,15 @@ legacy layout/profile settings. Keep the AX cancellation/drain tests.
 synthesized moves through profile actions that no longer exist. Do not revive
 that script to validate the manual arrangement workflow.
 
+The opt-in `nativeManualArrangementSmoke` test creates only Bento's own status
+items and exercises Arrange/Done and stop against native AppKit. It checks that
+existing menu-item frames and the pointer position are unchanged after cleanup.
+Run it only inside a guarded session, after building the tests:
+
+    BENTO_DEV=1 BENTO_NATIVE_MENUBAR_SMOKE=1 swift test --skip-build --filter nativeManualArrangementSmoke -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+
+It does not test a person's Command-drag gesture or move any other app's items.
+
 Optional manual macOS smoke (release owner; not part of the unit suite):
 
 1. Use the GUI session protocol above, an isolated DevMenuBar configuration and
