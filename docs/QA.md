@@ -61,6 +61,8 @@ recovery icon have actual on-screen windows clear of the notch. Set
 `BENTO_EXPECT_COMPACT=1` on a crowded layout to require compact mode, and
 `BENTO_QA_CAPTURE_CONTROLS=1` to capture only those known Bento status windows
 for visual inspection. These checks still require a guarded session.
+For shorter sessions, `BENTO_LAUNCH_CASE=cold|warm|duplicate|url|menu` selects
+one case; the default runs all five. Passing one case does not validate the rest.
 
 ## MenuBar corrective regression checks
 

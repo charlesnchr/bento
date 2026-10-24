@@ -10,6 +10,9 @@ CTL=/tmp/bento-launch-ctl
 H="$(mktemp -d /tmp/bento-launch-qa.XXXXXX)"
 DIAG="$H/support/diagnostics.json"
 PID=""
+CASE="${BENTO_LAUNCH_CASE:-all}"
+case "$CASE" in all|cold|warm|duplicate|url|menu) ;; *) echo 'unknown BENTO_LAUNCH_CASE' >&2; exit 2 ;; esac
+selected() { [ "$CASE" = all ] || [ "$CASE" = "$1" ]; }
 check_session() {
   test -f /tmp/bento-gui.lock/owner
   "$ROOT/scripts/e2e/session" check
@@ -33,7 +36,7 @@ cleanup() { stop_test; echo "launch test artifacts: $H"; }
 check_session
 [ -z "$(test_pids)" ] || { echo 'test app is already running' >&2; exit 1; }
 trap cleanup EXIT
-swiftc -O "$ROOT/scripts/e2e/overview-ctl.swift" -o "$CTL"
+[ "$CTL" -nt "$ROOT/scripts/e2e/overview-ctl.swift" ] || swiftc -O "$ROOT/scripts/e2e/overview-ctl.swift" -o "$CTL"
 mkdir -p "$H/config" "$H/support"
 cat > "$H/config/config.json" <<'JSON'
 {"general":{"checkForUpdates":false,"showMenuBarIcon":false,"enabledModules":{"shot":false,"windows":false,"tiling":false,"launcher":false,"clipboard":false,"notes":false,"todo":false,"menubar":false}},"windows":{"importedFromRectangle":true},"shortcuts":{}}
@@ -84,12 +87,15 @@ PY
   fi
 }
 
+if selected cold; then
 launch -n
 ready
 assert_window yes
 echo 'PASS: foreground cold launch opens Settings with the status icon disabled'
 stop_test
+fi
 
+if selected warm; then
 launch_background
 ready
 assert_window no
@@ -98,7 +104,9 @@ sleep 0.5
 assert_window yes
 echo 'PASS: explicit background launch stays quiet, normal reopen shows Settings'
 stop_test
+fi
 
+if selected duplicate; then
 launch_background
 ready
 assert_window no
@@ -109,7 +117,9 @@ assert_window yes
 [ "$(test_pids | wc -l | tr -d ' ')" = 1 ]
 echo 'PASS: duplicate foreground launch leaves one visible survivor'
 stop_test
+fi
 
+if selected url; then
 check_session
 open -n -g -a "$APP" bento://debug/state --env BENTO_DEV=1 --env "BENTO_HOME=$H"
 for _ in $(seq 1 60); do
@@ -122,7 +132,9 @@ ready
 assert_window no
 echo 'PASS: cold action URL stays quiet and reaches the running app'
 stop_test
+fi
 
+if selected menu; then
 python3 - "$H/config/config.json" <<'PY'
 import json, sys
 p = sys.argv[1]
@@ -216,3 +228,4 @@ s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
 assert s['visibility'] == 'hidden' and s['controls']['hiddenExpanded'], s
 PY
 echo 'PASS: Bento’s main status menu can show all items and hide them again'
+fi
