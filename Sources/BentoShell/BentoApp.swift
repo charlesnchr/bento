@@ -301,6 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             "dockPresence": DockPresence.retainCount,
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
             "statusItem": statusItem != nil,
+            "statusItemLength": statusItem.map { Double($0.length) } as Any,
             "launchAtLogin": LaunchAtLogin.statusDescription,
             "update": Updater.shared.diagnostics,
             "time": Date().timeIntervalSince1970,

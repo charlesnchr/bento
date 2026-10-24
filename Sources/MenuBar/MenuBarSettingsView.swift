@@ -46,7 +46,7 @@ struct MenuBarSettingsView: View {
                     }
                 }
                 if arrange.compactControls {
-                    Label("Space is limited, so Bento is using narrow dividers without a chevron. Use Bento’s main icon menu to show or hide items.", systemImage: "info.circle")
+                    Label("Space is limited, so Bento is using a smaller icon and narrow dividers without a chevron. Use Bento’s main icon menu to show or hide items.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and any chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")

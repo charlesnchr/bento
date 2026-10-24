@@ -66,7 +66,10 @@ one case; the default runs all five. Passing one case does not validate the rest
 The additional `enable` case begins with Menu Bar disabled and uses its actual
 Settings toggle to enable it, then runs the menu checks and disables it again.
 Compact dividers must measure 8 points in the native window snapshot, including
-any padding AppKit adds. Optional captures also include the test's own Settings window.
+any padding AppKit adds, and Bento's compact icon must measure 16 points. The
+enable case also checks that disabling restores the original icon length.
+Optional captures include the test's own Settings window; inspect the smaller
+Bento glyph as well as the distinct solid and dashed dividers.
 
 ## MenuBar corrective regression checks
 

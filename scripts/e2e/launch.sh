@@ -147,6 +147,7 @@ PY
 launch -n
 ready
 if [ "$CASE" = enable ]; then
+  normal_icon_length="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["statusItemLength"])' "$DIAG")"
   check_session
   "$CTL" url "$H" bento://settings/menubar
   sleep 0.3
@@ -203,6 +204,9 @@ assert len(own) >= 3, own
 if s['compactControls']:
     dividers = [i for i in own if i['role'].startswith('control(')]
     assert len(dividers) == 2 and all(abs(i['width'] - 8) < 0.1 for i in dividers), dividers
+    icons = [i for i in own if i['role'] == 'bentoIcon']
+    assert len(icons) == 1 and abs(icons[0]['width'] - 16) < 0.1, icons
+assert all(i['windowOnScreen'] for i in own), own
 for item in own:
     print(item['window'])
 PY
@@ -257,12 +261,15 @@ if [ "$CASE" = enable ]; then
   "$CTL" press "$PID" Enabled
   sleep 0.3
   diag
-  python3 - "$DIAG" <<'PY'
+  python3 - "$DIAG" "$normal_icon_length" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert not d['modules']['menubar']['running']
 assert d['settingsWindow']['open'] and d['statusItem']
+assert d['statusItemLength'] == float(sys.argv[2]), 'normal Bento icon size was not restored'
 PY
+  check_session
+  "$CTL" visible-status-window "$icon_window"
   echo 'PASS: enabling from Settings attaches working controls; disabling keeps Settings and Bento accessible'
 fi
 fi

@@ -345,7 +345,6 @@ final class MenuBarController {
         var allowed = settled ? MenuBarLayout.safeExpansion(items: current, displays: displays,
                                                   showChevron: effectiveShowChevron, ownPID: getpid())
             : .init(hidden: false, alwaysHidden: false)
-        MenuBarTrace.log("[DEBUG-layout] areas=\(displays.map { "\($0.frame):\($0.statusArea)" }) allowed=\(allowed) items=\(current.map { "\($0.windowID):\($0.role):\($0.ownerPID ?? -1):\($0.frame)" })")
         allowed.alwaysHidden = allowed.alwaysHidden && settings.alwaysHiddenSection
         let expansion = ControlItems.expansion(visibility, allowed: allowed)
         let blocked = (visibility == .hidden && !allowed.hidden)
