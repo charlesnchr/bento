@@ -89,6 +89,16 @@ Run it only inside a guarded session, after building the tests:
 
 It does not test a person's Command-drag gesture or move any other app's items.
 
+The compact-width check configures Bento's process-local spacing before AppKit
+creates status items, measures two disposable divider windows, and captures
+their glyphs for inspection. Run it alone inside a guarded session:
+
+    BENTO_DEV=1 BENTO_NATIVE_COMPACT_SMOKE=1 swift test --scratch-path .build-test-all --skip-build --filter nativeCompactDividersHaveEightPointWindows -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+
+The test prints its capture directory. Both real windows must be 8 points wide;
+inspect `hidden.png` and `alwaysHidden.png` for distinct solid and dashed lines.
+It does not write persistent preferences or exercise a user's arrangement.
+
 Optional manual macOS smoke (release owner; not part of the unit suite):
 
 1. Use the GUI session protocol above, an isolated DevMenuBar configuration and
