@@ -33,3 +33,10 @@ INSTALLED_APP="$BENTO_INSTALL_DIR/Bento.app"
 # The path its process runs from: Launch Services resolves links (a Homebrew
 # install runs from Cellar/bento/<version>/Bento.app).
 INSTALLED_APP_REAL="$( (cd "$INSTALLED_APP" 2>/dev/null && pwd -P) || echo "$INSTALLED_APP")"
+
+# Match the executable, independently of launch arguments such as --background.
+bento_installed_pids() {
+  ps -axo pid=,comm= | awk -v exe="$INSTALLED_APP_REAL/Contents/MacOS/Bento" '
+    { pid=$1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == exe) print pid }
+  '
+}

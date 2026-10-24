@@ -10,7 +10,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/scripts/config.sh"
 # Exact path match; $INSTALLED_APP_REAL is not a regex.
-installed_running() { ps -axo command | grep -qxF "$INSTALLED_APP_REAL/Contents/MacOS/Bento"; }
+installed_running() { [ -n "$(bento_installed_pids)" ]; }
 FLAG=/tmp/bento-user-active
 idle() { /usr/sbin/ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'; }
 build_tools() {
@@ -38,8 +38,13 @@ case "${1:-}" in
     done
     if installed_running; then
       touch /tmp/bento-e2e-restore
-      osascript -e 'tell application id "com.charles.bento" to quit' >/dev/null 2>&1
+      kill -TERM $(bento_installed_pids) 2>/dev/null
       for _ in $(seq 1 20); do installed_running || break; sleep 0.25; done
+      if installed_running; then
+        echo 'installed Bento did not quit; refusing to start GUI tests' >&2
+        "$0" end "$who"
+        exit 1
+      fi
     fi
     echo "session started for $who (user idle, guard running)" ;;
   check)

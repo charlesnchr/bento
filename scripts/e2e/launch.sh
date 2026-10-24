@@ -14,7 +14,7 @@ check_session() {
   test -f /tmp/bento-gui.lock/owner
   "$ROOT/scripts/e2e/session" check
 }
-test_pids() { ps -axo pid=,comm= | awk -v exe="$APP/Contents/MacOS/Bento" '{pid=$1; $1=""; sub(/^ /, ""); if ($0 == exe) print pid}'; }
+test_pids() { ps -axo pid=,comm= | awk -v exe="$APP/Contents/MacOS/Bento" '{pid=$1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == exe) print pid}'; }
 stop_test() {
   local pids
   pids="$(test_pids)"
