@@ -45,7 +45,11 @@ struct MenuBarSettingsView: View {
                         Button("Arrange in Menu Bar") { arrange.begin() }
                     }
                 }
-                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")
+                if arrange.compactControls {
+                    Label("Space is limited, so Bento is using a smaller icon and narrow dividers without a chevron. Use Bento’s main icon menu to show or hide items.", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Visible: right of the solid separator. Hidden: left of the solid separator, up to the dashed separator. Always Hidden: left of the dashed separator, when enabled. Keep Bento’s icon and any chevron right of both separators, and the dashed separator left of the solid one. If hiding would make Bento inaccessible or its position cannot be verified, sections stay revealed. Choose Arrange in Menu Bar and Command-drag items or separators, then click Done.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !Permissions.accessibility || !Permissions.screenRecording {
                     HStack(spacing: 8) {
@@ -108,6 +112,10 @@ struct MenuBarSettingsView: View {
             Toggle(isOn: $model.value.alwaysHiddenSection) {
                 Text("Always Hidden section")
                 Text("Items left of the dashed separator show with Show All Items, ⌥-click or Arrange in Menu Bar.")
+            }
+            if arrange.compactControls {
+                Text("Compact controls are active until this module is turned off. Your section preferences are unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         } header: {
             Text("Sections")
@@ -291,6 +299,7 @@ final class ArrangeModel: ObservableObject {
     @Published var images: [CGWindowID: NSImage] = [:]
     @Published private(set) var arranging = false
     @Published private(set) var message: String?
+    @Published private(set) var compactControls = false
     @Published private(set) var overflow: Set<CGWindowID> = []
     private weak var controller: MenuBarController?
     private var observer: NSObjectProtocol?
@@ -326,6 +335,7 @@ final class ArrangeModel: ObservableObject {
         overflow = []
         arranging = false
         message = nil
+        compactControls = false
     }
 
     func begin() { controller?.beginArrangement() }
@@ -349,6 +359,7 @@ final class ArrangeModel: ObservableObject {
         overflow = Set(controller.overflowItems().map(\.windowID))
         arranging = controller.isArranging
         message = controller.lastError
+        compactControls = controller.compactControls
     }
 
     func section(of item: MenuBarItem) -> MenuBarSection {

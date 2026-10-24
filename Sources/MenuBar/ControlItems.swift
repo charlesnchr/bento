@@ -34,8 +34,11 @@ final class ControlItems: NSObject {
 
     private(set) var hiddenExpanded = false
     private(set) var alwaysHiddenExpanded = false
+    private(set) var compact = false
+    static let compactDividerLength: CGFloat = 8
 
-    func create(showToggle: Bool, alwaysHiddenSection: Bool) {
+    func create(showToggle: Bool, alwaysHiddenSection: Bool, compact: Bool = false) {
+        self.compact = compact
         // Creation order matters on first run (newer items go further left):
         // chevron, then the hidden separator, then the always-hidden one.
         if showToggle, toggle == nil { toggle = make(.toggle) }
@@ -52,6 +55,7 @@ final class ControlItems: NSObject {
         alwaysHidden = nil
         hiddenExpanded = false
         alwaysHiddenExpanded = false
+        compact = false
     }
 
     /// Removed items, kept for the life of the process (a few bytes each).
@@ -117,22 +121,30 @@ final class ControlItems: NSObject {
         alwaysHiddenExpanded = alwaysHidden != nil && e.alwaysHidden
     }
 
+    static func length(kind: Kind, imageWidth: CGFloat, compact: Bool, expandedLength: CGFloat?,
+                       sizing: StatusItemSizing = .shared) -> CGFloat {
+        if kind != .toggle {
+            if let expandedLength { return expandedLength }
+            if compact { return compactDividerLength }
+        }
+        return sizing.normalLength(contentWidth: imageWidth, fallback: NSStatusItem.variableLength)
+    }
+
     private func style(_ item: NSStatusItem, kind: Kind, expanded: Bool, revealed: Bool) {
         guard let button = item.button else { return }
         switch kind {
         case .toggle:
-            item.length = NSStatusItem.variableLength
             button.image = ControlItems.chevron(pointingLeft: !revealed)
             button.setAccessibilityLabel(revealed ? "Hide Menu Bar Items" : "Show Hidden Menu Bar Items")
         case .hidden, .alwaysHidden:
             if expanded {
                 button.image = nil
-                item.length = expandedLength
             } else {
-                button.image = ControlItems.divider(dashed: kind == .alwaysHidden)
-                item.length = NSStatusItem.variableLength
+                button.image = ControlItems.divider(dashed: kind == .alwaysHidden, compact: compact)
             }
         }
+        item.length = Self.length(kind: kind, imageWidth: button.image?.size.width ?? 0,
+                                  compact: compact, expandedLength: expanded ? expandedLength : nil)
     }
 
     // MARK: Images
@@ -146,8 +158,8 @@ final class ControlItems: NSObject {
     }
 
     /// A thin vertical line (dashed for the always-hidden separator).
-    static func divider(dashed: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 9, height: 18), flipped: false) { rect in
+    static func divider(dashed: Bool, compact: Bool = false) -> NSImage {
+        let image = NSImage(size: NSSize(width: compact ? 2 : 9, height: 18), flipped: false) { rect in
             let path = NSBezierPath()
             path.move(to: NSPoint(x: rect.midX, y: 2))
             path.line(to: NSPoint(x: rect.midX, y: rect.maxY - 2))

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+import BentoCore
 @testable import MenuBar
 
 /// Opt-in only, inside scripts/e2e/session. Creates only our status items;
@@ -24,7 +25,8 @@ import Testing
     let cursor = try #require(CGEvent(source: nil)?.location)
     let before = Dictionary(uniqueKeysWithValues: WindowServer.menuBarItemWindows().map { ($0.id, $0.frame) })
     // The shell normally creates Bento's recovery icon before these controls.
-    var recovery: NSStatusItem? = NSStatusBar.system.statusItem(withLength: 24)
+    var recovery: NSStatusItem? = NSStatusBar.system.statusItem(withLength:
+        StatusItemSizing.shared.normalLength(contentWidth: 24, fallback: 24))
     recovery?.autosaveName = "BentoQARecoveryIcon"
     recovery?.button?.title = "B"
     defer { if let recovery { NSStatusBar.system.removeStatusItem(recovery) } }

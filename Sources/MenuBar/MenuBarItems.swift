@@ -28,6 +28,9 @@ struct MenuBarItem: Identifiable, Equatable {
     /// What the item calls itself to VoiceOver, if anything useful.
     var detail: String?
     var role: Role = .regular
+    /// Window Server's visibility signal; geometry alone can fit while macOS
+    /// has ordered a crowded status item out. Nil in injected snapshots.
+    var windowIsOnScreen: Bool?
 
     var id: CGWindowID { windowID }
 
@@ -165,6 +168,7 @@ final class ItemScanner {
             }
             var item = MenuBarItem(windowID: w.id, frame: w.frame, windowName: name, ownerPID: owner?.pid,
                                    bundleID: owner?.bundleID, appName: owner?.appName ?? "", detail: owner?.detail)
+            item.windowIsOnScreen = w.isOnScreen
             // On macOS 26 Bento's own icon is told apart through Accessibility
             // like any other app's (its local window doesn't know where it is).
             let isOwn = owner?.pid == myPID

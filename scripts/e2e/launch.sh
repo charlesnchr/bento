@@ -10,6 +10,9 @@ CTL=/tmp/bento-launch-ctl
 H="$(mktemp -d /tmp/bento-launch-qa.XXXXXX)"
 DIAG="$H/support/diagnostics.json"
 PID=""
+CASE="${BENTO_LAUNCH_CASE:-all}"
+case "$CASE" in all|cold|warm|duplicate|url|menu|enable) ;; *) echo 'unknown BENTO_LAUNCH_CASE' >&2; exit 2 ;; esac
+selected() { [ "$CASE" = all ] || [ "$CASE" = "$1" ]; }
 check_session() {
   test -f /tmp/bento-gui.lock/owner
   "$ROOT/scripts/e2e/session" check
@@ -33,7 +36,7 @@ cleanup() { stop_test; echo "launch test artifacts: $H"; }
 check_session
 [ -z "$(test_pids)" ] || { echo 'test app is already running' >&2; exit 1; }
 trap cleanup EXIT
-swiftc -O "$ROOT/scripts/e2e/overview-ctl.swift" -o "$CTL"
+[ "$CTL" -nt "$ROOT/scripts/e2e/overview-ctl.swift" ] || swiftc -O "$ROOT/scripts/e2e/overview-ctl.swift" -o "$CTL"
 mkdir -p "$H/config" "$H/support"
 cat > "$H/config/config.json" <<'JSON'
 {"general":{"checkForUpdates":false,"showMenuBarIcon":false,"enabledModules":{"shot":false,"windows":false,"tiling":false,"launcher":false,"clipboard":false,"notes":false,"todo":false,"menubar":false}},"windows":{"importedFromRectangle":true},"shortcuts":{}}
@@ -84,12 +87,15 @@ PY
   fi
 }
 
+if selected cold; then
 launch -n
 ready
 assert_window yes
 echo 'PASS: foreground cold launch opens Settings with the status icon disabled'
 stop_test
+fi
 
+if selected warm; then
 launch_background
 ready
 assert_window no
@@ -98,7 +104,9 @@ sleep 0.5
 assert_window yes
 echo 'PASS: explicit background launch stays quiet, normal reopen shows Settings'
 stop_test
+fi
 
+if selected duplicate; then
 launch_background
 ready
 assert_window no
@@ -109,7 +117,9 @@ assert_window yes
 [ "$(test_pids | wc -l | tr -d ' ')" = 1 ]
 echo 'PASS: duplicate foreground launch leaves one visible survivor'
 stop_test
+fi
 
+if selected url; then
 check_session
 open -n -g -a "$APP" bento://debug/state --env BENTO_DEV=1 --env "BENTO_HOME=$H"
 for _ in $(seq 1 60); do
@@ -122,35 +132,144 @@ ready
 assert_window no
 echo 'PASS: cold action URL stays quiet and reaches the running app'
 stop_test
+fi
 
-python3 - "$H/config/config.json" <<'PY'
+if selected menu || selected enable; then
+python3 - "$H/config/config.json" "$CASE" <<'PY'
 import json, sys
 p = sys.argv[1]
 d = json.load(open(p))
 d['general']['showMenuBarIcon'] = True
-d['general']['enabledModules']['menubar'] = True
+d['general']['enabledModules']['menubar'] = sys.argv[2] != 'enable'
 with open(p, 'w') as f:
     json.dump(d, f)
 PY
 launch -n
 ready
+if [ "$CASE" = enable ]; then
+  normal_icon_length="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["statusItemLength"])' "$DIAG")"
+  check_session
+  "$CTL" url "$H" bento://settings/menubar
+  sleep 0.3
+  check_session
+  "$CTL" press "$PID" Enabled
+fi
 for _ in $(seq 1 40); do
   check_session
+  diag
+  if python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+ready = s.get('controls', {}).get('hidden') and not s['controlRelayoutPending'] and any(i['role'] == 'bentoIcon' for i in s['items'])
+sys.exit(0 if ready else 1)
+PY
+  then break; fi
   sleep 0.1
 done
 diag
 cp "$DIAG" "$H/menu-diagnostics.json"
 python3 - "$DIAG" <<'PY'
-import json, sys
+import json, os, sys
 d = json.load(open(sys.argv[1]))
 s = d['modules']['menubar']['state']
 assert d['accessibility'] and d['screenRecording'], 'native menu check needs existing grants'
 assert d['statusItem'] and d['settingsWindow']['open']
 assert d['modules']['menubar']['running'] and s['started']
 assert any(i['role'] == 'bentoIcon' for i in s['items']), 'real app did not identify its recovery icon'
-assert s['controls']['toggle'] and s['controls']['hidden']
+assert s['controls']['hidden'] and s['controls']['alwaysHidden']
 assert s['controls']['hiddenExpanded'], s['lastError']
 assert not s['lastError'], s['lastError']
+assert not s['controlRelayoutPending']
+if os.environ.get('BENTO_EXPECT_COMPACT') == '1':
+    assert s['compactControls'] and not s['controls']['toggle'], s['controls']
 PY
 "$CTL" windows "$PID" | grep -q 'Bento Settings'
 echo 'PASS: signed app identifies its recovery icon and safely hides the section'
+
+check_session
+"$CTL" url "$H" bento://settings/menubar
+sleep 0.5
+check_session
+"$CTL" press "$PID" 'Arrange in Menu Bar'
+sleep 0.5
+diag
+cp "$DIAG" "$H/arrangement-diagnostics.json"
+python3 - "$DIAG" > "$H/arrange-window-ids" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['arranging']
+assert not s['controls']['hiddenExpanded'] and not s['controls']['alwaysHiddenExpanded']
+own = [i for i in s['items'] if i['role'] == 'bentoIcon' or i['role'].startswith('control(')]
+assert len(own) >= 3, own
+if s['compactControls']:
+    dividers = [i for i in own if i['role'].startswith('control(')]
+    assert len(dividers) == 2 and all(abs(i['width'] - 8) < 0.1 for i in dividers), dividers
+    icons = [i for i in own if i['role'] == 'bentoIcon']
+    assert len(icons) == 1 and abs(icons[0]['width'] - 16) < 0.1, icons
+assert all(i['windowOnScreen'] for i in own), own
+for item in own:
+    print(item['window'])
+PY
+while read -r wid; do
+  check_session
+  "$CTL" visible-status-window "$wid"
+  if [ "${BENTO_QA_CAPTURE_CONTROLS:-0}" = 1 ]; then
+    /usr/sbin/screencapture -x -l "$wid" "$H/status-$wid.png"
+  fi
+done < "$H/arrange-window-ids"
+if [ "${BENTO_QA_CAPTURE_CONTROLS:-0}" = 1 ]; then
+  check_session
+  settings_window="$("$CTL" windows "$PID" | awk '/Bento Settings/ {print $1; exit}')"
+  [ -n "$settings_window" ]
+  /usr/sbin/screencapture -x -l "$settings_window" "$H/arrange-settings.png"
+fi
+check_session
+"$CTL" press "$PID" Done
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert not s['arranging']
+assert s['controls']['hiddenExpanded'], s['lastError']
+PY
+echo 'PASS: Arrange exposes actual controls clear of the notch; Done resumes hiding'
+
+icon_window="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["modules"]["menubar"]["state"]; print(next(i["window"] for i in s["items"] if i["role"]=="bentoIcon"))' "$DIAG")"
+check_session
+"$CTL" status-menu "$PID" "$icon_window" 'Menu Bar' 'Show All Items'
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['visibility'] == 'shownAll' and not s['barOpen'], s
+assert not s['controls']['hiddenExpanded'] and not s['controls']['alwaysHiddenExpanded']
+PY
+check_session
+"$CTL" status-menu "$PID" "$icon_window" 'Menu Bar' 'Hide Items'
+sleep 0.5
+diag
+python3 - "$DIAG" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))['modules']['menubar']['state']
+assert s['visibility'] == 'hidden' and s['controls']['hiddenExpanded'], s
+PY
+echo 'PASS: Bento’s main status menu can show all items and hide them again'
+if [ "$CASE" = enable ]; then
+  check_session
+  "$CTL" press "$PID" Enabled
+  sleep 0.3
+  diag
+  python3 - "$DIAG" "$normal_icon_length" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert not d['modules']['menubar']['running']
+assert d['settingsWindow']['open'] and d['statusItem']
+assert d['statusItemLength'] == float(sys.argv[2]), 'normal Bento icon size was not restored'
+PY
+  check_session
+  "$CTL" visible-status-window "$icon_window"
+  echo 'PASS: enabling from Settings attaches working controls; disabling keeps Settings and Bento accessible'
+fi
+fi

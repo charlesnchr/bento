@@ -56,6 +56,20 @@ keyboard or mouse events. Unregister the test bundle from Launch Services and
 register the installed bundle again when the session ends.
 The final case enables Menu Bar only in that isolated config and checks the
 signed app's real recovery-icon ownership and initial safe expansion.
+It then uses Bento's Arrange/Done buttons to check that both dividers and its
+recovery icon have actual on-screen windows clear of the notch. Set
+`BENTO_EXPECT_COMPACT=1` on a crowded layout to require compact mode, and
+`BENTO_QA_CAPTURE_CONTROLS=1` to capture only those known Bento status windows
+for visual inspection. These checks still require a guarded session.
+For shorter sessions, `BENTO_LAUNCH_CASE=cold|warm|duplicate|url|menu` selects
+one case; the default runs all five. Passing one case does not validate the rest.
+The additional `enable` case begins with Menu Bar disabled and uses its actual
+Settings toggle to enable it, then runs the menu checks and disables it again.
+Compact dividers must measure 8 points in the native window snapshot, including
+any padding AppKit adds, and Bento's compact icon must measure 16 points. The
+enable case also checks that disabling restores the original icon length.
+Optional captures include the test's own Settings window; inspect the smaller
+Bento glyph as well as the distinct solid and dashed dividers.
 
 ## MenuBar corrective regression checks
 
@@ -77,6 +91,16 @@ Run it only inside a guarded session, after building the tests:
     BENTO_DEV=1 BENTO_NATIVE_MENUBAR_SMOKE=1 swift test --skip-build --filter nativeManualArrangementSmoke -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
 
 It does not test a person's Command-drag gesture or move any other app's items.
+
+The compact-width check configures Bento's process-local spacing before AppKit
+creates status items, measures two disposable divider windows, and captures
+their glyphs for inspection. Run it alone inside a guarded session:
+
+    BENTO_DEV=1 BENTO_NATIVE_COMPACT_SMOKE=1 swift test --scratch-path .build-test-all --skip-build --filter nativeCompactDividersHaveEightPointWindows -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+
+The test prints its capture directory. Both real windows must be 8 points wide;
+inspect `hidden.png` and `alwaysHidden.png` for distinct solid and dashed lines.
+It does not write persistent preferences or exercise a user's arrangement.
 
 Optional manual macOS smoke (release owner; not part of the unit suite):
 

@@ -42,6 +42,16 @@ private func safe(_ items: [MenuBarItem], displays: [MenuBarLayout.RecoveryDispl
     MenuBarLayout.safeExpansion(items: items, displays: displays, showChevron: showChevron, ownPID: 42)
 }
 
+@Test func nativeHiddenRecoveryControlsCannotAuthorizeExpansion() {
+    for index in [2, 3] {
+        var items = recoveryItems()
+        items[index].windowIsOnScreen = false
+        #expect(safe(items) == .init(hidden: false, alwaysHidden: false))
+        items[index].windowIsOnScreen = true
+        #expect(safe(items) == .init(hidden: true, alwaysHidden: true))
+    }
+}
+
 @Test func savedPositionsOnEitherSideOfEachRecoveryControl() {
     for recoveryIndex in [2, 3] { // chevron and shell, independently
         for (x, expected) in [(CGFloat(850), ControlItems.Expansion(hidden: false, alwaysHidden: false)),

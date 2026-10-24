@@ -21,6 +21,10 @@ final class MenuBarController {
     /// Holds both sections open for native Command-drag until Done.
     private(set) var isArranging = false
     private(set) var lastError: String?
+    /// Latched until the module stops. Never changes the saved section options
+    /// or alternates widths when the notch/display/foreground app changes.
+    private(set) var compactControls = false
+    var effectiveShowChevron: Bool { settings.showChevron && !compactControls }
 
     let controls = ControlItems()
     let scanner: ItemScanner
@@ -36,11 +40,28 @@ final class MenuBarController {
         var reportError: (String) -> Void = { HUD.show($0, symbol: "exclamationmark.triangle") }
         var recoveryDisplays: (() -> [MenuBarLayout.RecoveryDisplay])?
         var applyControls: ((Visibility, ControlItems.Expansion) -> Void)?
+        var configureControls: ((_ showToggle: Bool, _ alwaysHiddenSection: Bool, _ compact: Bool) -> Void)?
+        /// Schedules each settling sample. Tests advance the monotonic clock
+        /// before running it; they use the same readiness/deadline checks.
+        var afterControlRelayout: ((@escaping () -> Void) -> Void)?
+        var controlRelayoutNow: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var resolveControlOwners: (([MenuBarItem], @escaping () -> Void) -> Void)?
+        /// Tests may inject an isolated request without touching the live shell.
+        var statusItemSizing: StatusItemSizing?
     }
     private let environment: Environment
+    private var statusItemSizing: StatusItemSizing? {
+        environment.statusItemSizing ?? (environment.usesSystemUI ? .shared : nil)
+    }
     private var arrangementVisibility: Visibility?
     private var activationGeneration = 0
     private var started = false
+    private var controlLayoutGeneration = 0
+    private var controlRelayoutPending = false
+    private var controlRelayoutWork: DispatchWorkItem?
+    private var controlRelayoutDeadline: TimeInterval = 0
+    private var controlLayoutSample: MenuBarLayout.ControlLayoutSample?
+    private var controlOwnerReadPending = false
     private var rehideTimer: Timer?
     private var clickMonitor: Any?
     /// After a click on a shown item: its app, and a check for its menu.
@@ -66,6 +87,10 @@ final class MenuBarController {
             self.hide()
         }
         triggers.emptySpace = { [weak self] screen in self?.emptySpace(on: screen) }
+    }
+
+    deinit {
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
     }
 
     // MARK: Lifecycle
@@ -98,6 +123,14 @@ final class MenuBarController {
     func stop() {
         guard started else { return }
         started = false
+        controlLayoutGeneration += 1
+        controlRelayoutWork?.cancel()
+        controlRelayoutWork = nil
+        controlRelayoutPending = false
+        controlLayoutSample = nil
+        controlOwnerReadPending = false
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
+        compactControls = false
         cancelActivation()
         // Drain any AX action already begun before removing the separators.
         scanner.stop()
@@ -124,17 +157,79 @@ final class MenuBarController {
     private func createControls() {
         guard started else { return }
         controls.expandedLength = MenuBarController.expandedLength()
-        controls.create(showToggle: settings.showChevron, alwaysHiddenSection: settings.alwaysHiddenSection)
-        MenuBarLook.button = (controls.toggle ?? controls.hidden)?.button
+        relayoutControls()
+        applyOptions()
+    }
+
+    /// One native relayout, then bounded reads until two full-row snapshots
+    /// agree. Settings/display changes supersede it; show/hide only changes the
+    /// target state. Never recreate items just because their animation is slow.
+    private func relayoutControls() {
+        if compactControls { statusItemSizing?.setCompactShellIconRequested(true) }
+        controlLayoutGeneration += 1
+        let generation = controlLayoutGeneration
+        controlRelayoutWork?.cancel()
+        controlRelayoutPending = true
+        controlRelayoutDeadline = environment.controlRelayoutNow() + 2
+        controlLayoutSample = nil
+        controlOwnerReadPending = false
+        if let configureControls = environment.configureControls {
+            configureControls(effectiveShowChevron, settings.alwaysHiddenSection, compactControls)
+        } else if environment.usesSystemUI {
+            controls.create(showToggle: effectiveShowChevron, alwaysHiddenSection: settings.alwaysHiddenSection,
+                            compact: compactControls)
+            MenuBarLook.button = (controls.toggle ?? controls.hidden)?.button
+        }
         // macOS 26 blanks parked item names, including separator names. Read
         // them once with sections revealed so later section checks are safe.
         // Keep the requested visibility unchanged: any manual request made
         // during this read (including Arrange) is what we apply afterwards.
-        controls.apply(.shownAll, expansion: .init(hidden: false, alwaysHidden: false))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            self?.readInitialLayout()
+        applyControlExpansion(.init(hidden: false, alwaysHidden: false))
+        scheduleControlLayoutSample(generation: generation)
+    }
+
+    private func scheduleControlLayoutSample(generation: Int) {
+        let sample: () -> Void = { [weak self] in self?.readControlLayoutSample(generation: generation) }
+        if let afterControlRelayout = environment.afterControlRelayout { afterControlRelayout(sample) }
+        else {
+            let work = DispatchWorkItem { sample() }
+            controlRelayoutWork = work
+            let remaining = max(0, controlRelayoutDeadline - environment.controlRelayoutNow())
+            DispatchQueue.main.asyncAfter(deadline: .now() + min(0.1, remaining), execute: work)
         }
-        applyOptions()
+    }
+
+    private func readControlLayoutSample(generation: Int) {
+        guard started, controlRelayoutPending, generation == controlLayoutGeneration else { return }
+        controlRelayoutWork = nil
+        items = scanner.snapshot()
+        let displays = recoveryDisplays()
+        let sample = MenuBarLayout.controlLayoutSample(items: items, displays: displays,
+            showChevron: effectiveShowChevron, alwaysHiddenSection: settings.alwaysHiddenSection, ownPID: getpid())
+        let expired = environment.controlRelayoutNow() >= controlRelayoutDeadline
+        let settled = !expired && sample != nil && sample == controlLayoutSample
+        controlLayoutSample = sample
+        if settled || expired {
+            controlRelayoutPending = false
+            controlLayoutSample = nil
+            controlOwnerReadPending = false
+            if expired, compactControls { statusItemSizing?.setCompactShellIconRequested(false) }
+            applyVisibility(current: items, displays: displays, settled: settled)
+            notify()
+            return
+        }
+        scheduleControlLayoutSample(generation: generation)
+        // Owner lookup must not hold the deadline hostage or accumulate one
+        // completion per sample while an app is slow to answer Accessibility.
+        guard !controlOwnerReadPending else { return }
+        controlOwnerReadPending = true
+        let resolved = { [weak self] in
+            guard let self, self.started, self.controlRelayoutPending,
+                  generation == self.controlLayoutGeneration else { return }
+            self.controlOwnerReadPending = false
+        }
+        if let resolve = environment.resolveControlOwners { resolve(items, resolved) }
+        else { scanner.resolveOwners(items, completion: resolved) }
     }
 
     private func readInitialLayout() {
@@ -150,13 +245,11 @@ final class MenuBarController {
         settings = new
         guard started else { return }
         if new.showChevron != old.showChevron || new.alwaysHiddenSection != old.alwaysHiddenSection {
-            if environment.usesSystemUI {
-                controls.create(showToggle: new.showChevron, alwaysHiddenSection: new.alwaysHiddenSection)
-            }
-            applyVisibility()
+            relayoutControls()
         }
         applyOptions()
         if visibility != .hidden { scheduleRehide() }
+        notify()
     }
 
     /// Starts or stops the optional monitors to match the settings.
@@ -176,10 +269,10 @@ final class MenuBarController {
         }
     }
 
-    private func screensChanged() {
-        let length = MenuBarController.expandedLength()
-        controls.expandedLength = length
-        applyVisibility()
+    func screensChanged() {
+        guard started else { return }
+        if environment.usesSystemUI { controls.expandedLength = MenuBarController.expandedLength() }
+        relayoutControls()
         notify()
     }
 
@@ -207,11 +300,14 @@ final class MenuBarController {
         startShownState()
         // Names and owners of items that appeared while parked.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, self.visibility != .hidden else { return }
+            guard let self, self.started, self.visibility != .hidden else { return }
             self.items = self.scanner.snapshot()
             self.scanner.resolveOwners(self.items) { [weak self] in
-                guard let self, self.visibility != .hidden else { return }
+                guard let self, self.started, self.visibility != .hidden else { return }
                 self.items = self.scanner.snapshot()
+                // Now that expanded dividers have collapsed, crowding can be
+                // assessed from their actual widths without projecting positions.
+                self.applyVisibility()
                 self.notify()
             }
         }
@@ -241,12 +337,26 @@ final class MenuBarController {
         }
     }
 
-    private func applyVisibility() {
-        MenuBarTrace.log("visibility \(visibility.rawValue)")
-        let displays = environment.recoveryDisplays?() ?? (environment.usesSystemUI
+    private func recoveryDisplays() -> [MenuBarLayout.RecoveryDisplay] {
+        environment.recoveryDisplays?() ?? (environment.usesSystemUI
             ? NSScreen.screens.map { MenuBarLayout.RecoveryDisplay(frame: $0.axFrame, statusArea: statusArea(on: $0)) } : [])
-        var allowed = MenuBarLayout.safeExpansion(items: scanner.snapshot(), displays: displays,
-                                                  showChevron: settings.showChevron, ownPID: getpid())
+    }
+
+    private func applyVisibility(current: [MenuBarItem]? = nil,
+                                 displays: [MenuBarLayout.RecoveryDisplay]? = nil, settled: Bool = true) {
+        MenuBarTrace.log("visibility \(visibility.rawValue)")
+        guard !controlRelayoutPending else { return }
+        let displays = displays ?? recoveryDisplays()
+        let current = current ?? scanner.snapshot()
+        if settled, !compactControls, MenuBarLayout.needsCompactControls(items: current, displays: displays,
+                showChevron: effectiveShowChevron, alwaysHiddenSection: settings.alwaysHiddenSection, ownPID: getpid()) {
+            compactControls = true
+            relayoutControls()
+            return
+        }
+        var allowed = settled ? MenuBarLayout.safeExpansion(items: current, displays: displays,
+                                                  showChevron: effectiveShowChevron, ownPID: getpid())
+            : .init(hidden: false, alwaysHidden: false)
         allowed.alwaysHidden = allowed.alwaysHidden && settings.alwaysHiddenSection
         let expansion = ControlItems.expansion(visibility, allowed: allowed)
         let blocked = (visibility == .hidden && !allowed.hidden)
@@ -256,18 +366,22 @@ final class MenuBarController {
         } else if lastError == Self.recoveryMessage {
             lastError = nil
         }
+        applyControlExpansion(expansion)
+    }
+
+    private func applyControlExpansion(_ expansion: ControlItems.Expansion) {
         if let applyControls = environment.applyControls { applyControls(visibility, expansion) }
         else if environment.usesSystemUI { controls.apply(visibility, expansion: expansion) }
         triggers.invalidateEmptySpace()
         syncChangeWatcher()
     }
 
-    private static let recoveryMessage = "Some sections stay revealed because Bento cannot safely hide them while keeping its icon and chevron accessible. Choose Arrange in Menu Bar, then hold ⌘ and drag Bento’s icon and chevron to the right of both separators. Keep the dashed separator left of the solid one, make room beside the notch, then click Done."
+    private static let recoveryMessage = "Some sections stay revealed because Bento cannot verify safe access to its menu. Choose Arrange in Menu Bar, then hold ⌘ and drag Bento’s icon and any chevron to the right of both separators. Keep the dashed separator left of the solid one, make room beside the notch, then click Done."
 
     /// Icon changes only matter while the items are hidden. Called on every
     /// layout change, so the watcher also looks again at what's hidden.
     func syncChangeWatcher() {
-        changeWatcher?.setActive(started && visibility == .hidden && !bar.isOpen && !isArranging)
+        changeWatcher?.setActive(started && !controlRelayoutPending && visibility == .hidden && !bar.isOpen && !isArranging)
     }
 
     private func controlClicked(_ kind: ControlItems.Kind, right: Bool, option: Bool) {
@@ -545,7 +659,9 @@ final class MenuBarController {
             // Expanded separators count at their collapsed width.
             let widths = shown.map { item -> LayoutItem in
                 var l = item.layoutItem
-                if case .control = item.role, l.width > 200 { l.width = 26 }
+                if case .control = item.role, l.width > 200 {
+                    l.width = compactControls ? ControlItems.compactDividerLength : 26
+                }
                 return l
             }
             let need = MenuBarLayout.shortfall(widths, shown: Set(widths.map(\.key)), available: area.upperBound - area.lowerBound)
@@ -701,11 +817,14 @@ final class MenuBarController {
         return [
             "started": started,
             "visibility": visibility.rawValue,
+            "compactControls": compactControls,
+            "controlRelayoutPending": controlRelayoutPending,
             "controls": ["toggle": controls.toggle != nil, "hidden": controls.hidden != nil, "alwaysHidden": controls.alwaysHidden != nil,
                          "hiddenExpanded": controls.hiddenExpanded, "alwaysHiddenExpanded": controls.alwaysHiddenExpanded,
                          "expandedLength": Double(controls.expandedLength)],
             "items": items.map { ["key": $0.key, "name": $0.name, "section": (s[$0.windowID] ?? .visible).rawValue,
                                   "x": Double($0.frame.minX), "width": Double($0.frame.width), "window": Int($0.windowID),
+                                  "windowOnScreen": $0.windowIsOnScreen.map { $0 as Any } ?? NSNull(),
                                   "role": "\($0.role)"] },
             "arranging": isArranging,
             "overflow": overflowItems(items).map(\.key),

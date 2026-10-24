@@ -39,9 +39,107 @@ struct LayoutItem: Equatable {
 /// Pure section geometry, owner matching and notch overflow.
 enum MenuBarLayout {
     /// Both the display and item frames use global top-left coordinates.
-    struct RecoveryDisplay {
+    struct RecoveryDisplay: Equatable {
         var frame: CGRect
         var statusArea: ClosedRange<CGFloat>
+    }
+
+    /// Only recovery/control geometry participates in settling; another app's
+    /// changing title or icon must not keep Bento's relayout alive.
+    struct ControlLayoutSample: Equatable {
+        struct Window: Equatable {
+            var id: CGWindowID
+            var frame: CGRect
+            var role: MenuBarItem.Role
+            var ownerPID: pid_t?
+        }
+        var display: RecoveryDisplay
+        var windows: [Window]
+    }
+
+    /// A complete, collapsed menu row, including controls behind the notch.
+    /// This establishes readiness only; safeExpansion still authorizes hiding.
+    static func controlLayoutSample(items: [MenuBarItem], displays: [RecoveryDisplay],
+                                    showChevron: Bool, alwaysHiddenSection: Bool, ownPID: pid_t) -> ControlLayoutSample? {
+        let shell = recoveryShell(items, ownPID: ownPID)
+        guard !shell.isEmpty else { return nil }
+        let candidates = displays.filter { d in
+            validDisplay(d) && shell.allSatisfy { fitsStatusArea($0.frame, display: d) }
+        }
+        guard candidates.count == 1 else { return nil }
+        let display = candidates[0]
+        let kinds: [ControlItems.Kind] = [.hidden] + (alwaysHiddenSection ? [.alwaysHidden] : [])
+            + (showChevron ? [.toggle] : [])
+        let controls = items.filter { if case .control = $0.role { return true }; return false }
+        guard controls.count == kinds.count,
+              kinds.allSatisfy({ kind in controls.filter { $0.role == .control(kind) }.count == 1 }),
+              let rowBottom = shell.map({ $0.frame.maxY }).max(),
+              controls.allSatisfy({ item in
+                  let f = item.frame
+                  return validFrame(f) && f.width <= 200
+                      && abs(f.minY - display.frame.minY) <= 1 && abs(f.maxY - rowBottom) <= 1
+                      && f.maxY <= display.frame.maxY && f.maxX <= display.frame.maxX
+              }) else { return nil }
+        let windows = (shell + controls).sorted { $0.windowID < $1.windowID }.map {
+            ControlLayoutSample.Window(id: $0.windowID, frame: $0.frame, role: $0.role, ownerPID: $0.ownerPID)
+        }
+        guard Set(windows.map(\.id)).count == windows.count else { return nil }
+        return ControlLayoutSample(display: display, windows: windows)
+    }
+
+    /// Try smaller controls only with a known, accessible shell and complete
+    /// collapsed geometry. Expanded dividers (and items parked by them) are
+    /// not evidence of crowding; wait until a revealed snapshot instead.
+    static func needsCompactControls(items: [MenuBarItem], displays: [RecoveryDisplay],
+                                     showChevron: Bool, alwaysHiddenSection: Bool, ownPID: pid_t) -> Bool {
+        let shell = recoveryShell(items, ownPID: ownPID)
+        guard !shell.isEmpty else { return false }
+        let candidates = displays.filter { d in
+            validDisplay(d) && shell.allSatisfy { fitsStatusArea($0.frame, display: d) }
+        }
+        guard candidates.count == 1 else { return false }
+        let display = candidates[0]
+        let kinds: [ControlItems.Kind] = [.hidden] + (alwaysHiddenSection ? [.alwaysHidden] : [])
+            + (showChevron ? [.toggle] : [])
+        var frames: [CGRect] = []
+        var nativeOverflow = false
+        for kind in kinds {
+            let matches = items.filter { $0.role == .control(kind) }
+            guard matches.count == 1 else { return false }
+            let f = matches[0].frame
+            // Native expanded lengths are at least 1000 pt. Leave ambiguous
+            // widths alone too, including a relayout still in progress.
+            guard validFrame(f), f.width <= 200,
+                  abs(f.minY - display.frame.minY) <= 1, f.maxY <= display.frame.maxY,
+                  f.maxX <= display.frame.maxX else { return false }
+            frames.append(f)
+            nativeOverflow = nativeOverflow || matches[0].windowIsOnScreen == false
+        }
+        // macOS can reserve more room beside the notch than the auxiliary
+        // screen geometry reports. Its on-screen flag catches that culling.
+        return nativeOverflow || frames.contains { $0.minX < display.statusArea.lowerBound }
+    }
+
+    private static func validFrame(_ f: CGRect) -> Bool {
+        f.origin.x.isFinite && f.origin.y.isFinite && f.width.isFinite && f.height.isFinite
+            && f.size.width > 0 && f.size.height > 0 && f.maxX.isFinite && f.maxY.isFinite
+    }
+
+    private static func validDisplay(_ d: RecoveryDisplay) -> Bool {
+        validFrame(d.frame) && d.statusArea.lowerBound.isFinite && d.statusArea.upperBound.isFinite
+            && d.statusArea.lowerBound >= d.frame.minX && d.statusArea.upperBound <= d.frame.maxX
+    }
+
+    private static func fitsStatusArea(_ f: CGRect, display d: RecoveryDisplay) -> Bool {
+        validFrame(f) && abs(f.minY - d.frame.minY) <= 1 && f.maxY <= d.frame.maxY
+            && f.minX >= d.statusArea.lowerBound && f.maxX <= d.statusArea.upperBound
+    }
+
+    private static func recoveryShell(_ items: [MenuBarItem], ownPID: pid_t) -> [MenuBarItem] {
+        items.filter {
+            if case .control = $0.role { return false }
+            return $0.role == .bentoIcon || $0.ownerPID == ownPID
+        }
     }
 
     /// Status items grow to the left, with their right edge anchored. Never
@@ -49,33 +147,21 @@ enum MenuBarLayout {
     static func safeExpansion(items: [MenuBarItem], displays: [RecoveryDisplay],
                               showChevron: Bool, ownPID: pid_t) -> ControlItems.Expansion {
         let collapsed = ControlItems.Expansion(hidden: false, alwaysHidden: false)
-        func valid(_ f: CGRect) -> Bool {
-            f.origin.x.isFinite && f.origin.y.isFinite && f.width.isFinite && f.height.isFinite
-                && f.size.width > 0 && f.size.height > 0 && f.maxX.isFinite && f.maxY.isFinite
-        }
         func controls(_ kind: ControlItems.Kind) -> [MenuBarItem] {
             items.filter { $0.role == .control(kind) }
         }
         let solid = controls(.hidden), dashed = controls(.alwaysHidden), chevrons = controls(.toggle)
         // The shell icon may have no stable autosave name. On macOS 26 its
         // owner is learned through AX; an unresolved shell keeps hiding off.
-        let shell = items.filter {
-            if case .control = $0.role { return false }
-            return $0.role == .bentoIcon || $0.ownerPID == ownPID
-        }
+        let shell = recoveryShell(items, ownPID: ownPID)
         let recovery = shell + chevrons
         guard solid.count == 1, !shell.isEmpty, !showChevron || chevrons.count == 1,
-              recovery.allSatisfy({ valid($0.frame) }), valid(solid[0].frame) else { return collapsed }
+              recovery.allSatisfy({ validFrame($0.frame) && $0.windowIsOnScreen != false }),
+              validFrame(solid[0].frame) else { return collapsed }
         // Require one unambiguous display containing every known recovery
         // control. A missing, parked, notched or split-display control fails closed.
         let candidates = displays.filter { d in
-            valid(d.frame) && d.statusArea.lowerBound.isFinite && d.statusArea.upperBound.isFinite
-                && d.statusArea.lowerBound >= d.frame.minX && d.statusArea.upperBound <= d.frame.maxX
-                && recovery.allSatisfy { item in
-                    let f = item.frame
-                    return abs(f.minY - d.frame.minY) <= 1 && f.maxY <= d.frame.maxY
-                        && f.minX >= d.statusArea.lowerBound && f.maxX <= d.statusArea.upperBound
-                }
+            validDisplay(d) && recovery.allSatisfy { fitsStatusArea($0.frame, display: d) }
         }
         guard candidates.count == 1 else { return collapsed }
         let display = candidates[0], h = solid[0].frame
@@ -84,7 +170,7 @@ enum MenuBarLayout {
         let hiddenSafe = recovery.allSatisfy { $0.frame.minX >= h.maxX }
         // The dashed separator may already be parked to the left by an
         // expanded solid separator. Compare full edges on the same menu row.
-        let alwaysSafe = dashed.count == 1 && valid(dashed[0].frame)
+        let alwaysSafe = dashed.count == 1 && validFrame(dashed[0].frame)
             && abs(dashed[0].frame.minY - h.minY) <= 1 && dashed[0].frame.maxY <= display.frame.maxY
             && dashed[0].frame.maxX <= h.minX
             && recovery.allSatisfy { $0.frame.minX >= dashed[0].frame.maxX }

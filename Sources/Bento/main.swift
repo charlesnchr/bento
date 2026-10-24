@@ -1,3 +1,4 @@
+import BentoCore
 import BentoShell
 import Shot
 import Windows
@@ -7,6 +8,8 @@ import Clipboard
 import Notes
 import Todo
 import MenuBar
+
+StatusItemSizing.shared.configure()
 
 BentoApp.run(modules: [
     ShotModule(),
