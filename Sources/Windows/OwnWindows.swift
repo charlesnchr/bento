@@ -16,10 +16,12 @@ enum OwnWindows {
         Set(NSApp.windows.filter(isRegular).map { CGWindowID($0.windowNumber) })
     }
 
-    /// The key (or main) Bento window, if it is a regular one. Main thread.
+    /// The focused regular Bento window: the key window, the window a key
+    /// popup belongs to (the Notes palette), or the main window. Main thread.
     static func focused() -> AXWindow? {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard let w = NSApp.keyWindow ?? NSApp.mainWindow, isRegular(w) else { return nil }
+        let key = NSApp.keyWindow
+        guard let w = [key, key?.parent, NSApp.mainWindow].compactMap({ $0 }).first(where: isRegular) else { return nil }
         return element(CGWindowID(w.windowNumber))
     }
 
