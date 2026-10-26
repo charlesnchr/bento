@@ -1,0 +1,516 @@
+"""Authenticated loopback bridge for Bento's dictation, meetings and voice calls.
+
+Bento talks to Vertex AI (and, for some models, Azure, OpenRouter or a local
+gateway) through this helper so the app never holds cloud credentials. Google
+auth owns token refresh. See helper/README.md for setup.
+"""
+import asyncio
+import argparse
+import base64
+import hmac
+import json
+import os
+from pathlib import Path
+import ssl
+from urllib.parse import urlsplit
+
+import aiohttp
+from aiohttp import web
+import google.auth
+from google.auth.transport.requests import Request
+
+MODEL = 'gemini-3.5-transcribe-preview'
+LIVE_MODEL = 'gemini-3.5-transcribe-live-preview'
+CLEANUP_MODEL = 'gemini-3.5-flash-lite'
+EDITING_MODEL = 'gemini-3.8-flash'
+GPT_MODEL = 'gpt-transcribe'
+LUNA_MODEL = 'gpt-6-luna'
+MAI_MODEL = 'mai-transcribe-2'
+OPENROUTER_TRANSCRIBE = 'https://openrouter.ai/api/v1/audio/transcriptions'
+# Assistant voice calls. 3.8 Live has no global endpoint; us-central1 is its documented regional host.
+CONVERSATION_MODEL = 'gemini-3.8-live'
+CONVERSATION_LOCATION = 'us-central1'
+CONVERSATION_TOOL = 'ask_hermes'
+# A stalled upgrade must not hold the one call slot; the app gives up after 25 s.
+CONVERSATION_CONNECT_TIMEOUT = 20
+
+
+AUDIO_EXTENSIONS = {'audio/flac': 'flac', 'audio/wav': 'wav', 'audio/x-wav': 'wav'}
+
+
+def inline_audio(parts, body):
+    """The one recording and dictionary terms of a transcription request, validated before credentials."""
+    if len(parts) != 1 or set(parts[0]) not in ({'inlineData'}, {'inline_data'}):
+        raise web.HTTPBadRequest(text='Expected one inline audio recording')
+    inline = parts[0].get('inlineData', parts[0].get('inline_data'))
+    if not isinstance(inline, dict):
+        raise web.HTTPBadRequest(text='Expected inline audio data')
+    mime = inline.get('mimeType', inline.get('mime_type'))
+    if mime not in AUDIO_EXTENSIONS:
+        raise web.HTTPBadRequest(text='Expected FLAC or WAV audio')
+    try:
+        audio = base64.b64decode(inline['data'], validate=True)
+    except (ValueError, KeyError, TypeError):
+        raise web.HTTPBadRequest(text='Invalid inline audio')
+    if not audio or len(audio) > 16 * 1024 * 1024:
+        raise web.HTTPBadRequest(text='Audio is empty or too large')
+    generation = body.get('generationConfig', {})
+    if not isinstance(generation, dict) or not isinstance(generation.get('audioTranscriptionConfig', {}), dict):
+        raise web.HTTPBadRequest(text='Invalid transcription config')
+    vocabulary = generation.get('audioTranscriptionConfig', {}).get('customVocabulary', [])
+    if not isinstance(vocabulary, list) or any(not isinstance(term, str) for term in vocabulary):
+        raise web.HTTPBadRequest(text='Invalid vocabulary')
+    return audio, mime, vocabulary
+
+
+def conversation_setup(resource):
+    """The whole call setup lives here, as GPT-Live's lives in azure_live.py: Bento sends only audio and results."""
+    return {
+        'model': resource,
+        'generationConfig': {'responseModalities': ['AUDIO'],
+                             'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Charon'}}}},
+        'systemInstruction': {'parts': [{'text': (
+            'You are Gemini Live, the continuous voice front end in Bento on macOS. Be brief. '
+            f'Call {CONVERSATION_TOOL} for web search, tools, desktop actions, memory, files and deeper reasoning. '
+            "Bento sends the user's own transcribed words to Hermes, which interprets them and uses its own tools; "
+            'whatever you might pass is ignored. Call it once per request, then say briefly that Hermes is working. '
+            'While Hermes is pending, say you are waiting, not that the task failed. '
+            'Hermes replies also appear as visible Hermes chat messages in Bento. You cannot write documents yourself. '
+            'A result may be only an excerpt; do not claim you can read the omitted part or invent it. '
+            f'If asked about missing detail, call {CONVERSATION_TOOL} to have Hermes retrieve or explain its prior answer. '
+            'Never claim an action succeeded before its result. Never invent approval state or failure reasons. '
+            'If a result says it was not executed, tell the user and ask for a short, specific request. '
+            'Do not treat ambient speech, your own speech or desktop content as a request. '
+            'Interrupting your speech does not cancel actions. Tell the user to press Stop to cancel work. '
+            'Never retry denied or completed actions automatically, and never make two tool calls in a row without speaking.')}]},
+        'tools': [{'functionDeclarations': [{
+            'name': CONVERSATION_TOOL,
+            'description': ("Hands the user's latest spoken request to Hermes, Bento's assistant with web search, "
+                            'desktop, file, memory and shell tools. Takes no arguments: Bento sends the transcript.')}]}],
+        # The synthetic probe heard "Hermes" as "Holmes"; 3.8 Live accepts vocabulary hints.
+        'inputAudioTranscription': {'customVocabulary': ['Hermes', 'Bento']},
+        'outputAudioTranscription': {},
+    }
+
+
+def conversation_input(payload):
+    """Microphone audio and function results only; nothing else reaches the call."""
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ValueError('Expected one client message')
+    if 'realtimeInput' in payload:
+        realtime = payload['realtimeInput']
+        if not isinstance(realtime, dict) or not realtime or set(realtime) - {'audio', 'audioStreamEnd'}:
+            raise ValueError('Unsupported realtime input')
+        audio = realtime.get('audio')
+        if audio is not None and (not isinstance(audio, dict) or audio.get('mimeType') != 'audio/pcm;rate=16000'
+                                  or not isinstance(audio.get('data'), str)):
+            raise ValueError('Expected 16 kHz PCM audio')
+    elif 'toolResponse' in payload:
+        responses = payload['toolResponse'].get('functionResponses') if isinstance(payload['toolResponse'], dict) else None
+        if (not isinstance(responses, list) or not responses or set(payload['toolResponse']) != {'functionResponses'}
+                or any(not isinstance(item, dict) or set(item) - {'id', 'name', 'response', 'scheduling'}
+                       or not isinstance(item.get('id'), str) or not isinstance(item.get('response'), dict)
+                       for item in responses)):
+            raise ValueError('Invalid function response')
+    else:
+        raise ValueError('Unsupported client message')
+    return payload
+
+
+DEFAULT_ENV_FILES = ['~/.hermes/.env']
+DEFAULT_GATEWAY_KEY_ENV = ['BENTO_GATEWAY_API_KEY', 'LITELLM_API_KEY']
+
+
+def hermes_env(config=None):
+    """Keys the user's other tools already keep (by default Hermes's .env, then the
+    environment); read on use, never copied into the app or its preferences."""
+    from dotenv import dotenv_values
+    env = {}
+    for name in (config or {}).get('env_files', DEFAULT_ENV_FILES):
+        path = Path(name).expanduser()
+        if path.is_file():
+            env.update(dotenv_values(path))
+    env.update(os.environ)
+    return env
+
+
+def gateway_config(config):
+    """The optional local gateway (an Anthropic-messages endpoint such as LiteLLM)
+    for relayed cleanup models: {"url", "models", "key_env"} under "gateway"."""
+    gateway = config.get('gateway') or {}
+    return {'url': gateway.get('url', 'http://127.0.0.1:4000').rstrip('/'),
+            'models': list(gateway.get('models', [])),
+            'key_env': list(gateway.get('key_env', DEFAULT_GATEWAY_KEY_ENV))}
+
+
+def gateway_key(config):
+    # The first configured name that is set: where several are, list the one the gateway accepts first.
+    env = hermes_env(config)
+    value = next((env[name] for name in gateway_config(config)['key_env'] if env.get(name)), None)
+    if not value:
+        raise ValueError('Gateway credentials unavailable')
+    return value
+
+
+def transcript_prompt(body, name):
+    parts = [part for content in body.get('contents', []) for part in content.get('parts', [])]
+    if not parts or any(set(part) != {'text'} or not isinstance(part['text'], str) for part in parts):
+        raise web.HTTPBadRequest(text=name + ' accepts transcript text only')
+    prompt = '\n'.join(part['text'] for part in parts)
+    # MeetingPrompts.summary allows 600k transcript characters plus its instructions.
+    if not prompt.strip() or len(prompt) > 650000:
+        raise web.HTTPBadRequest(text='Transcript is empty or too large')
+    return prompt
+
+
+def openrouter_key(config=None):
+    # The key Hermes already uses; never copied into the bundle or prefs.
+    env = hermes_env(config)
+    value = env.get('BENTO_OPENROUTER_API_KEY') or env.get('OPENROUTER_API_KEY')
+    if not value:
+        raise ValueError('OpenRouter credentials unavailable')
+    return value
+
+
+class VertexBridge:
+    def __init__(self, config, credentials):
+        self.config = config
+        self.credentials = credentials
+        self.lock = asyncio.Lock()
+        self.slots = asyncio.Semaphore(4)
+        self.azure_slots = asyncio.Semaphore(1)
+        # One voice call at a time, outside the four slots dictation and meetings share.
+        self.conversation_slot = asyncio.Semaphore(1)
+        self.session = None
+        self.openrouter_tls = None
+
+    async def headers(self):
+        async with self.lock:
+            if not self.credentials.valid:
+                await asyncio.to_thread(self.credentials.refresh, Request())
+            return {'Authorization': 'Bearer ' + self.credentials.token}
+
+    def resource(self, model, location='global'):
+        return f'projects/{self.config["project"]}/locations/{location}/publishers/google/models/{model}'
+
+    async def generate(self, request):
+        model = request.match_info['model']
+        gateway_models = gateway_config(self.config)['models']
+        if model not in (MODEL, CLEANUP_MODEL, EDITING_MODEL, GPT_MODEL, LUNA_MODEL, MAI_MODEL, *gateway_models):
+            raise web.HTTPForbidden(text='Model is not enabled for Bento')
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeError):
+            raise web.HTTPBadRequest(text='Invalid JSON')
+        if not isinstance(body, dict) or set(body) - {'contents', 'generationConfig'}:
+            raise web.HTTPBadRequest(text='Unsupported request fields')
+        if not isinstance(body.get('contents'), list):
+            raise web.HTTPBadRequest(text='Expected inline contents')
+        # Bento sends inline audio/text only; never allow arbitrary GCS/file fetches.
+        for content in body.get('contents', []):
+            if not isinstance(content, dict) or not isinstance(content.get('parts'), list):
+                raise web.HTTPBadRequest(text='Expected inline content parts')
+            for part in content.get('parts', []):
+                if not isinstance(part, dict) or set(part) - {'text', 'inlineData', 'inline_data'}:
+                    raise web.HTTPBadRequest(text='Only inline content is supported')
+        if model in (GPT_MODEL, LUNA_MODEL):
+            return await self.azure_generate(model, body)
+        if model == MAI_MODEL:
+            return await self.openrouter_generate(body)
+        if model in gateway_models:
+            return await self.gateway_generate(model, body)
+        url = 'https://aiplatform.googleapis.com/v1/' + self.resource(model) + ':generateContent'
+        async with self.slots:
+            async with self.session.post(url, headers=await self.headers(), json=body, allow_redirects=False) as response:
+                data = await response.read()
+                if 300 <= response.status < 400:
+                    raise web.HTTPBadGateway(text='Upstream redirect refused')
+                return web.Response(status=response.status, body=data, content_type='application/json')
+
+    async def azure_generate(self, model, body):
+        # Credentials remain in their existing provider store, never in app preferences.
+        from azure_live import azure_credentials
+        parts = [part for content in body.get('contents', []) for part in content.get('parts', [])]
+        if model == GPT_MODEL:
+            audio, mime, vocabulary = inline_audio(parts, body)
+            form = aiohttp.FormData()
+            form.add_field('file', audio, filename='dictation.' + AUDIO_EXTENSIONS[mime], content_type=mime)
+            form.add_field('response_format', 'json')
+            if vocabulary:
+                form.add_field('prompt', 'Vocabulary: ' + ', '.join(vocabulary)[:2000])
+            endpoint, key = azure_credentials(self.config)
+            deployment = (self.config.get('azure') or {}).get('transcribe_deployment', GPT_MODEL)
+            url = endpoint + f'/openai/deployments/{deployment}/audio/transcriptions?api-version=2025-04-01-preview'
+            kwargs = {'data': form}
+        else:
+            prompt = transcript_prompt(body, 'Luna')
+            endpoint, key = azure_credentials(self.config)
+            url = endpoint + '/openai/v1/chat/completions'
+            kwargs = {'json': {'model': LUNA_MODEL, 'messages': [{'role': 'user', 'content': prompt}],
+                               'reasoning_effort': 'none', 'max_completion_tokens': 8192}}
+        # Queued Azure calls must not consume every slot used by Gemini Live.
+        async with self.azure_slots, self.slots:
+            async with self.session.post(url, headers={'api-key': key}, allow_redirects=False,
+                                         timeout=aiohttp.ClientTimeout(total=60, connect=10), **kwargs) as response:
+                if response.status != 200:
+                    status = response.status if 400 <= response.status <= 599 else 502
+                    headers = {}
+                    if status == 429 and response.headers.get('Retry-After', '').isdigit():
+                        headers['Retry-After'] = response.headers['Retry-After']
+                    return web.json_response({'error': {'message': 'Azure model request failed'}}, status=status, headers=headers)
+                result = await response.json()
+        if model == GPT_MODEL:
+            text = result.get('text')
+        else:
+            choices = result.get('choices', [])
+            if not choices or choices[0].get('finish_reason') != 'stop':
+                raise web.HTTPBadGateway(text='Luna did not return a complete transcript')
+            text = choices[0].get('message', {}).get('content')
+        if not isinstance(text, str):
+            raise web.HTTPBadGateway(text='Azure returned no transcript')
+        # Keep the native client's existing deadlines, errors and validation gate.
+        return web.json_response({'modelVersion': model, 'candidates': [{'finishReason': 'STOP',
+            'content': {'parts': [{'text': text}]}}]})
+
+    async def gateway_generate(self, model, body):
+        prompt = transcript_prompt(body, model)
+        request = {'model': model, 'max_tokens': 8192, 'messages': [{'role': 'user', 'content': prompt}]}
+        url = gateway_config(self.config)['url'] + '/v1/messages'
+        async with self.slots:
+            async with self.session.post(url, headers={'x-api-key': gateway_key(self.config), 'anthropic-version': '2023-06-01'},
+                                         json=request, allow_redirects=False,
+                                         # Meeting summaries allow 120 s; dictation keeps its own short deadline.
+                                         timeout=aiohttp.ClientTimeout(total=150, connect=5)) as response:
+                if response.status != 200:
+                    status = response.status if 400 <= response.status <= 599 else 502
+                    headers = {}
+                    if status == 429 and response.headers.get('Retry-After', '').isdigit():
+                        headers['Retry-After'] = response.headers['Retry-After']
+                    return web.json_response({'error': {'message': 'Gateway model request failed'}}, status=status, headers=headers)
+                result = await response.json()
+        if result.get('stop_reason') != 'end_turn':
+            raise web.HTTPBadGateway(text='The gateway model did not return a complete transcript')
+        text = ''.join(block.get('text', '') for block in result.get('content', []) if block.get('type') == 'text')
+        return web.json_response({'modelVersion': model, 'candidates': [{'finishReason': 'STOP',
+            'content': {'parts': [{'text': text}]}}]})
+
+    async def openrouter_generate(self, body):
+        parts = [part for content in body.get('contents', []) for part in content.get('parts', [])]
+        audio, mime, vocabulary = inline_audio(parts, body)
+        request = {'model': 'microsoft/' + MAI_MODEL,
+                   'input_audio': {'data': base64.b64encode(audio).decode(), 'format': AUDIO_EXTENSIONS[mime]}}
+        if vocabulary:
+            # Azure keyword biasing; OpenRouter forwards provider options as-is.
+            request['provider'] = {'options': {'azure': {'phraseList': {'phrases': vocabulary[:100]}}}}
+        key = openrouter_key(self.config)
+        if self.openrouter_tls is None:
+            # A TLS-inspecting proxy may re-sign openrouter.ai; the macOS trust store has its root.
+            import truststore
+            self.openrouter_tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        async with self.azure_slots, self.slots:
+            async with self.session.post(OPENROUTER_TRANSCRIBE, headers={'Authorization': 'Bearer ' + key},
+                                         json=request, ssl=self.openrouter_tls, allow_redirects=False,
+                                         timeout=aiohttp.ClientTimeout(total=60, connect=10)) as response:
+                if response.status != 200:
+                    status = response.status if 400 <= response.status <= 599 else 502
+                    headers = {}
+                    if status == 429 and response.headers.get('Retry-After', '').isdigit():
+                        headers['Retry-After'] = response.headers['Retry-After']
+                    return web.json_response({'error': {'message': 'OpenRouter transcription failed'}}, status=status, headers=headers)
+                result = await response.json()
+        text = result.get('text')
+        if not isinstance(text, str):
+            raise web.HTTPBadGateway(text='OpenRouter returned no transcript')
+        return web.json_response({'modelVersion': MAI_MODEL, 'candidates': [{'finishReason': 'STOP',
+            'content': {'parts': [{'text': text}]}}]})
+
+    async def live(self, request):
+        async with self.slots:
+            return await self.live_session(request)
+
+    async def live_session(self, request):
+        ws = web.WebSocketResponse(max_msg_size=2 * 1024 * 1024, heartbeat=20)
+        await ws.prepare(request)
+        try:
+            first = await asyncio.wait_for(ws.receive(), 10)
+            if first.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                raise ValueError('Expected setup')
+            message = json.loads(first.data)
+            setup = message.get('setup', {})
+            if setup.get('model') not in ('models/' + LIVE_MODEL, self.resource(LIVE_MODEL)):
+                raise ValueError('Live model is not enabled')
+            if set(setup) - {'model', 'generationConfig', 'inputAudioTranscription', 'realtimeInputConfig'}:
+                raise ValueError('Unsupported setup fields')
+            setup['model'] = self.resource(LIVE_MODEL)
+            url = 'wss://aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent'
+            async with self.session.ws_connect(url, headers=await self.headers(), max_msg_size=4 * 1024 * 1024, heartbeat=20) as upstream:
+                await upstream.send_json({'setup': setup})
+                async def send():
+                    async for frame in ws:
+                        if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                            break
+                        payload = json.loads(frame.data)
+                        if set(payload) != {'realtimeInput'}:
+                            raise ValueError('Only realtime audio input is supported')
+                        realtime = payload['realtimeInput']
+                        if set(realtime) - {'audio', 'audioStreamEnd', 'activityStart', 'activityEnd'}:
+                            raise ValueError('Unsupported realtime input')
+                        await upstream.send_json(payload)
+                async def receive():
+                    async for frame in upstream:
+                        if frame.type == aiohttp.WSMsgType.TEXT:
+                            await ws.send_str(frame.data)
+                        elif frame.type == aiohttp.WSMsgType.BINARY:
+                            await ws.send_bytes(frame.data)
+                        else:
+                            break
+                tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
+                try:
+                    done, _ = await asyncio.wait(tasks, timeout=590, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        task.result()
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            if not ws.closed:
+                await ws.send_json({'error': {'message': 'Vertex Live session failed; retry with batch transcription'}})
+        finally:
+            await ws.close()
+        return ws
+
+    async def conversation(self, request):
+        ws = web.WebSocketResponse(max_msg_size=2 * 1024 * 1024, heartbeat=20)
+        await ws.prepare(request)
+        if self.conversation_slot.locked():
+            await ws.send_json(conversation_error('busy'))
+            await ws.close()
+            return ws
+        async with self.conversation_slot:
+            await self.conversation_session(ws)
+        return ws
+
+    async def conversation_session(self, ws):
+        # Only fixed codes, an HTTP status and a WebSocket close code leave on failure; never upstream text.
+        failure = {}
+        try:
+            setup = conversation_setup(self.resource(CONVERSATION_MODEL, CONVERSATION_LOCATION))
+            url = (f'wss://{CONVERSATION_LOCATION}-aiplatform.googleapis.com'
+                   '/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent')
+            async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
+                upstream = await self.session.ws_connect(url, headers=await self.headers(),
+                                                         max_msg_size=4 * 1024 * 1024, heartbeat=20)
+            async with upstream:
+                await upstream.send_json({'setup': setup})
+                async def send():
+                    async for frame in ws:
+                        if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                            break
+                        await upstream.send_json(conversation_input(json.loads(frame.data)))
+                async def receive():
+                    async for frame in upstream:
+                        if frame.type == aiohttp.WSMsgType.TEXT:
+                            await ws.send_str(frame.data)
+                        elif frame.type == aiohttp.WSMsgType.BINARY:
+                            await ws.send_bytes(frame.data)
+                        else:
+                            break
+                tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
+                try:
+                    done, _ = await asyncio.wait(tasks, timeout=600, return_when=asyncio.FIRST_COMPLETED)
+                    if tasks[0] in done and isinstance(tasks[0].exception(), (aiohttp.ClientError, ConnectionError)):
+                        # Audio can fail to write to a closing upstream before its close frame is read.
+                        await asyncio.wait([tasks[1]], timeout=2)
+                    if tasks[1].done() and not tasks[1].cancelled() and tasks[1].exception() is None:
+                        failure = {'code': 'upstream_closed', 'close_code': upstream.close_code}
+                    elif not done:
+                        failure = {'code': 'timeout'}
+                    else:
+                        for task in done:
+                            task.result()
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        except aiohttp.WSServerHandshakeError as error:
+            failure = {'code': 'http_error', 'http_status': error.status}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            failure = {'code': 'invalid_message'}
+        except (asyncio.TimeoutError, TimeoutError):
+            failure = {'code': 'timeout'}
+        except aiohttp.ClientError:
+            failure = {'code': 'connection_error'}
+        except Exception:
+            failure = {'code': 'transport_error'}
+        finally:
+            if failure and not ws.closed:
+                await ws.send_json(conversation_error(**failure))
+            await ws.close()
+
+
+def conversation_error(code, http_status=None, close_code=None):
+    error = {'message': 'Gemini Live call ended', 'code': code}
+    if isinstance(http_status, int) and 100 <= http_status <= 599:
+        error['httpStatus'] = http_status
+    if isinstance(close_code, int) and 1000 <= close_code <= 4999:
+        error['closeCode'] = close_code
+    return {'error': error}
+
+
+DEFAULT_RUNTIME = Path.home() / '.config/bento/voice-runtime.json'
+
+
+def listen_port(config):
+    """The port of the loopback URL the app is configured to call."""
+    return urlsplit(config.get('bifrost_base_url', 'http://127.0.0.1:8767')).port or 8767
+
+
+def make_app(config, credentials):
+    bridge = VertexBridge(config, credentials)
+    host = f'127.0.0.1:{listen_port(config)}'
+    @web.middleware
+    async def authenticate(request, handler):
+        if request.headers.get('Origin') or request.host != host:
+            raise web.HTTPForbidden()
+        supplied = request.headers.get('x-goog-api-key', '')
+        if not hmac.compare_digest(supplied, config['bifrost_key']):
+            raise web.HTTPUnauthorized()
+        try:
+            return await handler(request)
+        except web.HTTPException:
+            raise
+        except Exception:
+            return web.json_response({'error': {'message': 'Vertex helper request failed'}}, status=502)
+    app = web.Application(middlewares=[authenticate], client_max_size=24 * 1024 * 1024)
+    async def lifecycle(app):
+        # Optional explicit upstream proxy (e.g. a Mac outside a VPC Service Controls perimeter); environment proxies stay ignored.
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15), trust_env=False,
+                                         proxy=config.get('proxy')) as session:
+            bridge.session = session
+            yield
+    app.cleanup_ctx.append(lifecycle)
+    app.router.add_post('/v1beta/models/{model}:generateContent', bridge.generate)
+    app.router.add_get('/live', bridge.live)
+    app.router.add_get('/conversation', bridge.conversation)
+    async def health(request):
+        return web.json_response({'status': 'ok', 'transport': 'direct-vertex'})
+    app.router.add_get('/health', health)
+    return app
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=Path, default=Path(os.environ.get('BENTO_VOICE_RUNTIME', DEFAULT_RUNTIME)))
+    args = parser.parse_args()
+    config = json.loads(args.config.read_text())
+    if config.get('transport') != 'direct' or config['location'] != 'global':
+        raise RuntimeError('Direct Vertex global configuration required')
+    base = urlsplit(config.get('bifrost_base_url', ''))
+    if base.scheme != 'http' or base.hostname != '127.0.0.1' or not base.port:
+        raise RuntimeError('bifrost_base_url must be http://127.0.0.1:<port>, the address the helper listens on')
+    credentials, project = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+    if project != config['project']:
+        raise RuntimeError('ADC project does not match the voice runtime configuration')
+    os.umask(0o077)
+    web.run_app(make_app(config, credentials), host='127.0.0.1', port=listen_port(config), access_log=None, print=None)

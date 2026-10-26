@@ -8,3 +8,4 @@ server/target/
 Resources/Bento-1024.png
 .claude/
 scripts/config.local.sh
+__pycache__/

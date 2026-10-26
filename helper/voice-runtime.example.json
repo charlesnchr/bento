@@ -1,0 +1,24 @@
+{
+  "transport": "direct",
+  "bifrost_base_url": "http://127.0.0.1:8767",
+  "bifrost_key": "a long random string shared by Bento and the helper",
+  "project": "your-gcp-project",
+  "location": "global",
+  "model": "gemini-3.5-transcribe-preview",
+
+  "relayed_cleanup_models": [
+    {"id": "claude-haiku-5-5", "name": "Haiku 5.5"},
+    {"id": "gpt-6-luna", "name": "Luna, Azure GPT-6"}
+  ],
+  "default_cleanup_model": "claude-haiku-5-5",
+  "gateway": {
+    "url": "http://127.0.0.1:4000",
+    "models": ["claude-haiku-5-5"],
+    "key_env": ["LITELLM_API_KEY"]
+  },
+  "azure": {
+    "endpoint": "https://your-resource.openai.azure.com"
+  },
+  "env_files": ["~/.hermes/.env"],
+  "proxy": "http://127.0.0.1:3128"
+}
