@@ -34,6 +34,19 @@ copy_scripts() {
   cp "$ROOT/helper/voice-helper.py" "$ROOT/helper/azure_live.py" "$ROOT/helper/requirements.txt" "$PREFIX/"
 }
 
+install_requirements() {
+  local py="$PREFIX/venv/bin/python"
+  # uv-made virtualenvs have no pip: use uv when it's there, else bootstrap pip.
+  if ! "$py" -m pip --version >/dev/null 2>&1; then
+    if command -v uv >/dev/null; then
+      uv pip install -q --python "$py" -r "$PREFIX/requirements.txt"
+      return
+    fi
+    "$py" -m ensurepip -q
+  fi
+  "$py" -m pip install -q --disable-pip-version-check -r "$PREFIX/requirements.txt"
+}
+
 restart() {
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
@@ -79,7 +92,7 @@ case "$cmd" in
     say "helper in $PREFIX (Python: $PY)"
     copy_scripts
     if [ ! -x "$PREFIX/venv/bin/python" ]; then "$PY" -m venv "$PREFIX/venv"; fi
-    "$PREFIX/venv/bin/python" -m pip install -q --disable-pip-version-check -r "$PREFIX/requirements.txt"
+    install_requirements
     mkdir -p "$LOGS" "$(dirname "$PLIST")"
     chmod 700 "$LOGS"
     cat > "$PLIST" <<PLIST_END
@@ -117,7 +130,7 @@ PLIST_END
   update)
     [ -f "$PLIST" ] || die "not installed (scripts/voice-helper.sh install)"
     copy_scripts
-    "$PREFIX/venv/bin/python" -m pip install -q --disable-pip-version-check -r "$PREFIX/requirements.txt"
+    install_requirements
     restart
     health
     ;;
