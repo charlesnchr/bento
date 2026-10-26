@@ -30,9 +30,9 @@ public enum LiveEvent: Equatable, Sendable {
     /// The server's voice activity marker opened a turn. Its presence is what
     /// tells the session that this server reports turn ends at all.
     case activityStarted
-    /// The server closed the turn, having heard this many seconds of audio.
-    /// Audio sent after this point is not transcribed.
-    case activityEnded(TimeInterval)
+    /// The server closed the turn, having heard this many seconds of audio
+    /// (nil if it did not say). Audio sent after this point is not transcribed.
+    case activityEnded(TimeInterval?)
     /// The server is closing the session — the 10-minute cap, or its own reasons.
     case goAway
     /// An error envelope. Terminal for the session.
@@ -142,8 +142,9 @@ public enum LiveProtocol {
             }
         }
         if root["goAway"] != nil || root["go_away"] != nil { return .goAway }
-        // Vertex sends these even with automatic activity detection disabled
-        // (probed 2026-10-26 through the local helper): ACTIVITY_START when the
+        // Both Vertex (through the local helper) and the Gemini API send these
+        // even with automatic activity detection disabled (probed 2026-10-26):
+        // ACTIVITY_START when the
         // turn opens, ACTIVITY_END when it closes, each in a frame of its own.
         // ACTIVITY_END normally answers activityEnd with `audioOffset` equal to
         // the audio sent. But the server can also close a long turn by itself
@@ -153,8 +154,7 @@ public enum LiveProtocol {
             let type = (activity["type"] ?? activity["voiceActivityType"]) as? String ?? ""
             if type.hasSuffix("START") { return .activityStarted }
             if type.hasSuffix("END") {
-                let offset = MeetingLiveProtocol.parseDuration(activity["audioOffset"] ?? activity["audio_offset"]) ?? 0
-                return .activityEnded(offset)
+                return .activityEnded(MeetingLiveProtocol.parseDuration(activity["audioOffset"] ?? activity["audio_offset"]))
             }
         }
         return nil

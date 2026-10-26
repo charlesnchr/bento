@@ -211,9 +211,38 @@ import Testing
         #expect(LiveStats.classify(why) == .turnEndedEarly, "got: \(why)")
     }
 
+    /// An early cut that lands after finish() starts is caught by the offset:
+    /// it names a point that is not where the audio ended.
+    @Test func turnEndPastTheAudioSentFallsBack() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        transport.replyToActivityEnd = [finalFrame("Before the pause."), activityFrame("ACTIVITY_END", offset: "216.120s")]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x09, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        guard case .unusable(let why) = outcome else {
+            Issue.record("a turn end at 216s for 2.08s of audio must be unusable, got \(outcome)")
+            return
+        }
+        #expect(LiveStats.classify(why) == .turnEndedEarly, "got: \(why)")
+    }
+
+    /// Without an offset there is nothing to compare, and that alone is no
+    /// reason to throw away a turn the server closed on request.
+    @Test func turnEndWithoutAnOffsetStillCompletes() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        transport.replyToActivityEnd = [finalFrame("Ship it."), frame(["voiceActivity": ["type": "ACTIVITY_END"]])]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x0A, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        #expect(outcome == .completed("Ship it."))
+    }
+
     @Test func voiceActivityFramesDecode() {
         #expect(LiveProtocol.decode(activityFrame("ACTIVITY_START")) == .activityStarted)
         #expect(LiveProtocol.decode(activityFrame("ACTIVITY_END", offset: "216.120s")) == .activityEnded(216.12))
+        #expect(LiveProtocol.decode(frame(["voiceActivity": ["type": "ACTIVITY_END"]])) == .activityEnded(nil))
     }
 
     /// The failure the whole design is arranged around: dropped audio yields a
