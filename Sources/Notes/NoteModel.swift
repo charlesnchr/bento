@@ -137,6 +137,7 @@ enum NoteText {
         let ns = line as NSString
         if case .rule = parsed.kind { return "" }
         if case .fence = parsed.kind { return "" }
+        if case .detailsEnd = parsed.kind { return "" }
         let content = ns.substring(with: parsed.contentRange)
         return MarkdownParser.stripInline(content)
     }
@@ -152,7 +153,7 @@ enum NoteText {
                 inCode = opening
             case .code:
                 lines.append(line)
-            case .rule:
+            case .rule, .detailsEnd:
                 break
             default:
                 lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))

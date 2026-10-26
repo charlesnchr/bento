@@ -29,8 +29,18 @@ public final class NotesModule: BentoModule {
         return a
     }
 
-    public func start() { controller.start() }
-    public func stop() { controller.stop() }
+    public func start() { started = true; controller.start() }
+    public func stop() { started = false; controller.stop() }
+
+    private var started = false
+
+    /// Appends dictated text to the capture note as a collapsible, timestamped entry
+    /// (Dictation's Capture Thought to Note). Returns the note's title; nil when Notes
+    /// is off or there is no text.
+    public func capture(_ text: String) -> String? {
+        guard started else { return nil }
+        return controller.capture(text)
+    }
 
     public func makeSettingsView() -> AnyView? {
         controller.makeSettingsView(actions: actions.filter { !$0.id.hasPrefix("notes.debug") })

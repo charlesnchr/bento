@@ -4,6 +4,7 @@
 #   scripts/voice-dev assistant.state
 #   scripts/voice-dev assistant.frame "{{100, 100}, {700, 600}}"
 #   scripts/voice-dev assistant.hide
+#   scripts/voice-dev capture "An idea for later"   (Capture Thought to Note's output path)
 # Uses BENTO_HOME (default /tmp/bento-dev/voice, the harness's).
 set -euo pipefail
 HOME_DIR="${BENTO_HOME:-/tmp/bento-dev/voice}"

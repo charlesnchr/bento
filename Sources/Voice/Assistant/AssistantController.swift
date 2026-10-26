@@ -775,7 +775,18 @@ final class VoiceOutputRouter: TextInserting {
     init(composer: ComposerWindow, assistant: AssistantController) { self.composer = composer; self.assistant = assistant }
     func insert(_ text: String, context: DictationContext) async -> InsertionOutcome {
         if context.isAssistant { assistant.respond(to: text, activate: false); return .inserted }
+        if context.captureToNote { return captureToNote(text) }
         if context.useComposer { return await composer.insert(text, context: context) }
         return await InsertionCoordinator().insert(text, context: context)
+    }
+
+    /// Appends to the capture note through Notes; when Notes can't take it (off, or not
+    /// in this build) the text goes to the clipboard rather than being lost.
+    private func captureToNote(_ text: String) -> InsertionOutcome {
+        if DictationModule.noteCapture?(text) != nil { return .inserted }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        return .fellBackToClipboard
     }
 }

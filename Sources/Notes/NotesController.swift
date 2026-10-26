@@ -412,6 +412,34 @@ final class NotesController {
         if w.noteID == note.id { w.applyExternalBody(note.body) }
     }
 
+    // MARK: Thought capture
+
+    /// Appends a dictated thought to the capture note (Settings → Notes) as an expander,
+    /// first creating a "Thoughts" note when none is set or it was deleted. Returns the
+    /// note's title, nil for empty text.
+    @discardableResult
+    func capture(_ text: String) -> String? {
+        guard let entry = ThoughtCapture.entry(text) else { return nil }
+        flushPendingSave()
+        var id = settings.captureNoteID
+        if store.note(id)?.isLive != true {
+            var n = Note()
+            n.body = "# Thoughts"
+            n.device = sync.device
+            n.dirty = true
+            store.save(n)
+            id = n.id
+            updateSettings { $0.captureNoteID = id }
+        }
+        mutate(id) { $0.body = ThoughtCapture.append(entry, to: $0.body) }
+        guard let note = store.note(id) else { return nil }
+        countCache.removeValue(forKey: id)
+        if id == currentID, let w = windowController, w.noteID == id { w.applyExternalBody(note.body) }
+        let title = NoteText.displayTitle(of: note.body)
+        HUD.show("Saved to \(title)", symbol: "text.badge.plus")
+        return title
+    }
+
     // MARK: Pin, duplicate, delete
 
     func togglePin(_ id: String) {
@@ -831,7 +859,8 @@ final class NotesController {
     // MARK: Settings view
 
     func makeSettingsView(actions: [BentoAction]) -> AnyView {
-        AnyView(NotesSettingsView(status: sync.status, actions: actions, syncNow: { [weak self] in self?.sync.syncNow() }))
+        let notes = store.liveNotes.map { NotesSettingsView.NoteChoice(id: $0.id, title: NoteText.displayTitle(of: $0.body)) }
+        return AnyView(NotesSettingsView(status: sync.status, actions: actions, notes: notes, syncNow: { [weak self] in self?.sync.syncNow() }))
     }
 
     // MARK: Debug hooks (dev harness only)

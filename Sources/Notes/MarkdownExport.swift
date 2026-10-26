@@ -17,11 +17,12 @@ enum MarkdownExport {
             case .fence(let opening, _): inCode = opening
             case .code: out.append(line)
             case .rule: out.append("———")
+            case .detailsEnd: break
             case .bullet: out.append(indent + "• " + content)
             case .ordered(let n): out.append(indent + "\(n). " + content)
             case .task(let checked): out.append(indent + (checked ? "☑ " : "☐ ") + content)
             case .quote: out.append(content)
-            case .heading, .paragraph: out.append(content)
+            case .heading, .paragraph, .details: out.append(content)
             }
         }
         return out.joined(separator: "\n")
@@ -91,6 +92,7 @@ enum MarkdownExport {
         var codeLines: [String] = []
         var codeLang = ""
         var quoteOpen = false
+        var detailsOpen = false
 
         func closeAllLists() {
             while let top = listStack.popLast() { out += "</li></\(top.tag)>\n" }
@@ -113,6 +115,20 @@ enum MarkdownExport {
                 return
             case .code:
                 codeLines.append(line)
+                return
+            default: break
+            }
+            switch p.kind {
+            case .details:
+                closeAllLists(); closeQuote()
+                if detailsOpen { out += "</details>\n" }
+                out += "<details><summary>" + inlineHTML(content) + "</summary>\n"
+                detailsOpen = true
+                return
+            case .detailsEnd where detailsOpen:
+                closeAllLists(); closeQuote()
+                out += "</details>\n"
+                detailsOpen = false
                 return
             default: break
             }
@@ -152,6 +168,7 @@ enum MarkdownExport {
                 if !quoteOpen { out += "<blockquote>\n"; quoteOpen = true }
                 out += "<p>" + inlineHTML(content) + "</p>\n"
             case .rule: out += "<hr>\n"
+            case .detailsEnd: out += "<p>:::</p>\n"
             case .paragraph:
                 if content.trimmingCharacters(in: .whitespaces).isEmpty { out += "<p><br></p>\n" } else { out += "<p>" + inlineHTML(content) + "</p>\n" }
             default: break
@@ -160,6 +177,7 @@ enum MarkdownExport {
         if inCode { out += "<pre><code>" + escape(codeLines.joined(separator: "\n")) + "</code></pre>\n" }
         closeAllLists()
         closeQuote()
+        if detailsOpen { out += "</details>\n" }
         guard standalone else { return "<meta charset=\"utf-8\">" + out }
         return """
         <!DOCTYPE html>

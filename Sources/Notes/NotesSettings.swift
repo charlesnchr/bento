@@ -25,6 +25,9 @@ struct NotesSettings: Codable, Equatable {
     var confirmDelete = true
     /// Extra menu bar button that toggles the notes window (⌥-click: new note).
     var showMenuBarButton = false
+    /// Note that Dictation's Capture Thought to Note appends to ("": a new "Thoughts" note,
+    /// created on the first capture).
+    var captureNoteID = ""
     var sync = SyncSettings()
 
     var theme: NotesTheme {
@@ -52,7 +55,14 @@ struct NotesSettingsView: View {
     @StateObject private var model = ConfigSection("notes", default: NotesSettings())
     @ObservedObject var status: SyncStatus
     let actions: [BentoAction]
+    /// Live notes for the capture note picker.
+    let notes: [NoteChoice]
     let syncNow: () -> Void
+
+    struct NoteChoice: Identifiable {
+        let id: String
+        let title: String
+    }
     @State private var now = Date()
 
     var body: some View {
@@ -94,6 +104,21 @@ struct NotesSettingsView: View {
                     Text("Character count").tag("characters")
                 }
                 Toggle("Confirm before deleting a note", isOn: $model.value.confirmDelete)
+            }
+
+            Section {
+                Picker("Capture note", selection: $model.value.captureNoteID) {
+                    Text("New “Thoughts” note").tag("")
+                    ForEach(notes) { Text($0.title).tag($0.id) }
+                    if !model.value.captureNoteID.isEmpty, !notes.contains(where: { $0.id == model.value.captureNoteID }) {
+                        Text("Deleted note").tag(model.value.captureNoteID)
+                    }
+                }
+            } header: {
+                Text("Thought capture")
+            } footer: {
+                Text("Dictation's Capture Thought to Note shortcut appends what you say to this note as a collapsed entry headed by the date, time and first words. ⌘↩ or the chevron opens an entry.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {

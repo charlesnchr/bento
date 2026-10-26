@@ -69,6 +69,8 @@ public struct DictationContext: Equatable, Sendable {
     public var keepOutputSelected: Bool = false
     public var isAssistant: Bool = false
     public var useComposer: Bool = false
+    /// The transcript goes to the capture note (Notes), not the frontmost app.
+    public var captureToNote: Bool = false
 
     public init(targetAppBundleID: String? = nil, targetAppName: String? = nil, targetPID: pid_t? = nil) {
         self.targetAppBundleID = targetAppBundleID

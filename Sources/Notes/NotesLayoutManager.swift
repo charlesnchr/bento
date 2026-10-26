@@ -1,8 +1,8 @@
 import AppKit
 
 /// TextKit 1 layout manager that hides markdown markers (null glyphs) and draws the
-/// block decorations: bullets, numbers, checkboxes, quote bars, rules, code boxes and
-/// inline-code pills.
+/// block decorations: bullets, numbers, checkboxes, quote bars, rules, code boxes,
+/// expander chevrons and inline-code pills.
 final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     var theme = NotesTheme()
 
@@ -120,6 +120,8 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     private func drawDecoration(_ d: BlockDecoration, paragraph p: NSRange, origin: NSPoint, ts: NSTextStorage) {
         let t = theme
+        // an expander's body is indented under its summary
+        let origin = d.inDetails ? NSPoint(x: origin.x + t.listIndent, y: origin.y) : origin
         switch d.kind {
         case .bullet(let level):
             guard let line = firstLine(ofParagraphAt: p.location) else { return }
@@ -175,18 +177,36 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let bottom = line.rect.maxY - (ps?.lineSpacing ?? 0)
             let y = ((top + bottom) / 2).rounded() - 1
             t.separator.setFill()
-            NSBezierPath(roundedRect: NSRect(x: origin.x, y: origin.y + y, width: containerWidth, height: 2), xRadius: 1, yRadius: 1).fill()
+            NSBezierPath(roundedRect: NSRect(x: origin.x, y: origin.y + y, width: containerWidth - (d.inDetails ? t.listIndent : 0), height: 2), xRadius: 1, yRadius: 1).fill()
+        case .summary(let collapsed?):
+            guard let rect = chevronRect(paragraphStart: p.location) else { return }
+            let config = NSImage.SymbolConfiguration(pointSize: (t.base * 0.75).rounded(), weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [t.bullet]))
+            guard let image = NSImage(systemSymbolName: collapsed ? "chevron.right" : "chevron.down", accessibilityDescription: nil)?
+                .withSymbolConfiguration(config) else { return }
+            let box = rect.offsetBy(dx: origin.x, dy: origin.y)
+            let size = image.size
+            image.draw(in: NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2, width: size.width, height: size.height),
+                       from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         default:
             break
         }
     }
 
-    /// Checkbox rect (container coordinates) of a task paragraph.
-    func checkboxRect(paragraphStart: Int, level: Int) -> NSRect? {
+    /// Chevron rect (container coordinates) of an expander's summary line.
+    func chevronRect(paragraphStart: Int) -> NSRect? {
+        guard let line = firstLine(ofParagraphAt: paragraphStart) else { return nil }
+        let side: CGFloat = 14
+        let centerY = line.baseline - (theme.bodyFont.xHeight / 2) - 0.5
+        return NSRect(x: theme.listIndent - 20, y: (centerY - side / 2).rounded(), width: side, height: side)
+    }
+
+    /// Checkbox rect (container coordinates) of a task paragraph (`inDetails`: in an expander's body).
+    func checkboxRect(paragraphStart: Int, level: Int, inDetails: Bool = false) -> NSRect? {
         guard let line = firstLine(ofParagraphAt: paragraphStart) else { return nil }
         let t = theme
         let side: CGFloat = 14
-        let contentX = t.listIndent * CGFloat(level + 1)
+        let contentX = t.listIndent * CGFloat(level + 1 + (inDetails ? 1 : 0))
         // vertically centre on the text's x-height band of the first line
         let font = t.bodyFont
         let centerY = line.baseline - (font.xHeight / 2) - 0.5
@@ -208,7 +228,8 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             r.origin.y += (ps?.paragraphSpacingBefore ?? 0) - 2
             r.size.height -= (ps?.paragraphSpacingBefore ?? 0) - 2
             // if the block ends at the document end without a newline the extra fragment is excluded
-            let box = NSRect(x: origin.x, y: origin.y + r.minY, width: containerWidth, height: r.height)
+            let dx = (ts.attribute(.notesBlock, at: block.location, effectiveRange: nil) as? BlockDecoration)?.inDetails == true ? theme.listIndent : 0
+            let box = NSRect(x: origin.x + dx, y: origin.y + r.minY, width: containerWidth - dx, height: r.height)
             theme.codeBackground.setFill()
             NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
         }

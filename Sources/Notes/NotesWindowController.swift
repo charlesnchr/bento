@@ -171,6 +171,25 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
                 self.textView.apply(EditResult(edits: r.edits, selection: sel))
             }
         }
+        tv.onToggleExpander = { [weak self] lineStart in self?.toggleExpander(summaryAt: lineStart) }
+    }
+
+    /// Opens or closes an expander. A selection in the body of one that closes moves to
+    /// the end of its summary.
+    @discardableResult
+    func toggleExpander(summaryAt lineStart: Int) -> Bool {
+        let text = storage.string as NSString
+        let summary = text.lineRange(for: NSRange(location: lineStart, length: 0))
+        guard let end = MarkdownParser.expanderEnd(after: summary, in: text) else { return false }
+        let body = NSRange(location: NSMaxRange(summary), length: NSMaxRange(end) - NSMaxRange(summary))
+        let sel = textView.selectedRange()
+        if NSLocationInRange(sel.location, body) || sel.location == NSMaxRange(body) || NSIntersectionRange(sel, body).length > 0 {
+            textView.setSelectedRange(NSRange(location: NSMaxRange(summary) - 1, length: 0))
+        }
+        guard styler.toggleExpander(storage, summaryAt: summary.location) else { return false }
+        textView.needsDisplay = true
+        if settings.autoResize { autoResize() }
+        return true
     }
 
     // MARK: Settings
@@ -430,6 +449,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange) -> NSRange {
         guard new.length == 0, !loadingNote else { return new }
+        if let e = MarkdownStyler.collapsedExpander(at: new.location, in: storage) {
+            // the caret skips a collapsed body: past it going forward, else to the summary's end
+            let summaryEnd = NSMaxRange(e.summary) - 1
+            let after = NSMaxRange(e.hidden) + 1
+            return NSRange(location: new.location > old.location && after <= storage.length ? after : summaryEnd, length: 0)
+        }
         return snap(new.location, previous: old.location).map { NSRange(location: $0, length: 0) } ?? new
     }
 
@@ -526,7 +551,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         case .orderedList: result = MarkdownCommands.setBlock(text, selection: sel, format: .ordered)
         case .bulletList: result = MarkdownCommands.setBlock(text, selection: sel, format: .bullet)
         case .taskList: result = MarkdownCommands.setBlock(text, selection: sel, format: .task)
-        case .toggleTask: result = MarkdownCommands.toggleTasks(text, selection: sel)
+        case .toggleTask:
+            // on an expander's summary line ⌘↩ opens or closes it
+            if sel.length == 0, toggleExpander(summaryAt: text.lineRange(for: NSRange(location: sel.location, length: 0)).location) { return }
+            result = MarkdownCommands.toggleTasks(text, selection: sel)
         case .moveUp: result = MarkdownCommands.moveLines(text, selection: sel, up: true)
         case .moveDown: result = MarkdownCommands.moveLines(text, selection: sel, up: false)
         case .link:

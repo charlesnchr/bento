@@ -179,6 +179,7 @@ final class VoiceApp {
                 if command.hasPrefix("assistant.") {
                     state["assistant"] = self.dictation.devAssistant(String(command.dropFirst("assistant.".count)), info)
                 }
+                if command == "capture" { self.dictation.devCapture(info["text"] as? String ?? "") }
                 if let data = try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]) {
                     try? data.write(to: AppPaths.supportDir.appendingPathComponent("voice-dev.json"), options: .atomic)
                 }
@@ -209,6 +210,7 @@ extension VoiceApp {
         menu.addItem(status)
         menu.addItem(.separator())
         menu.addItem(action("dictation.hands-free"))
+        menu.addItem(action("dictation.capture-note"))
         menu.addItem(action("dictation.compose"))
         menu.addItem(.separator())
         menu.addItem(action("dictation.paste-last"))
