@@ -116,6 +116,9 @@ import Testing
         #expect(LiveStats.classify("no final transcript before deadline") == .noFinal)
         #expect(LiveStats.classify("final transcript was empty") == .noFinal)
         #expect(LiveStats.classify("server sent goAway") == .droppedMidSession)
+        #expect(LiveStats.classify("server ended the turn at 216.1s of 337.0s — the rest was never transcribed")
+                == .turnEndedEarly)
+        #expect(LiveStats.classify("no final turn end before deadline") == .noFinal)
         #expect(LiveStats.classify("something nobody anticipated") == .droppedMidSession,
                 "an unknown reason must still be counted, not dropped")
     }

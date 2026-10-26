@@ -29,6 +29,8 @@ import Testing
         var connectError: Error?
         var sendErrorAfter: Int?
         var receiveHangs = false
+        /// Frames the server sends once activityEnd reaches it, as a real one does.
+        var replyToActivityEnd: [Data] = []
         private(set) var closeCount = 0
 
         init(script: [Data]) { self.inbox = script }
@@ -42,7 +44,13 @@ import Testing
             if let limit, count >= limit {
                 throw URLError(.networkConnectionLost)
             }
-            lock.withLock { sent.append(data) }
+            lock.withLock {
+                sent.append(data)
+                if let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let realtime = root["realtimeInput"] as? [String: Any], realtime["activityEnd"] != nil {
+                    inbox.append(contentsOf: replyToActivityEnd)
+                }
+            }
         }
 
         func receive() async throws -> Data {
@@ -50,11 +58,12 @@ import Testing
                 try await Task.sleep(nanoseconds: 30_000_000_000)
                 throw URLError(.timedOut)
             }
-            let next = lock.withLock { inbox.isEmpty ? nil : inbox.removeFirst() }
-            if let next { return next }
-            // Nothing left to say: park rather than spinning, like a real socket
-            // waiting on a server that has gone quiet.
-            try await Task.sleep(nanoseconds: 30_000_000_000)
+            // Nothing to say yet: wait, like a real socket on a quiet server, but
+            // keep checking so a reply to activityEnd is delivered when it lands.
+            for _ in 0..<3_000 {
+                if let next = lock.withLock({ inbox.isEmpty ? nil : inbox.removeFirst() }) { return next }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
             throw URLError(.timedOut)
         }
 
@@ -85,6 +94,10 @@ import Testing
     }
     private func partialFrame(_ text: String) -> Data {
         frame(["serverContent": ["interimInputTranscription": ["text": text]]])
+    }
+
+    private func activityFrame(_ type: String, offset: String = "0s") -> Data {
+        frame(["voiceActivity": ["type": type, "audioOffset": offset]])
     }
 
     private func makeSession(_ transport: FakeTransport, ring: PCMRing = PCMRing()) -> LiveTranscriptionSession {
@@ -130,7 +143,107 @@ import Testing
         #expect(kinds.dropFirst().first == "activityStart")
     }
 
+    /// A server that reports turns is trusted once ACTIVITY_END covers the audio.
+    @Test func turnEndCoveringTheAudioCompletes() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        // 20 chunks of 3,328 bytes at 32,000 bytes/s is 2.08s.
+        transport.replyToActivityEnd = [finalFrame("Ship it on Friday."), activityFrame("ACTIVITY_END", offset: "2.080s")]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x01, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        #expect(outcome == .completed("Ship it on Friday."))
+    }
+
     // MARK: - Everything that must fall back
+
+    /// The 337s dictation that came back as its first 216s. The server closed
+    /// the turn during a pause, sent the final for what it had heard, and ignored
+    /// everything after. That final must not be inserted as the whole dictation.
+    @Test func turnTheServerEndedByItselfFallsBack() async throws {
+        let transport = FakeTransport(script: [
+            setupCompleteFrame(),
+            activityFrame("ACTIVITY_START"),
+            finalFrame("Everything before the pause."),
+            frame(["serverContent": ["generationComplete": true]]),
+            activityFrame("ACTIVITY_END", offset: "216.120s"),
+        ])
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x06, count: 3_328)) }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let outcome = await session.finish(deadline: 1.0)
+        guard case .unusable(let why) = outcome else {
+            Issue.record("a turn the server ended early must be unusable, got \(outcome)")
+            return
+        }
+        #expect(LiveStats.classify(why) == .turnEndedEarly, "got: \(why)")
+    }
+
+    /// The bug itself: a final in hand from earlier audio used to end the wait
+    /// the moment activityEnd was sent, before the rest could be transcribed.
+    @Test func anEarlierFinalDoesNotStandInForTheTurnEnd() async throws {
+        let transport = FakeTransport(script: [
+            setupCompleteFrame(), activityFrame("ACTIVITY_START"), finalFrame("Only the first half."),
+        ])
+        let session = makeSession(transport)
+        try await session.start()
+        session.enqueue(Data(repeating: 0x07, count: 3_328))
+        try await Task.sleep(nanoseconds: 120_000_000)
+        let outcome = await session.finish(deadline: 0.4)
+        guard case .unusable = outcome else {
+            Issue.record("without the server's turn end the transcript is unproven, got \(outcome)")
+            return
+        }
+    }
+
+    @Test func turnEndShortOfTheAudioSentFallsBack() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        transport.replyToActivityEnd = [finalFrame("Half of it."), activityFrame("ACTIVITY_END", offset: "0.500s")]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x08, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        guard case .unusable(let why) = outcome else {
+            Issue.record("a turn end that heard 0.5s of 2.08s must be unusable, got \(outcome)")
+            return
+        }
+        #expect(LiveStats.classify(why) == .turnEndedEarly, "got: \(why)")
+    }
+
+    /// An early cut that lands after finish() starts is caught by the offset:
+    /// it names a point that is not where the audio ended.
+    @Test func turnEndPastTheAudioSentFallsBack() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        transport.replyToActivityEnd = [finalFrame("Before the pause."), activityFrame("ACTIVITY_END", offset: "216.120s")]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x09, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        guard case .unusable(let why) = outcome else {
+            Issue.record("a turn end at 216s for 2.08s of audio must be unusable, got \(outcome)")
+            return
+        }
+        #expect(LiveStats.classify(why) == .turnEndedEarly, "got: \(why)")
+    }
+
+    /// Without an offset there is nothing to compare, and that alone is no
+    /// reason to throw away a turn the server closed on request.
+    @Test func turnEndWithoutAnOffsetStillCompletes() async throws {
+        let transport = FakeTransport(script: [setupCompleteFrame(), activityFrame("ACTIVITY_START")])
+        transport.replyToActivityEnd = [finalFrame("Ship it."), frame(["voiceActivity": ["type": "ACTIVITY_END"]])]
+        let session = makeSession(transport)
+        try await session.start()
+        for _ in 0..<20 { session.enqueue(Data(repeating: 0x0A, count: 3_328)) }
+        let outcome = await session.finish(deadline: 2.0)
+        #expect(outcome == .completed("Ship it."))
+    }
+
+    @Test func voiceActivityFramesDecode() {
+        #expect(LiveProtocol.decode(activityFrame("ACTIVITY_START")) == .activityStarted)
+        #expect(LiveProtocol.decode(activityFrame("ACTIVITY_END", offset: "216.120s")) == .activityEnded(216.12))
+        #expect(LiveProtocol.decode(frame(["voiceActivity": ["type": "ACTIVITY_END"]])) == .activityEnded(nil))
+    }
 
     /// The failure the whole design is arranged around: dropped audio yields a
     /// fluent-but-truncated transcript. It must NEVER be promoted.
