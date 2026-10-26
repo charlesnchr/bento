@@ -52,9 +52,9 @@ final class WindowEngine {
             return false
         }
         if cmd.isMultiWindow { return performMulti(cmd) }
-        // Bento's own windows (settings) are left alone: AX to ourselves on the main thread can stall.
-        if given == nil, NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() { return false }
-        guard let window = given ?? AXWindow.focused(), let frame = window.frame, frame.width > 0, frame.height > 0,
+        // Bento's own windows: only regular ones (not popups or panels), resolved in-process.
+        let own = given == nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()
+        guard let window = given ?? (own ? OwnWindows.focused() : AXWindow.focused()), let frame = window.frame, frame.width > 0, frame.height > 0,
               !window.isFullscreen else {
             NSSound.beep()
             return false
@@ -187,7 +187,8 @@ final class WindowEngine {
     // MARK: Several windows
 
     private func performMulti(_ cmd: WindowCommand) -> Bool {
-        let focused = AXWindow.focused()
+        let ownFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()
+        let focused = ownFront ? OwnWindows.focused() : AXWindow.focused()
         let snap = ScreenSnapshot.current()
         guard !snap.rects.isEmpty else { return false }
         let idx = focused?.frame.map { snap.index(containing: $0) } ?? snap.index(at: NSScreen.mouseAX)
@@ -195,9 +196,9 @@ final class WindowEngine {
         var windows: [AXWindow]
         if cmd == .tileActiveApp || cmd == .cascadeActiveApp {
             guard let f = focused else { NSSound.beep(); return false }
-            windows = AXWindow.windows(of: f.pid).filter { $0.isStandard && !$0.isMinimized }
+            windows = f.pid == getpid() ? OwnWindows.all() : AXWindow.windows(of: f.pid).filter { $0.isStandard && !$0.isMinimized }
         } else {
-            windows = AXWindow.allStandardWindows()
+            windows = AXWindow.allStandardWindows() + OwnWindows.all()
         }
         var items: [(AXWindow, CGRect, Int)] = []
         for w in windows {
@@ -257,6 +258,24 @@ enum WindowList {
         var pid: pid_t
         var frame: CGRect
         var layer: Int
+    }
+
+    /// The front-most visible app window or panel containing a point. Layers
+    /// from the Dock's up are skipped: the Dock keeps a transparent,
+    /// click-through window over the whole screen there.
+    static func topmost(at p: CGPoint) -> Info? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let dock = Int(CGWindowLevelForKey(.dockWindow))
+        for d in list {
+            let layer = d[kCGWindowLayer as String] as? Int ?? 0
+            guard layer >= 0, layer < dock, (d[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let b = d[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: b), rect.contains(p),
+                  let n = d[kCGWindowNumber as String] as? Int else { continue }
+            return Info(id: CGWindowID(truncatingIfNeeded: n), pid: pid_t(truncatingIfNeeded: d[kCGWindowOwnerPID as String] as? Int ?? 0),
+                        frame: rect, layer: layer)
+        }
+        return nil
     }
 
     /// One window's bounds (CG bounds use the same top-left origin as AX).

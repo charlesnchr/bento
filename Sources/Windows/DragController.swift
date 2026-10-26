@@ -180,14 +180,10 @@ final class DragController: NSObject {
         refreshOwnWindows()
     }
 
-    /// Regular Bento windows (Notes, Settings, the editor…): titled, activating,
-    /// movable and not full screen. Not popups, HUDs, pins or the clipboard panel.
+    /// Regular Bento windows (see `OwnWindows.isRegular`).
     private func refreshOwnWindows() {
-        let ids = NSApp.windows.filter {
-            $0.isVisible && $0.isMovable && !$0.ignoresMouseEvents && $0.styleMask.contains(.titled)
-                && !$0.styleMask.contains(.nonactivatingPanel) && !$0.styleMask.contains(.fullScreen)
-        }.map { CGWindowID($0.windowNumber) }
-        locked { ownDraggable = Set(ids) }
+        let ids = OwnWindows.regularIDs
+        locked { ownDraggable = ids }
     }
 
     private func runTap() {
@@ -252,9 +248,9 @@ final class DragController: NSObject {
             let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
             let s: Session
             let t0 = CFAbsoluteTimeGetCurrent()
-            let info = WindowList.info(cgID)
+            let info = DragController.windowInfo(cgID, at: p)
             if let own = ownWindow(info) {
-                s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: event.copy(), hover: false)
+                s = Session(window: nil, wid: own.id, frame: own.frame, mode: mode, mouse: p, press: event.copy(), hover: false)
             } else {
                 guard DragController.isDraggableLayer(cgID, info) else { DragController.trace("pass: layer of \(cgID)"); return pass }
                 guard let w = DragController.window(at: p) else { DragController.trace("pass: no AX window at \(p)"); return pass }
@@ -357,9 +353,9 @@ final class DragController: NSObject {
         let cgID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
         if let miss = hoverMiss, miss.0 == cgID, miss.1 == event.flags.rawValue { return }
         let s: Session
-        let info = WindowList.info(cgID)
+        let info = DragController.windowInfo(cgID, at: p)
         if let own = ownWindow(info) {
-            s = Session(window: nil, wid: cgID, frame: own.frame, mode: mode, mouse: p, press: nil, hover: true)
+            s = Session(window: nil, wid: own.id, frame: own.frame, mode: mode, mouse: p, press: nil, hover: true)
         } else {
             guard DragController.isDraggableLayer(cgID, info), let w = DragController.window(at: p),
                   let f = w.frame, f.width > 0, f.height > 0, !w.isFullscreen else {
@@ -382,6 +378,17 @@ final class DragController: NSObject {
             return s
         }
         if let stale { DispatchQueue.main.async { self.finish(stale) } }
+    }
+
+    /// The window list entry for the event's window. When the event doesn't
+    /// name one and our own window is topmost at the point, that one: an AX hit
+    /// test over our windows is answered in-process on this thread, needs
+    /// SwiftUI's main-thread lock and deadlocks with any AX call the main
+    /// thread makes meanwhile (this thread holds AX's port-cache lock).
+    static func windowInfo(_ id: CGWindowID, at p: CGPoint) -> WindowList.Info? {
+        if let info = WindowList.info(id) { return info }
+        guard let top = WindowList.topmost(at: p), top.pid == getpid() else { return nil }
+        return top
     }
 
     /// Normal app windows and panels only: not the desktop, Dock, menu bar,
