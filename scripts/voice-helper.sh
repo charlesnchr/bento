@@ -49,6 +49,15 @@ install_requirements() {
 
 restart() {
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  # bootout returns before launchd has let go; bootstrapping too soon fails with error 5.
+  for _ in $(seq 1 20); do
+    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.25
+  done
+  for _ in 1 2 3; do
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && return 0
+    sleep 1
+  done
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
 }
 
