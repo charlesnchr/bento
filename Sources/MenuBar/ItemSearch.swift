@@ -59,21 +59,9 @@ final class ItemSearch: NSObject, NSWindowDelegate {
         p.backgroundColor = .clear
         p.delegate = self
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
         let host = NSHostingView(rootView: SearchView(model: model))
         host.sizingOptions = []
-        host.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            host.topAnchor.constraint(equalTo: effect.topAnchor),
-            host.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
-        p.contentView = effect
+        p.contentView = ThemedBackgroundView(material: .popover, content: host)
         if let vf = (NSScreen.underMouse ?? NSScreen.main)?.visibleFrame {
             p.setFrameOrigin(NSPoint(x: (vf.midX - Self.size.width / 2).rounded(),
                                      y: (vf.minY + (vf.height - Self.size.height) * 0.7).rounded()))

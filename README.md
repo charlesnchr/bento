@@ -126,6 +126,14 @@ external edits apply live. Shortcut syntax: `ctrl+opt+cmd+left`, `cmd+shift+2`,
 and mean a key's position: on a German or Nordic keyboard `ctrl+opt+slash` is ⌃⌥
 plus the key left of the right Shift (`-`), and the keyboard overview says so.
 
+**Themes.** Settings → General → Appearance switches Bento's windows (Settings,
+Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search, Capture History)
+between **Standard**, the native look, **Glass**, frosted glass that lets the
+desktop show through, and **Aero**, glass tinted with your accent colour and a
+gloss across the top, after Windows Vista. It's `general.theme` in the config
+(`"standard"`, `"glass"`, `"aero"`). With Reduce Transparency on, every theme
+looks like Standard; Increase Contrast frosts the glass more.
+
 Any action can be triggered from scripts, Karabiner, etc.:
 
 ```sh

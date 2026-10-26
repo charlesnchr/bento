@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import BentoCore
 
 struct TodoRootView: View {
     @ObservedObject var c: TodoController
@@ -9,7 +10,7 @@ struct TodoRootView: View {
             if c.sidebarVisible {
                 TodoSidebar(c: c)
                     .frame(width: 220)
-                    .background(VisualEffect(material: .sidebar))
+                    .themedBackground(VisualEffect(material: .sidebar))
                 Divider()
             }
             VStack(spacing: 0) {
@@ -17,8 +18,9 @@ struct TodoRootView: View {
                 TodoList(c: c)
                 TodoFooter(c: c, status: c.client.status)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .themedBackground(Color(nsColor: .textBackgroundColor))
         }
+        .background(ThemeBackdrop().ignoresSafeArea())
         .overlay {
             if let p = c.picker { PickerOverlay(model: p, close: { c.closePicker() }) }
         }
@@ -495,7 +497,7 @@ struct TodoFooter: View {
         .font(.caption)
         .padding(.horizontal, 16)
         .frame(height: 28)
-        .background(.bar)
+        .themedBackground(Rectangle().fill(.bar))
         .overlay(alignment: .top) { Divider() }
     }
 }

@@ -49,24 +49,23 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         scroll.documentView = collection
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        let effect = NSVisualEffectView()
-        effect.material = .contentBackground
-        effect.blendingMode = .behindWindow
+        let background = ThemedBackgroundView(material: .contentBackground)
+        background.effect.state = .followsWindowActiveState
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(scroll)
+        background.addSubview(scroll)
         emptyLabel.font = .systemFont(ofSize: 15)
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(emptyLabel)
+        background.addSubview(emptyLabel)
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: effect.safeAreaLayoutGuide.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-            emptyLabel.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: background.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: background.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: background.centerYAnchor),
         ])
-        window.contentView = effect
+        window.contentView = background
         reload()
     }
 

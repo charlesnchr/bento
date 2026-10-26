@@ -72,6 +72,10 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 - `Permissions`, `Keyboard.paste()/copy()/post(...)`, `HUD.show("Left Half", symbol:)`,
   `KeyablePanel`, `AppActivation.activateSelf()/previousApp`, `AppPaths.support("name")`,
   `SQLiteDB` (tiny sqlite3 wrapper), `BentoLog.make("category")`.
+- `Theme` / `ThemeCenter` (Theme.swift) — Standard, Glass or Aero; `ThemeCenter.shared.style`
+  says what to draw (standard under Reduce Transparency), `didChange` when it changes.
+  `ThemedBackgroundView(material:content:)`, SwiftUI `ThemeBackdrop`, `themedBackground(_:)`,
+  `themedScrollBackground()`.
 
 ## Rules for module work
 
@@ -102,6 +106,9 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 6. Look and feel: native macOS — SF Symbols, system materials (NSVisualEffectView / SwiftUI
    materials), system accent colour, light + dark mode, 8-pt spacing, no custom chrome unless the
    reference app has it. Keyboard-first: every panel fully usable without the mouse.
+   Main windows follow the theme (`general.theme`): put content on a `ThemedBackgroundView`
+   (or `ThemeBackdrop` in SwiftUI) instead of a bare NSVisualEffectView, and wrap opaque
+   backgrounds in `themedBackground(_:)` so the glass shows through.
 7. Settings: each module provides `makeSettingsView()` (SwiftUI `Form { … }.formStyle(.grouped)`)
    with its options and a "Shortcuts" section listing its actions with `ShortcutRecorder(actionID:)`.
 8. Action ids are `<module>.<kebab-name>`. Titles are short ("Left Half", "Capture Area").
