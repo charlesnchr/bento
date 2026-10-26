@@ -10,6 +10,8 @@ import BentoCore
 final class SnapController {
     private let engine: WindowEngine
     private var monitor: Any?
+    /// Global monitors never see our own windows' events; this one does.
+    private var localMonitor: Any?
     private let footprint = FootprintWindow()
     var options = Geometry.SnapOptions()
     /// True while Bento's own modifier-drag owns the mouse.
@@ -34,14 +36,21 @@ final class SnapController {
 
     func start() {
         guard monitor == nil else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] e in
+        let types: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: types) { [weak self] e in
             self?.handle(e)
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] e in
+            self?.handle(e)
+            return e
         }
     }
 
     func stop() {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         monitor = nil
+        localMonitor = nil
         reset()
         footprint.close()
     }
@@ -64,7 +73,8 @@ final class SnapController {
             guard !isSuspended() else { return }
             var id = CGWindowID(truncatingIfNeeded: cg.getIntegerValueField(.mouseEventWindowUnderMousePointer))
             if id == 0 { id = CGWindowID(truncatingIfNeeded: cg.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent)) }
-            guard let info = WindowList.info(id), info.layer == 0, info.pid != getpid() else { return }
+            guard let info = WindowList.info(id), info.layer == 0,
+                  info.pid != getpid() || OwnWindows.regularIDs.contains(id) else { return }
             windowID = id
             pid = info.pid
             initialFrame = info.frame
@@ -177,6 +187,7 @@ final class SnapController {
 
     /// The AX window with a CG window id (hit test first, then the app's list).
     static func axWindow(id: CGWindowID, pid: pid_t, near p: CGPoint) -> AXWindow? {
+        if pid == getpid() { return OwnWindows.element(id) }
         if let w = AXWindow.at(p), w.windowID == id { return w }
         return AXWindow.windows(of: pid).first { $0.windowID == id }
     }
