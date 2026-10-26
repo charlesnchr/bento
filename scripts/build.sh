@@ -48,6 +48,21 @@ if [ ! -f "$ROOT/Resources/Bento.icns" ]; then
   swift "$ROOT/scripts/make-icon.swift" "$ROOT/Resources" >/dev/null
 fi
 cp "$ROOT/Resources/Bento.icns" "$APP/Contents/Resources/Bento.icns"
+# Dictation, meetings and the assistant: sounds, fonts, math fonts and the
+# Python helpers they run (VoiceResources.swift reads Contents/Resources/Voice).
+ditto "$ROOT/Resources/Voice" "$APP/Contents/Resources/Voice"
+mkdir -p "$APP/Contents/Resources/Voice/helper"
+cp "$ROOT"/helper/*.py "$ROOT/helper/requirements.txt" "$APP/Contents/Resources/Voice/helper/"
+# Licences of the code compiled into the binary.
+mkdir -p "$APP/Contents/Resources/Licenses"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/Licenses/"
+cp "$ROOT/licenses/Jot-LICENSE" "$APP/Contents/Resources/Licenses/Jot-LICENSE"
+cp "$ROOT/Vendor/SwiftMath/LICENSE" "$APP/Contents/Resources/Licenses/SwiftMath-LICENSE"
+for dep in swift-markdown-ui NetworkImage swift-cmark FluidAudio; do
+  for f in LICENSE LICENSE.txt LICENSE.md COPYING; do
+    if [ -f "$ROOT/.build/checkouts/$dep/$f" ]; then cp "$ROOT/.build/checkouts/$dep/$f" "$APP/Contents/Resources/Licenses/$dep-LICENSE"; break; fi
+  done
+done
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -68,6 +83,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSAppleEventsUsageDescription</key><string>Bento uses Apple Events to hide and show apps for app hotkeys.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Bento records audio while you dictate, record a meeting or talk to the assistant.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>Bento records what your Mac plays during a meeting you choose to record, so the other side of a call is in your notes.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
   <key>NSHumanReadableCopyright</key><string>Signed with a self-signed certificate, not notarized.</string>
   <key>CFBundleURLTypes</key>
   <array>
