@@ -1,9 +1,10 @@
 # Bento — spec and conventions
 
-Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI, no third-party
-dependencies) that replaces Shottr, Rectangle Pro, Raycast app hotkeys, a tiling
-window manager (AeroSpace-lite), a clipboard manager, Raycast Notes and Todoist. It also shows and hides manually
-arranged menu bar sections.
+Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI) that replaces Shottr,
+Rectangle Pro, Raycast app hotkeys, a tiling window manager (AeroSpace-lite), a clipboard
+manager, Raycast Notes, Todoist and Jot (dictation, meeting notes, a Hermes assistant). It also
+shows and hides manually arranged menu bar sections. Third-party code is confined to the voice
+targets (MarkdownUI, FluidAudio, vendored SwiftMath); no other module may add a dependency.
 
 Priorities, in order: **correct, low resource use, neat**. It runs all day:
 idle CPU must be ~0 %, memory small, nothing polls when an event or notification
@@ -24,7 +25,11 @@ Sources/<Module>      one target per feature area
 Dev/Dev<Module>       single-module dev harness executables
 Tests/<Module>Tests   swift-testing tests per target (`import Testing`, `@Test`, `#expect`)
 server/               bento-sync (Rust) for notes and todo sync
+helper/               Python helpers for the voice modules (voice helper, GPT-Live, Hermes ACP)
+Vendor/SwiftMath      vendored LaTeX renderer (MIT) for the assistant
+Resources/Voice       sounds, fonts and math fonts for the voice modules
 scripts/build.sh      release build -> dist/Bento.app, signed (see script header)
+scripts/voice-helper.sh  install/update the voice helper as a launchd agent
 scripts/release.sh    GitHub release + Homebrew formula (charlesnchr/homebrew-tap)
 packaging/bento.rb    the formula template release.sh fills in
 docs/                 this file, SYNC_PROTOCOL.md
@@ -33,6 +38,20 @@ docs/                 this file, SYNC_PROTOCOL.md
 Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 `Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`,
 `MenuBar` (manually arranged hidden menu bar sections).
+
+Voice: `VoiceCore` (UI-free: audio capture, transcription clients, formatting, insertion,
+hotkey engine, history index, settings, meetings) and `Voice` (the Dictation, Meetings and
+Assistant modules, which share one engine, `VoiceApp`, and so live in one target; pill HUD,
+composer, meeting capsule and notes, assistant window, settings panes). Ported from Jot
+(Apache 2.0, see THIRD_PARTY_NOTICES.md); Jot's tests live in `Tests/VoiceCoreTests`.
+`helper/` holds the Python pieces: the loopback voice helper (Vertex/Azure/OpenRouter/gateway),
+the Azure GPT-Live transport and the Hermes ACP launcher (`helper/README.md`). build.sh copies
+`Resources/Voice` and `helper/` into `Contents/Resources/Voice`; Swift finds them through
+`VoiceResources` (not `Bundle.module`, which looks only in the bundle root and the build
+machine's `.build`). Voice settings live in UserDefaults and are mirrored both ways into the
+`dictation` section of config.json (`SettingsSync`); data is under
+`~/Library/Application Support/Bento/Voice`; the helper runtime is
+`~/.config/bento/voice-runtime.json`.
 
 ## BentoCore API (read the sources, they are short)
 
@@ -75,8 +94,10 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
    management: prefer testing on a window you open yourself (e.g. `open -a TextEdit` new doc,
    or a window from your harness) and restore what you move.
 5. Idle cost: no timers that fire when nothing happens, except the clipboard changeCount poll
-   (≤ 2 Hz with tolerance) and MenuBar's opt-in "show when the icon changes" check (0.5 Hz, only
-   for the items picked, only while they're hidden). Event taps only while their feature is
+   (≤ 2 Hz with tolerance), MenuBar's opt-in "show when the icon changes" check (0.5 Hz, only
+   for the items picked, only while they're hidden), the dictation tap's health check while
+   Dictation or the Assistant is on (every 5 s: macOS disables taps silently), and once a voice
+   module has run, a 6-hourly recording-retention sweep. The voice modules are off by default. Event taps only while their feature is
    enabled. AX observers only while needed. Release big images when windows close.
 6. Look and feel: native macOS — SF Symbols, system materials (NSVisualEffectView / SwiftUI
    materials), system accent colour, light + dark mode, 8-pt spacing, no custom chrome unless the
@@ -99,6 +120,9 @@ Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
 | MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item Accessibility open shortcuts are user-defined |
+| Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds) |
+| Meetings | `shift+opt+f17` record/stop |
+| Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
 | Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
 
 ## MenuBar behavior

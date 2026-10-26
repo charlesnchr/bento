@@ -1,14 +1,16 @@
 # Bento
 
-One small native macOS menu-bar app instead of seven: screenshots and annotation
+One small native macOS menu-bar app instead of eight: screenshots and annotation
 (Shottr), window management with snapping and modifier-drag (Rectangle Pro),
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
-synced in real time through a tiny Rust server, and manually arranged menu bar
-sections that Bento shows and hides.
+synced in real time through a tiny Rust server, manually arranged menu bar
+sections that Bento shows and hides, and dictation with meeting notes and a
+voice assistant (Jot, Wispr Flow).
 
-Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
-~0 % CPU with a ~16 MB footprint; the bundle is 6.5 MB.
+Swift + AppKit/SwiftUI, macOS 14+. The only third-party code is in the voice
+modules: MarkdownUI, FluidAudio (on-device Parakeet) and a vendored SwiftMath.
+Idles at ~0 % CPU.
 
 ## What's in it
 
@@ -22,6 +24,9 @@ Swift + AppKit/SwiftUI, no third-party dependencies, macOS 14+. Idles at
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, live sync via `bento-sync` | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 | Menu Bar (off by default) | — | Visible, Hidden and Always Hidden sections; native manual Command-drag arrangement; chevron, shortcuts and optional hover/click/scroll reveal; automatic hiding; search and Bento Bar with Accessibility opening in place; per-item shortcuts and icon-change alerts; spacing and appearance | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
+| Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions, dictionary; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
+| Meetings (off by default) | Granola | records the mic plus system audio beside dictation; live transcript, tidied as it goes, gaps backfilled from the recording, summary with decisions and action items; a small capsule while recording; notes in Markdown | ⇧⌥F17 record/stop |
+| Assistant (off by default) | — | chat window for Hermes over ACP: Markdown, equations, images, tool steps, plan, attachments, `/` commands and `@` context, queue and steer, edit/regenerate/branch, history; continuous voice calls through Azure GPT-Live or Gemini 3.8 Live with Hermes doing the work | ⇧⌥F18 window, ⌥F18 talk |
 
 **Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
 module with its current shortcut. Type to filter by name, module or key (“left”
@@ -103,8 +108,14 @@ Mac, so each machine can use its own identity. Without an identity, or with
 `--adhoc`, builds are signed ad hoc and grants reset on every build.
 
 On first launch, grant **Accessibility** (window management, modifier-drag,
-pasting, opening menu bar items through search/shortcuts) and **Screen Recording** (screenshots, menu bar
-item names and images) from Settings → General.
+pasting, the dictation key, opening menu bar items through search/shortcuts) and **Screen Recording** (screenshots, menu bar
+item names and images) from Settings → General. Dictation asks for the
+**Microphone** the first time you use it, and meetings ask once for **System
+Audio Recording** when they include what the Mac plays.
+
+Dictation works with a Gemini API key out of the box. The other transcription
+models, meeting notes through Vertex AI and Gemini Live calls go through a small
+local helper you run yourself: see `helper/README.md`.
 
 ## Configuration
 
@@ -125,8 +136,8 @@ open "bento://settings/shortcuts/Left%20Half"    # the Shortcuts page, filtered
 open "bento://action/bento.keyboard-overview"
 ```
 
-Data (clipboard history, captures, notes and todo DBs) is in
-`~/Library/Application Support/Bento/`. Sync is optional and off by default: it needs your own
+Data (clipboard history, captures, notes and todo DBs, dictation recordings,
+history and meetings under `Voice/`) is in `~/Library/Application Support/Bento/`. Sync is optional and off by default: it needs your own
 `bento-sync` server (`server/README.md`), set under Settings → Notes and Todo, and its token in
 `~/.config/bento/sync-token` (shared by Notes and Todo).
 
@@ -137,6 +148,7 @@ swift build                                   # everything
 swift build --scratch-path .build-x --product DevClipboard && .build-x/debug/DevClipboard
 scripts/test ClipboardTests                   # Swift Testing (Command Line Tools-only wrapper)
 scripts/perform clipboard.show                # trigger an action in a running dev harness
+scripts/voice-dev assistant.send "Hello"      # drive DevVoice's assistant, print its state
 ```
 
 Each module has a `Dev<Module>` harness that runs only that module, with config
