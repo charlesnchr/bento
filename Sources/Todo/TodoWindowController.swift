@@ -33,7 +33,7 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Hiding the sidebar lets the window go narrower; showing it again widens the
-    /// window up to the minimum if it is now narrower.
+    /// window up to the minimum if it is now narrower, shifting left to stay on screen.
     private func fitMinWidth(sidebar: Bool) {
         let min = NSSize(width: TodoStyle.minWidth(sidebar: sidebar), height: TodoStyle.minHeight)
         panel.contentMinSize = min
@@ -41,6 +41,7 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
         let content = panel.contentRect(forFrameRect: f)
         guard content.width < min.width else { return }
         f.size.width += min.width - content.width
+        if let screen = panel.screen?.visibleFrame, f.maxX > screen.maxX { f.origin.x = max(screen.minX, screen.maxX - f.width) }
         panel.setFrame(f, display: true, animate: false)
     }
 
