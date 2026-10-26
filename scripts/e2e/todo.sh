@@ -278,7 +278,7 @@ type_into() { # type_into <bundle id> <text>
 press() { local b=$1; shift; "$CTL" key "$@" --expect "$b"; local rc=$?; [ $rc = 75 ] && return 75; [ $rc != 0 ] && bad "keys refused: $*"; return 0; }
 guarded() { "$ROOT/scripts/e2e/session" check >/dev/null || { log "user became active: stopping"; return 75; }; }
 shot() { # shot <name>: screenshot of instance A's todo window
-  local id; id=$("$CTL" windows "BentoE2E-a" 2>/dev/null | awk '$5 >= 500 && $6 >= 300 {print $1; exit}')
+  local id; id=$("$CTL" windows "BentoE2E-a" 2>/dev/null | awk '$5 >= 280 && $6 >= 300 {print $1; exit}')
   [ -n "$id" ] && screencapture -x -o -l "$id" "$WORK/shot-$1.png" && log "    screenshot: $WORK/shot-$1.png"
 }
 
@@ -322,6 +322,31 @@ gui_session() {
   press "$A" z; sleep 0.6
   eventually 5 "undone in A" field_is a "Buy milk" completed_at null
   eventually 8 "undone in B" field_is b "Buy milk" completed_at null
+  guarded || return 75
+
+  log "- clicking a task's circle completes it (p4: unfilled circle, inside the ring)"
+  local cx cy
+  read -r cx cy < <("$CTL" axfind "$A" "Complete Second task")
+  if [ -n "${cx:-}" ]; then
+    "$CTL" click "$cx" "$cy" --expect "$A"; sleep 0.6
+    eventually 5 "click on the circle completed it" bash -c "[ \"\$(python3 '$WORK/q.py' field '$WORK' $PORT $TOKEN a 'Second task' completed_at)\" != null ]"
+    press "$A" z; sleep 0.6
+    eventually 5 "undone" field_is a "Second task" completed_at null
+  else
+    bad "circle for 'Second task' not found"
+  fi
+  guarded || return 75
+
+  log "- hiding the sidebar lowers the minimum width; showing it widens the window again"
+  local fx fy fw fh
+  read -r fx fy fw fh < <("$CTL" frame "$A" Todo)
+  press "$A" m; sleep 0.4
+  "$CTL" setframe "$A" Todo "$fx" "$fy" 200 "$fh"; sleep 0.4
+  check "no sidebar: shrinks to 300" bash -c "[ \"\$($CTL frame '$A' Todo | awk '{print \$3}')\" = 300 ]"
+  shot narrow
+  press "$A" m; sleep 0.4
+  check "sidebar back: widened to 520" bash -c "[ \"\$($CTL frame '$A' Todo | awk '{print \$3}')\" = 520 ]"
+  "$CTL" setframe "$A" Todo "$fx" "$fy" "$fw" "$fh"; sleep 0.3
   guarded || return 75
 
   log "- t schedules with natural language, 3 sets priority, v moves, l labels"

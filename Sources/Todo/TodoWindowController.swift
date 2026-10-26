@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import BentoCore
 
@@ -9,6 +10,7 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
     let panel: NSPanel
     private unowned let controller: TodoController
     private var keyMonitor: Any?
+    private var sidebarSub: AnyCancellable?
 
     init(controller: TodoController) {
         self.controller = controller
@@ -23,11 +25,24 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.becomesKeyOnlyIfNeeded = false
         panel.tabbingMode = .disallowed
-        panel.minSize = NSSize(width: 520, height: 360)
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: TodoRootView(c: controller))
         panel.center()
         panel.setFrameAutosaveName("BentoTodoWindow")
+        sidebarSub = controller.$sidebarVisible.removeDuplicates().sink { [weak self] in self?.fitMinWidth(sidebar: $0) }
+    }
+
+    /// Hiding the sidebar lets the window go narrower; showing it again widens the
+    /// window up to the minimum if it is now narrower, shifting left to stay on screen.
+    private func fitMinWidth(sidebar: Bool) {
+        let min = NSSize(width: TodoStyle.minWidth(sidebar: sidebar), height: TodoStyle.minHeight)
+        panel.contentMinSize = min
+        var f = panel.frame
+        let content = panel.contentRect(forFrameRect: f)
+        guard content.width < min.width else { return }
+        f.size.width += min.width - content.width
+        if let screen = panel.screen?.visibleFrame, f.maxX > screen.maxX { f.origin.x = max(screen.minX, screen.maxX - f.width) }
+        panel.setFrame(f, display: true, animate: false)
     }
 
     func apply(_ s: TodoSettings) {

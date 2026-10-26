@@ -40,12 +40,13 @@ struct PickerOverlay: View {
                     }
                 }
             }
-            .frame(width: 460)
+            .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
             .background(VisualEffect(material: .popover, blending: .withinWindow))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12)))
             .shadow(color: .black.opacity(0.25), radius: 20, y: 8)
+            .padding(.horizontal, 16)
             .padding(.top, 64)
         }
     }
