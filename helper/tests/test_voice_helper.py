@@ -25,6 +25,7 @@ spec.loader.exec_module(helper)
 
 GATEWAY_MODEL = 'test-gateway-model'
 TEXT_BODY = {'contents': [{'parts': [{'text': 'clean me'}]}]}
+AUDIO_BODY = {'contents': [{'parts': [{'inlineData': {'mimeType': 'audio/flac', 'data': 'AQ=='}}]}]}
 
 
 @contextlib.contextmanager
@@ -344,8 +345,23 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                 client = TestClient(TestServer(helper.make_app(config, self.credentials)))
                 await client.start_server()
                 await client.close()
-            self.assertEqual(session.call_args.kwargs['proxy'], proxy)
+            self.assertNotIn('proxy', session.call_args.kwargs, 'The proxy is per request, not session-wide')
             self.assertFalse(session.call_args.kwargs['trust_env'])
+            self.assertEqual(helper.VertexBridge(config, self.credentials).proxy, proxy)
+
+    async def test_proxy_reaches_cloud_calls_but_not_the_local_gateway(self):
+        config = {**self.config, 'proxy': 'http://127.0.0.1:13128'}
+        bridge = helper.VertexBridge(config, self.credentials)
+        response = Response()
+        response.result = {'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': 'ok'}]}
+        bridge.session = Session(response)
+        with patch.object(helper, 'gateway_key', return_value='test-key'):
+            await bridge.gateway_generate(GATEWAY_MODEL, TEXT_BODY)
+        self.assertIsNone(bridge.session.kwargs.get('proxy'), 'The gateway runs on this Mac')
+        response.result = {'text': 'transcript'}
+        with patch('azure_live.azure_credentials', return_value=('https://resource.openai.azure.com', 'test-key')):
+            await bridge.azure_generate(helper.GPT_MODEL, AUDIO_BODY)
+        self.assertEqual(bridge.session.kwargs.get('proxy'), 'http://127.0.0.1:13128')
 
     async def test_refresh_is_serialized_and_reused(self):
         bridge = helper.VertexBridge(self.config, self.credentials)
