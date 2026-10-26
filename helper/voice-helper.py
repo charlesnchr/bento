@@ -183,6 +183,9 @@ class VertexBridge:
         self.conversation_slot = asyncio.Semaphore(1)
         self.session = None
         self.openrouter_tls = None
+        # Optional upstream proxy (e.g. a Mac outside a VPC Service Controls perimeter), for the
+        # cloud calls only: the local gateway is on this Mac and must be reached directly.
+        self.proxy = config.get('proxy')
 
     async def headers(self):
         async with self.lock:
@@ -221,7 +224,8 @@ class VertexBridge:
             return await self.gateway_generate(model, body)
         url = 'https://aiplatform.googleapis.com/v1/' + self.resource(model) + ':generateContent'
         async with self.slots:
-            async with self.session.post(url, headers=await self.headers(), json=body, allow_redirects=False) as response:
+            async with self.session.post(url, headers=await self.headers(), json=body, allow_redirects=False,
+                                         proxy=self.proxy) as response:
                 data = await response.read()
                 if 300 <= response.status < 400:
                     raise web.HTTPBadGateway(text='Upstream redirect refused')
@@ -250,7 +254,7 @@ class VertexBridge:
                                'reasoning_effort': 'none', 'max_completion_tokens': 8192}}
         # Queued Azure calls must not consume every slot used by Gemini Live.
         async with self.azure_slots, self.slots:
-            async with self.session.post(url, headers={'api-key': key}, allow_redirects=False,
+            async with self.session.post(url, headers={'api-key': key}, allow_redirects=False, proxy=self.proxy,
                                          timeout=aiohttp.ClientTimeout(total=60, connect=10), **kwargs) as response:
                 if response.status != 200:
                     status = response.status if 400 <= response.status <= 599 else 502
@@ -308,7 +312,7 @@ class VertexBridge:
             import truststore
             self.openrouter_tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         async with self.azure_slots, self.slots:
-            async with self.session.post(OPENROUTER_TRANSCRIBE, headers={'Authorization': 'Bearer ' + key},
+            async with self.session.post(OPENROUTER_TRANSCRIBE, headers={'Authorization': 'Bearer ' + key}, proxy=self.proxy,
                                          json=request, ssl=self.openrouter_tls, allow_redirects=False,
                                          timeout=aiohttp.ClientTimeout(total=60, connect=10)) as response:
                 if response.status != 200:
@@ -343,7 +347,8 @@ class VertexBridge:
                 raise ValueError('Unsupported setup fields')
             setup['model'] = self.resource(LIVE_MODEL)
             url = 'wss://aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent'
-            async with self.session.ws_connect(url, headers=await self.headers(), max_msg_size=4 * 1024 * 1024, heartbeat=20) as upstream:
+            async with self.session.ws_connect(url, headers=await self.headers(), max_msg_size=4 * 1024 * 1024, heartbeat=20,
+                                               proxy=self.proxy) as upstream:
                 await upstream.send_json({'setup': setup})
                 async def send():
                     async for frame in ws:
@@ -399,7 +404,7 @@ class VertexBridge:
             url = (f'wss://{CONVERSATION_LOCATION}-aiplatform.googleapis.com'
                    '/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent')
             async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
-                upstream = await self.session.ws_connect(url, headers=await self.headers(),
+                upstream = await self.session.ws_connect(url, headers=await self.headers(), proxy=self.proxy,
                                                          max_msg_size=4 * 1024 * 1024, heartbeat=20)
             async with upstream:
                 await upstream.send_json({'setup': setup})
@@ -484,9 +489,8 @@ def make_app(config, credentials):
             return web.json_response({'error': {'message': 'Vertex helper request failed'}}, status=502)
     app = web.Application(middlewares=[authenticate], client_max_size=24 * 1024 * 1024)
     async def lifecycle(app):
-        # Optional explicit upstream proxy (e.g. a Mac outside a VPC Service Controls perimeter); environment proxies stay ignored.
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15), trust_env=False,
-                                         proxy=config.get('proxy')) as session:
+        # Environment proxies stay ignored; the configured one is per request (VertexBridge.proxy).
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15), trust_env=False) as session:
             bridge.session = session
             yield
     app.cleanup_ctx.append(lifecycle)
