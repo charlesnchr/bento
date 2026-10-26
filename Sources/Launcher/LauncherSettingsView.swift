@@ -117,8 +117,9 @@ struct LauncherSettingsView: View {
 
     /// Adds the app (or finds its entry) and starts recording its shortcut.
     private func pick(_ app: AppCandidate, proxy: ScrollViewProxy, fromKeyboard: Bool) {
-        let entry = BoundApps(model.value.entries).entry(for: app)
-            ?? append(appEntry(url: app.url, name: app.name, bundleID: app.bundleID))
+        var settings = model.value
+        let entry = settings.entry(for: app)
+        if settings != model.value { model.value = settings }
         focus(entry, proxy: proxy, returnToSearch: fromKeyboard)
     }
 

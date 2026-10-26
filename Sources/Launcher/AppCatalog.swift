@@ -1,4 +1,5 @@
 import AppKit
+import BentoCore
 
 /// An app the picker offers: running, installed, or both (one tile per app).
 struct AppCandidate: Identifiable, Equatable {
@@ -61,6 +62,13 @@ enum AppPicker {
             return a.app.name.localizedStandardCompare(b.app.name) == .orderedAscending
         }
         .prefix(limit).map(\.app)
+    }
+
+    /// The keyboard overview's app results: matches without an entry (the
+    /// overview lists entries as actions already). Nothing for an empty query.
+    static func unboundResults(_ apps: [AppCandidate], query: String, bound: BoundApps, limit: Int) -> [AppCandidate] {
+        guard !normalize(query).isEmpty else { return [] }
+        return results(apps.filter { bound.entry(for: $0) == nil }, query: query, limit: limit)
     }
 
     static func normalize(_ s: String) -> String {
@@ -201,6 +209,30 @@ enum GridNavigation {
 }
 
 // MARK: - Installed apps
+
+/// The keyboard overview's app search: the picker's index and ranking.
+/// Indexes when the overview opens; released with it.
+final class InstalledAppSearch: AppSearch {
+    private let index = InstalledAppIndex()
+    private var apps: [AppCandidate] = []
+    private let entries: () -> [LauncherEntry]
+
+    init(entries: @escaping () -> [LauncherEntry], changed: @escaping () -> Void) {
+        self.entries = entries
+        index.build { [weak self] apps in
+            self?.apps = apps
+            changed()
+        }
+    }
+
+    deinit { index.cancel() }
+
+    func results(_ query: String, limit: Int) -> [FoundApp] {
+        AppPicker.unboundResults(apps, query: query, bound: BoundApps(entries()), limit: limit).map {
+            FoundApp(id: $0.id, name: $0.name, url: $0.url, bundleID: $0.bundleID)
+        }
+    }
+}
 
 /// Set on the main queue, read by a background scan between items.
 final class StopFlag: @unchecked Sendable {

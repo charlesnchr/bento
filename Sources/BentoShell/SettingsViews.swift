@@ -13,9 +13,15 @@ final class SettingsNavigator: ObservableObject {
     /// keyboard overview's Change Shortcut); the page takes it once. Plain
     /// "shortcuts" clears a filter left from before.
     @Published var shortcutsFilter: String?
+    /// Action whose shortcut the Shortcuts page starts recording, from a
+    /// "record/<action id>" link (⌘E on an app found in the overview).
+    @Published var recordRequest: String?
+    /// The filter for a recording request (the action's title).
+    var actionTitle: (String) -> String? = { ActionRegistry.shared.action($0)?.title }
 
     func select(_ id: String?) {
         shortcutsFilter = nil
+        recordRequest = nil
         switch id {
         case nil, "", "general": page = .general
         case "shortcuts":
@@ -23,6 +29,11 @@ final class SettingsNavigator: ObservableObject {
             page = .shortcuts
         case let id? where id.hasPrefix("shortcuts/"):
             shortcutsFilter = String(id.dropFirst("shortcuts/".count))
+            page = .shortcuts
+        case let id? where id.hasPrefix("record/"):
+            let actionID = String(id.dropFirst("record/".count))
+            shortcutsFilter = actionTitle(actionID) ?? actionID
+            recordRequest = actionID
             page = .shortcuts
         case let id?: page = .module(id)
         }
@@ -59,7 +70,7 @@ struct SettingsRootView: View {
                     GeneralPane(delegate: delegate, general: general)
                 case .shortcuts:
                     // The registry's modules: the feature modules plus app-level actions.
-                    ShortcutsPane(modules: ActionRegistry.shared.modules, navigator: navigator)
+                    ShortcutsPane(modules: ActionRegistry.shared.modules, navigator: navigator) { delegate.settingsWindow }
                 case .module(let id):
                     if let m = delegate.modules.first(where: { $0.id == id }) {
                         ModulePane(module: m, enabled: Binding(
@@ -286,6 +297,8 @@ struct PermissionsView: View {
 struct ShortcutsPane: View {
     let modules: [BentoModule]
     @ObservedObject var navigator: SettingsNavigator
+    /// For a recording request: the window its recorder is in.
+    let window: () -> NSWindow?
     @State private var search = ""
     @State private var revision = 0
 
@@ -315,6 +328,23 @@ struct ShortcutsPane: View {
         guard let filter = navigator.shortcutsFilter else { return }
         search = filter
         navigator.shortcutsFilter = nil
+        if let id = navigator.recordRequest {
+            navigator.recordRequest = nil
+            record(id)
+        }
+    }
+
+    /// Records once the window is key in the active app. Activation is
+    /// asynchronous (the overview leaves another app frontmost): before it
+    /// lands the filtered row may not be laid out yet, and the key-window
+    /// change it brings would end a recording started earlier.
+    private func record(_ id: String, attempts: Int = 50) {
+        guard let w = window() else { return }
+        guard (NSApp.isActive && w.isKeyWindow) || attempts == 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { record(id, attempts: attempts - 1) }
+            return
+        }
+        RecorderFocus.begin(id, in: w)
     }
 
     private func filtered(_ actions: [BentoAction]) -> [BentoAction] {

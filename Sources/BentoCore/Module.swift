@@ -367,6 +367,44 @@ public enum BentoEvents {
     public static let windowPlaced = Notification.Name("BentoWindowPlaced")
 }
 
+/// An installed app found by an `AppSearch`.
+public struct FoundApp: Identifiable, Equatable {
+    /// The bundle id when known, else the path.
+    public let id: String
+    public let name: String
+    public let url: URL
+    public let bundleID: String?
+
+    public init(id: String, name: String, url: URL, bundleID: String?) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.bundleID = bundleID
+    }
+}
+
+/// Implemented by the module that binds shortcuts to apps (App Hotkeys), so
+/// the keyboard overview can find installed apps and give them a shortcut
+/// without importing it. The entries it adds are ordinary actions of that
+/// module: registered, conflict-checked and stored like the others.
+public protocol AppHotkeyProvider: AnyObject {
+    /// An installed-app index that lives as long as the returned search.
+    /// `changed` runs on the main queue whenever more apps were found.
+    func makeAppSearch(changed: @escaping () -> Void) -> AppSearch
+    /// The action that opens `app`: its entry, or a new one without a shortcut.
+    func addApp(_ app: FoundApp) -> String
+    /// Removes an action's entry. False when the action isn't an entry.
+    @discardableResult
+    func removeEntry(_ actionID: String) -> Bool
+    /// The app, file or folder an entry opens, for its icon.
+    func iconFile(for actionID: String) -> URL?
+}
+
+public protocol AppSearch: AnyObject {
+    /// Best matches first, without the apps that already have an entry.
+    func results(_ query: String, limit: Int) -> [FoundApp]
+}
+
 /// Opens the settings window, optionally on a module's page.
 public enum SettingsRouter {
     public static let openRequest = Notification.Name("BentoOpenSettings")

@@ -32,8 +32,11 @@ Idles at ~0 % CPU.
 module with its current shortcut. Type to filter by name, module or key (“left”
 finds Left Half, “⌘⇧” every ⌘⇧ shortcut). ↩ runs the selected action in the app
 you were in, ⌘E changes its shortcut in Settings, ⌘, opens Settings, and each
-module has a link to its own settings. The header shows whether Accessibility and
-Screen Recording are granted. A hint points to it once after launch.
+module has a link to its own settings. The search also finds installed apps
+without a hotkey (with their icons): ⌘E adds the app to App Hotkeys and records
+its shortcut straight away, and ⌘⌫ removes an app hotkey again. The header shows
+whether Accessibility and Screen Recording are granted. A hint points to it once
+after launch.
 
 ## Menu bar arrangement
 

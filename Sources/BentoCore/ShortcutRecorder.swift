@@ -75,6 +75,42 @@ private struct RecorderRepresentable: NSViewRepresentable {
     static func dismantleNSView(_ v: RecorderView, coordinator: ()) { v.cancelRecording() }
 }
 
+// MARK: - Recording from code
+
+/// Starts recording in an `actionID:` `ShortcutRecorder` (found by its
+/// accessibility identifier and pressed the way VoiceOver would), so the next
+/// keystroke becomes the binding.
+public enum RecorderFocus {
+    /// A new row only exists after SwiftUI's next layout pass: retry briefly.
+    public static func begin(_ actionID: String, in window: NSWindow?, attempts: Int = 15,
+                             started: @escaping (NSView) -> Void = { _ in }) {
+        guard let window, attempts > 0 else { return }
+        if let recorder = window.contentView.flatMap({ find("recorder:\(actionID)", in: $0) }) {
+            recorder.scrollToVisible(recorder.bounds.insetBy(dx: 0, dy: -20))   // with the row's subtitle
+            // Pressing toggles: never stop a recording that's already running.
+            if isRecording(recorder) || recorder.accessibilityPerformPress() { started(recorder) }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+            begin(actionID, in: window, attempts: attempts - 1, started: started)
+        }
+    }
+
+    public static func isRecording(_ recorder: NSView) -> Bool {
+        (recorder.accessibilityValue() as? String) == "Recording"
+    }
+
+    public static func find(_ identifier: String, in view: NSView) -> NSView? {
+        if view.accessibilityIdentifier() == identifier { return view }
+        for sub in view.subviews {
+            if let hit = find(identifier, in: sub) { return hit }
+        }
+        return nil
+    }
+}
+
+// MARK: - Recorder view
+
 final class RecorderView: NSView {
     var shortcut: Shortcut? { didSet { if shortcut != oldValue { needsDisplay = true } } }
     var placeholder = "Record Shortcut" { didSet { if placeholder != oldValue { needsDisplay = true } } }
