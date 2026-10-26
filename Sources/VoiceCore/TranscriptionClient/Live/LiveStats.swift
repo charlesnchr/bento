@@ -32,7 +32,7 @@ public struct LiveStats: Sendable {
     /// Why a dictation did not use its live transcript. Kept coarse on purpose:
     /// these are for a human reading one line of Settings, not an analytics
     /// schema, and a long tail of near-identical reasons would obscure the
-    /// distinction that matters — network, or us.
+    /// distinction that matters — network, us, or the server.
     public enum Fallback: String, Sendable, CaseIterable {
         /// The socket never opened: offline, refused, or the handshake timed out.
         case neverOpened
@@ -42,6 +42,8 @@ public struct LiveStats: Sendable {
         case truncated
         /// The server never sent a final transcript in time.
         case noFinal
+        /// The server closed the turn during a pause and ignored what came after.
+        case turnEndedEarly
     }
 
     private static let attemptsKey = "liveAttempts"
@@ -144,13 +146,15 @@ public struct LiveStats: Sendable {
         case .droppedMidSession: return "the connection dropped mid-sentence"
         case .truncated: return "audio arrived faster than it could be sent"
         case .noFinal: return "the transcript did not arrive in time"
+        case .turnEndedEarly: return "the server stopped listening after a long pause"
         }
     }
 
     /// Maps a session's own explanation onto a coarse reason. The session's
-    /// strings are for the log; these four are for the human.
+    /// strings are for the log; these few are for the human.
     public static func classify(_ why: String) -> Fallback {
         let lowered = why.lowercased()
+        if lowered.contains("ended the turn") { return .turnEndedEarly }
         if lowered.contains("truncated") || lowered.contains("dropped") { return .truncated }
         if lowered.contains("setup") || lowered.contains("connect") || lowered.contains("refused") {
             return .neverOpened

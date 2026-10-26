@@ -72,6 +72,16 @@ public actor LiveTranscriptionSession {
     private var didSetup = false
     private var activityEndFlushed = false
     private var closed = false
+    /// Set once the server sends ACTIVITY_START. A server that never does gives
+    /// no turn-end signal, so `finish` falls back to waiting for any final.
+    private var serverReportsActivity = false
+    /// The `audioOffset` of the server's latest ACTIVITY_END.
+    private var serverTurnEnd: TimeInterval?
+
+    /// Slack between the audio the socket accepted and the audio the server says
+    /// it heard. A normal turn end matches to the millisecond; a turn the server
+    /// closed by itself is short by at least the pause that triggered it.
+    static let turnEndTolerance: TimeInterval = 1.0
 
     /// Partials for the HUD. Separate from the outcome on purpose — nothing that
     /// arrives here is allowed to become the transcript.
@@ -191,6 +201,10 @@ public actor LiveTranscriptionSession {
                 case .final(let text):
                     finals.append(text)
                     latestPartial = ""
+                case .activityStarted:
+                    serverReportsActivity = true
+                case .activityEnded(let offset):
+                    serverTurnEnd = offset
                 case .goAway:
                     recordFailure("server sent goAway")
                     return
@@ -219,6 +233,12 @@ public actor LiveTranscriptionSession {
     public func finish(deadline: TimeInterval = 6.0) async -> LiveOutcome {
         guard didSetup else { return .unusable("setup never completed") }
         if let failure { close(); return .unusable(failure) }
+        // Nothing has asked for a turn end yet, so this one is the server's own:
+        // everything said after it was ignored.
+        if let early = serverTurnEnd {
+            close()
+            return .unusable(turnEndedEarly(at: early))
+        }
 
         commandSink.yield(.endActivity)
         commandSink.finish()
@@ -232,21 +252,37 @@ public actor LiveTranscriptionSession {
         if let failure { close(); return .unusable(failure) }
         guard activityEndFlushed else { close(); return .unusable("activityEnd never flushed") }
 
-        // A final may already have arrived. Otherwise wait, briefly.
+        // Wait for the server to close the turn activityEnd asked it to close. A
+        // final already in hand is not enough: the server sends one per segment,
+        // so an earlier segment's final says nothing about the audio after it.
+        // Only a server that never reports activity is judged on finals alone.
         let finalDeadline = Date().addingTimeInterval(deadline)
-        while finals.isEmpty, failure == nil, Date() < finalDeadline {
+        while failure == nil, Date() < finalDeadline,
+              serverReportsActivity ? serverTurnEnd == nil : finals.isEmpty {
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
         close()
 
         if let failure { return .unusable(failure) }
+        if serverReportsActivity, serverTurnEnd == nil {
+            return .unusable("no final turn end before deadline")
+        }
         guard !finals.isEmpty else { return .unusable("no final transcript before deadline") }
         if ring.didDrop { return .unusable("dropped \(ring.droppedChunks) chunks — stream is truncated") }
+        if let heard = serverTurnEnd, heard + Self.turnEndTolerance < sentSeconds {
+            return .unusable(turnEndedEarly(at: heard))
+        }
 
         let joined = finals.joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !joined.isEmpty else { return .unusable("final transcript was empty") }
         return .completed(joined)
+    }
+
+    private var sentSeconds: TimeInterval { Double(ring.acceptedBytes) / Double(PCMRing.bytesPerSecond) }
+
+    private func turnEndedEarly(at heard: TimeInterval) -> String {
+        String(format: "server ended the turn at %.1fs of %.1fs — the rest was never transcribed", heard, sentSeconds)
     }
 
     /// Tear down without waiting. Idempotent — every path that abandons a session
