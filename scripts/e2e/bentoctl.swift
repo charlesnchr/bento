@@ -239,6 +239,22 @@ case "click":
     let flags = args2.count > 3 ? parseFlags(args2[3].split(separator: "+", omittingEmptySubsequences: false)) : []
     mouse(.mouseMoved, p, flags); usleep(60000)
     mouse(.leftMouseDown, p, flags); usleep(40000); mouse(.leftMouseUp, p, flags)
+case "axfind":
+    // axfind <bundleid> <label>: centre (screen coords) of the first element whose AX description is <label>.
+    let (el, _) = axApp(args2[1])
+    func search(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
+        var d: CFTypeRef?
+        AXUIElementCopyAttributeValue(e, kAXDescriptionAttribute as CFString, &d)
+        if d as? String == args2[2] { return e }
+        guard depth < 40 else { return nil }
+        var kids: CFTypeRef?
+        AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &kids)
+        for k in (kids as? [AXUIElement]) ?? [] { if let hit = search(k, depth + 1) { return hit } }
+        return nil
+    }
+    guard let hit = search(el, 0) else { fail("no element '\(args2[2])' in \(args2[1])") }
+    let r = frame(hit)
+    print(Int(r.midX), Int(r.midY))
 case "screens":
     let h = NSScreen.screens.first!.frame.height
     for s in NSScreen.screens {

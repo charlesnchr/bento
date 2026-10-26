@@ -26,7 +26,7 @@ struct TodoRootView: View {
             if c.showHelp { HelpOverlay(close: { c.showHelp = false }) }
         }
         .ignoresSafeArea()
-        .frame(minWidth: 520, minHeight: 360)
+        .frame(minWidth: TodoStyle.minWidth(sidebar: c.sidebarVisible), minHeight: TodoStyle.minHeight)
     }
 }
 
@@ -298,8 +298,15 @@ struct TaskRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Button { c.toggleComplete([t.id]) } label: { PriorityCircle(priority: t.priority, completed: t.isCompleted) }
-                .buttonStyle(.plain)
+            // Not a Button: the row's tap gestures swallow its clicks. The whole circle is
+            // the target (an unfilled p4 circle would otherwise only take clicks on its ring).
+            PriorityCircle(priority: t.priority, completed: t.isCompleted)
+                .contentShape(Circle())
+                .highPriorityGesture(TapGesture().onEnded { c.toggleComplete([t.id]) })
+                .accessibilityElement()
+                .accessibilityLabel(t.isCompleted ? "Mark \(t.title) not done" : "Complete \(t.title)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { c.toggleComplete([t.id]) }
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
                 Text(t.title.isEmpty ? "Untitled" : t.title)

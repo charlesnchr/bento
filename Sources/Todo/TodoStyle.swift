@@ -3,6 +3,10 @@ import SwiftUI
 
 /// Todoist's colours: priorities, due-date states, the project palette.
 enum TodoStyle {
+    /// Narrowest the window may get; the sidebar takes 220 of it when shown.
+    static func minWidth(sidebar: Bool) -> CGFloat { sidebar ? 520 : 300 }
+    static let minHeight: CGFloat = 360
+
     static func priority(_ p: Int) -> NSColor {
         switch p {
         case 1: return NSColor(srgbRed: 0.82, green: 0.27, blue: 0.23, alpha: 1)   // #D1453B
