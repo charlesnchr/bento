@@ -14,10 +14,30 @@ final class AssistantWindowPlacement {
     private var placed = false
     /// Set while this class moves the window, so only the user's moves are saved.
     private var adjusting = false
+    /// The frame this class last gave the window (fitted to a screen, widened
+    /// for the conversation list). Until the user moves or resizes the window
+    /// away from it there is nothing of theirs to save, even on hide or quit.
+    private var adjusted: NSRect?
     /// The display arrangement the saved frames were last read or written for.
     /// A move under a different one is macOS relocating the window for a
     /// display that slept or went away, not the user.
     private var arrangement = ""
+    /// The smallest size the user can resize the window to. Not the window's
+    /// minSize: the SwiftUI hosting view resets that to zero on every layout.
+    private var minSize = AssistantWindowPlacement.minimumSize(sidebar: false)
+    /// The conversation list is showing, so the window needs room for it too.
+    /// Showing it widens a narrower window; hiding it again gives the window
+    /// back the frame the user saved.
+    var sidebar = false {
+        didSet {
+            guard sidebar != oldValue else { return }
+            if !sidebar, placed, let saved = Self.savedFrame(in: defaults.dictionary(forKey: key) ?? [:], for: NSScreen.screens.map(\.frame)),
+               let frame = Self.constrainedFrame(saved, visibleFrames: NSScreen.screens.map(\.visibleFrame)) {
+                set(frame)
+            }
+            constrainToScreens()
+        }
+    }
 
     init(window: NSWindow, key: String = "assistantWindowFrames", defaults: UserDefaults = .standard) {
         self.window = window
@@ -46,7 +66,7 @@ final class AssistantWindowPlacement {
     /// or resize (a drag, a window-management shortcut), except this class's
     /// own and the ones macOS makes when the displays change.
     func save() {
-        guard placed, !adjusting else { return }
+        guard placed, !adjusting, window.frame != adjusted else { return }
         let current = Self.signature(NSScreen.screens.map(\.frame))
         guard current == arrangement else { return }
         var frames = defaults.dictionary(forKey: key) ?? [:]
@@ -57,12 +77,20 @@ final class AssistantWindowPlacement {
     }
 
     /// Keeps the window on the current screens (after a display goes away)
-    /// without forgetting where the user had put it.
+    /// without forgetting where the user had put it. Showing the conversation
+    /// list widens a narrower window to fit it, shifting left to stay on screen.
     func constrainToScreens() {
-        guard placed, let frame = Self.constrainedFrame(window.frame, visibleFrames: NSScreen.screens.map(\.visibleFrame)) else { return }
+        let minimum = Self.minimumSize(sidebar: sidebar)
+        guard placed, let frame = Self.constrainedFrame(window.frame, minimum: minimum,
+                                                        visibleFrames: NSScreen.screens.map(\.visibleFrame)) else { return }
         // A smaller replacement screen takes precedence over the normal resize minimum.
-        window.minSize = NSSize(width: min(610, frame.width), height: min(420, frame.height))
+        minSize = NSSize(width: min(minimum.width, frame.width), height: min(minimum.height, frame.height))
         if window.frame != frame { set(frame) }
+    }
+
+    /// The size a user's resize to `proposed` gets (the window delegate's windowWillResize).
+    func resizing(to proposed: NSSize) -> NSSize {
+        NSSize(width: max(proposed.width, minSize.width), height: max(proposed.height, minSize.height))
     }
 
     /// Screen parameters changed (a display came or went, slept or woke, the
@@ -85,6 +113,7 @@ final class AssistantWindowPlacement {
     private func set(_ frame: NSRect) {
         adjusting = true
         window.setFrame(frame, display: window.isVisible)
+        adjusted = window.frame
         adjusting = false
     }
 
@@ -100,7 +129,13 @@ final class AssistantWindowPlacement {
         screens.map { "\(Int($0.minX)),\(Int($0.minY)),\(Int($0.width)),\(Int($0.height))" }.sorted().joined(separator: ";")
     }
 
-    nonisolated static func constrainedFrame(_ proposed: NSRect, visibleFrames: [NSRect]) -> NSRect? {
+    /// The conversation needs 370 wide; the conversation list takes another 220 when shown.
+    nonisolated static func minimumSize(sidebar: Bool) -> NSSize {
+        NSSize(width: sidebar ? 610 : 370, height: 420)
+    }
+
+    nonisolated static func constrainedFrame(_ proposed: NSRect, minimum: NSSize = minimumSize(sidebar: false),
+                                             visibleFrames: [NSRect]) -> NSRect? {
         let screens = visibleFrames.filter { valid($0) }
         guard let fallback = screens.first else { return nil }
         let frame = valid(proposed) ? proposed : NSRect(origin: fallback.origin, size: NSSize(width: 650, height: 650))
@@ -109,8 +144,8 @@ final class AssistantWindowPlacement {
         let target = screens.max { a, b in
             area(frame.intersection(a)) < area(frame.intersection(b))
         }.flatMap { area(frame.intersection($0)) > 0 ? $0 : nil } ?? fallback
-        let size = NSSize(width: min(max(frame.width, 610), target.width),
-                          height: min(max(frame.height, 420), target.height))
+        let size = NSSize(width: min(max(frame.width, minimum.width), target.width),
+                          height: min(max(frame.height, minimum.height), target.height))
         return NSRect(x: min(max(frame.minX, target.minX), target.maxX - size.width),
                       y: min(max(frame.minY, target.minY), target.maxY - size.height),
                       width: size.width, height: size.height)
