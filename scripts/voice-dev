@@ -1,0 +1,18 @@
+#!/bin/bash
+# Drive the voice modules in a running DevVoice harness, then print its state:
+#   scripts/voice-dev assistant.send "What is 2+2?"
+#   scripts/voice-dev assistant.state
+#   scripts/voice-dev assistant.frame "{{100, 100}, {700, 600}}"
+#   scripts/voice-dev assistant.hide
+# Uses BENTO_HOME (default /tmp/bento-dev/voice, the harness's).
+set -euo pipefail
+HOME_DIR="${BENTO_HOME:-/tmp/bento-dev/voice}"
+cmd="${1:?command}"; arg="${2:-}"
+key=text; [ "$cmd" = assistant.frame ] && key=frame
+rm -f "$HOME_DIR/support/voice-dev.json"
+VOICE_CMD="$cmd" VOICE_KEY="$key" VOICE_ARG="$arg" VOICE_HOME="$HOME_DIR" swift -e 'import Foundation
+let env = ProcessInfo.processInfo.environment
+DistributedNotificationCenter.default().postNotificationName(Notification.Name("com.charles.bento.dev.voice"), object: env["VOICE_HOME"]!,
+    userInfo: ["command": env["VOICE_CMD"]!, env["VOICE_KEY"]!: env["VOICE_ARG"] ?? ""], deliverImmediately: true)'
+for _ in $(seq 1 40); do [ -f "$HOME_DIR/support/voice-dev.json" ] && break; sleep 0.25; done
+cat "$HOME_DIR/support/voice-dev.json"
