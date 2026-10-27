@@ -333,6 +333,7 @@ final class NotesController {
 
     func editorChanged(_ body: String) {
         guard let id = currentID, var n = store.note(id) else { return }
+        engine.willEdit(n) // the text this edit starts from: what a concurrent edit merges against
         n.body = body
         n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true

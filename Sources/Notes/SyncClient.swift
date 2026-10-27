@@ -501,7 +501,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
         guard !notes.isEmpty else { updatePending(); return }
         if status.state == .connected, task != nil, helloDone {
             for n in notes {
-                if send(["type": "put", "note": NoteWire.encode(n, device: device)]) {
+                if send(["type": "put", "note": engine.encode(n)]) {
                     engine.markSent(n)
                 } else {
                     engine.markUnsendable(n)
@@ -537,7 +537,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func encodedSize(_ n: Note) -> Int {
-        (try? JSONSerialization.data(withJSONObject: ["type": "put", "note": NoteWire.encode(n, device: device)]))?.count ?? Int.max
+        (try? JSONSerialization.data(withJSONObject: ["type": "put", "note": engine.encode(n)]))?.count ?? Int.max
     }
 
     private func updatePending() {
@@ -613,7 +613,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func restPut(_ n: Note) {
-        guard let body = try? JSONSerialization.data(withJSONObject: NoteWire.encode(n, device: device)),
+        guard let body = try? JSONSerialization.data(withJSONObject: engine.encode(n)),
               let id = n.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let req = request("/v1/notes/\(id)", method: "PUT", body: body) else { return }
         engine.markSent(n)

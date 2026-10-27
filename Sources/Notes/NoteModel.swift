@@ -57,6 +57,9 @@ struct Note: Equatable {
     /// (nil: unknown). Lets the sync engine tell a real concurrent edit from a
     /// meta-only change on either side.
     var baseHash: UInt64?
+    /// Wire only (never stored): hashes of recent texts a remote version descends from
+    /// (`meta.base`, newest first). Lets the engine merge concurrent edits.
+    var remoteBases: [UInt64] = []
 
     init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
         self.id = id

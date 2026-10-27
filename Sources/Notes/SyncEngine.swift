@@ -2,18 +2,30 @@ import Foundation
 
 /// Wire format conversions for the sync protocol's note object.
 enum NoteWire {
-    /// JSON object for a client put (no `seq`).
-    static func encode(_ n: Note, device: String) -> [String: Any] {
-        [
+    /// JSON object for a client put (no `seq`). `ancestors`: hashes of recent texts this
+    /// version descends from, newest first.
+    static func encode(_ n: Note, device: String, ancestors: [UInt64] = []) -> [String: Any] {
+        var meta = n.meta
+        meta.removeValue(forKey: baseKey)
+        if !ancestors.isEmpty, !n.deleted {
+            // Tied to this version's updated_at: an older client that edits the note keeps
+            // the key but not the timestamp, so a stale base is never trusted.
+            meta[baseKey] = .object(["at": .number(Double(n.updatedAt)),
+                                     "hashes": .array(ancestors.map { .string(String($0, radix: 16)) })])
+        }
+        return [
             "id": n.id,
             "body": n.deleted ? "" : n.body,
             "created_at": n.createdAt,
             "updated_at": n.updatedAt,
             "deleted": n.deleted,
             "device": device,
-            "meta": n.meta.mapValues(\.any),
+            "meta": meta.mapValues(\.any),
         ]
     }
+
+    /// `meta` key listing the texts a version descends from.
+    static let baseKey = "base"
 
     static func decode(_ obj: Any?) -> Note? {
         guard let d = obj as? [String: Any], let id = d["id"] as? String, !id.isEmpty else { return nil }
@@ -28,6 +40,10 @@ enum NoteWire {
         n.seq = int("seq")
         n.device = d["device"] as? String ?? ""
         if let m = d["meta"] as? [String: Any] { n.meta = m.mapValues { JSONValue(any: $0) } }
+        if case .object(let b)? = n.meta.removeValue(forKey: baseKey), case .array(let hashes)? = b["hashes"],
+           b["at"]?.double == Double(updated) {
+            n.remoteBases = hashes.prefix(8).compactMap { if case .string(let h) = $0 { return UInt64(h, radix: 16) }; return nil }
+        }
         return n
     }
 }
@@ -38,10 +54,14 @@ enum NoteWire {
 /// - `inflight` remembers which versions (updated_at) of a note were sent, oldest first.
 ///   Acks arrive in send order on a connection, so each ack pops the version it
 ///   acknowledges and only clears `dirty` when that is still the current version.
-/// - Remote notes are applied with last-writer-wins on `updated_at`. When a real
-///   concurrent edit would be overwritten (both sides changed the body since the last
-///   version they share), the losing body is kept as a "conflicted copy" note, so no
-///   edit is ever silently lost.
+/// - Concurrent text edits are merged like Google Docs: every put lists recent texts it
+///   descends from (`meta.base`), and when one of them is also an ancestor of the local
+///   text (versions seen, sent or merged this session), both sides' changes since the
+///   newest such text are applied together and the result is sent back.
+/// - Otherwise remote notes are applied with last-writer-wins on `updated_at`. When a
+///   real concurrent edit would be overwritten (both sides changed the body since the
+///   last version they share, and the changes overlap or can't be merged), the losing
+///   body is kept as a "conflicted copy" note, so no edit is ever silently lost.
 final class SyncEngine {
     enum RemoteResult: Equatable {
         case inserted, overwritten, adopted, keptLocal, unchanged
@@ -66,6 +86,12 @@ final class SyncEngine {
     /// concurrent typing updates one copy instead of creating dozens.
     private var conflictCopies: [String: (id: String, updatedAt: Int64, created: Int64)] = [:]
 
+    /// Recent texts of each note by hash, oldest first (seen from the server, sent, merged
+    /// or about to be edited). `ancestor`: the local text descends from it, so it can be
+    /// the base of a three-way merge.
+    private var versions: [String: [(hash: UInt64, body: String, ancestor: Bool)]] = [:]
+    private static let versionsKept = 16
+
     /// Called for every note whose stored content changed because of the server.
     var onRemoteChange: ((Note, RemoteResult) -> Void)?
     /// Called before a remote note is applied (lets the editor flush unsaved edits).
@@ -83,14 +109,19 @@ final class SyncEngine {
         beforeApply?(r.id)
         guard let local = repo.note(r.id) else {
             var n = r
+            n.remoteBases = []
             n.dirty = false
             n.openedAt = 0
             n.baseHash = NoteText.hash(n.body)
             repo.save(n)
+            remember(n.id, n.body, ancestor: true)
             onRemoteChange?(n, .inserted)
             return .inserted
         }
+        remember(local.id, local.body, ancestor: true)
         let wasResyncing = resyncing.remove(r.id) != nil
+        if !wasResyncing, let result = threeWay(local: local, remote: r) { return result }
+        defer { settle(local: local, remote: r) }
         if local.dirty {
             if wasResyncing { return applyAfterRestore(local: local, remote: r) }
             // A version from another device that this local edit was not based on.
@@ -158,6 +189,68 @@ final class SyncEngine {
         n.baseHash = NoteText.hash(r.body)
         if n != local { repo.save(n) }
         return .keptLocal
+    }
+
+    /// A remote text edit that shares an ancestor with ours: both sides' changes kept.
+    /// nil when that doesn't apply (no shared ancestor known, deletes, same text, changes
+    /// to the same text) and last-writer-wins decides as before.
+    private func threeWay(local: Note, remote r: Note) -> RemoteResult? {
+        guard !r.remoteBases.isEmpty, !r.deleted, !local.deleted, r.body != local.body else { return nil }
+        if r.remoteBases.contains(NoteText.hash(local.body)) {
+            // Made from our text (which reached the server): a fast-forward, even if our
+            // ack hasn't arrived yet. Clean notes take the normal path.
+            return local.dirty ? take(local: local, remote: r, fastForward: true) : nil
+        }
+        // A version we already had (our own, echoed by a snapshot) brings nothing new.
+        if ancestor(local.id, NoteText.hash(r.body)) { return keepMerged(local: local, remote: r, body: local.body) }
+        guard let base = r.remoteBases.lazy.compactMap({ self.ancestorText(local.id, $0) }).first,
+              let body = TextMerge.merge(base: base, local: local.body, remote: r.body) else { return nil }
+        if body == r.body { return local.dirty ? take(local: local, remote: r, fastForward: false) : nil }
+        return keepMerged(local: local, remote: r, body: body)
+    }
+
+    /// Stores a text that includes the remote version as a new local version (it goes to
+    /// the server, which only has theirs).
+    private func keepMerged(local: Note, remote r: Note, body: String) -> RemoteResult {
+        var n = local
+        n.body = body
+        if r.updatedAt > local.updatedAt { n.meta = r.meta }
+        if let s = r.seq, local.seq ?? -1 < s { n.seq = s }
+        if body != local.body || !local.dirty || local.updatedAt <= r.updatedAt {
+            n.updatedAt = Note.nextUpdate(after: r.updatedAt, local.updatedAt)
+        }
+        n.dirty = true
+        n.baseHash = NoteText.hash(r.body)
+        repo.save(n)
+        // their ancestors are ours now too
+        versions[n.id] = versions[n.id]?.map { v in (v.hash, v.body, v.ancestor || r.remoteBases.contains(v.hash)) }
+        remember(n.id, r.body, ancestor: true)
+        remember(n.id, body, ancestor: true)
+        if body != local.body || n.meta != local.meta { onRemoteChange?(n, .merged) }
+        return body == local.body ? .keptLocal : .merged
+    }
+
+    private func take(local: Note, remote r: Note, fastForward: Bool) -> RemoteResult {
+        let result = adopt(local: local, remote: r)
+        rebase(r.id, onto: r, fastForward: fastForward)
+        return result
+    }
+
+    /// After last-writer-wins: what the local text descends from now.
+    private func settle(local: Note, remote r: Note) {
+        let body = repo.note(r.id)?.body
+        if body == r.body, local.body != r.body {
+            rebase(r.id, onto: r, fastForward: r.remoteBases.contains(NoteText.hash(local.body)))
+        } else {
+            remember(r.id, r.body, ancestor: body == r.body)
+        }
+    }
+
+    /// Our text was replaced by theirs: only their ancestors are ours now (all of ours too
+    /// when theirs was made from our text).
+    private func rebase(_ id: String, onto r: Note, fastForward: Bool) {
+        if !fastForward { versions[id] = versions[id]?.map { v in (v.hash, v.body, r.remoteBases.contains(v.hash)) } }
+        remember(id, r.body, ancestor: true)
     }
 
     private func adopt(local: Note, remote r: Note) -> RemoteResult {
@@ -243,6 +336,7 @@ final class SyncEngine {
     }
 
     func markSent(_ n: Note) {
+        if !n.deleted { remember(n.id, n.body, ancestor: true) }
         inflight[n.id, default: []].append(Sent(updatedAt: n.updatedAt, bodyHash: NoteText.hash(n.deleted ? "" : n.body)))
     }
 
@@ -287,8 +381,50 @@ final class SyncEngine {
 
     // MARK: Helpers
 
+    /// The local note is about to be edited: keep its text, the base of the edit.
+    func willEdit(_ n: Note) {
+        // keystrokes before the debounced save all see the same stored version
+        guard !n.dirty, !n.deleted, editBases[n.id] != n.updatedAt else { return }
+        editBases[n.id] = n.updatedAt
+        remember(n.id, n.body, ancestor: true)
+    }
+
+    private var editBases: [String: Int64] = [:]
+
+    private func remember(_ id: String, _ body: String, ancestor: Bool) {
+        let h = NoteText.hash(body)
+        var list = versions[id, default: []]
+        if let i = list.firstIndex(where: { $0.hash == h && $0.body == body }) {
+            let v = list.remove(at: i)
+            list.append((h, body, v.ancestor || ancestor))
+        } else {
+            list.append((h, body, ancestor))
+            if list.count > Self.versionsKept { list.removeFirst(list.count - Self.versionsKept) }
+        }
+        versions[id] = list
+    }
+
+    private func ancestorText(_ id: String, _ hash: UInt64) -> String? {
+        versions[id]?.last(where: { $0.hash == hash && $0.ancestor })?.body
+    }
+
+    /// Recent texts a local version descends from, newest first (sent as `meta.base`).
+    func ancestors(of n: Note) -> [UInt64] {
+        var out = (versions[n.id] ?? []).reversed().filter(\.ancestor).prefix(4).map(\.hash)
+        if let b = n.baseHash, !out.contains(b) { out.append(b) }
+        return out
+    }
+
+    /// The put for a note.
+    func encode(_ n: Note) -> [String: Any] { NoteWire.encode(n, device: device, ancestors: ancestors(of: n)) }
+
+    private func ancestor(_ id: String, _ hash: UInt64) -> Bool {
+        versions[id]?.contains { $0.hash == hash && $0.ancestor } ?? false
+    }
+
     private func merged(local: Note, remote r: Note) -> Note {
         var n = r
+        n.remoteBases = []
         n.dirty = false
         n.openedAt = local.openedAt
         n.createdAt = min(local.createdAt, r.createdAt)

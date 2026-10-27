@@ -23,9 +23,13 @@ Single user, single shared bearer token. All timestamps are Unix **milliseconds*
 pinned notes), `trashedAt` (ms; set when moved to Recently Deleted, purged after 60 days by
 turning the note into a tombstone), `conflictOf` (id of the note this one is a
 "conflicted copy" of: when a client's unsynced edit loses last-writer-wins to a
-different text from another device, the client keeps its losing text as a new note
-titled "‹title› (conflicted copy, ‹device›)" instead of discarding it). Unknown
-keys must be preserved.
+different text from another device and the two can't be merged, the client keeps its
+losing text as a new note titled "‹title› (conflicted copy, ‹device›)" instead of
+discarding it), `base` (written on every put: `{"at": updated_at, "hashes": [...]}`,
+hex FNV-1a hashes of the UTF-8 of recent texts this version descends from, newest
+first; only valid while `at` equals the note's `updated_at`, so a client that edits the
+note without rewriting `base` invalidates it; see Client behaviour). Unknown keys must
+be preserved.
 
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 
@@ -146,9 +150,18 @@ so it can adopt it. `created_at` is kept from the first version.
 - Debounce local edits (~400 ms) then send `put`; clear `dirty` on `ack accepted` for
   that id if the note was not edited again meanwhile.
 - On (re)connect: `hello{since:last_seq}`, apply snapshot, then re-send all dirty notes.
-- Applying a remote note: if the local copy is not dirty → overwrite. If dirty and
-  remote `updated_at` is newer → adopt remote (LWW), keeping the cursor position if the
-  note is open. Otherwise keep local and (re)send it.
+- Applying a remote note (Notes): when its `meta.base` lists the local text, it was
+  made from it → take it. Otherwise, when it lists a text the local version also
+  descends from (texts seen, sent or merged this session), merge three-way from the
+  newest such text: both sides' changes are applied when they don't touch the same
+  text, the result is stored dirty with a newer `updated_at` and sent, so the server
+  ends up with both. Two clients merging the same pair of versions get the same text.
+- Otherwise: if the local copy is not dirty → overwrite. If dirty and remote
+  `updated_at` is newer → adopt remote (LWW) and keep the local text as a conflicted
+  copy. Otherwise keep local and (re)send it.
+- An open note takes remote text like Google Docs: only the changed stretches are
+  replaced, the selection moves with the text around it (text inserted right at a caret
+  goes after it), and the line at the top of the view stays there.
 - Reconnect with exponential backoff (1 s … 60 s). If WebSocket upgrade keeps failing
   (e.g. a corporate proxy), fall back to REST polling `GET /v1/notes?since=` every 10 s
   and `PUT` for writes.

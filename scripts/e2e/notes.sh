@@ -101,7 +101,8 @@ elif cmd == "converged":  # converged <work> <port> <token> <instance>...: same 
         for i, n in s.items():
             m = r.get(i)
             if m is None: print(name, "missing", i); ok = False; continue
-            if m["body"] != n["body"] or bool(m["deleted"]) != bool(n["deleted"]) or json.loads(m["meta"] or "{}") != (n.get("meta") or {}):
+            meta = {k: v for k, v in (n.get("meta") or {}).items() if k != "base"}  # sync's own key, not stored locally
+            if m["body"] != n["body"] or bool(m["deleted"]) != bool(n["deleted"]) or json.loads(m["meta"] or "{}") != meta:
                 print(name, "differs", i, repr(m["body"][:40]), repr(n["body"][:40])); ok = False
         extra = [i for i, n in r.items() if i not in s and (n["body"] or n["dirty"])]
         if extra: print(name, "not on server:", extra[:5]); ok = False
@@ -263,7 +264,7 @@ sync_suite() {
   eventually 25 "queued edits reach B after restart" body_is b n6 '# Queued offline'
   eventually 10 "…all of them" contains b n1 "edited offline"
 
-  log "- concurrent offline edits (LWW + conflicted copy)"
+  log "- concurrent offline edits of the same text (LWW + conflicted copy)"
   dbg a 'put n8|# Shared\nbase' >/dev/null
   eventually 10 "shared note on both" body_is b n8 '# Shared\nbase'
   stop_server
@@ -275,6 +276,18 @@ sync_suite() {
   check "newest edit wins" body_is a n8 '# Shared\nedited on B'
   check "the other edit is kept as a conflicted copy" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN a \"body like '# Shared (conflicted copy%' and body like '%edited on A' and deleted = 0\")\" = 1 ]"
   check "…on both Macs" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN b \"body like '# Shared (conflicted copy%' and body like '%edited on A'\")\" = 1 ]"
+
+  log "- concurrent edits in different places merge"
+  dbg a 'put n10|# Merge\nfirst\n\nlast' >/dev/null
+  eventually 10 "note on both" body_is b n10 '# Merge\nfirst\n\nlast'
+  stop_server
+  dbg a 'put n10|# Merge\nfirst, from A\n\nlast' >/dev/null
+  sleep 1.1
+  dbg b 'put n10|# Merge\nfirst\n\nlast, from B' >/dev/null
+  start_server
+  eventually 25 "converges" converged a b
+  check "both edits are in the note" body_is a n10 '# Merge\nfirst, from A\n\nlast, from B'
+  check "no conflicted copy" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN b \"body like '# Merge (conflicted copy%'\")\" = 0 ]"
 
   log "- trash, restore, delete permanently"
   dbg a 'trash n1' >/dev/null
