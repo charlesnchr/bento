@@ -27,7 +27,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
     /// Created non-activating, because AppKit only honours that style from
     /// creation, not when it is added later. With keep on top off, a click
     /// activates Bento as it would for any other window.
-    private final class Panel: NSPanel {
+    private final class Panel: NSPanel, ManagedPanel {
         var hide: (() -> Void)?
         var key: ((NSEvent) -> Bool)?
         var activatesOnClick = false
@@ -129,6 +129,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         if stacking.nonactivating {
             // The panel takes the keyboard without activating Bento, so a
             // full-screen app keeps its Space and stays the active app.
+            if NSApp.isHidden { NSApp.unhideWithoutActivation() }
             AppActivation.show(panel, activate: false)
             if activate { panel.makeKey() }
         } else {

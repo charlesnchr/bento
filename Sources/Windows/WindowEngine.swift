@@ -53,7 +53,7 @@ final class WindowEngine {
         }
         if cmd.isMultiWindow { return performMulti(cmd) }
         // Bento's own windows: only regular ones (not popups or panels), resolved in-process.
-        let own = given == nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()
+        let own = given == nil && OwnWindows.haveFocus
         guard let window = given ?? (own ? OwnWindows.focused() : AXWindow.focused()), let frame = window.frame, frame.width > 0, frame.height > 0,
               !window.isFullscreen else {
             NSSound.beep()
@@ -187,7 +187,7 @@ final class WindowEngine {
     // MARK: Several windows
 
     private func performMulti(_ cmd: WindowCommand) -> Bool {
-        let ownFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()
+        let ownFront = OwnWindows.haveFocus
         let focused = ownFront ? OwnWindows.focused() : AXWindow.focused()
         let snap = ScreenSnapshot.current()
         guard !snap.rects.isEmpty else { return false }

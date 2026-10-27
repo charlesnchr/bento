@@ -659,7 +659,7 @@ struct AssistantSettingsView: View {
             } header: {
                 Text("Window")
             } footer: {
-                Footnote("The chat window stays above every app, on every Space and over full-screen apps, until you hide it (⇧⌥F18 or Esc). Typing in it doesn't switch away from the app in front.")
+                Footnote("The chat window stays above every app, on every Space and over full-screen apps, until you hide it (⇧⌥F18 or Esc). Typing in it doesn't switch away from the app in front. VoiceOver works best with this off.")
             }
             Section("Shortcuts") {
                 ModuleShortcuts(moduleID: "assistant", revision: revision.value)
