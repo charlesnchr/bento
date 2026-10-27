@@ -14,7 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * receiving the same JSON.
  */
 internal object AppleJson {
-    private const val BOM = '﻿'
+    private const val BOM = '\uFEFF'
 
     fun parse(text: String): JsonElement = normalize(Json.parseToJsonElement(text))
 
