@@ -148,7 +148,7 @@ struct NotesSettingsView: View {
             } header: {
                 Text("Sync")
             } footer: {
-                Text("Notes sync in real time through the Bento sync server. The token file holds only the bearer token (mode 600).")
+                Text("Notes sync in real time through the Bento sync server, and so do dictation's dictionary and instructions. The token file holds only the bearer token (mode 600).")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

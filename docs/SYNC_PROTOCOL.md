@@ -41,8 +41,9 @@ see Client behaviour). Unknown keys must be preserved.
 ## Collections
 
 One server stores documents for several apps. Every document belongs to exactly one
-**collection**: `notes` (the Notes module) or `todos` (the Todo module). Names match
-`[a-z][a-z0-9_-]{0,31}`; the server doesn't keep a fixed list.
+**collection**: `notes` (the Notes module), `todos` (the Todo module) or `voice`
+(dictation's dictionary and settings). Names match `[a-z][a-z0-9_-]{0,31}`; the server
+doesn't keep a fixed list.
 
 * `id`s are unique across all collections. A put whose id already exists in a
   different collection is refused (REST 409 `{"error":…}`, WebSocket `error` with the id).
@@ -90,6 +91,54 @@ changes, the client merges, keeps the result dirty and puts it with
 handled the same way with the stored winner. A tombstone (`deleted:true`) wins
 over every field change older than its `updated_at`; a field change made after it
 resurrects the task (its put carries the full body).
+
+## Voice documents (`collection: "voice"`)
+
+Dictation's personal dictionary and cleanup settings, shared by every Mac and the
+Android app. The body format and the merge, tie-break and tombstone rules are the
+todo documents' (`{"type", "fields", "clocks"}`, merged field by field). Unknown
+fields and unknown types are stored and preserved untouched, and never shown.
+
+`type: "entry"`, one dictionary entry. The id is the entry's UUID string (the Mac
+writes `UUID().uuidString`, upper case; compare ids as UUIDs).
+
+```json
+{
+  "type": "entry",
+  "fields": {
+    "term": "Kubernetes",               // the right spelling, 1–60 characters after trimming
+    "misspelling": "cooper netties",    // what the recogniser tends to write; null = none
+    "starred": false,                   // starred terms go first in the prompt
+    "created_at": 1761000000000         // ms; absent: the document's created_at
+  },
+  "clocks": {"term": 1761000000000, "misspelling": 1761000000000, "starred": 1761000200000, "created_at": 1761000000000}
+}
+```
+
+`type: "settings"`, a singleton with the id `"voice-settings"`. Fields, named like the
+Mac's settings keys: `customInstructions` (string, default `""`),
+`customInstructionsEnabled` (bool, default `false`) and `cleanupEnabled` (bool, default
+`true`, the cleanup pass's master switch). A missing field, or one of the wrong type,
+means the default.
+
+`type: "mode"`, the Android app's dictation profiles: fields `name`, `prompt`, `order`,
+`language` and `cleanup`. Android only; the Mac keeps them as they are.
+
+**First sync.** A client that has never synced uploads what it has, stamped so it never
+overrides an edit made while syncing: a new entry document's field clocks are its
+`created_at`, and a setting it had before it started syncing gets clock `1` when no
+document has a clock for that field yet (settings still at their defaults aren't sent).
+Edits made while syncing get the current time as usual. So the dictionaries of several devices
+union by id, a stale copy of an entry deleted elsewhere stays deleted (its clocks are
+older than the tombstone), and the settings document merges per field; two never-synced
+values of one setting tie, and the canonical-JSON tie-break picks one.
+
+**One term, several entries.** Two devices can add the same term (ignoring case) under
+different ids. Both documents stay. Clients show one entry for them: the one with the
+smaller `created_at` (then the smaller id), starred if any of them is, with the first
+misspelling any of them has, in the same order. An edit to that entry is written to
+every document behind it (`created_at` only to its own), and removing it deletes them
+all.
 
 ## Auth
 
@@ -148,7 +197,7 @@ sender and broadcast as `note` to every other connection. A rejected put is acke
 with `accepted:false` and the stored note is sent back to the sender as `note`
 so it can adopt it. `created_at` is kept from the first version.
 
-## Client behaviour (reference: Notes module; the Todo module follows it with field merges)
+## Client behaviour (reference: Notes module; Todo and voice follow it with field merges)
 
 - Keep notes in a local SQLite DB; the app works fully offline.
 - Track `last_seq` (highest applied server seq) and a per-note `dirty` flag.
@@ -209,3 +258,6 @@ off and there is no server by default:
 ```
 
 The token file contains only the token (mode 600) and is never written into config.json.
+The `voice` collection uses `notes.sync`, while a voice module runs and
+`dictation.syncDictionary` (Settings → Dictation → Sync dictionary and instructions) isn't
+`false`.

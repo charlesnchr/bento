@@ -148,6 +148,7 @@ private struct DictationSettingsForm: View {
             keys
             transcription
             formatting
+            sync
             feedback
             privacy
             advanced
@@ -338,6 +339,19 @@ private struct DictationSettingsForm: View {
         return "Nothing needs the cleanup pass right now, so no call is made."
     }
 
+    // MARK: Sync
+
+    private var sync: some View {
+        Section {
+            Toggle("Sync dictionary and instructions", isOn: binding({ settings.syncDictionary }, { settings.setSyncDictionary($0) }))
+            VoiceSyncStatusRow(wanted: settings.syncDictionary)
+        } header: {
+            Text("Sync")
+        } footer: {
+            Footnote("The dictionary, custom instructions and the cleanup pass switch sync with your other Macs and the Bento Android app, through the Notes sync server and token (Settings → Notes).")
+        }
+    }
+
     // MARK: Feedback
 
     private var feedback: some View {
@@ -454,6 +468,52 @@ private struct DictationSettingsForm: View {
         if settings.transcriptionEngine != .gemini { return "Gemini only: streams while you speak." }
         if let summary = LiveStats().summary { return "Streams while you speak and falls back to upload if it stumbles. \(summary)" }
         return "Streams while you speak and falls back to upload if it stumbles."
+    }
+}
+
+/// Where the voice documents' sync stands, like the Notes and Todo status rows.
+private struct VoiceSyncStatusRow: View {
+    let wanted: Bool
+
+    var body: some View {
+        if let sync = VoiceApp.current?.voiceSync {
+            Row(sync: sync, status: sync.status, wanted: wanted)
+        } else {
+            LabeledContent("Status") { Text("Dictation is off").foregroundStyle(.secondary) }
+        }
+    }
+
+    private struct Row: View {
+        let sync: VoiceSync
+        @ObservedObject var status: FieldSyncStatus
+        let wanted: Bool
+
+        var body: some View {
+            let notes = VoiceSync.notesSync
+            LabeledContent("Status") {
+                HStack(spacing: 8) {
+                    if !wanted {
+                        Text("Off").foregroundStyle(.secondary)
+                    } else if !notes.enabled || !notes.hasServer {
+                        Text("Turn on sync in Settings → Notes").foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: status.symbol)
+                            .foregroundStyle(status.isHealthy ? Color.secondary : Color.orange)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(status.summary)
+                            if let last = status.lastSync {
+                                Text("Last sync \(last.formatted(.relative(presentation: .named)))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let err = status.lastError, !status.isHealthy {
+                                Text(err).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        Button("Sync Now") { sync.syncNow() }
+                    }
+                }
+            }
+        }
     }
 }
 

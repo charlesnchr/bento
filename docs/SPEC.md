@@ -24,7 +24,7 @@ Sources/Bento         main.swift for the real app (all modules)
 Sources/<Module>      one target per feature area
 Dev/Dev<Module>       single-module dev harness executables
 Tests/<Module>Tests   swift-testing tests per target (`import Testing`, `@Test`, `#expect`)
-server/               bento-sync (Rust) for notes and todo sync
+server/               bento-sync (Rust) for notes, todo and voice sync
 helper/               Python helpers for the voice modules (voice helper, GPT-Live, Hermes ACP)
 Vendor/SwiftMath      vendored LaTeX renderer (MIT) for the assistant
 Resources/Voice       sounds, fonts and math fonts for the voice modules
@@ -60,7 +60,10 @@ length limit apply on every route. build.sh copies
 machine's `.build`). Voice settings live in UserDefaults and are mirrored both ways into the
 `dictation` section of config.json (`SettingsSync`); data is under
 `~/Library/Application Support/Bento/Voice`; the helper runtime is
-`~/.config/bento/voice-runtime.json`.
+`~/.config/bento/voice-runtime.json`. The dictionary, custom instructions and the cleanup
+switch also sync with the other Macs and the Android app as bento-sync's `voice` collection
+(`VoiceSync`, VoiceCore), through Notes' server and token while a voice module runs; its
+documents are in `Voice/voice-sync.sqlite`.
 
 ## BentoCore API (read the sources, they are short)
 
@@ -93,7 +96,7 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
   collection but `notes`: `FieldDoc` + `FieldDocWire(collection:)`, `FieldSyncEngine` (merges,
   acks, tombstones), `FieldDocStore` (SQLite, `last_seq`), `FieldSyncClient` (WebSocket/REST
   transport, configured with a `FieldSyncProfile` and `SyncServerSettings`) and its
-  `FieldSyncStatus`. Todo (`todos`) uses them; Notes has its own.
+  `FieldSyncStatus`. Todo (`todos`) and the voice modules (`voice`) use them; Notes has its own.
 
 ## Rules for module work
 
@@ -184,3 +187,6 @@ don't depend on each other: `main.swift` connects `DictationModule.noteCapture` 
 
 See `docs/SYNC_PROTOCOL.md`. Self-hosted `bento-sync` (`server/`); no server by default, set
 `notes.sync.server` / `todo.sync.server` in the config. Token in `~/.config/bento/sync-token`.
+Collections: `notes` (Notes), `todos` (Todo), `voice` (dictation's dictionary and cleanup
+settings, following `notes.sync`). Todo and voice share BentoCore's field-document engine and
+client.
