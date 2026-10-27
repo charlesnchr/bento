@@ -1,0 +1,161 @@
+package com.charles.bento.ui
+
+import android.Manifest
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.automirrored.outlined.StickyNote2
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.automirrored.rounded.StickyNote2
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.charles.bento.MainActivity
+import com.charles.bento.graph
+import com.charles.bento.settings.Pairing
+import com.charles.bento.settings.apply
+import com.charles.bento.ui.settings.SettingsScreen
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.Serializable
+
+@Serializable data object HomeRoute
+@Serializable data class NoteRoute(val id: String)
+@Serializable data object SettingsRoute
+@Serializable data object TrashRoute
+@Serializable data class MeetingRoute(val id: String)
+@Serializable data object DictionaryRoute
+@Serializable data object ModesRoute
+
+enum class Tab(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    Notes("Notes", Icons.AutoMirrored.Outlined.StickyNote2, Icons.AutoMirrored.Rounded.StickyNote2),
+    Todo("Todo", Icons.Outlined.CheckCircle, Icons.Rounded.CheckCircle),
+    Voice("Voice", Icons.Outlined.Mic, Icons.Rounded.Mic),
+}
+
+/** Asks the home screen to do something (from a deep link, widget or shortcut). */
+sealed interface HomeAction {
+    data object QuickAdd : HomeAction
+    data class ShowTab(val tab: Tab) : HomeAction
+}
+
+@Composable
+fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) {
+    val graph = activity.graph
+    val nav = rememberNavController()
+    var tab by rememberSaveable { mutableStateOf(Tab.Notes) }
+    var pairing by remember { mutableStateOf<Pairing?>(null) }
+    val homeAction = remember { MutableStateFlow<HomeAction?>(null) }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val intent by pendingIntent.collectAsStateWithLifecycle()
+
+    LaunchedEffect(intent) {
+        val i = intent ?: return@LaunchedEffect
+        pendingIntent.value = null
+        val id = i.getStringExtra(MainActivity.EXTRA_ID)
+        when (i.action) {
+            Intent.ACTION_VIEW -> i.dataString?.let { link ->
+                Pairing.parse(link)?.let { pairing = it }
+                    ?: Routes.fromLink(link)?.let { nav.navigate(it) }
+            }
+            MainActivity.ACTION_GRANT_MIC -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            MainActivity.ACTION_OPEN_NOTE -> id?.let { nav.navigate(NoteRoute(it)) }
+            MainActivity.ACTION_NEW_NOTE -> nav.navigate(NoteRoute(Routes.NEW))
+            MainActivity.ACTION_QUICK_ADD -> { tab = Tab.Todo; homeAction.value = HomeAction.QuickAdd }
+            MainActivity.ACTION_OPEN_TODO -> tab = Tab.Todo
+            MainActivity.ACTION_OPEN_TASK -> { tab = Tab.Todo; id?.let { Routes.openTask.value = it } }
+            MainActivity.ACTION_OPEN_MEETING -> { tab = Tab.Voice; id?.let { nav.navigate(MeetingRoute(it)) } }
+            MainActivity.ACTION_OPEN_UPDATES -> nav.navigate(SettingsRoute)
+        }
+    }
+
+    NavHost(nav, startDestination = HomeRoute, enterTransition = { fadeIn() }, exitTransition = { fadeOut() }) {
+        composable<HomeRoute> {
+            Scaffold(
+                bottomBar = {
+                    NavigationBar {
+                        Tab.entries.forEach { t ->
+                            NavigationBarItem(
+                                selected = tab == t,
+                                onClick = { tab = t },
+                                icon = { Icon(if (tab == t) t.selectedIcon else t.icon, contentDescription = null) },
+                                label = { Text(t.label) },
+                            )
+                        }
+                    }
+                },
+            ) { padding ->
+                val m = Modifier.padding(padding)
+                when (tab) {
+                    Tab.Notes -> Screens.notes(m, nav)
+                    Tab.Todo -> Screens.todo(m, nav, homeAction)
+                    Tab.Voice -> Screens.voice(m, nav)
+                }
+            }
+        }
+        composable<NoteRoute> { Screens.noteEditor(it.toRoute<NoteRoute>().id, nav) }
+        composable<SettingsRoute> { SettingsScreen(nav) }
+        composable<TrashRoute> { Screens.trash(nav) }
+        composable<MeetingRoute> { Screens.meeting(it.toRoute<MeetingRoute>().id, nav) }
+        composable<DictionaryRoute> { Screens.dictionary(nav) }
+        composable<ModesRoute> { Screens.modes(nav) }
+    }
+
+    pairing?.let { p ->
+        AlertDialog(
+            onDismissRequest = { pairing = null },
+            title = { Text("Pair with ${p.macName.ifBlank { "this Mac" }}?") },
+            text = {
+                Text(
+                    "Notes, tasks and your dictionary will sync with ${p.server}." +
+                        if (p.geminiKey != null) " The Gemini API key from the Mac will be used for dictation." else "",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { p.apply(graph.prefs, graph.secrets); pairing = null }) { Text("Pair") }
+            },
+            dismissButton = { TextButton(onClick = { pairing = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+object Routes {
+    const val NEW = "new"
+    /** A task to open in the Todo tab (from a widget or notification). */
+    val openTask = MutableStateFlow<String?>(null)
+
+    /** bento://note/<id>, bento://settings */
+    fun fromLink(link: String): Any? {
+        val uri = android.net.Uri.parse(link)
+        if (uri.scheme != "bento") return null
+        return when (uri.host) {
+            "note" -> uri.lastPathSegment?.let(::NoteRoute)
+            "settings" -> SettingsRoute
+            else -> null
+        }
+    }
+}

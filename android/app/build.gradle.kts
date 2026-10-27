@@ -22,7 +22,9 @@ val signingProps = Properties().apply { if (signingFile.isFile) signingFile.inpu
 
 android {
     namespace = "com.charles.bento"
-    compileSdk = 36
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         applicationId = "com.charles.bento"
@@ -46,7 +48,7 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            // same application id as release: static shortcuts and widgets name the package
             versionNameSuffix = "-debug"
         }
         release {

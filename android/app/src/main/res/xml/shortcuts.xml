@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="thought" android:enabled="true" android:icon="@drawable/ic_shortcut_mic" android:shortcutShortLabel="@string/shortcut_thought">
+        <intent android:action="com.charles.bento.SHORTCUT" android:targetPackage="com.charles.bento" android:targetClass="com.charles.bento.ShortcutActivity" android:data="bento://shortcut/thought" />
+    </shortcut>
+    <shortcut android:shortcutId="quickadd" android:enabled="true" android:icon="@drawable/ic_shortcut_task" android:shortcutShortLabel="@string/shortcut_quick_add">
+        <intent android:action="com.charles.bento.QUICK_ADD" android:targetPackage="com.charles.bento" android:targetClass="com.charles.bento.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="note" android:enabled="true" android:icon="@drawable/ic_shortcut_note" android:shortcutShortLabel="@string/shortcut_new_note">
+        <intent android:action="com.charles.bento.NEW_NOTE" android:targetPackage="com.charles.bento" android:targetClass="com.charles.bento.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="meeting" android:enabled="true" android:icon="@drawable/ic_shortcut_meeting" android:shortcutShortLabel="@string/shortcut_meeting">
+        <intent android:action="com.charles.bento.SHORTCUT" android:targetPackage="com.charles.bento" android:targetClass="com.charles.bento.ShortcutActivity" android:data="bento://shortcut/meeting" />
+    </shortcut>
+</shortcuts>
