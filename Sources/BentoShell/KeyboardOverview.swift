@@ -120,7 +120,9 @@ enum OverviewCatalog {
 
     /// Sections with matching actions. Off modules show while the query is
     /// empty or names them ("tiling" finds Tiling even while it's off).
-    static func filter(_ sections: [OverviewSection], query: String) -> [OverviewSection] {
+    /// `keeping`: an action listed even when it doesn't match (the one whose
+    /// shortcut was just changed, which may not match a key search any more).
+    static func filter(_ sections: [OverviewSection], query: String, keeping: String? = nil) -> [OverviewSection] {
         let tokens = tokens(query)
         guard !tokens.isEmpty else { return sections }
         return sections.compactMap { s in
@@ -129,7 +131,7 @@ enum OverviewCatalog {
                 return tokens.allSatisfy(title.contains) ? s : nil
             }
             var s = s
-            s.items = s.items.filter { $0.matches(tokens) }
+            s.items = s.items.filter { $0.id == keeping || $0.matches(tokens) }
             return s.items.isEmpty ? nil : s
         }
     }
@@ -170,12 +172,6 @@ enum OverviewCatalog {
     static func settingsPage(for moduleID: String) -> String {
         moduleID == AppActionsModule.moduleID ? "shortcuts" : moduleID
     }
-
-    /// Settings → Shortcuts, filtered to one action.
-    static func shortcutsPage(for item: OverviewItem) -> String { "shortcuts/\(item.title)" }
-
-    /// Settings → Shortcuts, filtered to one action and recording its shortcut.
-    static func recordPage(for actionID: String) -> String { "record/\(actionID)" }
 }
 
 // MARK: - Panel
@@ -187,11 +183,14 @@ enum OverviewCatalog {
 final class KeyboardOverview: NSObject, NSWindowDelegate {
     static let shared = KeyboardOverview()
     static let actionID = "bento.keyboard-overview"
-    /// ⌃⌥/: the "?" key (help in most apps) in the ⌃⌥ family of the window
-    /// shortcuts. Free in every module's defaults and in macOS's own, and,
-    /// registered by key position, never needs Shift (on layouts where "/" is
-    /// ⇧7 it's the key left of the right Shift, which the footer points out).
-    static let defaultShortcut = "ctrl+opt+slash"
+    /// ⌥/: the "?" key (help in most apps) with one modifier. Free in every
+    /// module's defaults and in macOS's own, and, registered by key position,
+    /// never needs Shift (on layouts where "/" is ⇧7 it's the key left of the
+    /// right Shift, which the footer points out). It types "÷" on a US layout,
+    /// which a global hotkey takes. Users who never changed the old default
+    /// (⌃⌥/) get it automatically: only shortcuts that differ from the default
+    /// are stored.
+    static let defaultShortcut = "opt+slash"
     static let size = NSSize(width: 680, height: 560)
     private static let hintKey = "KeyboardOverviewSeen"
 
@@ -225,6 +224,9 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         let model = OverviewModel()
         model.onRun = { [weak self] in self?.run($0) }
         model.onOpenSettings = { [weak self] in self?.openSettings($0) }
+        model.onRecord = { [weak self] in self?.record($0) }
+        // After the recorder has finished with the key that ended it.
+        model.onRecordingEnded = { [weak self] in DispatchQueue.main.async { self?.focusSearch() } }
         model.reload()
         self.model = model
         lastModel = model
@@ -300,11 +302,17 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         guard let w = window else { return }
         // The SwiftUI hierarchy creates the field during the first layout.
         w.contentView?.layoutSubtreeIfNeeded()
-        if let f = model?.searchField { w.makeFirstResponder(f) }
+        if let f = model?.searchField { focus(f, in: w) }
         DispatchQueue.main.async { [weak self] in
             guard let self, let w = self.window, let f = self.model?.searchField, w.firstResponder !== f.currentEditor() else { return }
-            w.makeFirstResponder(f)
+            self.focus(f, in: w)
         }
+    }
+
+    /// Caret after the query, so typing goes on with the search (back from recording).
+    private func focus(_ field: NSTextField, in window: NSWindow) {
+        window.makeFirstResponder(field)
+        (field.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -339,11 +347,25 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         SettingsRouter.open(page)
     }
 
+    /// Starts the recorder the selected row shows while it's being edited
+    /// (the panel stays key, so the app underneath stays frontmost).
+    private func record(_ id: String) {
+        guard let window else { return }
+        RecorderFocus.begin(id, in: window, attempts: 25, shouldContinue: { [weak self] in self?.model?.editingID == id })
+        // A row that never showed up mustn't leave the panel waiting for a recording.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let model = self?.model, model.editingID == id, !model.isRecording else { return }
+            model.recordingChanged(id, false)
+        }
+    }
+
     // MARK: Keyboard
 
     /// Returns true when the key was handled (otherwise it goes to the search field).
     private func handleKey(_ e: NSEvent) -> Bool {
         guard let model else { return false }
+        // The row's recorder takes every key (Esc cancels it, not the panel).
+        if model.isRecording { return false }
         // While an input method composes (dead keys, CJK), ↵ and the arrows are its keys.
         if let editor = model.searchField?.currentEditor() as? NSTextView, editor.hasMarkedText() { return false }
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -404,6 +426,7 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
     var diagnostics: [String: Any] {
         ["open": isVisible, "opened": opened, "closed": closed, "modelAlive": lastModel != nil,
          "query": model?.query ?? "", "selected": model?.selectedID ?? "", "listed": model?.items.map(\.id) ?? [],
+         "editing": model?.editingID ?? "", "recording": model?.isRecording ?? false,
          "problems": model?.items.filter { $0.problem != nil }.map(\.id) ?? [],
          "apps": model?.items.filter { $0.app != nil }.map(\.id) ?? [],
          "hintSeen": UserDefaults.standard.bool(forKey: Self.hintKey)]
@@ -414,7 +437,11 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
 
 final class OverviewModel: ObservableObject {
     @Published var query = "" {
-        didSet { if query != oldValue { refilter(keepSelection: false) } }
+        didSet {
+            guard query != oldValue else { return }
+            pinnedID = nil
+            refilter(keepSelection: false)
+        }
     }
     @Published private(set) var sections: [OverviewSection] = []
     @Published private(set) var selectedID: String?
@@ -424,10 +451,19 @@ final class OverviewModel: ObservableObject {
     @Published private(set) var accessibility = true
     @Published private(set) var screenRecording = true
     @Published private(set) var ownShortcut: Shortcut?
+    /// The action whose row shows a recorder (⌘E), until recording ends.
+    @Published private(set) var editingID: String?
+    /// True while that recorder records: it takes the keys.
+    @Published private(set) var isRecording = false
     weak var searchField: NSTextField?
     var onRun: (OverviewItem) -> Void = { _ in }
     var onOpenSettings: (String?) -> Void = { _ in }
+    /// Starts recording in the editing row once it's laid out.
+    var onRecord: (String) -> Void = { _ in }
+    var onRecordingEnded: () -> Void = {}
     private var all: [OverviewSection] = []
+    /// The last edited action stays listed until the search changes.
+    private var pinnedID: String?
     /// App Hotkeys, while it's on: finds installed apps and adds their entries.
     private var apps: (moduleID: String, provider: AppHotkeyProvider)?
     private var appSearch: AppSearch?
@@ -462,7 +498,7 @@ final class OverviewModel: ObservableObject {
     }
 
     private func refilter(keepSelection: Bool) {
-        sections = OverviewCatalog.filter(all, query: query)
+        sections = OverviewCatalog.filter(all, query: query, keeping: pinnedID)
         if let apps, let appSearch {
             sections = OverviewCatalog.adding(appSearch.results(query, limit: Self.appResults), to: sections,
                                               from: all, in: apps.moduleID)
@@ -491,13 +527,38 @@ final class OverviewModel: ObservableObject {
 
     func run(_ item: OverviewItem) { onRun(item) }
 
-    /// An app found by the search gets its entry first, then records straight away.
+    /// Records the action's new shortcut in its row, stored and conflict-checked
+    /// like a recording in Settings. An app found by the search gets its App
+    /// Hotkeys entry first.
     func editShortcut(_ item: OverviewItem) {
-        if let app = item.app, let provider = apps?.provider {
-            onOpenSettings(OverviewCatalog.recordPage(for: provider.addApp(app)))
-        } else {
-            onOpenSettings(OverviewCatalog.shortcutsPage(for: item))
+        var id = item.id
+        if let app = item.app {
+            guard let provider = apps?.provider else { return }
+            id = provider.addApp(app)
+            reload()   // with the new entry
         }
+        guard editingID != id || !isRecording else { return }
+        editingID = id
+        pinnedID = id
+        refilter(keepSelection: true)
+        guard items.contains(where: { $0.id == id }) else {
+            editingID = nil
+            NSSound.beep()
+            return
+        }
+        selectedID = id
+        scrollToken &+= 1
+        onRecord(id)
+    }
+
+    /// From the row's recorder. Ending (a shortcut typed, Esc, a click
+    /// elsewhere) puts the keycaps back and the focus in the search field.
+    func recordingChanged(_ id: String, _ recording: Bool) {
+        guard editingID == id else { return }
+        isRecording = recording
+        guard !recording else { return }
+        editingID = nil
+        onRecordingEnded()
     }
 
     /// App Hotkeys entries can be removed from here.
@@ -661,7 +722,9 @@ struct OverviewList: View {
                             }
                             ForEach(section.items) { item in
                                 OverviewRow(item: item, selected: item.id == model.selectedID, icons: model.icons,
+                                            editing: item.id == model.editingID,
                                             edit: { model.editShortcut(item) },
+                                            recordingChanged: { model.recordingChanged(item.id, $0) },
                                             remove: model.canRemove(item) ? { model.remove(item) } : nil)
                                     .id(item.id)
                                     .contentShape(Rectangle())
@@ -728,7 +791,10 @@ struct OverviewRow: View {
     let item: OverviewItem
     let selected: Bool
     let icons: IconCache
+    /// Shows a recorder for the new shortcut instead of the keycaps.
+    var editing = false
     let edit: () -> Void
+    var recordingChanged: (Bool) -> Void = { _ in }
     /// Set for App Hotkeys entries.
     var remove: (() -> Void)? = nil
 
@@ -750,6 +816,23 @@ struct OverviewRow: View {
                 }
             }
             Spacer(minLength: 8)
+            if editing {
+                ShortcutRecorder(actionID: item.id, placeholder: "No shortcut", onRecordingChange: recordingChanged)
+            } else {
+                shortcutAndButtons
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(minHeight: 28)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(selected ? Color.accentColor.opacity(0.22) : .clear)
+        )
+    }
+
+    private var shortcutAndButtons: some View {
+        Group {
             if selected, let remove {
                 Button(action: remove) {
                     Image(systemName: "trash")
@@ -764,7 +847,7 @@ struct OverviewRow: View {
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.borderless)
-                .help(item.app == nil ? "Change Shortcut in Settings (⌘E)" : "Add Shortcut in Settings (⌘E)")
+                .help(item.app == nil ? "Change Shortcut (⌘E)" : "Add Shortcut (⌘E)")
             }
             if let shortcut = item.shortcut {
                 HStack(spacing: 3) {
@@ -780,13 +863,6 @@ struct OverviewRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .frame(minHeight: 28)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selected ? Color.accentColor.opacity(0.22) : .clear)
-        )
     }
 }
 
@@ -827,6 +903,7 @@ struct OverviewFooter: View {
     }
 
     private var hint: String {
+        if model.isRecording { return "Type the new shortcut. Esc cancels, ⌫ removes it." }
         guard let sc = model.ownShortcut else { return "Open this list from the Bento menu, or give it a shortcut." }
         var s = "\(sc.displayString) opens this list anywhere"
         // Shortcuts are key positions named after the US layout.

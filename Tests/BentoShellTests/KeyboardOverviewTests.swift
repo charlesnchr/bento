@@ -62,7 +62,7 @@ private func ids(_ sections: [OverviewSection]) -> [String] { sections.flatMap(\
     // Off modules are listed by name only.
     #expect(sections[2].items.isEmpty)
     #expect(sections[3].items.map(\.id) == [KeyboardOverview.actionID])
-    #expect(sections[3].items[0].shortcut == Shortcut("ctrl+opt+slash"))
+    #expect(sections[3].items[0].shortcut == Shortcut("opt+slash"))
 }
 
 @Test func carriesCurrentShortcutsAndProblems() {
@@ -96,6 +96,7 @@ private func ids(_ sections: [OverviewSection]) -> [String] { sections.flatMap(\
     #expect(OverviewCatalog.keycaps(Shortcut("cmd+shift+2")!) == ["⇧", "⌘", "2"])
     #expect(OverviewCatalog.keycaps(Shortcut("hyper+h")!) == ["⌃", "⌥", "⇧", "⌘", "H"])
     #expect(OverviewCatalog.keycaps(Shortcut("ctrl+opt+slash")!) == ["⌃", "⌥", "/"])
+    #expect(OverviewCatalog.keycaps(Shortcut("opt+slash")!) == ["⌥", "/"])
     #expect(OverviewCatalog.keycaps(Shortcut("ctrl+opt+space")!) == ["⌃", "⌥", "Space"])
 }
 
@@ -124,14 +125,28 @@ private func ids(_ sections: [OverviewSection]) -> [String] { sections.flatMap(\
     #expect(ids(OverviewCatalog.filter(c, query: "⇧⌘2")) == ["shot.area"])
     #expect(ids(OverviewCatalog.filter(c, query: "⌘⇧")) == ["shot.area", "shot.fullscreen"])
     #expect(ids(OverviewCatalog.filter(c, query: "⌃⌥c")) == ["windows.center"])
-    #expect(ids(OverviewCatalog.filter(c, query: "⌃⌥/")) == [KeyboardOverview.actionID])
+    #expect(ids(OverviewCatalog.filter(c, query: "⌥/")) == [KeyboardOverview.actionID])
+    #expect(ids(OverviewCatalog.filter(c, query: "⌃⌥/")).isEmpty)
     // Config names and spelled-out modifiers.
     #expect(ids(OverviewCatalog.filter(c, query: "cmd+shift+1")) == ["shot.fullscreen"])
     #expect(ids(OverviewCatalog.filter(c, query: "command")) == ["shot.area", "shot.fullscreen"])
-    #expect(ids(OverviewCatalog.filter(c, query: "control option")) == ["windows.left-half", "windows.right-half", "windows.center", KeyboardOverview.actionID])
+    #expect(ids(OverviewCatalog.filter(c, query: "control option")) == ["windows.left-half", "windows.right-half", "windows.center"])
+    #expect(ids(OverviewCatalog.filter(c, query: "option")) == ["windows.left-half", "windows.right-half", "windows.center", KeyboardOverview.actionID])
     #expect(ids(OverviewCatalog.filter(c, query: "slash")) == [KeyboardOverview.actionID])
     // Unbound actions only match by name.
     #expect(ids(OverviewCatalog.filter(c, query: "⌘ fourth")).isEmpty)
+}
+
+@Test func searchKeepsTheEditedActionListed() {
+    let c = catalog()
+    // Capture Area changed away from ⌘⇧2 still shows in the "⌘⇧2" results it came from.
+    let changed = catalog(overrides: ["shot.area": "cmd+shift+3"])
+    #expect(ids(OverviewCatalog.filter(changed, query: "⌘⇧2")).isEmpty)
+    #expect(ids(OverviewCatalog.filter(changed, query: "⌘⇧2", keeping: "shot.area")) == ["shot.area"])
+    #expect(ids(OverviewCatalog.filter(c, query: "left", keeping: "shot.area")) == ["shot.area", "windows.left-half"])
+    // Nothing to keep in an off module, and an empty search lists everything anyway.
+    #expect(ids(OverviewCatalog.filter(c, query: "left", keeping: "tiling.move-left")) == ["windows.left-half"])
+    #expect(OverviewCatalog.filter(c, query: "", keeping: "shot.area") == c)
 }
 
 @Test func searchShowsOffModulesByName() {
@@ -212,7 +227,6 @@ private func appCatalog(launcherOn: Bool = true) -> [OverviewSection] {
 }
 
 @Test func recordLinkFiltersToTheActionAndRecords() {
-    #expect(OverviewCatalog.recordPage(for: "launcher.ab12") == "record/launcher.ab12")
     let nav = SettingsNavigator()
     nav.actionTitle = { $0 == "launcher.ab12" ? "Open Opera" : nil }
     nav.select("record/launcher.ab12")
@@ -313,8 +327,6 @@ private func appCatalog(launcherOn: Bool = true) -> [OverviewSection] {
 @Test func settingsLinks() {
     #expect(OverviewCatalog.settingsPage(for: "windows") == "windows")
     #expect(OverviewCatalog.settingsPage(for: AppActionsModule.moduleID) == "shortcuts")
-    let item = catalog()[1].items[0]
-    #expect(OverviewCatalog.shortcutsPage(for: item) == "shortcuts/Left Half")
 
     let nav = SettingsNavigator()
     nav.select("shortcuts/Left Half")
@@ -346,17 +358,17 @@ private func appCatalog(launcherOn: Bool = true) -> [OverviewSection] {
 
 private let overview = Shortcut(KeyboardOverview.defaultShortcut)!
 
-@Test func defaultShortcutIsPlainControlOptionSlash() {
-    #expect(overview.modifiers == [.control, .option])
+@Test func defaultShortcutIsOptionSlash() {
+    #expect(overview.modifiers == [.option])
     #expect(overview.keyCode == UInt32(kVK_ANSI_Slash))
     #expect(overview.isSafeGlobalHotkey)
-    #expect(overview.displayString == "⌃⌥/")
+    #expect(overview.displayString == "⌥/")
     // Registered by key position: never needs Shift, whatever the layout types there.
     #expect(!overview.modifiers.contains(.shift))
 }
 
 /// Every shortcut literal in Sources (module defaults, Rectangle/Spectacle
-/// import tables, window-local keys): none may be ⌃⌥/. Literals with an
+/// import tables, window-local keys): none may be ⌥/. Literals with an
 /// interpolated key ("ctrl+opt+cmd+\(key)") count when their modifiers match.
 @Test func defaultShortcutCollidesWithNoOtherShortcut() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -384,7 +396,7 @@ private let overview = Shortcut(KeyboardOverview.defaultShortcut)!
         }
     }
     #expect(seen > 40)
-    #expect(collisions.isEmpty, "⌃⌥/ is also used by: \(collisions)")
+    #expect(collisions.isEmpty, "⌥/ is also used by: \(collisions)")
 }
 
 @Test func defaultShortcutIsNotAMacOSShortcut() {
@@ -396,4 +408,169 @@ private let overview = Shortcut(KeyboardOverview.defaultShortcut)!
     #expect(!macOS.contains(overview))
     // The live list on this Mac (what the registry checks before registering).
     #expect(!SystemShortcuts.isReserved(overview))
+}
+
+/// macOS 15 refused some Option-only hotkeys in RegisterEventHotKey: the
+/// default must register (non-exclusively, so another app holding it too
+/// doesn't fail this).
+@MainActor @Test func defaultShortcutRegistersAsAGlobalHotkey() throws {
+    let token = try #require(HotkeyCenter.shared.register(overview) {})
+    #expect(HotkeyCenter.shared.isActive(token))
+    HotkeyCenter.shared.unregister(token)
+}
+
+// MARK: - Changing a shortcut in place (real registry, isolated config)
+
+/// The registry uses ConfigStore.shared: point it at a temp dir first, and
+/// refuse to run if anything already resolved the real config.
+private let isolatedHome: Bool = {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("bento-overview-test-home-\(getpid())").path
+    setenv("BENTO_HOME", home, 1)
+    return AppPaths.configDir.path.hasPrefix(home)
+}()
+
+/// App Hotkeys stand-in: entries store their own binding, the search finds one app.
+private final class FakeHotkeys: BentoModule, AppHotkeyProvider, AppSearch {
+    let id = "fakehotkeys"
+    let title = "App Hotkeys"
+    let symbol = "app"
+    var entries: [String: Shortcut?] = [:]
+    var actions: [BentoAction] {
+        entries.keys.sorted().map { id in
+            BentoAction(id, "Open Opera", shortcut: entries[id]??.configString, bindingWriter: { [weak self] sc in
+                self?.entries[id] = sc
+                ActionRegistry.shared.reload()
+            }) {}
+        }
+    }
+    func start() {}
+    func stop() {}
+    func makeAppSearch(changed: @escaping () -> Void) -> AppSearch { self }
+    func results(_ query: String, limit: Int) -> [FoundApp] { entries.isEmpty && !query.isEmpty ? [found("Opera")] : [] }
+    func addApp(_ app: FoundApp) -> String {
+        entries["fakehotkeys.opera"] = .some(nil)
+        ActionRegistry.shared.reload()
+        return "fakehotkeys.opera"
+    }
+    func removeEntry(_ actionID: String) -> Bool { entries.removeValue(forKey: actionID) != nil }
+    func iconFile(for actionID: String) -> URL? { nil }
+}
+
+@MainActor @Suite(.serialized) struct OverviewEditingTests {
+    // Unusual combinations, so the real registrations can't clash with anything.
+    private let keyA = Shortcut("hyper+f13")!, keyB = Shortcut("hyper+f14")!, keyC = Shortcut("hyper+f15")!
+    var reg: ActionRegistry { ActionRegistry.shared }
+
+    init() throws {
+        try #require(isolatedHome)
+        _ = NSApplication.shared   // the conflict HUD is a panel
+    }
+
+    private func setUp(_ modules: [BentoModule]) -> OverviewModel {
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.isModuleEnabled = { _ in true }
+        reg.setModules(modules)
+        let model = OverviewModel()
+        model.reload()
+        return model
+    }
+
+    @Test func usersOnTheOldDefaultGetTheNewOneCustomisedShortcutsStay() throws {
+        reg.isModuleEnabled = { _ in true }
+        ConfigStore.shared.shortcutOverrides = [:]   // never changed: nothing is stored
+        reg.setModules([AppActionsModule()])
+        #expect(reg.shortcut(for: KeyboardOverview.actionID) == Shortcut("opt+slash"))
+        #expect(reg.failureReason(for: KeyboardOverview.actionID) == nil)
+        ConfigStore.shared.shortcutOverrides = [KeyboardOverview.actionID: keyA.configString]
+        #expect(reg.shortcut(for: KeyboardOverview.actionID) == keyA)
+        ConfigStore.shared.shortcutOverrides = [KeyboardOverview.actionID: ""]   // removed by the user
+        #expect(reg.shortcut(for: KeyboardOverview.actionID) == nil)
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.setModules([])
+    }
+
+    @Test func editingRecordsInTheRowAndStoresLikeSettings() throws {
+        let m = FakeModule("fakeov", "Fake", [action("fakeov.one", "First Thing", keyA.configString),
+                                              action("fakeov.two", "Second Thing", keyB.configString)])
+        let model = setUp([m, AppActionsModule()])
+        var recorded: [String] = []
+        var ended = 0
+        model.onRecord = { recorded.append($0) }
+        model.onRecordingEnded = { ended += 1 }
+        var opened: [String?] = []
+        model.onOpenSettings = { opened.append($0) }
+
+        model.query = "second"
+        let item = try #require(model.selectedItem)
+        #expect(item.id == "fakeov.two")
+        model.editShortcut(item)
+        #expect(model.editingID == "fakeov.two" && recorded == ["fakeov.two"])
+        #expect(opened.isEmpty)   // never Settings
+
+        // The row's recorder starts, then stores a combination another action has:
+        // it moves (as in Settings), through the same overrides Settings writes.
+        model.recordingChanged("fakeov.two", true)
+        #expect(model.isRecording)
+        model.recordingChanged("fakeov.two", false)
+        reg.assign(keyA, to: "fakeov.two")
+        model.reload()
+        #expect(!model.isRecording && model.editingID == nil && ended == 1)
+        #expect(reg.shortcut(for: "fakeov.two") == keyA && reg.shortcut(for: "fakeov.one") == nil)
+        #expect(ConfigStore.shared.shortcutOverrides["fakeov.two"] == keyA.configString)
+        #expect(ConfigStore.shared.shortcutOverrides["fakeov.one"] == "")
+        #expect(model.selectedID == "fakeov.two")
+        #expect(model.items.first { $0.id == "fakeov.two" }?.shortcut == keyA)
+
+        // Searching by the old keys: the edited action stays until the search changes.
+        model.query = "⌃⌥⇧⌘f13"
+        let byKeys = try #require(model.items.first { $0.id == "fakeov.two" })
+        model.editShortcut(byKeys)
+        model.recordingChanged("fakeov.two", true)
+        model.recordingChanged("fakeov.two", false)
+        reg.assign(keyC, to: "fakeov.two")
+        model.reload()
+        #expect(model.items.map(\.id).contains("fakeov.two"))
+        model.query = "⌃⌥⇧⌘f13 "
+        #expect(!model.items.map(\.id).contains("fakeov.two"))
+
+        // Esc: recording ends with nothing stored.
+        model.query = "second"
+        model.editShortcut(try #require(model.selectedItem))
+        model.recordingChanged("fakeov.two", true)
+        model.recordingChanged("fakeov.two", false)
+        #expect(model.editingID == nil && reg.shortcut(for: "fakeov.two") == keyC)
+        // Another row's recorder can't end this one's editing.
+        model.editShortcut(try #require(model.selectedItem))
+        model.recordingChanged("fakeov.one", false)
+        #expect(model.editingID == "fakeov.two")
+        model.recordingChanged("fakeov.two", false)
+        reg.setModules([])
+        ConfigStore.shared.shortcutOverrides = [:]
+    }
+
+    @Test func anAppFromTheSearchGetsItsEntryAndRecordsInPlace() throws {
+        let hotkeys = FakeHotkeys()
+        let model = setUp([hotkeys, AppActionsModule()])
+        var recorded: [String] = []
+        var opened: [String?] = []
+        model.onRecord = { recorded.append($0) }
+        model.onOpenSettings = { opened.append($0) }
+        // The search finds Opera by something its entry's title won't match.
+        model.query = "browser"
+        let app = try #require(model.selectedItem)
+        #expect(app.id == "app:com.example.opera")
+        model.editShortcut(app)
+        #expect(hotkeys.entries.keys.sorted() == ["fakehotkeys.opera"])
+        #expect(model.editingID == "fakehotkeys.opera" && model.selectedID == "fakehotkeys.opera")
+        #expect(model.items.map(\.id) == ["fakehotkeys.opera"])   // listed while recording
+        #expect(recorded == ["fakehotkeys.opera"] && opened.isEmpty)
+        model.recordingChanged("fakehotkeys.opera", true)
+        model.recordingChanged("fakehotkeys.opera", false)
+        reg.assign(keyB, to: "fakehotkeys.opera")
+        #expect(hotkeys.entries["fakehotkeys.opera"] == .some(keyB))   // stored by the entry itself
+        #expect(ConfigStore.shared.shortcutOverrides["fakehotkeys.opera"] == nil)
+        model.reload()
+        #expect(model.items.first?.shortcut == keyB)
+        reg.setModules([])
+    }
 }

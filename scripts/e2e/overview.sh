@@ -1,15 +1,17 @@
 #!/bin/bash
-# Keyboard overview (⌃⌥/) end-to-end regression on the real, full app.
+# Keyboard overview (⌥/) end-to-end regression on the real, full app.
 #   scripts/e2e/overview.sh [phase ...]    phases: keys menu dark permissions (default: all)
 # keys: launch hint, opening by hotkey/action, search, arrows, Return runs the action on the app
-#       underneath (Left Half on this script's TextEdit document), toggle, Esc, ⌘, / ⌘E / ⇧⌘, and the
-#       section links into the right Settings page, teardown on close. Screenshots (light) and checks.
-# menu: Keyboard Shortcuts… in the menu bar menu shows ⌃⌥/ and opens the panel.
+#       underneath (Left Half on this script's TextEdit document), toggle, Esc, ⌘E recording a new
+#       shortcut in the row (Esc cancels, ⌫ removes, a taken combination moves, an app found by the
+#       search gets an App Hotkeys entry) without opening Settings, ⌘, / ⇧⌘, and the section links
+#       into the right Settings page, teardown on close. Screenshots (light) and checks.
+# menu: Keyboard Shortcuts… in the menu bar menu shows ⌥/ and opens the panel.
 # dark: the panel in dark mode (screenshots). permissions: an instance without this shell's
 #       Accessibility/Screen Recording grants: the header warns and its button opens Settings.
 # Each phase runs in its own short GUI session (scripts/e2e/session). E2E_EXTERNAL_SESSION=1: the
 # caller holds the GUI lock and runs the input guard instead (the installed Bento may keep running:
-# the panel opens through dev notifications, and with OVERVIEW_REAL_HOTKEY=1 through ⌃⌥/ when the
+# the panel opens through dev notifications, and with OVERVIEW_REAL_HOTKEY=1 through ⌥/ when the
 # installed app doesn't own it). Input only goes to the test's TextEdit document /tmp/overview-qa.txt
 # and the Bento under test. Screenshots: $OVERVIEW_SHOTS (default /tmp/bento-overview-shots).
 # Exit 0 = passed, 1 = failed, 75 = the user came back (retry later).
@@ -72,6 +74,15 @@ expect() { # expect <python expr on o (overview) / s (settings)> <wanted> <label
   if [ "$got" = "$2" ]; then ok "$3"; else fail "$3: $1 = '$got', wanted '$2'"; fi
 }
 
+cfg() { # cfg <python expr on c (the config file)>: as the app wrote it (writes are debounced)
+  sleep 0.6
+  python3 -I -c 'import json, sys; c = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$BH/config/config.json" "$1" 2>/dev/null
+}
+expect_cfg() { # expect_cfg <python expr on c> <wanted> <label>
+  local got; got="$(cfg "$1")"
+  if [ "$got" = "$2" ]; then ok "$3"; else fail "$3: $1 = '$got', wanted '$2'"; fi
+}
+
 set_shortcut() { # set_shortcut <action-id> <shortcut>: edit the config file like a user would (applies live)
   python3 -I - "$BH/config/config.json" "$1" "$2" <<'EOF2'
 import json, sys
@@ -91,7 +102,7 @@ shot() { # shot <title> <file>: screenshot of the process's window with that tit
 
 open_overview() {
   [ "$($BCTL frontmost)" = "$TE" ] || { $BCTL front $TE overview-qa >/dev/null; sleep 0.4; }
-  if [ "${OVERVIEW_REAL_HOTKEY:-0}" = 1 ]; then key ctrl+opt+slash te 0.6; else $CTL perform bento.keyboard-overview; sleep 0.6; fi
+  if [ "${OVERVIEW_REAL_HOTKEY:-0}" = 1 ]; then key opt+slash te 0.6; else $CTL perform bento.keyboard-overview; sleep 0.6; fi
 }
 
 launch() { # launch [appearance] [disclaimed] [config-json]
@@ -185,8 +196,8 @@ phase_keys() {
   expect 'o["modelAlive"]' false "closed panel is released"
 
   if [ "${OVERVIEW_REAL_HOTKEY:-0}" = 1 ]; then
-    key ctrl+opt+slash te 0.6; expect 'o["open"]' true "⌃⌥/ opens it"
-    key ctrl+opt+slash te 0.6; expect 'o["open"]' false "⌃⌥/ again closes it"
+    key opt+slash te 0.6; expect 'o["open"]' true "⌥/ opens it"
+    key opt+slash te 0.6; expect 'o["open"]' false "⌥/ again closes it"
   fi
 
   open_overview; key escape; expect 'o["open"]' false "Esc closes"
@@ -208,12 +219,43 @@ phase_keys() {
   shot "Bento Settings" settings-general.png
   key cmd+w bento 0.8
 
-  open_overview; type_text "left half"; key cmd+e te 1.4
-  expect 's["open"] and s["page"] == "shortcuts"' true "⌘E opens Settings → Shortcuts"
-  local filter; filter="$($CTL search-value "$PID" "Bento Settings")"
-  [ "$filter" = "Left Half" ] && ok "… filtered to “Left Half”" || fail "Shortcuts filter is '$filter'"
-  shot "Bento Settings" settings-shortcuts-filtered.png
-  key cmd+w bento 0.8
+  # ⌘E: the new shortcut is recorded in the row; the panel stays open over TextEdit, no Settings.
+  open_overview; type_text "left half"; key cmd+e te 0.6
+  expect 'o["open"] and o["editing"] == "windows.left-half" and o["recording"] and not s["open"]' true "⌘E records in the row, without Settings"
+  shot "Keyboard Shortcuts" overview-light-recording.png
+  key ctrl+shift+cmd+9 te 0.6
+  expect 'o["open"] and not o["recording"] and o["editing"] == "" and o["query"] == "left half" and not s["open"]' true "a typed combination ends recording, the panel stays"
+  expect_cfg 'c["shortcuts"]["windows.left-half"]' ctrl+cmd+shift+9 "… stored in the config Settings edits"
+  [ "$($BCTL frontmost)" = "$TE" ] && ok "… TextEdit stays frontmost" || fail "frontmost is $($BCTL frontmost)"
+  shot "Keyboard Shortcuts" overview-light-recorded.png
+  type_text x; expect 'o["query"]' "left halfx" "focus is back in the search field"
+  key delete
+
+  key cmd+e te 0.6; expect 'o["recording"]' true "⌘E again"
+  key escape te 0.6
+  expect 'o["open"] and not o["recording"] and o["query"] == "left half"' true "Esc cancels the recording only (panel open, search kept)"
+  expect_cfg 'c["shortcuts"]["windows.left-half"]' ctrl+cmd+shift+9 "… nothing changed"
+
+  set_shortcut shot.window ctrl+cmd+shift+8
+  key cmd+e te 0.6; key ctrl+shift+cmd+8 te 0.8
+  # Capture Window is back to its default (unbound), so its override is gone.
+  expect_cfg '[c["shortcuts"].get("windows.left-half"), c["shortcuts"].get("shot.window")]' "['ctrl+cmd+shift+8', None]" "a combination another action has moves to this one (as in Settings)"
+  expect 'o["open"] and "windows.left-half" in o["listed"]' true "… the panel stays"
+
+  key cmd+e te 0.6; key delete te 0.6
+  expect_cfg 'c["shortcuts"]["windows.left-half"]' "" "⌫ while recording removes the shortcut"
+  expect 'o["open"] and not s["open"]' true "… still no Settings"
+  key escape; key escape
+
+  # An installed app without a hotkey: ⌘E adds its App Hotkeys entry and records into it in place.
+  open_overview; type_text textedit; sleep 1
+  expect 'o["selected"].lower()' app:com.apple.textedit "the search finds TextEdit (no hotkey yet)"
+  key cmd+e te 0.8
+  expect 'o["open"] and o["editing"].startswith("launcher.") and o["recording"] and not s["open"]' true "⌘E on an app adds its entry and records in the row"
+  key ctrl+shift+cmd+7 te 0.6
+  expect_cfg '[e["shortcut"] for e in c["launcher"]["entries"] if "TextEdit" in json.dumps(e)]' "['ctrl+cmd+shift+7']" "… its shortcut is stored with the entry"
+  expect 'o["open"] and not o["recording"] and o["selected"].startswith("launcher.")' true "… the entry stays selected, the panel open"
+  key escape; key escape
 
   open_overview; type_text "left half"; key cmd+shift+comma te 1.2
   expect 's["open"] and s["page"] == "module(\"windows\")"' true "⇧⌘, opens the selected action's module settings"
@@ -241,7 +283,7 @@ phase_menu() {
   open_doc
   launch light
   local sc; sc="$($CTL menu "$PID" "Keyboard Shortcuts…")" || fail "no Keyboard Shortcuts… in the menu bar menu"
-  [ "$sc" = "⌃⌥/" ] && ok "menu item shows ⌃⌥/" || fail "menu item shortcut is '$sc'"
+  [ "$sc" = "⌥/" ] && ok "menu item shows ⌥/" || fail "menu item shortcut is '$sc'"
   sleep 0.8
   expect 'o["open"]' true "Keyboard Shortcuts… opens the panel"
   key escape
