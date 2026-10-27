@@ -93,7 +93,7 @@ class DictationOverlay(
         val dictating = state !is DictationState.Idle
         if (showBubbleFor != null && !dictating) showBubble(showBubbleFor) else hideBubble()
         pillState.value = state
-        if (dictating) showPill(current) else hidePill()
+        if (dictating && dictation.intoOtherApp) showPill(current) else hidePill()
     }
 
     fun hapticStart() {

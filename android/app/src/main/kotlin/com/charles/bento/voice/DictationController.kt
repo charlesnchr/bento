@@ -82,6 +82,9 @@ class DictationController(
 
     val isBusy: Boolean get() = _state.value is DictationState.Listening || _state.value is DictationState.Processing
 
+    /** The dictation goes into another app's field: the bubble's pill shows it (Bento's own screens show their own). */
+    val intoOtherApp: Boolean get() = target is DictationTarget.Field
+
     /** From the bubble: dictate into the field the accessibility service is tracking. */
     fun startFromBubble(handsFree: Boolean): Boolean = BentoAccessibilityService.instance?.dictateIntoField(handsFree) ?: false
 
@@ -130,7 +133,11 @@ class DictationController(
             session = s
             val c = AudioCapture(
                 // false: the session has all it wants (stopped, or the 10-minute cap)
-                onFrame = { if (!s.feed(it)) scope.launch { if (_state.value is DictationState.Listening) stop() else releaseMic() } },
+                onFrame = {
+                    if (!s.feed(it)) scope.launch {
+                        if (_state.value is DictationState.Listening) { log("session ended itself"); stop() } else releaseMic()
+                    }
+                },
                 onLevel = { level -> _state.update { st -> if (st is DictationState.Listening) st.copy(level = level) else st } },
             )
             if (!c.start()) {
@@ -143,6 +150,8 @@ class DictationController(
             if (prefs.haptics.value) tick()
         }
     }
+
+    private fun log(message: String) = android.util.Log.i("BentoDictation", message)
 
     private fun updatePartial(text: String) {
         _state.update { st -> if (st is DictationState.Listening) st.copy(partial = text) else st }
@@ -158,6 +167,7 @@ class DictationController(
             // the microphone stays open a moment for a word still being spoken; the session
             // says when it has enough (feed returns false), and finish waits for that
             val text = runCatching { s?.finish() ?: "" }
+            log("finished: ${text.exceptionOrNull()?.message ?: "${text.getOrNull()?.length} chars"}")
             releaseMic()
             VoiceService.exit(context)
             text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true) }

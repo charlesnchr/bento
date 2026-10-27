@@ -63,14 +63,22 @@ class GeminiVoice(
         }
     }
 
+    private val recovering = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** At launch and when the network returns: finish recordings a crash or an outage left behind. */
     fun recover() {
         val key = secrets.geminiKey ?: return
+        // launch and the first network callback arrive together: one pass at a time
+        if (!recovering.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
-            val cfg = baseConfig(key, VoiceRequest(FieldContext(), null, VoiceRequest.Purpose.Dictation))
-            runCatching { engine.recoverInterrupted(cfg) }
-            runCatching { engine.drainRetryQueue(cfg) }
-            runCatching { engine.purgeExpiredAudio() }
+            try {
+                val cfg = baseConfig(key, VoiceRequest(FieldContext(), null, VoiceRequest.Purpose.Dictation))
+                runCatching { engine.recoverInterrupted(cfg) }
+                runCatching { engine.drainRetryQueue(cfg) }
+                runCatching { engine.purgeExpiredAudio() }
+            } finally {
+                recovering.set(false)
+            }
         }
     }
 
