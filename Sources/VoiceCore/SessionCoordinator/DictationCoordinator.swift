@@ -347,7 +347,6 @@ public final class DictationCoordinator: ObservableObject {
         coachingHint = nil
         pendingLockIn = false // never inherit a stale latch from a dead session
         var context = suppliedContext ?? contextProvider()
-        context.keepOutputSelected = true
         if editing {
             guard transcription.supportsEditing else {
                 coachingHint = "Voice editing requires the direct Gemini connection"
@@ -777,15 +776,12 @@ public final class DictationCoordinator: ObservableObject {
         guard session?.id == sessionID, !Task.isCancelled else { return }
         let pipelineSeconds = Date().timeIntervalSince(startedAt)
         switch insertionOutcome {
-        case .inserted, .insertedWithoutSelection:
+        case .inserted:
             var chain = context.editingSession ?? EditingSession(seed: outcome.cleanedTranscript, now: now())
             if context.editingSession != nil {
                 chain.append(instruction: outcome.rawTranscript, revision: outcome.cleanedTranscript, now: now())
             }
             editingSessions.save(chain, for: context)
-            if insertionOutcome == .insertedWithoutSelection {
-                coachingHint = "Output inserted; select it manually before Option+F18 in this app"
-            }
             updateMeta { $0.status = .inserted; $0.pipelineSeconds = pipelineSeconds }
             apply(.inserted)
         case .frontmostChanged:
