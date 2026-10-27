@@ -5,3 +5,6 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+# ML Kit (the QR code scanner) creates its component registrars by reflection.
+-keep class com.google.mlkit.**.*Registrar { <init>(); }
+-keep class * implements com.google.firebase.components.ComponentRegistrar { <init>(); }
