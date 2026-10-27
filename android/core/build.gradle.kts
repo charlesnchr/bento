@@ -31,5 +31,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // The live Gemini tests run only with a key: its presence (never its value) is an
+    // input, so a cached run without the key can't stand in for one with it.
+    inputs.property("geminiKeyPresent", providers.environmentVariable("GEMINI_API_KEY").map { it.isNotBlank() }.orElse(false))
     testLogging { events("failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
