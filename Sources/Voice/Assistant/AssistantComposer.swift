@@ -310,7 +310,7 @@ struct AssistantComposer: View {
             if model.liveVoice {
                 button("phone.down.fill", "End \(model.liveName) call", tint: .red) { model.actions?.call() }
             } else {
-                if model.busy {
+                if model.busy, !model.recording { // A recording finishes with the mic.
                     button("stop.fill", model.stopping ? "Stopping..." : "Stop (⌘.)") { model.perform(.stop) }.disabled(model.stopping)
                 }
                 if !empty {
