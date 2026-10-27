@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import AppKit
 import CoreFoundation
 import Testing
 @testable import VoiceCore
@@ -83,5 +84,86 @@ import Testing
         // "e" followed by a combining acute is one character; the output "\u{301}x"
         // starts mid-character and must not match.
         #expect(range("\u{301}x", in: "e\u{301}x", at: 3) == nil)
+    }
+
+    @Test func searchesOnlyABoundedTailOfLongDocuments() {
+        let prefix = String(repeating: "lorem ipsum\r\n", count: 5_000)
+        let value = prefix + "x one\r\ntwo"
+        let caret = (value as NSString).length
+        let found = range("one\ntwo", in: value, at: caret)
+        #expect(found?.location == caret - 8)
+        #expect(found?.length == 8)
+    }
+
+    @Test func boundedTailStartsOnACharacterBoundary() {
+        // The tail start lands inside the emoji's surrogate pair and must move to its start.
+        let output = String(repeating: "a", count: 10)
+        let value = "👍" + String(repeating: "b", count: 25) + output
+        let caret = (value as NSString).length
+        #expect(caret - (2 * 10 + 16) == 1)
+        let found = range(output, in: value, at: caret)
+        #expect(found?.location == caret - 10)
+        #expect(found?.length == 10)
+    }
+}
+
+/// Option+F18 only treats output at the caret as the edit target briefly; a
+/// selection keeps it editable for the whole editing session.
+@Suite struct EditingCaretWindowTests {
+    @Test func caretEditingExpiresBeforeTheSession() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let session = EditingSession(seed: "hello", now: start)
+        #expect(session.editsAtCaret(at: start.addingTimeInterval(29)))
+        #expect(!session.editsAtCaret(at: start.addingTimeInterval(31)))
+        #expect(session.isActive(at: start.addingTimeInterval(31)))
+    }
+
+    @Test func eachRevisionRestartsTheCaretWindow() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var session = EditingSession(seed: "hello", now: start)
+        session.append(instruction: "shorter", revision: "hi", now: start.addingTimeInterval(60))
+        #expect(session.editsAtCaret(at: start.addingTimeInterval(80)))
+    }
+}
+
+/// Back-to-back pastes must restore the user's clipboard, not clear it.
+@MainActor
+@Suite struct PasteRestoreCarryTests {
+    private func board() -> NSPasteboard {
+        NSPasteboard(name: NSPasteboard.Name("com.charles.bento.tests.paste.\(UUID().uuidString)"))
+    }
+
+    @Test func secondPasteInheritsTheUsersClipboard() {
+        let pasteboard = board()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("user's clipboard", forType: .string)
+        let first = PasteInserter.snapshot(pasteboard, carrying: nil)
+        let pending = PasteInserter.PendingRestore(snapshot: first,
+            changeCount: PasteInserter.writeTranscript("first dictation", to: pasteboard))
+        let second = PasteInserter.snapshot(pasteboard, carrying: pending)
+        PasteInserter.restore(second, to: pasteboard)
+        #expect(pasteboard.string(forType: .string) == "user's clipboard")
+    }
+
+    @Test func aCopyBetweenPastesWins() {
+        let pasteboard = board()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("old", forType: .string)
+        let pending = PasteInserter.PendingRestore(snapshot: PasteInserter.snapshot(pasteboard, carrying: nil),
+            changeCount: PasteInserter.writeTranscript("dictation", to: pasteboard))
+        pasteboard.clearContents()
+        pasteboard.setString("copied since", forType: .string)
+        PasteInserter.restore(PasteInserter.snapshot(pasteboard, carrying: pending), to: pasteboard)
+        #expect(pasteboard.string(forType: .string) == "copied since")
+    }
+
+    @Test func withoutCarryTheOldTranscriptIsSkipped() {
+        // The failure mode the carry fixes: our own transcript is never snapshotted.
+        let pasteboard = board()
+        defer { pasteboard.releaseGlobally() }
+        _ = PasteInserter.writeTranscript("dictation", to: pasteboard)
+        #expect(PasteInserter.snapshot(pasteboard, carrying: nil).isEmpty)
     }
 }

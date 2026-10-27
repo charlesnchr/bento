@@ -634,7 +634,8 @@ final class DictationController {
                 if intent == .beginEditing {
                     if context.targetPID != ProcessInfo.processInfo.processIdentifier,
                        let chain = coordinator.recentEditingSession(for: context),
-                       OutputSelection.isRecentOutput(chain.currentText, targetPID: context.targetPID) {
+                       OutputSelection.isRecentOutput(chain.currentText, targetPID: context.targetPID,
+                                                      atCaret: chain.editsAtCaret(at: Date())) {
                         context.editingSession = chain
                         return coordinator.handle(.beginEditing, context: context)
                     }

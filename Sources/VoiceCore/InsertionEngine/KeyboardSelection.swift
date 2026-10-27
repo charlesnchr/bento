@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 
 /// Reads the current selection by Copy, for editors whose AX tree hides it.
 @MainActor

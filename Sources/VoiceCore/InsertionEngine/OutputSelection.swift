@@ -8,7 +8,7 @@ public enum OutputSelection {
         let value: String
         let range: CFRange
 
-        public init(element: AXUIElement, value: String, range: CFRange) {
+        init(element: AXUIElement, value: String, range: CFRange) {
             self.element = element
             self.value = value
             self.range = range
@@ -91,18 +91,23 @@ public enum OutputSelection {
             let selected = source.substring(with: NSRange(location: selection.location, length: selection.length))
             return equivalent(selected, text) ? selection : nil
         }
-        let (canonical, offsets) = canonicalOffsets(source.substring(to: selection.location))
+        // Canonicalise only a bounded tail: CRLF can at most double the output's
+        // length in the editor. Start on a character boundary.
+        var tailStart = max(0, selection.location - (2 * text.utf16.count + 16))
+        if tailStart > 0 { tailStart = source.rangeOfComposedCharacterSequence(at: tailStart).location }
+        let tail = source.substring(with: NSRange(location: tailStart, length: selection.location - tailStart))
+        let (canonical, offsets) = canonicalOffsets(tail)
         let target = normalized(text)
         let start = (canonical as NSString).length - (target as NSString).length
         guard start >= 0, (canonical as NSString).substring(from: start) == target,
               let mappedStart = offsets[start] else { return nil }
-        return CFRange(location: mappedStart, length: selection.location - mappedStart)
+        return CFRange(location: tailStart + mappedStart, length: selection.location - tailStart - mappedStart)
     }
 
-    /// True when `text` is selected or ends at the caret in the focused editor.
-    public static func isRecentOutput(_ text: String, targetPID: pid_t?) -> Bool {
+    /// True when `text` is selected or, if `atCaret`, ends at the caret in the focused editor.
+    public static func isRecentOutput(_ text: String, targetPID: pid_t?, atCaret: Bool = true) -> Bool {
         if equivalent(selectedText(targetPID: targetPID), text) { return true }
-        guard let snapshot = capture(targetPID: targetPID) else { return false }
+        guard atCaret, let snapshot = capture(targetPID: targetPID) else { return false }
         return recentOutputRange(text, value: snapshot.value, selection: snapshot.range) != nil
     }
 
@@ -123,8 +128,9 @@ public enum OutputSelection {
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
         SelectionDiagnostics.record("selection.didNotStick", targetPID: targetPID)
-        // Never leave a highlight behind when the replacement falls back to the clipboard.
-        _ = setRange(snapshot.range, on: snapshot.element, targetPID: targetPID)
+        // Never leave a highlight behind when the replacement falls back to the
+        // clipboard, but don't move the caret once the user has taken over.
+        if permitted() { _ = setRange(snapshot.range, on: snapshot.element, targetPID: targetPID) }
         return false
     }
 
