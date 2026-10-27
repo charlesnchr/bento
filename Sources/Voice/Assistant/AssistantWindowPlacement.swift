@@ -69,6 +69,7 @@ final class AssistantWindowPlacement {
         guard placed, !adjusting, window.frame != adjusted else { return }
         let current = Self.signature(NSScreen.screens.map(\.frame))
         guard current == arrangement else { return }
+        adjusted = nil
         var frames = defaults.dictionary(forKey: key) ?? [:]
         let value = NSStringFromRect(window.frame)
         frames[current] = value

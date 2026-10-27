@@ -57,6 +57,20 @@ import Testing
         let widened = try #require(AssistantWindowPlacement.constrainedFrame(edge, minimum: withSidebar, visibleFrames: [laptop]))
         #expect(widened == NSRect(x: laptop.maxX - 610, y: 186, width: 610, height: 650))
     }
+
+    @Test func fittingHandlesNegativeCoordinatesGapsAndSmallDisplays() throws {
+        let left = NSRect(x: -1920, y: -200, width: 1920, height: 1080)
+        let right = NSRect(x: 300, y: 0, width: 1728, height: 1117)
+        let straddling = NSRect(x: -500, y: 100, width: 1000, height: 650)
+        let fitted = try #require(AssistantWindowPlacement.constrainedFrame(straddling, visibleFrames: [right, left]))
+        #expect(fitted == NSRect(x: -1000, y: 100, width: 1000, height: 650))
+        let gap = NSRect(x: 20, y: 100, width: 200, height: 450)
+        let fromGap = try #require(AssistantWindowPlacement.constrainedFrame(gap, visibleFrames: [right, left]))
+        #expect(right.contains(fromGap))
+        let small = NSRect(x: -500, y: -200, width: 500, height: 300)
+        #expect(AssistantWindowPlacement.constrainedFrame(straddling, minimum: .init(width: 610, height: 420),
+                                                        visibleFrames: [small]) == small)
+    }
 }
 
 /// The placement as AssistantWindow drives it, on a real window: frames the
@@ -68,6 +82,39 @@ import Testing
     func window() -> NSWindow {
         NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 650),
                  styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: true)
+    }
+
+    @Test(arguments: [false, true]) func userCanReturnToTheLastAdjustedFrame(sidebar: Bool) throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first?.visibleFrame)
+        #expect(screen.width >= 800 && screen.height >= 600)
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let screens = NSScreen.screens.map(\.frame)
+        let narrow = NSRect(x: screen.minX + 40, y: screen.minY + 40, width: 419, height: 430)
+        defaults.set([AssistantWindowPlacement.signature(screens): NSStringFromRect(narrow)], forKey: "frames")
+        func saved() -> NSRect? { AssistantWindowPlacement.savedFrame(in: defaults.dictionary(forKey: "frames") ?? [:], for: screens) }
+
+        let first = window()
+        let placement = AssistantWindowPlacement(window: first, key: "frames", defaults: defaults)
+        placement.prepareToShow()
+        placement.sidebar = sidebar
+        let adjusted = first.frame
+        let resized = NSRect(x: adjusted.minX + 10, y: adjusted.minY + 10,
+                             width: adjusted.width + 40, height: adjusted.height + 40)
+        first.setFrame(resized, display: false)
+        placement.save()
+        #expect(saved() == resized)
+        // Returning to a restored or sidebar-widened frame is now a user resize.
+        first.setFrame(adjusted, display: false)
+        placement.save()
+        #expect(saved() == adjusted)
+        placement.sidebar = false
+        #expect(first.frame == adjusted)
+        let second = window()
+        AssistantWindowPlacement(window: second, key: "frames", defaults: defaults).prepareToShow()
+        #expect(second.frame == adjusted)
     }
 
     @Test func userFrameSurvivesHideRelaunchAndTheSidebar() throws {
