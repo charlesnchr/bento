@@ -112,6 +112,11 @@ enum MarkdownCommands {
             let fence = fenceChars(text, l.range)
             return EditResult(edits: [TextEdit(range: sel, replacement: "\n\n" + fence)],
                               selection: NSRange(location: sel.location + 1, length: 0))
+        case .details:
+            // Return at the end of an unclosed expander's summary closes it, like a code fence
+            guard sel.length == 0, rel == l.range.length, MarkdownParser.expanderEnd(after: l.full, in: text) == nil else { return nil }
+            return EditResult(edits: [TextEdit(range: sel, replacement: "\n\n:::")],
+                              selection: NSRange(location: sel.location + 1, length: 0))
         case .bullet, .ordered, .task, .quote:
             let p = l.parsed
             let content = (text.substring(with: NSRange(location: l.contentStart, length: l.end - l.contentStart)))
@@ -323,7 +328,7 @@ enum MarkdownCommands {
         let editable = ls.filter { l in
             if l.inCode { return false }
             switch l.parsed.kind {
-            case .fence, .code, .rule: return false
+            case .fence, .code, .rule, .details, .detailsEnd: return false
             default: return true
             }
         }

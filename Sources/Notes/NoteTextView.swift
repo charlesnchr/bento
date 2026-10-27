@@ -5,6 +5,8 @@ import AppKit
 final class NoteTextView: NSTextView {
     /// Toggle the task on the line starting at the given index (cascade = ⌘-click).
     var onToggleTask: ((Int, Bool) -> Void)?
+    /// Open or close the expander whose summary line starts at the given index.
+    var onToggleExpander: ((Int) -> Void)?
     var placeholder = "Start writing…"
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
@@ -56,6 +58,10 @@ final class NoteTextView: NSTextView {
             onToggleTask?(lineStart, event.modifierFlags.contains(.command))
             return
         }
+        if let lineStart = expanderChevron(at: p) {
+            onToggleExpander?(lineStart)
+            return
+        }
         if event.modifierFlags.contains(.command), let url = link(at: p) {
             NSWorkspace.shared.open(url)
             return
@@ -76,9 +82,21 @@ final class NoteTextView: NSTextView {
         let para = (ts.string as NSString).paragraphRange(for: NSRange(location: i, length: 0))
         guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration,
               case .task(let level, _) = d.kind,
-              let box = lm.checkboxRect(paragraphStart: para.location, level: level) else { return nil }
+              let box = lm.checkboxRect(paragraphStart: para.location, level: level, inDetails: d.inDetails) else { return nil }
         let pt = NSPoint(x: viewPoint.x - textContainerOrigin.x, y: viewPoint.y - textContainerOrigin.y)
         return box.insetBy(dx: -5, dy: -4).contains(pt) ? para.location : nil
+    }
+
+    /// Line start of the expander summary whose chevron (or the margin left of the
+    /// summary text) is under the point.
+    func expanderChevron(at viewPoint: NSPoint) -> Int? {
+        guard let i = charIndex(at: viewPoint), let ts = textStorage, let lm = notesLayoutManager else { return nil }
+        let para = (ts.string as NSString).paragraphRange(for: NSRange(location: i, length: 0))
+        guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration,
+              case .summary(_?) = d.kind, let box = lm.chevronRect(paragraphStart: para.location) else { return nil }
+        let pt = NSPoint(x: viewPoint.x - textContainerOrigin.x, y: viewPoint.y - textContainerOrigin.y)
+        let target = NSRect(x: box.minX - 8, y: box.minY - 4, width: lm.theme.listIndent - box.minX + 8, height: box.height + 8)
+        return target.contains(pt) ? para.location : nil
     }
 
     func link(at viewPoint: NSPoint) -> URL? {
@@ -88,7 +106,7 @@ final class NoteTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if checkbox(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
+        if checkbox(at: p) != nil || expanderChevron(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
             NSCursor.pointingHand.set()
             return
         }

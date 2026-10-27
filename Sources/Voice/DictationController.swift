@@ -141,6 +141,7 @@ final class DictationController {
             makeLiveSession: { Self.makeLiveSession(assistant: assistant.isRecording) },
             finalizeContext: { [composer, assistant] in
                 if $0.isAssistant { return assistant.finalizeContext() }
+                if $0.captureToNote { return $0 }
                 if $0.useComposer { return composer.finalizeContext($0) }
                 // Resolve ordinary dictation at speech end. An edit stays bound
                 // to the selected text's original app for replacement safety.
@@ -441,6 +442,14 @@ final class DictationController {
 
     var assistantIsLive: Bool { assistant.isLive }
 
+    /// Dev harness hook: a transcript down the Capture Thought to Note output path.
+    func devCapture(_ text: String) {
+        var context = DictationContext()
+        context.captureToNote = true
+        let router = VoiceOutputRouter(composer: composer, assistant: assistant)
+        Task { _ = await router.insert(text, context: context) }
+    }
+
     /// Dev harness hooks (VoiceApp's BENTO_DEV observer).
     func devAssistant(_ command: String, _ info: [AnyHashable: Any]) -> [String: Any] {
         switch command {
@@ -596,6 +605,23 @@ final class DictationController {
             return
         }
         if handleIntent(.begin) { coordinator.handle(.lockIn) }
+    }
+
+    /// Hands-free dictation into the capture note instead of the frontmost app; pressed
+    /// again (or during any hands-free dictation) it stops, like Stop Dictation.
+    func toggleCapture() {
+        if case .recording = coordinator.state {
+            coordinator.handle(.finalize)
+            return
+        }
+        guard engineActive, dictationEnabled else {
+            if !AXIsProcessTrusted() { SettingsRouter.open() } else { NSSound.beep() }
+            return
+        }
+        guard !assistant.isBusy, coordinator.state == .idle || coordinator.state.isTerminal, microphoneReady() else { return }
+        var context = DictationContext()
+        context.captureToNote = true
+        if coordinator.handle(.begin, context: context) { coordinator.handle(.lockIn) }
     }
 
     private func handleIntent(_ intent: HotkeyIntent) -> Bool {

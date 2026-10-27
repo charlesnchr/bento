@@ -28,26 +28,42 @@ final class BlockDecoration: NSObject {
         case rule(revealed: Bool)
         case fence(opening: Bool, revealed: Bool)
         case code
+        /// An expander's "::: details" line; `collapsed` is nil without a closing ":::".
+        case summary(collapsed: Bool?)
+        /// The closing ":::" of an open expander.
+        case detailsEnd(revealed: Bool)
+        /// A line inside a collapsed expander: hidden and squeezed to no height.
+        case folded
     }
 
     let kind: Kind
     /// Fence state after this line.
     let inCodeAfter: Bool
     let first: Bool
+    /// Expander state after this line: nil outside one, else whether it is collapsed.
+    let foldAfter: Bool?
+    /// The line is in an expander's body (indented under its summary).
+    let inDetails: Bool
 
-    init(_ kind: Kind, inCodeAfter: Bool, first: Bool) {
+    init(_ kind: Kind, inCodeAfter: Bool, first: Bool, foldAfter: Bool? = nil, inDetails: Bool = false) {
         self.kind = kind
         self.inCodeAfter = inCodeAfter
         self.first = first
+        self.foldAfter = foldAfter
+        self.inDetails = inDetails
     }
 
     override func isEqual(_ object: Any?) -> Bool {
         guard let o = object as? BlockDecoration else { return false }
-        return o.kind == kind && o.inCodeAfter == inCodeAfter && o.first == first
+        return o.kind == kind && o.inCodeAfter == inCodeAfter && o.first == first && o.foldAfter == foldAfter && o.inDetails == inDetails
     }
 
     // NSTextStorage uniques attribute dictionaries by hash: a constant hash made that slow
-    override var hash: Int { var h = Hasher(); h.combine(kind); h.combine(inCodeAfter); h.combine(first); return h.finalize() }
+    override var hash: Int {
+        var h = Hasher()
+        h.combine(kind); h.combine(inCodeAfter); h.combine(first); h.combine(foldAfter); h.combine(inDetails)
+        return h.finalize()
+    }
 
     var listLevel: Int? {
         switch kind {

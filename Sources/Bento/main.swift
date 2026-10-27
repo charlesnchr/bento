@@ -12,13 +12,17 @@ import Voice
 
 StatusItemSizing.shared.configure()
 
+let notes = NotesModule()
+// Dictation's Capture Thought to Note appends to a note; the modules don't know each other.
+DictationModule.noteCapture = { notes.capture($0) }
+
 BentoApp.run(modules: [
     ShotModule(),
     WindowsModule(),
     TilingModule(),
     LauncherModule(),
     ClipboardModule(),
-    NotesModule(),
+    notes,
     TodoModule(),
     MenuBarModule(),
 ] + VoiceModules.all())

@@ -8,8 +8,9 @@ import BentoCore
 ///
 ///     open | hide | toggle | new | wait <ms> | cmd <NotesCommand> | key newline|tab|backtab|backspace|delete|escape
 ///     type <text with \n \t>     set <text with \n>     select <loc> <len>     caret end|start
-///     checkbox <line>            palette <query>        palette-enter          palette-down
+///     checkbox <line>            chevron <line>         palette <query>        palette-enter          palette-down
 ///     dump                       (writes $BENTO_HOME/dump.json)
+///     window-png <path>          settings-png <path> [dark]
 enum NotesDebug {
     static var home: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["BENTO_HOME"] ?? "/tmp/bento-dev/notes") }
     /// Result of the last bench-* command (included in the dump).
@@ -76,6 +77,18 @@ enum NotesDebug {
                 let start = lines.prefix(n).reduce(0) { $0 + ($1 as NSString).length + 1 }
                 tv.onToggleTask?(start, false)
             }
+        case "chevron":
+            // a click on the expander chevron of line <n>, through the text view's hit testing
+            if let tv = w?.textView, let lm = tv.notesLayoutManager, let n = Int(arg) {
+                let lines = (tv.string as NSString).components(separatedBy: "\n")
+                let start = lines.prefix(n).reduce(0) { $0 + ($1 as NSString).length + 1 }
+                guard let r = lm.chevronRect(paragraphStart: start) else { break }
+                let p = tv.convert(NSPoint(x: r.midX + tv.textContainerOrigin.x, y: r.midY + tv.textContainerOrigin.y), to: nil)
+                if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: tv.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                    tv.mouseDown(with: e)
+                }
+            }
         case "palette": w?.palette.debugSetQuery(arg)
         case "palette-enter": w?.palette.debugActivate()
         case "palette-down": w?.palette.debugMove(1)
@@ -98,6 +111,19 @@ enum NotesDebug {
                 _ = win
             }
             delay = 0.8
+        case "window-png":
+            // renders the notes window's content offscreen (no Screen Recording needed): window-png <path>
+            guard let view = w?.panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { break }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let image = NSImage(size: view.bounds.size)
+            image.lockFocus()
+            NSColor.windowBackgroundColor.setFill()
+            view.bounds.fill()
+            rep.draw(in: view.bounds)
+            image.unlockFocus()
+            if let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: arg.isEmpty ? "/tmp/notes-window.png" : arg))
+            }
         case "edit-title":
             // edit-title <title>|<new body>: local edit of a stored note (window not needed)
             let kv = arg.components(separatedBy: "|")

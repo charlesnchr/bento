@@ -67,8 +67,10 @@ import Testing
     final class FakeInserter: TextInserting {
         var outcome: InsertionOutcome = .inserted
         private(set) var insertedText: String?
+        private(set) var insertedContext: DictationContext?
         func insert(_ text: String, context: DictationContext) async -> InsertionOutcome {
             insertedText = text
+            insertedContext = context
             return outcome
         }
     }
@@ -176,6 +178,26 @@ import Testing
         #expect(c.state == .done(.inserted))
         #expect(inserter.insertedText == "clean")
         #expect(c.lastResult == "clean")
+        #expect(c.lastDictation?.text == "clean")
+    }
+
+    /// Capture Thought to Note: a supplied context reaches the inserter intact, which
+    /// routes the transcript to the note instead of the frontmost app.
+    @Test func captureContextReachesTheInserter() async {
+        let c = makeCoordinator()
+        var context = DictationContext()
+        context.captureToNote = true
+        #expect(c.handle(.begin, context: context))
+        c.handle(.lockIn)
+        await pump()
+        #expect(c.state == .recording(locked: true))
+        c.handle(.finalize)
+        await settle()
+        #expect(c.state == .done(.inserted))
+        #expect(inserter.insertedText == "clean")
+        #expect(inserter.insertedContext?.captureToNote == true)
+        #expect(c.lastResult == "clean")
+        #expect(c.lastDictation == nil)
     }
 
     @Test func lockInMarksHandsFree() async {

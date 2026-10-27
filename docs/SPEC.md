@@ -127,7 +127,7 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
 | MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item Accessibility open shortcuts are user-defined |
-| Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds) |
+| Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds); Capture Thought to Note (`dictation.capture-note`) has none |
 | Meetings | `shift+opt+f17` record/stop |
 | Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
 | Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
@@ -146,6 +146,18 @@ Search and Bento Bar reveal in place and request a cancellable, validated
 AXPress. There is no synthetic click fallback or temporary relocation. Crowded
 and notched displays can leave items inaccessible; the user must make space,
 click or reposition them manually. See QA.md for safe validation.
+
+## Expanders and thought capture
+
+Notes render `::: details <summary>` … `:::` (VitePress / markdown-it-container syntax) as an
+expander, collapsed to its summary line until opened with its chevron or ⌘↩ on the summary.
+The body is any markdown; an unclosed `::: details` line has no body. Collapse state is per
+window and never written to the note, so the body stays plain text for sync and other clients.
+Dictation's Capture Thought to Note records hands-free and appends the transcript to the
+note set in Settings → Notes (`notes.captureNoteID`; unset or deleted: a new "Thoughts" note) as
+`::: details yyyy-MM-dd HH:mm · <first words>` / text / `:::`, after a blank line. The modules
+don't depend on each other: `main.swift` connects `DictationModule.noteCapture` to
+`NotesModule.capture`; without Notes the transcript goes to the clipboard.
 
 ## Sync
 

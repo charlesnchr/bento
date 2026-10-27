@@ -9,6 +9,7 @@ final class NotesController {
     let store: NoteStore
     let engine: SyncEngine
     let sync: SyncClient
+    private let config: ConfigStore
     private(set) var settings: NotesSettings
     private var windowController: NotesWindowController?
     private let log = BentoLog.make("notes")
@@ -25,11 +26,12 @@ final class NotesController {
     private var running = false
     private var paletteRefreshQueued = false
 
-    init(store: NoteStore = NoteStore()) {
+    init(store: NoteStore = NoteStore(), config: ConfigStore = .shared) {
         self.store = store
+        self.config = config
         engine = SyncEngine(repo: store)
         sync = SyncClient(engine: engine)
-        settings = ConfigStore.shared.section("notes", default: NotesSettings())
+        settings = config.section("notes", default: NotesSettings())
         backStack = store.kvJSON("nav.back", as: [String].self) ?? []
         forwardStack = store.kvJSON("nav.forward", as: [String].self) ?? []
         currentID = store.kv("lastNoteID")
@@ -49,9 +51,9 @@ final class NotesController {
     func start() {
         guard !running else { return }
         running = true
-        ConfigStore.shared.materialize("notes", default: NotesSettings())
-        settings = ConfigStore.shared.section("notes", default: NotesSettings())
-        observers.append(ConfigStore.shared.observe("notes") { [weak self] in self?.reloadSettings() })
+        config.materialize("notes", default: NotesSettings())
+        settings = config.section("notes", default: NotesSettings())
+        observers.append(config.observe("notes") { [weak self] in self?.reloadSettings() })
         observers.append(NotificationCenter.default.addObserver(forName: NoteStore.didChange, object: store, queue: .main) { [weak self] _ in
             // a snapshot applies hundreds of notes in one go: rebuild the open list once
             guard let self, self.windowController?.palette.isOpen == true, !self.paletteRefreshQueued else { return }
@@ -87,7 +89,7 @@ final class NotesController {
 
     private func reloadSettings() {
         let old = settings
-        settings = ConfigStore.shared.section("notes", default: NotesSettings())
+        settings = config.section("notes", default: NotesSettings())
         windowController?.applySettings(settings)
         if old.sync != settings.sync {
             // debounce: the server/token fields write the config on every keystroke
@@ -109,7 +111,7 @@ final class NotesController {
         mutate(&s)
         guard s != settings else { return }
         settings = s
-        ConfigStore.shared.setSection("notes", s)
+        config.setSection("notes", s)
         windowController?.applySettings(s)
     }
 
@@ -410,6 +412,32 @@ final class NotesController {
             return
         }
         if w.noteID == note.id { w.applyExternalBody(note.body) }
+    }
+
+    // MARK: Thought capture
+
+    /// Appends a dictated thought to the capture note (Settings → Notes) as an expander,
+    /// first creating a "Thoughts" note when none is set or it was deleted. Returns the
+    /// note's title, nil for empty text or when it cannot be saved.
+    @discardableResult
+    func capture(_ text: String) -> String? {
+        guard let entry = ThoughtCapture.entry(text) else { return nil }
+        flushPendingSave()
+        let target = store.note(settings.captureNoteID).flatMap { $0.isLive ? $0 : nil }
+        var note = target ?? Note(body: "# Thoughts")
+        note.body = ThoughtCapture.append(entry, to: note.body)
+        note.device = sync.device
+        note.updatedAt = Note.nextUpdate(after: note.updatedAt)
+        note.dirty = true
+        guard store.save(note, notify: true, remote: false, requirePersistence: true) else { return nil }
+        let id = note.id
+        if target == nil { updateSettings { $0.captureNoteID = id } }
+        sync.localChange()
+        countCache.removeValue(forKey: id)
+        if id == currentID, let w = windowController, w.noteID == id { w.applyExternalBody(note.body) }
+        let title = NoteText.displayTitle(of: note.body)
+        HUD.show("Saved to \(title)", symbol: "text.badge.plus")
+        return title
     }
 
     // MARK: Pin, duplicate, delete
@@ -831,7 +859,7 @@ final class NotesController {
     // MARK: Settings view
 
     func makeSettingsView(actions: [BentoAction]) -> AnyView {
-        AnyView(NotesSettingsView(status: sync.status, actions: actions, syncNow: { [weak self] in self?.sync.syncNow() }))
+        AnyView(NotesSettingsView(status: sync.status, actions: actions, store: store, syncNow: { [weak self] in self?.sync.syncNow() }))
     }
 
     // MARK: Debug hooks (dev harness only)

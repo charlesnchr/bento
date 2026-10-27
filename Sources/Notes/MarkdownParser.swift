@@ -14,6 +14,10 @@ enum BlockKind: Equatable {
     case fence(opening: Bool, lang: String)
     /// A line inside a fenced code block.
     case code
+    /// "::: details Summary": opens an expander (VitePress / markdown-it-container syntax).
+    case details
+    /// ":::": closes an expander.
+    case detailsEnd
 
     var isList: Bool {
         switch self {
@@ -60,6 +64,8 @@ enum MarkdownParser {
     private static let dash: UInt16 = 45, star: UInt16 = 42, plus: UInt16 = 43, underscore: UInt16 = 95
     private static let backtick: UInt16 = 96, tilde: UInt16 = 126, lbracket: UInt16 = 91, rbracket: UInt16 = 93
     private static let dot: UInt16 = 46, rparen: UInt16 = 41, x: UInt16 = 120, X: UInt16 = 88
+    private static let colon: UInt16 = 58
+    private static let detailsWord = Array("details".utf16)
 
     /// Number of spaces one list nesting level is written with.
     static let indentUnit = "    "
@@ -91,6 +97,8 @@ enum MarkdownParser {
         if cols <= 3, let f = isFence(u) {
             return ParsedLine(kind: .fence(opening: true, lang: f.lang), prefixRange: whole, contentRange: empty)
         }
+
+        if cols <= 3, let d = detailsLine(u, from: i) { return d }
 
         // Heading: up to 6 '#' followed by a space.
         if cols <= 3, i < n, u[i] == hash {
@@ -179,6 +187,23 @@ enum MarkdownParser {
         return (c, rest)
     }
 
+    /// "::: details <summary>" (an expander's header) or a bare ":::" (its end).
+    private static func detailsLine(_ u: [UInt16], from i: Int) -> ParsedLine? {
+        let n = u.count
+        guard i + 2 < n, u[i] == colon, u[i + 1] == colon, u[i + 2] == colon else { return nil }
+        var j = i + 3
+        while j < n, u[j] == space || u[j] == tab { j += 1 }
+        if j == n {
+            return ParsedLine(kind: .detailsEnd, prefixRange: NSRange(location: 0, length: n), contentRange: NSRange(location: n, length: 0))
+        }
+        let w = detailsWord.count
+        guard j + w <= n, Array(u[j..<j + w]) == detailsWord, j + w == n || u[j + w] == space else { return nil }
+        var k = j + w
+        while k < n, u[k] == space { k += 1 }
+        return ParsedLine(kind: .details, prefixRange: NSRange(location: 0, length: k), contentRange: NSRange(location: k, length: n - k),
+                          markerRange: NSRange(location: i, length: j + w - i))
+    }
+
     static func isRule(_ s: String) -> Bool { isRule(Array(s.utf16), from: 0) }
 
     static func isRule(_ u: [UInt16], from start: Int) -> Bool {
@@ -219,6 +244,38 @@ enum MarkdownParser {
         return out
     }
 
+    /// The closing ":::" line (without newline) of the expander whose summary line is
+    /// `summary`; nil when another expander or the end of the note comes first.
+    static func expanderEnd(after summary: NSRange, in text: NSString) -> NSRange? {
+        guard summary.location >= 0, summary.length > 0, summary.location <= text.length,
+              summary.length <= text.length - summary.location else { return nil }
+        var loc = NSMaxRange(summary)
+        let header = contentRange(summary, in: text)
+        guard header.length < summary.length,
+              parseLine(utf16(text, header), inCode: false).kind == .details else { return nil }
+        var inCode = false
+        while loc < text.length {
+            let full = text.lineRange(for: NSRange(location: loc, length: 0))
+            let r = contentRange(full, in: text)
+            switch parseLine(utf16(text, r), inCode: inCode).kind {
+            case .detailsEnd: return r
+            case .details: return nil
+            case .fence(let opening, _): inCode = opening
+            default: break
+            }
+            loc = NSMaxRange(full)
+        }
+        return nil
+    }
+
+    /// A full line range without its LF, CRLF or CR terminator.
+    static func contentRange(_ full: NSRange, in text: NSString) -> NSRange {
+        var end = NSMaxRange(full)
+        if end > full.location, text.character(at: end - 1) == 10 { end -= 1 }
+        if end > full.location, text.character(at: end - 1) == 13 { end -= 1 }
+        return NSRange(location: full.location, length: end - full.location)
+    }
+
     static func utf16(_ text: NSString, _ r: NSRange) -> [UInt16] {
         var buf = [UInt16](repeating: 0, count: r.length)
         if r.length > 0 { text.getCharacters(&buf, range: r) }
@@ -235,9 +292,7 @@ enum MarkdownParser {
             // cheap pre-check before decoding the line
             let first = firstNonSpace(text, lr)
             if first == backtick || first == tilde {
-                var end = NSMaxRange(lr)
-                if end > lr.location, text.character(at: end - 1) == 10 { end -= 1 }
-                let u = utf16(text, NSRange(location: lr.location, length: end - lr.location))
+                let u = utf16(text, contentRange(lr, in: text))
                 if let f = isFence(u) {
                     if inCode { if f.lang.isEmpty { inCode = false } } else { inCode = true }
                 }

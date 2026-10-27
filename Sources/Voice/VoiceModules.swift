@@ -39,6 +39,11 @@ public final class DictationModule: BentoModule {
 
     public init() {}
 
+    /// Appends a transcript to the capture note and returns the note's title, nil when
+    /// that isn't possible. Set by the app to Notes' `capture` (called on the main
+    /// thread); nil without Notes.
+    public static var noteCapture: ((String) -> String?)?
+
     public var actions: [BentoAction] {
         let group = "Dictation"
         return [
@@ -47,6 +52,9 @@ public final class DictationModule: BentoModule {
             },
             BentoAction("dictation.stop", "Stop Dictation", group: group, hiddenFromMenu: true) {
                 onMain { _ = VoiceApp.shared.dictation.coordinator.handle(.finalize) }
+            },
+            BentoAction("dictation.capture-note", "Capture Thought to Note", group: group) {
+                onMain { VoiceApp.shared.dictation.toggleCapture() }
             },
             BentoAction("dictation.compose", "Compose…", group: group) {
                 onMain { VoiceApp.shared.dictation.openComposer() }
