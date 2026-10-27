@@ -8,12 +8,7 @@ enum MarkdownExport {
     static func plainText(_ md: String) -> String {
         var out: [String] = []
         var inCode = false
-        let text = md as NSString
-        var loc = 0
-        var detailsEnd: Int?
         md.enumerateLines { line, _ in
-            let full = text.lineRange(for: NSRange(location: loc, length: 0))
-            defer { loc = NSMaxRange(full) }
             let p = MarkdownParser.parseLine(line, inCode: inCode)
             let ns = line as NSString
             let content = MarkdownParser.stripInline(ns.substring(with: p.contentRange))
@@ -22,15 +17,10 @@ enum MarkdownExport {
             case .fence(let opening, _): inCode = opening
             case .code: out.append(line)
             case .rule: out.append("———")
-            case .detailsEnd:
-                if detailsEnd == loc { detailsEnd = nil } else { out.append(line) }
             case .bullet: out.append(indent + "• " + content)
             case .ordered(let n): out.append(indent + "\(n). " + content)
             case .task(let checked): out.append(indent + (checked ? "☑ " : "☐ ") + content)
             case .quote: out.append(content)
-            case .details:
-                detailsEnd = MarkdownParser.expanderEnd(after: full, in: text)?.location
-                out.append(content)
             case .heading, .paragraph: out.append(content)
             }
         }
@@ -101,9 +91,6 @@ enum MarkdownExport {
         var codeLines: [String] = []
         var codeLang = ""
         var quoteOpen = false
-        let text = md as NSString
-        var loc = 0
-        var detailsEnd: Int?
 
         func closeAllLists() {
             while let top = listStack.popLast() { out += "</li></\(top.tag)>\n" }
@@ -111,8 +98,6 @@ enum MarkdownExport {
         func closeQuote() { if quoteOpen { out += "</blockquote>\n"; quoteOpen = false } }
 
         md.enumerateLines { line, _ in
-            let full = text.lineRange(for: NSRange(location: loc, length: 0))
-            defer { loc = NSMaxRange(full) }
             let p = MarkdownParser.parseLine(line, inCode: inCode)
             let content = (line as NSString).substring(with: p.contentRange)
             switch p.kind {
@@ -128,23 +113,6 @@ enum MarkdownExport {
                 return
             case .code:
                 codeLines.append(line)
-                return
-            default: break
-            }
-            switch p.kind {
-            case .details:
-                closeAllLists(); closeQuote()
-                guard let end = MarkdownParser.expanderEnd(after: full, in: text) else {
-                    out += "<p>" + inlineHTML(content) + "</p>\n"
-                    return
-                }
-                out += "<details><summary>" + inlineHTML(content) + "</summary>\n"
-                detailsEnd = end.location
-                return
-            case .detailsEnd where detailsEnd == loc:
-                closeAllLists(); closeQuote()
-                out += "</details>\n"
-                detailsEnd = nil
                 return
             default: break
             }
@@ -184,7 +152,6 @@ enum MarkdownExport {
                 if !quoteOpen { out += "<blockquote>\n"; quoteOpen = true }
                 out += "<p>" + inlineHTML(content) + "</p>\n"
             case .rule: out += "<hr>\n"
-            case .detailsEnd: out += "<p>" + inlineHTML(line.trimmingCharacters(in: .whitespaces)) + "</p>\n"
             case .paragraph:
                 if content.trimmingCharacters(in: .whitespaces).isEmpty { out += "<p><br></p>\n" } else { out += "<p>" + inlineHTML(content) + "</p>\n" }
             default: break
@@ -193,7 +160,6 @@ enum MarkdownExport {
         if inCode { out += "<pre><code>" + escape(codeLines.joined(separator: "\n")) + "</code></pre>\n" }
         closeAllLists()
         closeQuote()
-        if detailsEnd != nil { out += "</details>\n" }
         guard standalone else { return "<meta charset=\"utf-8\">" + out }
         return """
         <!DOCTYPE html>

@@ -5,8 +5,8 @@ import AppKit
 final class NoteTextView: NSTextView {
     /// Toggle the task on the line starting at the given index (cascade = ⌘-click).
     var onToggleTask: ((Int, Bool) -> Void)?
-    /// Open or close the expander whose summary line starts at the given index.
-    var onToggleExpander: ((Int) -> Void)?
+    /// Collapse or open the section of the heading whose line starts at the given index.
+    var onToggleHeading: ((Int) -> Void)?
     var placeholder = "Start writing…"
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
@@ -50,6 +50,11 @@ final class NoteTextView: NSTextView {
         super.insertText(string, replacementRange: replacementRange)
     }
 
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        notesLayoutManager?.drawHeadingChevrons(in: rect, origin: textContainerOrigin)
+    }
+
     // MARK: Mouse
 
     override func mouseDown(with event: NSEvent) {
@@ -58,8 +63,8 @@ final class NoteTextView: NSTextView {
             onToggleTask?(lineStart, event.modifierFlags.contains(.command))
             return
         }
-        if let lineStart = expanderChevron(at: p) {
-            onToggleExpander?(lineStart)
+        if let lineStart = headingChevron(at: p) {
+            onToggleHeading?(lineStart)
             return
         }
         if event.modifierFlags.contains(.command), let url = link(at: p) {
@@ -82,21 +87,30 @@ final class NoteTextView: NSTextView {
         let para = (ts.string as NSString).paragraphRange(for: NSRange(location: i, length: 0))
         guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration,
               case .task(let level, _) = d.kind,
-              let box = lm.checkboxRect(paragraphStart: para.location, level: level, inDetails: d.inDetails) else { return nil }
+              let box = lm.checkboxRect(paragraphStart: para.location, level: level) else { return nil }
         let pt = NSPoint(x: viewPoint.x - textContainerOrigin.x, y: viewPoint.y - textContainerOrigin.y)
         return box.insetBy(dx: -5, dy: -4).contains(pt) ? para.location : nil
     }
 
-    /// Line start of the expander summary whose chevron (or the margin left of the
-    /// summary text) is under the point.
-    func expanderChevron(at viewPoint: NSPoint) -> Int? {
-        guard let i = charIndex(at: viewPoint), let ts = textStorage, let lm = notesLayoutManager else { return nil }
+    /// Line start of the heading under the point (nil: not on a heading line).
+    func heading(at viewPoint: NSPoint) -> Int? {
+        guard let i = charIndex(at: viewPoint), let ts = textStorage, let lm = layoutManager, let tc = textContainer else { return nil }
         let para = (ts.string as NSString).paragraphRange(for: NSRange(location: i, length: 0))
-        guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration,
-              case .summary(_?) = d.kind, let box = lm.chevronRect(paragraphStart: para.location) else { return nil }
+        guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration, d.collapsed != nil else { return nil }
+        // only within the line's height (characterIndex picks the nearest line)
+        let glyphs = lm.glyphRange(forCharacterRange: para, actualCharacterRange: nil)
+        let rect = lm.boundingRect(forGlyphRange: glyphs, in: tc)
+        let y = viewPoint.y - textContainerOrigin.y
+        return y >= rect.minY && y <= rect.maxY ? para.location : nil
+    }
+
+    /// Line start of the heading whose fold chevron (or the margin left of its text) is
+    /// under the point.
+    func headingChevron(at viewPoint: NSPoint) -> Int? {
+        guard let start = heading(at: viewPoint), let lm = notesLayoutManager, let box = lm.chevronRect(paragraphStart: start) else { return nil }
         let pt = NSPoint(x: viewPoint.x - textContainerOrigin.x, y: viewPoint.y - textContainerOrigin.y)
-        let target = NSRect(x: box.minX - 8, y: box.minY - 4, width: lm.theme.listIndent - box.minX + 8, height: box.height + 8)
-        return target.contains(pt) ? para.location : nil
+        let target = NSRect(x: -textContainerOrigin.x, y: box.minY - 4, width: textContainerOrigin.x + box.maxX + 2, height: box.height + 8)
+        return target.contains(pt) ? start : nil
     }
 
     func link(at viewPoint: NSPoint) -> URL? {
@@ -106,11 +120,23 @@ final class NoteTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if checkbox(at: p) != nil || expanderChevron(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
+        setHoveredHeading(heading(at: p))
+        if checkbox(at: p) != nil || headingChevron(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
             NSCursor.pointingHand.set()
             return
         }
         super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHoveredHeading(nil)
+        super.mouseExited(with: event)
+    }
+
+    private func setHoveredHeading(_ start: Int?) {
+        guard let lm = notesLayoutManager, lm.hoveredHeading != start else { return }
+        lm.hoveredHeading = start
+        needsDisplay = true
     }
 
     // MARK: Pasteboard: copy markdown (+ HTML for rich-text targets), paste plain text

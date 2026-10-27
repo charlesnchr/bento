@@ -8,7 +8,7 @@ enum NotesCommand: String, CaseIterable {
     case find, zoomIn, zoomOut, resetZoom, toggleAutoResize, toggleFloat, toggleScreenSharing
     case export, recentlyDeleted, settings, deleteNote, deleteAll, back, forward, close
     case heading1, heading2, heading3, paragraph, bold, italic, underline, strike, inlineCode, link
-    case codeBlock, quote, expander, orderedList, bulletList, taskList, toggleTask, moveUp, moveDown
+    case codeBlock, quote, orderedList, bulletList, taskList, toggleTask, moveUp, moveDown
 
     var title: String {
         switch self {
@@ -47,7 +47,6 @@ enum NotesCommand: String, CaseIterable {
         case .link: return "Link"
         case .codeBlock: return "Code Block"
         case .quote: return "Blockquote"
-        case .expander: return "Expander"
         case .orderedList: return "Ordered List"
         case .bulletList: return "Bullet List"
         case .taskList: return "Task List"
@@ -93,7 +92,6 @@ enum NotesCommand: String, CaseIterable {
         case .link: return "link"
         case .codeBlock: return "curlybraces.square"
         case .quote: return "text.quote"
-        case .expander: return "chevron.down.square"
         case .orderedList: return "list.number"
         case .bulletList: return "list.bullet"
         case .taskList: return "checklist"
@@ -137,7 +135,6 @@ enum NotesCommand: String, CaseIterable {
         case .link: return "cmd+l"
         case .codeBlock: return "cmd+opt+c"
         case .quote: return "cmd+shift+b"
-        case .expander: return "cmd+opt+e"
         case .orderedList: return "cmd+shift+7"
         case .bulletList: return "cmd+shift+8"
         case .taskList: return "cmd+shift+9"
@@ -153,15 +150,15 @@ enum NotesCommand: String, CaseIterable {
     var isFormatting: Bool {
         switch self {
         case .heading1, .heading2, .heading3, .paragraph, .bold, .italic, .underline, .strike, .inlineCode, .link,
-             .codeBlock, .quote, .expander, .orderedList, .bulletList, .taskList, .toggleTask, .moveUp, .moveDown: return true
+             .codeBlock, .quote, .orderedList, .bulletList, .taskList, .toggleTask, .moveUp, .moveDown: return true
         default: return false
         }
     }
 
     /// Commands listed in the Format… submenu, in Raycast's order.
     static let formatMenu: [NotesCommand] = [.heading1, .heading2, .heading3, .paragraph, .bold, .italic, .underline, .strike,
-                                             .inlineCode, .link, .codeBlock, .quote, .expander, .orderedList, .bulletList,
-                                             .taskList, .toggleTask, .moveUp, .moveDown]
+                                             .inlineCode, .link, .codeBlock, .quote, .orderedList, .bulletList, .taskList,
+                                             .toggleTask, .moveUp, .moveDown]
 
     /// Extra key combinations (⌘+ also zooms in).
     static let aliases: [(Shortcut, NotesCommand)] = [
