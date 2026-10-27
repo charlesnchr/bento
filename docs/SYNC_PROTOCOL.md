@@ -25,10 +25,12 @@ turning the note into a tombstone), `conflictOf` (id of the note this one is a
 "conflicted copy" of: when a client's unsynced edit loses last-writer-wins to a
 different text from another device and the two can't be merged, the client keeps its
 losing text as a new note titled "‹title› (conflicted copy, ‹device›)" instead of
-discarding it), `base` (written on Notes puts: `{"at": updated_at, "heads": {"<device>":
-[updated_at, "<hash>"], ...}}`: for each device, the newest version of that device's text
-this version contains, as that device's `updated_at` for it and the hex FNV-1a hash of
-its UTF-8 body, like a version vector; only valid while `at` equals the note's
+discarding it), `base` (written on Notes puts: `{"at": updated_at, "from": "<install
+id>", "heads": {"<install id>": [updated_at, "<hash>"], ...}}`: `from` is the sending
+install's random id (computer names can repeat); `heads`, absent when the sender doesn't
+know them, says for each install the newest version of that install's text this version
+contains, as its `updated_at` and the hex FNV-1a hash of its UTF-8 body, like a version
+vector, at most 16 (the most recently edited); only valid while `at` equals the note's
 `updated_at`, so a client that edits the note without rewriting `base` invalidates it;
 see Client behaviour). Unknown keys must be preserved.
 
@@ -165,9 +167,14 @@ so it can adopt it. `created_at` is kept from the first version.
 - No such text is known (heads disagree, three or more clients edited at the same
   moment, or the history is gone), or the changes overlap: last-writer-wins as below,
   and a synced local text the remote one overwrote is kept as a conflicted copy.
-- Heads and recent versions are kept in memory only: after a relaunch, a note's heads
-  are unknown (its puts carry no `base`) until a remote version of it is adopted; a put
-  without `base` counts as the start of a note's history.
+- Meta (pin, trash…) is merged key by key against the base text's meta: a key changed
+  locally keeps the local value.
+- A remote version that waits for an ack holds `last_seq` just below its seq, so after a
+  crash the next hello fetches it again.
+- Heads are stored with each note; the texts merges start from are kept in memory only,
+  so right after a relaunch a concurrent edit falls back to last-writer-wins, keeping
+  the local text as a conflicted copy when the heads show the remote one lacks it. A
+  put without heads counts as the start of a note's history.
 - Otherwise (no `meta.base`, e.g. an older client, or local heads unknown): if the local
   copy is not dirty → overwrite. If dirty and remote
   `updated_at` is newer → adopt remote (LWW) and keep the local text as a conflicted

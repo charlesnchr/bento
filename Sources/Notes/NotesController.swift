@@ -385,6 +385,7 @@ final class NotesController {
         toSave.seq = stored.seq
         toSave.openedAt = stored.openedAt
         toSave.baseHash = stored.baseHash
+        toSave.syncHeads = stored.syncHeads
         if stored.updatedAt >= n.updatedAt, stored.body != n.body { toSave.updatedAt = Note.nextUpdate(after: stored.updatedAt) }
         store.save(toSave)
         sync.localChange()

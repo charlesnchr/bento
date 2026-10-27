@@ -7,6 +7,9 @@ protocol NoteRepository: AnyObject {
     func save(_ note: Note)
     var lastSeq: Int64 { get set }
     func allNotes(includeTombstones: Bool) -> [Note]
+    /// Random id of this install, stable across launches: names this Mac in sync history
+    /// (computer names can repeat).
+    var installID: String { get }
 }
 
 /// Local notes database: `<support>/Notes/notes.sqlite`.
@@ -59,6 +62,9 @@ final class NoteStore: NoteRepository {
             if !columns.contains("base_hash") {
                 try db.exec("ALTER TABLE notes ADD COLUMN base_hash INTEGER")
             }
+            if !columns.contains("heads") {
+                try db.exec("ALTER TABLE notes ADD COLUMN heads TEXT")
+            }
         } catch {
             log.error("Notes DB migration failed: \(String(describing: error), privacy: .public)")
         }
@@ -81,6 +87,7 @@ final class NoteStore: NoteRepository {
                 n.dirty = (row["dirty"] as? Int64 ?? 0) != 0
                 n.openedAt = row["opened_at"] as? Int64 ?? 0
                 n.baseHash = (row["base_hash"] as? Int64).map { UInt64(bitPattern: $0) }
+                n.syncHeads = (row["heads"] as? String).flatMap(SyncHeadsCodec.decode)
                 cache[id] = n
             }
             for row in try db.query("SELECT key, value FROM kv") {
@@ -130,6 +137,13 @@ final class NoteStore: NoteRepository {
     var lastSeq: Int64 {
         get { Int64(kv("last_seq") ?? "0") ?? 0 }
         set { setKV("last_seq", String(newValue)) }
+    }
+
+    var installID: String {
+        if let id = kv("sync_install_id"), !id.isEmpty { return id }
+        let id = UUID().uuidString
+        setKV("sync_install_id", id)
+        return id
     }
 
     // MARK: Queries
@@ -196,14 +210,14 @@ final class NoteStore: NoteRepository {
     private func write(_ n: Note) -> Bool {
         do {
             try db?.run("""
-            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash, heads)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at,
               updated_at = excluded.updated_at, deleted = excluded.deleted, seq = excluded.seq,
               device = excluded.device, meta = excluded.meta, dirty = excluded.dirty, opened_at = excluded.opened_at,
-              base_hash = excluded.base_hash
+              base_hash = excluded.base_hash, heads = excluded.heads
             """, [n.id, n.body, n.createdAt, n.updatedAt, n.deleted, n.seq, n.device, NoteStore.encodeMeta(n.meta), n.dirty, n.openedAt,
-                  n.baseHash.map { Int64(bitPattern: $0) }])
+                  n.baseHash.map { Int64(bitPattern: $0) }, n.syncHeads.map(SyncHeadsCodec.encode)])
             return db != nil
         } catch {
             log.error("Saving note failed: \(String(describing: error), privacy: .public)")

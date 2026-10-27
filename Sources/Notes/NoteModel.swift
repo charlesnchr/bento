@@ -45,8 +45,27 @@ struct SyncHead: Equatable {
     var hash: UInt64
 }
 
-/// Per Mac (device name), the newest of its versions a version contains.
+/// Per Mac (install id), the newest of its versions a version contains.
 typealias SyncHeads = [String: SyncHead]
+
+/// JSON text for stored heads: `{"<install id>": [updated_at, "<hex hash>"]}`.
+enum SyncHeadsCodec {
+    static func encode(_ h: SyncHeads) -> String {
+        let obj = h.mapValues { [NSNumber(value: $0.at), String($0.hash, radix: 16)] as [Any] }
+        guard let d = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return "{}" }
+        return String(decoding: d, as: UTF8.self)
+    }
+
+    static func decode(_ s: String) -> SyncHeads? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: [Any]] else { return nil }
+        var out: SyncHeads = [:]
+        for (k, v) in obj {
+            guard v.count == 2, let at = (v[0] as? NSNumber)?.int64Value, let h = (v[1] as? String).flatMap({ UInt64($0, radix: 16) }) else { return nil }
+            out[k] = SyncHead(at: at, hash: h)
+        }
+        return out
+    }
+}
 
 /// One note, mirroring the sync protocol's note object plus local bookkeeping.
 struct Note: Equatable {
@@ -67,10 +86,15 @@ struct Note: Equatable {
     /// (nil: unknown). Lets the sync engine tell a real concurrent edit from a
     /// meta-only change on either side.
     var baseHash: UInt64?
+    /// Which versions of each Mac's text this text contains, as far as the sync engine
+    /// knows (nil: unknown). Local only; kept so merges survive a relaunch.
+    var syncHeads: SyncHeads?
     /// Wire only (never stored): which versions of each Mac's text a remote version
     /// contains (`meta.base`); nil when it doesn't say. Lets the engine merge concurrent
     /// edits.
     var remoteHeads: SyncHeads?
+    /// Wire only: the install id of the Mac that sent this version (`meta.base.from`).
+    var remoteOrigin: String?
 
     init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
         self.id = id
