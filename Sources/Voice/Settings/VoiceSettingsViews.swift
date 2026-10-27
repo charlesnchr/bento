@@ -347,6 +347,12 @@ private struct DictationSettingsForm: View {
                 Text("Resting indicator")
                 Text("A dot at the bottom of the screen that grows into a Dictate button on hover.")
             }
+            LabeledContent {
+                Button("Reset Position") { NotificationCenter.default.post(name: .pillPositionReset, object: nil) }
+            } label: {
+                Text("Indicator position")
+                Text("Drag the indicator to move it; it stays where you leave it.")
+            }
         } header: {
             Text("Feedback")
         }
@@ -652,6 +658,16 @@ struct AssistantSettingsView: View {
                 Text("Chat")
             } footer: {
                 Footnote("The assistant is Hermes over ACP. Its model, effort and model list come from the bento_voice section of ~/.hermes/config.yaml (jot_voice is read too); the chat window's pickers apply to Bento's Hermes process only. In the window, ⌘K opens the palette and ⌘/ lists every shortcut.")
+            }
+            Section {
+                Toggle(isOn: binding({ settings.assistantKeepOnTop }, { settings.setAssistantKeepOnTop($0) })) {
+                    Text("Keep on top (picture in picture)")
+                    Text("Off, the window floats over the Space it opened on and stays behind when you switch Spaces.")
+                }
+            } header: {
+                Text("Window")
+            } footer: {
+                Footnote("The chat window stays above every app, on every Space and over full-screen apps, until you hide it (⇧⌥F18 or Esc). Typing in it doesn't switch away from the app in front. VoiceOver works best with this off.")
             }
             Section("Shortcuts") {
                 ModuleShortcuts(moduleID: "assistant", revision: revision.value)

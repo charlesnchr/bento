@@ -5,11 +5,23 @@ import BentoCore
 /// window commands treat them like any other app's. Their AX elements are
 /// resolved in-process, which is a direct call on the main thread only.
 enum OwnWindows {
-    /// Titled, activating, movable and not full screen. Not popups, HUDs,
-    /// pins, Quick Add or the clipboard panel.
+    /// Titled, activating (or a `ManagedPanel`), movable and not full screen.
+    /// Not popups, HUDs, pins, Quick Add or the clipboard panel.
     static func isRegular(_ w: NSWindow) -> Bool {
-        w.isVisible && w.isMovable && !w.ignoresMouseEvents && w.styleMask.contains(.titled)
-            && !w.styleMask.contains(.nonactivatingPanel) && !w.styleMask.contains(.fullScreen)
+        w.isVisible && isRegular(style: w.styleMask, movable: w.isMovable, ignoresMouse: w.ignoresMouseEvents, managed: w is ManagedPanel)
+    }
+
+    static func isRegular(style: NSWindow.StyleMask, movable: Bool, ignoresMouse: Bool, managed: Bool) -> Bool {
+        movable && !ignoresMouse && style.contains(.titled) && !style.contains(.fullScreen)
+            && (managed || !style.contains(.nonactivatingPanel))
+    }
+
+    /// Bento's windows take the window commands: Bento is the active app, or
+    /// a `ManagedPanel` has the keyboard without activating it. Main thread.
+    static var haveFocus: Bool {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() { return true }
+        guard let key = NSApp.keyWindow else { return false }
+        return key is ManagedPanel && key.isKeyWindow && isRegular(key)
     }
 
     static var regularIDs: Set<CGWindowID> {

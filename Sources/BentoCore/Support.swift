@@ -147,6 +147,11 @@ open class KeyablePanel: NSPanel {
 
 // MARK: - App activation helpers
 
+/// A non-activating panel that window management still treats as one of
+/// Bento's regular windows: titled, movable and typed into, it only doesn't
+/// activate Bento when clicked (the assistant kept on top).
+public protocol ManagedPanel: NSWindow {}
+
 public enum AppActivation {
     /// Activates Bento itself (needed before showing windows from an accessory app).
     /// Accessory apps launched in the background are not allowed to take focus

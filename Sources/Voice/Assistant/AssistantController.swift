@@ -220,8 +220,11 @@ final class AssistantController: AssistantActions {
     func openChat() {
         open()
     }
+    /// Kept on top, the window is nearly always visible: after the user clicks
+    /// back into another app, the shortcut brings the keyboard back to it
+    /// instead of hiding it.
     func toggle() {
-        if window.isVisible { window.hide() } else { open() }
+        if !window.isVisible { open() } else if window.isKey { window.hide() } else { window.show() }
     }
     func openBento(_ page: String) {
         switch page {
