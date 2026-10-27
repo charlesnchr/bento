@@ -1,4 +1,5 @@
 import AppKit
+import BentoCore
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
@@ -30,7 +31,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         panel.setFrame(frame, display: true)
         placement.save()
     }
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible && !AppActivation.isOrderingOut(panel) }
 
     override init() {
         super.init()
@@ -98,21 +99,14 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
     func show(activate: Bool = true) {
         if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier { origin = app }
         placement.prepareToShow()
-        if activate {
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-            model.focus()
-        } else {
-            panel.orderFrontRegardless()
-        }
+        AppActivation.show(panel, activate: activate)
+        if activate { model.focus() }
     }
     func hide() {
         guard panel.attachedSheet == nil else { return }
         onHide?()
-        let wasKey = panel.isKeyWindow
         placement.save()
-        panel.orderOut(nil)
-        if wasKey { origin?.activate(options: []) }
+        AppActivation.orderOut(panel, activating: panel.isKeyWindow ? origin : nil)
     }
     func export(_ markdown: String, title: String) {
         let save = NSSavePanel()

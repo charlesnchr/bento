@@ -224,26 +224,21 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     // MARK: Showing
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible && !AppActivation.isOrderingOut(panel) }
     var isKey: Bool { panel.isKeyWindow || palette.isOpen && NSApp.keyWindow != nil && NSApp.keyWindow?.parent === panel }
 
     func show(focus: Bool = true) {
         ensureOnScreen()
-        if focus {
-            AppActivation.activateSelf()
-            panel.makeKeyAndOrderFront(nil)
-            panel.orderFrontRegardless()
-            if !palette.isOpen { panel.makeFirstResponder(textView) }
-        } else {
-            panel.orderFrontRegardless()
-        }
+        AppActivation.show(panel, activate: focus)
+        if focus, !palette.isOpen { panel.makeFirstResponder(textView) }
     }
 
-    func hide() {
+    /// `app`: hand focus to it (see `AppActivation.orderOut`).
+    func hide(activating app: NSRunningApplication? = nil) {
         closeInline()
         palette.close()
         controller.flushPendingSave()
-        panel.orderOut(nil)
+        AppActivation.orderOut(panel, activating: app)
         removeKeyMonitor()
     }
 
