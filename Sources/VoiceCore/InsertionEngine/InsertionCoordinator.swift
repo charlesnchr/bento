@@ -57,31 +57,32 @@ public struct InsertionCoordinator: TextInserting {
         }
         let activity = SelectionActivity(targetPID: context.targetPID)
         defer { activity.stop() }
-        func editingSelectionMatches() async -> Bool {
+        // Edits and retries replace their earlier output. Dictation leaves the caret
+        // after that text, so it is selected only now, right before the replacement.
+        func editingTargetSelected() async -> Bool {
             guard let editing = context.editingSession else { return true }
-            if OutputSelection.equivalent(OutputSelection.selectedText(targetPID: context.targetPID), editing.currentText) { return true }
+            if await OutputSelection.selectRecentOutput(editing.currentText, targetPID: context.targetPID,
+                                                        permitted: { activity.valid }) { return true }
             let selected = await KeyboardSelection.readSelectedText(targetPID: context.targetPID, permitted: { activity.valid })
             return activity.valid && OutputSelection.equivalent(selected, editing.currentText)
         }
 
-        if !(await editingSelectionMatches()) {
+        // An unchanged revision is already in place; do not paste it twice.
+        if let editing = context.editingSession, editing.currentText == text,
+           OutputSelection.isRecentOutput(text, targetPID: context.targetPID) {
+            return .inserted
+        }
+        if !(await editingTargetSelected()) {
             SelectionDiagnostics.record("editing.selectionMismatch", targetPID: context.targetPID)
             paster.copyOnly(text)
             return .fellBackToClipboard
         }
-        let selection = context.keepOutputSelected ? OutputSelection.capture(targetPID: context.targetPID, diagnose: true) : nil
-        // An unchanged revision is already inserted and selected; do not paste it twice.
-        if context.editingSession?.currentText == text { return .inserted }
 
         // Tier 1: AX direct insertion.
         switch await AXInserter.insert(text, targetPID: context.targetPID, bundleID: context.targetAppBundleID) {
         case .landed:
             SelectionDiagnostics.record("insertion.axLanded", targetPID: context.targetPID)
             Log.insertion.info("inserted via AX")
-            if context.keepOutputSelected,
-               !(await OutputSelection.selectInserted(text, before: selection, targetPID: context.targetPID, activity: activity)) {
-                return .insertedWithoutSelection
-            }
             return .inserted
         case .focusElsewhere:
             // PROVEN focus theft — a blind ⌘V would paste into the thief.
@@ -106,30 +107,16 @@ public struct InsertionCoordinator: TextInserting {
             paster.copyOnly(text)
             return .fellBackToClipboard
         }
-        if !(await editingSelectionMatches()) {
+        if !(await editingTargetSelected()) {
             paster.copyOnly(text)
             return .fellBackToClipboard
         }
         // Tier 2: guarded paste. Note: "true" means the ⌘V was POSTED — there is
         // no OS-level delivery receipt for synthetic paste (industry-wide floor;
         // the text also stays recoverable in History).
-        var selected = !context.keepOutputSelected
-        let afterPaste: @MainActor () async -> Void = {
-            if context.keepOutputSelected {
-                selected = await OutputSelection.selectInserted(text, before: selection, targetPID: context.targetPID, activity: activity)
-                if !selected, selection == nil, activity.valid {
-                    // Browser editors may expose no AX range. After our single
-                    // paste, use character navigation and verify by Copy instead.
-                    selected = await KeyboardSelection.select(text, targetPID: context.targetPID, activity: activity)
-                }
-            }
-        }
-        if await paster.paste(text, afterPaste: context.keepOutputSelected ? afterPaste : nil) {
+        if await paster.paste(text) {
             SelectionDiagnostics.record("insertion.pastePosted", targetPID: context.targetPID)
             Log.insertion.info("⌘V posted (delivery is best-effort)")
-            if !selected {
-                return .insertedWithoutSelection
-            }
             return .inserted
         }
 
@@ -146,7 +133,7 @@ public struct InsertionCoordinator: TextInserting {
            !(client is NSTextView) || (client as? NSTextView)?.isEditable == true {
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
             Log.insertion.info("inserted into a Bento window")
-            return .insertedWithoutSelection
+            return .inserted
         }
         paster.copyOnly(text)
         return .fellBackToClipboard

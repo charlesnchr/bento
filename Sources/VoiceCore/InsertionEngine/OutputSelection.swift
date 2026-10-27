@@ -7,15 +7,11 @@ public enum OutputSelection {
         let element: AXUIElement
         let value: String
         let range: CFRange
-        let identifier: String?
-        let window: AXUIElement?
 
-        public init(element: AXUIElement, value: String, range: CFRange, identifier: String? = nil, window: AXUIElement? = nil) {
+        init(element: AXUIElement, value: String, range: CFRange) {
             self.element = element
             self.value = value
             self.range = range
-            self.identifier = identifier
-            self.window = window
         }
     }
 
@@ -53,12 +49,7 @@ public enum OutputSelection {
             return nil
         }
         report("capture.ready")
-        var identifier: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &identifier)
-        var window: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &window)
-        let axWindow = window.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? unsafeDowncast($0 as AnyObject, to: AXUIElement.self) : nil }
-        return Snapshot(element: element, value: value, range: range, identifier: identifier as? String, window: axWindow)
+        return Snapshot(element: element, value: value, range: range)
     }
 
     public static func selectedText(targetPID: pid_t?) -> String? {
@@ -90,27 +81,69 @@ public enum OutputSelection {
             .replacingOccurrences(of: "\u{2029}", with: "\n")
     }
 
-    private static func insertedRange(text: String, before: Snapshot, current: Snapshot) -> CFRange? {
-        let source = before.value as NSString
-        let value = current.value as NSString
-        let start = before.range.location
-        guard start >= 0, before.range.length >= 0, start <= source.length,
-              before.range.length <= source.length - start else { return nil }
-        let prefix = source.substring(to: start)
-        let suffix = source.substring(from: start + before.range.length)
-        let (canonical, offsets) = canonicalOffsets(current.value)
-        let canonicalPrefix = normalized(prefix)
-        let canonicalText = normalized(text)
-        guard canonical == canonicalPrefix + canonicalText + normalized(suffix) else { return nil }
-        let normalizedStart = (canonicalPrefix as NSString).length
-        let normalizedEnd = normalizedStart + (canonicalText as NSString).length
-        guard let mappedStart = offsets[normalizedStart], let mappedEnd = offsets[normalizedEnd],
-              mappedStart <= mappedEnd, mappedEnd <= value.length else { return nil }
-        return CFRange(location: mappedStart, length: mappedEnd - mappedStart)
+    /// Where `text` sits for a replacement: already selected, or immediately before
+    /// a collapsed caret, which is where dictation leaves it. Offsets are UTF-16, as AX uses.
+    public static func recentOutputRange(_ text: String, value: String, selection: CFRange) -> CFRange? {
+        let source = value as NSString
+        guard !text.isEmpty, selection.location >= 0, selection.length >= 0,
+              selection.location <= source.length, selection.length <= source.length - selection.location else { return nil }
+        if selection.length > 0 {
+            let selected = source.substring(with: NSRange(location: selection.location, length: selection.length))
+            return equivalent(selected, text) ? selection : nil
+        }
+        // Canonicalise only a bounded tail: CRLF can at most double the output's
+        // length in the editor. Start on a character boundary.
+        var tailStart = max(0, selection.location - (2 * text.utf16.count + 16))
+        if tailStart > 0 { tailStart = source.rangeOfComposedCharacterSequence(at: tailStart).location }
+        let tail = source.substring(with: NSRange(location: tailStart, length: selection.location - tailStart))
+        let (canonical, offsets) = canonicalOffsets(tail)
+        let target = normalized(text)
+        let start = (canonical as NSString).length - (target as NSString).length
+        guard start >= 0, (canonical as NSString).substring(from: start) == target,
+              let mappedStart = offsets[start] else { return nil }
+        return CFRange(location: tailStart + mappedStart, length: selection.location - tailStart - mappedStart)
+    }
+
+    /// True when `text` is selected or, if `atCaret`, ends at the caret in the focused editor.
+    public static func isRecentOutput(_ text: String, targetPID: pid_t?, atCaret: Bool = true) -> Bool {
+        if equivalent(selectedText(targetPID: targetPID), text) { return true }
+        guard atCaret, let snapshot = capture(targetPID: targetPID) else { return false }
+        return recentOutputRange(text, value: snapshot.value, selection: snapshot.range) != nil
+    }
+
+    /// Selects `text` just before it is replaced, and only when it ends at the caret.
+    /// Dictation itself never leaves a selection behind.
+    public static func selectRecentOutput(_ text: String, targetPID: pid_t?, permitted: () -> Bool) async -> Bool {
+        if equivalent(selectedText(targetPID: targetPID), text) { return true }
+        guard permitted(), let snapshot = capture(targetPID: targetPID, diagnose: true),
+              let range = recentOutputRange(text, value: snapshot.value, selection: snapshot.range) else {
+            SelectionDiagnostics.record("selection.recentOutputNotFound", targetPID: targetPID)
+            return false
+        }
+        guard setRange(range, on: snapshot.element, targetPID: targetPID) else { return false }
+        // Some editors apply AX selection writes asynchronously. Verify before replacing.
+        for _ in 0..<10 {
+            guard permitted() else { break }
+            if equivalent(selectedText(targetPID: targetPID), text) { return true }
+            try? await Task.sleep(nanoseconds: 30_000_000)
+        }
+        SelectionDiagnostics.record("selection.didNotStick", targetPID: targetPID)
+        // Never leave a highlight behind when the replacement falls back to the
+        // clipboard, but don't move the caret once the user has taken over.
+        if permitted() { _ = setRange(snapshot.range, on: snapshot.element, targetPID: targetPID) }
+        return false
+    }
+
+    private static func setRange(_ range: CFRange, on element: AXUIElement, targetPID: pid_t?) -> Bool {
+        var range = range
+        guard let value = AXValueCreate(.cfRange, &range) else { return false }
+        let error = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
+        if error != .success { SelectionDiagnostics.record("selection.writeError:\(error.rawValue)", targetPID: targetPID) }
+        return error == .success
     }
 
     // Keep AX offsets in the editor's UTF-16 representation while comparing
-    // canonical newlines across the whole replacement, including surrounding text.
+    // canonical newlines.
     private static func canonicalOffsets(_ text: String) -> (String, [Int: Int]) {
         var canonical = ""
         var offsets = [0: 0]
@@ -127,103 +160,6 @@ public enum OutputSelection {
         return (canonical, offsets)
     }
 
-    public static func replacementValue(before: String, range: NSRange, text: String) -> String? {
-        let source = before as NSString
-        guard range.location >= 0, range.length >= 0, range.location <= source.length,
-              range.length <= source.length - range.location else { return nil }
-        return source.replacingCharacters(in: range, with: text)
-    }
-
-    public static func selectInserted(_ text: String, before: Snapshot?, targetPID: pid_t?) async -> Bool {
-        let activity = SelectionActivity(targetPID: targetPID)
-        defer { activity.stop() }
-        return await selectInserted(text, before: before, targetPID: targetPID, activity: activity)
-    }
-
-    static func selectInserted(_ text: String, before: Snapshot?, targetPID: pid_t?, activity: SelectionActivity) async -> Bool {
-        let result = await selectInserted(text, before: before, read: { capture(targetPID: targetPID) },
-            setRange: { element, range in
-                var range = range
-                guard let value = AXValueCreate(.cfRange, &range) else { return false }
-                let error = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
-                if error != .success { SelectionDiagnostics.record("selection.writeError:\(error.rawValue)", targetPID: targetPID) }
-                return error == .success
-            }, permitted: { activity.valid }, pause: {
-                try? await Task.sleep(nanoseconds: 40_000_000)
-            }, report: { SelectionDiagnostics.record($0, targetPID: targetPID) })
-        if result, equivalent(selectedText(targetPID: targetPID), text) { return true }
-        guard activity.valid else { return false }
-        // A keyboard fallback needs positive caret/text evidence, not merely a
-        // posted paste. Never guess its starting point in an unreadable editor.
-        guard let before, let current = capture(targetPID: targetPID),
-              sameEditor(before, current), let expected = insertedRange(text: text, before: before, current: current),
-              (current.range.length == 0 && current.range.location == expected.location + expected.length) ||
-              (current.range.location == expected.location && current.range.length == expected.length) else {
-            SelectionDiagnostics.record("selection.noSafeKeyboardAnchor", targetPID: targetPID)
-            return false
-        }
-        if current.range.length > 0 {
-            let copied = await KeyboardSelection.readSelectedText(targetPID: targetPID, permitted: { activity.valid })
-            return activity.valid && equivalent(copied, text)
-        }
-        let fallback = await KeyboardSelection.select(text, targetPID: targetPID, activity: activity)
-        SelectionDiagnostics.record(fallback ? "selection.keyboardVerified" : "selection.keyboardUnverified", targetPID: targetPID)
-        return fallback
-    }
-
-    public static func selectInserted(_ text: String, before: Snapshot?,
-        read: () -> Snapshot?, setRange: (AXUIElement, CFRange) -> Bool,
-        permitted: () -> Bool, pause: () async -> Void, report: (String) -> Void = { _ in }) async -> Bool {
-        guard let before, !text.isEmpty else {
-            report(before == nil ? "selection.noInitialSnapshot" : "selection.emptyOutput")
-            return false
-        }
-        var lastWrite = -10
-        var stableReads = 0
-        var observedEnd = false
-        // AX value, caret, and selection notifications arrive independently.
-        // Wait for convergence and a short stable selection, bounded to 1.2 seconds.
-        for tick in 0..<30 {
-            guard !Task.isCancelled, permitted() else { report("selection.cancelledOrBlocked"); return false }
-            guard let current = read() else { report("selection.snapshotLost"); return false }
-            // Browser renderers can replace the AX node on paste. The complete
-            // replacement match below plus the caller's input/window guard own safety.
-            if !sameEditor(before, current) {
-                stableReads = 0
-                await pause()
-                continue
-            }
-            if let selection = insertedRange(text: text, before: before, current: current) {
-                let isSelected = current.range.location == selection.location && current.range.length == selection.length
-                let atEnd = current.range.location == selection.location + selection.length && current.range.length == 0
-                let unchangedCaret = current.range.location == before.range.location && current.range.length == before.range.length
-                if isSelected {
-                    stableReads += 1
-                    if stableReads >= 5 { report("selection.verified"); return true }
-                } else {
-                    stableReads = 0
-                    if atEnd {
-                        observedEnd = true
-                        // Give asynchronous selection writes time to arrive before retrying.
-                        if tick - lastWrite >= 5 {
-                            guard setRange(current.element, selection) else { report("selection.writeRejected"); return false }
-                            lastWrite = tick
-                        }
-                    } else if observedEnd || !unchangedCaret {
-                        report("selection.caretMoved")
-                        return false
-                    }
-                }
-            } else {
-                stableReads = 0
-                if observedEnd { report("selection.contentChanged"); return false }
-            }
-            await pause()
-        }
-        report(observedEnd ? "selection.didNotStick" : "selection.insertionNotObserved")
-        return false
-    }
-
     private static func value(_ element: AXUIElement) -> String? {
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &ref) == .success else { return nil }
@@ -237,13 +173,6 @@ public enum OutputSelection {
             return unsafeDowncast(ancestor as AnyObject, to: AXUIElement.self)
         }
         return element
-    }
-
-    private static func sameEditor(_ before: Snapshot, _ current: Snapshot) -> Bool {
-        if CFEqual(before.element, current.element) { return true }
-        guard let identifier = before.identifier, !identifier.isEmpty, identifier == current.identifier,
-              let window = before.window, let otherWindow = current.window else { return false }
-        return CFEqual(window, otherWindow)
     }
 
     private static func range(_ element: AXUIElement) -> CFRange? {
