@@ -15,6 +15,12 @@ final class AssistantController: AssistantActions {
     private var task: Task<Void, Never>?
     private var turn = UUID()
     private var liveStarting = false
+    /// A resumed call's first words start a new message, not the end of the last call's.
+    private var liveBoundary = false
+    /// The earlier call's transcript, for Hermes when the resumed call has no Hermes conversation to continue.
+    private var liveEarlier = ""
+    /// The recap a resumed call started with, while its adopted Hermes conversation is unconfirmed.
+    private var liveAdopted: String?
     private var steerAcks = 0
     private var promptInFlight = false
     private var settingsLaunch = 0
@@ -57,10 +63,11 @@ final class AssistantController: AssistantActions {
                 guard let self, let session, session === self.live, session.active else { return }
                 // Live fragments aren't authoritative turn boundaries. Group adjacent speakers only.
                 let speaker = role == "assistant" ? session.provider.displayName : nil
-                if self.window.model.messages.last?.role == role,
+                if !self.liveBoundary, self.window.model.messages.last?.role == role,
                    self.window.model.messages.last?.speaker == speaker {
                     self.window.model.messages[self.window.model.messages.count - 1].text += text
                 } else { self.window.model.messages.append(AssistantMessage(role: role, text: text, speaker: speaker)) }
+                self.liveBoundary = false
             }
             session.onTool = { [weak self] call in
                 guard let self else { return "Not executed: assistant unavailable." }
@@ -92,12 +99,15 @@ final class AssistantController: AssistantActions {
         _ = desktop.captureTarget()
         live = SettingsStore().assistantLiveProvider == .gemini ? geminiLive : gptLive
         let name = live.provider.displayName
+        // A voice conversation on screen continues until New Chat: same transcript and Hermes
+        // conversation, and the new call is told what was said.
+        let recap = AssistantTranscript.liveRecap(model.messages)
         liveStarting = true
         isBusy = true; onBusyChange?(true)
         window.show(activate: false)
         window.model.liveName = name
         window.model.liveVoice = true
-        window.setStatus("Starting \(name) call...", busy: true)
+        window.setStatus(recap != nil ? "Resuming the call with \(name)..." : "Starting \(name) call...", busy: true)
         let token = UUID(); turn = token
         task = Task { [weak self] in
             guard let self else { return }
@@ -108,9 +118,20 @@ final class AssistantController: AssistantActions {
                 return
             }
             do {
-                try live.start()
+                try live.start(recap: recap)
                 client.stop() // A voice session starts a fresh backend, never replays old requests.
-                window.clear()
+                liveAdopted = nil
+                if recap == nil {
+                    liveEarlier = ""
+                    window.clear()
+                } else if let id = model.sessionID {
+                    client.adopt(id) // Hermes reloads the conversation from its history.
+                    liveEarlier = ""
+                    liveAdopted = recap
+                } else {
+                    liveEarlier = recap ?? ""
+                }
+                liveBoundary = true
                 window.model.historyVisible = false
                 window.model.liveVoice = true
                 window.setStatus("Connecting to \(name)...", busy: true)
@@ -170,14 +191,30 @@ final class AssistantController: AssistantActions {
             // Context is read on demand via ACP, never automatically forwarded to the voice model.
             AzureLiveDiagnostics.record(.taskStarted, log: live.diagnosticsLog)
             let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
-            try await client.prompt("User's transcribed request from Bento's " + live.requestSource + " voice session:\n" + instruction +
-                "\nInterpret this spoken request and write your own precise tool queries; do not mechanically pass filler words to tools. " +
-                "Perform only this request. The transcript may be imperfect; clarify ambiguity instead of guessing actions. " +
-                "Current desktop context is available via bento_desktop_context. Do not broaden scope or retry denied actions. " +
-                "Today's date is " + today + ". For current/latest information search the current year and verify dates, not old model knowledge. " +
-                "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
-                "Bento displays your response directly as a Hermes chat reply. Do not promise a separate document unless you actually create one. " +
-                "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + call.context)
+            let request = { [self] in
+                let prior = String([liveEarlier, call.context].filter { !$0.isEmpty }.joined(separator: "\n").suffix(6000))
+                return "User's transcribed request from Bento's " + live.requestSource + " voice session:\n" + instruction +
+                    "\nInterpret this spoken request and write your own precise tool queries; do not mechanically pass filler words to tools. " +
+                    "Perform only this request. The transcript may be imperfect; clarify ambiguity instead of guessing actions. " +
+                    "Current desktop context is available via bento_desktop_context. Do not broaden scope or retry denied actions. " +
+                    "Today's date is " + today + ". For current/latest information search the current year and verify dates, not old model knowledge. " +
+                    "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
+                    "Bento displays your response directly as a Hermes chat reply. Do not promise a separate document unless you actually create one. " +
+                    "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + prior
+            }
+            let response = try await client.prompt(blocks: [["type": "text", "text": request()]])
+            // Hermes refuses, running nothing, a conversation it no longer has. A resumed call then
+            // continues in a fresh one, told the earlier call's transcript instead.
+            if let recap = liveAdopted, response["stopReason"] as? String == "refusal", result.isEmpty {
+                liveAdopted = nil
+                liveEarlier = recap
+                client.detach()
+                try await client.ready()
+                guard live.active, turn == token, !Task.isCancelled else { return "Cancelled before execution." }
+                window.bindSession(client.sessionID)
+                try await client.prompt(request())
+            }
+            liveAdopted = nil
             guard live.active, turn == token, !Task.isCancelled else { return "Cancelled. Completed actions were not undone." }
             window.updateTool(["toolCallId": toolID, "status": "completed"])
             if result.isEmpty {

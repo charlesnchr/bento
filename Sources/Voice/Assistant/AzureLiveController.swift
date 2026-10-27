@@ -28,7 +28,7 @@ final class AzureLiveController {
     var onEnd: (() -> Void)?
     var onTool: ((AzureLiveProtocol.Call) async -> String)?
 
-    func start() throws {
+    func start(recap: String?) throws {
         guard !active else { return }
         guard !SecureInput.isActive, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             throw ACPClient.Failure(message: "Allow microphone access and leave secure input before starting Azure voice.")
@@ -36,6 +36,9 @@ final class AzureLiveController {
         guard let script = VoiceResources.url("azure_live", "py") else {
             throw ACPClient.Failure(message: "The Azure voice bridge is missing from Bento.")
         }
+        // The bridge reads this line before it opens the session: the earlier call's transcript when resuming.
+        var setup = try JSONSerialization.data(withJSONObject: ["type": "bento.setup", "recap": recap ?? ""])
+        setup.append(10)
         let child = Process(), incoming = Pipe(), outgoing = Pipe()
         child.executableURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".hermes/hermes-agent/venv/bin/python")
         child.arguments = [script.path]
@@ -55,7 +58,12 @@ final class AzureLiveController {
         inputChunks = 0; outputChunks = 0; outputBytes = 0
         AzureLiveDiagnostics.record(.connecting)
         let token = generation
-        onStatus?("Connecting to Azure GPT-Live...")
+        let handle = incoming.fileHandleForWriting
+        Task { [weak self] in
+            do { try await Self.write(setup, to: handle) }
+            catch { self?.failed("Azure voice could not start.", token: token, code: .sendFailure) }
+        }
+        onStatus?(recap?.isEmpty == false ? "Resuming the call with Azure GPT-Live..." : "Connecting to Azure GPT-Live...")
         reader = Task.detached { [weak self] in
             do {
                 try await lines.readLines { [weak self] line in
