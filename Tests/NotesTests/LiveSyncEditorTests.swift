@@ -15,10 +15,10 @@ import Testing
         let c = NotesController(store: NoteStore(url: home.appendingPathComponent("notes.sqlite")),
                                 config: ConfigStore(url: home.appendingPathComponent("config.json")))
         c.updateSettings { $0 = NotesSettings() }
-        var n = Note(body: body, createdAt: 1, updatedAt: 100)
-        n.seq = 1
-        n.baseHash = NoteText.hash(body)
-        c.store.save(n)
+        // the note as it came from the other Mac (so the engine knows its history)
+        let id = UUID().uuidString
+        c.engine.applyRemote(theirs(id, body, seq: 1))
+        let n = try #require(c.store.note(id))
         c.open(n.id)
         let w = try #require(c.debugWindow)
         try run(c, w, n.id)
@@ -26,11 +26,12 @@ import Testing
         w.hide()
     }
 
-    /// Another Mac's version made from `base`.
-    private func theirs(_ id: String, _ body: String, from base: String, seq: Int64 = 2) -> Note {
-        var r = remote(id, body, updated: Note.now() + 1000, seq: seq)
+    /// The other Mac's next version (made from its previous one).
+    private func theirs(_ id: String, _ body: String, seq: Int64 = 2) -> Note {
+        let at = Note.now() + 1000 + seq
+        var r = remote(id, body, updated: at, seq: seq)
         r.device = "Other Mac"
-        r.remoteBases = [NoteText.hash(base)]
+        r.remoteHeads = ["Other Mac": SyncHead(at: at, hash: NoteText.hash(body))]
         return r
     }
 
@@ -41,7 +42,7 @@ import Testing
         try withNote(base) { c, w, id in
             w.textView.setSelectedRange(NSRange(location: (base as NSString).length, length: 0))
             w.textView.insertText(" mine", replacementRange: NSRange(location: NSNotFound, length: 0)) // not saved yet
-            c.engine.applyRemote(theirs(id, "# Note\nNEW first\n\nlast", from: base))
+            c.engine.applyRemote(theirs(id, "# Note\nNEW first\n\nlast"))
             #expect(w.currentText == "# Note\nNEW first\n\nlast mine")
             #expect(caret(w) == (w.currentText as NSString).length) // still right after what was typed
             let stored = try #require(c.store.note(id))
@@ -55,10 +56,10 @@ import Testing
         let base = "alpha\nbeta\ngamma"
         try withNote(base) { c, w, id in
             w.textView.setSelectedRange(NSRange(location: 6, length: 4)) // "beta"
-            c.engine.applyRemote(theirs(id, "zero\nalpha\nbeta\ngamma delta", from: base))
+            c.engine.applyRemote(theirs(id, "zero\nalpha\nbeta\ngamma delta"))
             #expect((w.currentText as NSString).substring(with: w.selectedRange) == "beta")
             w.textView.setSelectedRange(NSRange(location: 7, length: 0)) // "zero\nal|pha"
-            c.engine.applyRemote(theirs(id, "alpha\nbeta\ngamma", from: "zero\nalpha\nbeta\ngamma delta", seq: 3))
+            c.engine.applyRemote(theirs(id, "alpha\nbeta\ngamma", seq: 3))
             #expect(caret(w) == 2) // the line above it went, the text after it doesn't matter
             #expect(w.currentText == "alpha\nbeta\ngamma")
         }
@@ -84,7 +85,7 @@ import Testing
             let before = topLine()
             #expect(before.hasPrefix("line 1"))
             let added = (0..<30).map { "new \($0)" }.joined(separator: "\n") + "\n"
-            c.engine.applyRemote(theirs(id, added + base, from: base))
+            c.engine.applyRemote(theirs(id, added + base))
             #expect(tv.string == added + base)
             #expect(topLine() == before)
         }

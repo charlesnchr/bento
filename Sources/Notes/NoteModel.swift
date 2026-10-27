@@ -38,6 +38,16 @@ enum JSONValue: Equatable {
     var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
 }
 
+/// The newest version of one Mac's text that a version of a note contains: that Mac's
+/// `updated_at` for it (only ever grows for a note) and the hash of its body.
+struct SyncHead: Equatable {
+    var at: Int64
+    var hash: UInt64
+}
+
+/// Per Mac (device name), the newest of its versions a version contains.
+typealias SyncHeads = [String: SyncHead]
+
 /// One note, mirroring the sync protocol's note object plus local bookkeeping.
 struct Note: Equatable {
     var id: String
@@ -57,9 +67,10 @@ struct Note: Equatable {
     /// (nil: unknown). Lets the sync engine tell a real concurrent edit from a
     /// meta-only change on either side.
     var baseHash: UInt64?
-    /// Wire only (never stored): hashes of recent texts a remote version descends from
-    /// (`meta.base`, newest first). Lets the engine merge concurrent edits.
-    var remoteBases: [UInt64] = []
+    /// Wire only (never stored): which versions of each Mac's text a remote version
+    /// contains (`meta.base`); nil when it doesn't say. Lets the engine merge concurrent
+    /// edits.
+    var remoteHeads: SyncHeads?
 
     init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
         self.id = id

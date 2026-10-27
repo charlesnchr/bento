@@ -25,11 +25,12 @@ turning the note into a tombstone), `conflictOf` (id of the note this one is a
 "conflicted copy" of: when a client's unsynced edit loses last-writer-wins to a
 different text from another device and the two can't be merged, the client keeps its
 losing text as a new note titled "‹title› (conflicted copy, ‹device›)" instead of
-discarding it), `base` (written on every put: `{"at": updated_at, "hashes": [...]}`,
-hex FNV-1a hashes of the UTF-8 of recent texts this version descends from, newest
-first; only valid while `at` equals the note's `updated_at`, so a client that edits the
-note without rewriting `base` invalidates it; see Client behaviour). Unknown keys must
-be preserved.
+discarding it), `base` (written on Notes puts: `{"at": updated_at, "heads": {"<device>":
+[updated_at, "<hash>"], ...}}`: for each device, the newest version of that device's text
+this version contains, as that device's `updated_at` for it and the hex FNV-1a hash of
+its UTF-8 body, like a version vector; only valid while `at` equals the note's
+`updated_at`, so a client that edits the note without rewriting `base` invalidates it;
+see Client behaviour). Unknown keys must be preserved.
 
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 
@@ -150,13 +151,25 @@ so it can adopt it. `created_at` is kept from the first version.
 - Debounce local edits (~400 ms) then send `put`; clear `dirty` on `ack accepted` for
   that id if the note was not edited again meanwhile.
 - On (re)connect: `hello{since:last_seq}`, apply snapshot, then re-send all dirty notes.
-- Applying a remote note (Notes): when its `meta.base` lists the local text, it was
-  made from it → take it. Otherwise, when it lists a text the local version also
-  descends from (texts seen, sent or merged this session), merge three-way from the
-  newest such text: both sides' changes are applied when they don't touch the same
-  text, the result is stored dirty with a newer `updated_at` and sent, so the server
-  ends up with both. Two clients merging the same pair of versions get the same text.
-- Otherwise: if the local copy is not dirty → overwrite. If dirty and remote
+- Applying a remote note (Notes) that carries `meta.base`, when the local text's heads
+  are known: exactly one of two clients with concurrent versions merges them, the one
+  whose version the server no longer has. A remote version made without our latest put
+  that arrives while that put is in flight waits for its ack: stored after ours, we
+  merge onto it; stored before ours (ours overwrote it) or our put refused (the winner
+  follows), it is dropped, as its sender merges. Otherwise the local text is merged
+  three-way with the remote one from a known text whose heads are exactly what both
+  contain (the element-wise minimum); both sides' changes are applied when they don't
+  touch the same text, the result is stored dirty with a newer `updated_at` and sent,
+  and the other client takes it as a fast-forward. Two clients merging the same pair of
+  versions get the same text.
+- No such text is known (heads disagree, three or more clients edited at the same
+  moment, or the history is gone), or the changes overlap: last-writer-wins as below,
+  and a synced local text the remote one overwrote is kept as a conflicted copy.
+- Heads and recent versions are kept in memory only: after a relaunch, a note's heads
+  are unknown (its puts carry no `base`) until a remote version of it is adopted; a put
+  without `base` counts as the start of a note's history.
+- Otherwise (no `meta.base`, e.g. an older client, or local heads unknown): if the local
+  copy is not dirty → overwrite. If dirty and remote
   `updated_at` is newer → adopt remote (LWW) and keep the local text as a conflicted
   copy. Otherwise keep local and (re)send it.
 - An open note takes remote text like Google Docs: only the changed stretches are

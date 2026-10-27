@@ -122,7 +122,8 @@ enum TextMerge {
             let x = l[i], y = r[j]
             if x == y { out.append(x); i += 1; j += 1; continue } // the same change on both
             if x.range.length == 0, y.range.length == 0, x.range.location == y.range.location {
-                out.append(TextEdit(range: x.range, replacement: combine(x.replacement, y.replacement)))
+                guard let both = combine(x.replacement, y.replacement) else { return nil }
+                out.append(TextEdit(range: x.range, replacement: both))
                 i += 1; j += 1
                 continue
             }
@@ -140,9 +141,15 @@ enum TextMerge {
     }
 
     /// Two insertions at the same spot (both typed there): both, in an order both Macs
-    /// agree on.
-    static func combine(_ x: String, _ y: String) -> String {
-        x.utf16.lexicographicallyPrecedes(y.utf16) ? x + y : y + x
+    /// agree on. nil when one starts or ends with the other: that's the same typing seen
+    /// from two different bases, and keeping both would duplicate it.
+    static func combine(_ x: String, _ y: String) -> String? {
+        let a = x.utf16, b = y.utf16
+        func contains(_ l: String.UTF16View, _ s: String.UTF16View) -> Bool {
+            l.starts(with: s) || l.reversed().starts(with: s.reversed())
+        }
+        if contains(a, b) || contains(b, a) { return nil }
+        return a.lexicographicallyPrecedes(b) ? x + y : y + x
     }
 
     /// Where a selection ends up after `edits` (sorted, in its text's coordinates), like

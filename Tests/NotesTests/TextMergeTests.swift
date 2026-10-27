@@ -100,9 +100,16 @@ import Testing
     }
 
     @Test func combineIsSymmetric() {
-        for (x, y) in [("milk", "eggs"), ("A", "A more"), ("", "x")] {
+        for (x, y) in [("milk", "eggs"), ("abc", "xyz")] {
             #expect(TextMerge.combine(x, y) == TextMerge.combine(y, x))
         }
+    }
+
+    @Test func theSameTypingFromTwoBasesIsAConflict() {
+        // one side's insertion starts or ends with the other's: never "abcabcdef"
+        #expect(TextMerge.combine("abc", "abcdef") == nil)
+        #expect(TextMerge.combine("def", "abcdef") == nil)
+        #expect(merge("x\n", "x\nabc", "x\nabcdef") == nil)
     }
 }
 

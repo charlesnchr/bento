@@ -281,10 +281,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     /// stretches are replaced, the selection moves with the text around it and the text at
     /// the top of the view stays where it is.
     func applyExternalBody(_ body: String) {
+        guard !storage.string.utf16.elementsEqual(body.utf16) else { return }
+        if textView.hasMarkedText() { textView.unmarkText() } // can change the text: diff after it
+        closeInline()
         let edits = TextMerge.edits(from: storage.string, to: body)
         guard !edits.isEmpty else { return }
-        if textView.hasMarkedText() { textView.unmarkText() }
-        closeInline()
         let sel = TextMerge.map(textView.selectedRange(), through: edits)
         let anchor = scrollAnchor()
         loadingNote = true
