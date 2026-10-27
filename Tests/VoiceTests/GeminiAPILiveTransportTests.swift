@@ -159,6 +159,144 @@ struct GeminiAPILiveProbeTests {
     }
 }
 
+/// A resumed call, live: the recap (with a codeword) goes in as the first user turn, Gemini
+/// stays silent until real speech arrives, then answers a spoken question from the recap.
+/// Opt in explicitly; the question is spoken by `say`:
+///
+///   BENTO_VOICE_LIVE_PROBE=1 GEMINI_API_KEY=... scripts/test VoiceTests --filter ResumedCallProbe
+///
+/// Through the Vertex helper, point at a runtime file for a helper you started yourself
+/// (`BENTO_VOICE_HELPER_RUNTIME=/path/to/voice-runtime.json`); it uses that file's port and key.
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["BENTO_VOICE_LIVE_PROBE"] == "1",
+                "live probe: needs the network, credentials and say; set BENTO_VOICE_LIVE_PROBE=1"))
+struct ResumedCallProbeTests {
+    static let recap = "User: Remember this codeword for later: marigold.\nGemini Live: Got it. The codeword is marigold."
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil, "set GEMINI_API_KEY"))
+    func theGeminiAPIAnswersFromTheRecap() async throws {
+        let key = try #require(ProcessInfo.processInfo.environment["GEMINI_API_KEY"])
+        let resume = try #require(try LiveResume.context(Self.recap))
+        let transport = GeminiAPILiveTransport(
+            socket: WebSocketTransport(apiKey: { key }, requestTimeout: 120),
+            setup: try #require(GeminiAPILiveTransport.setupFrame(instruction: resume.instruction)),
+            recap: try GeminiAPILiveTransport.recapFrame(resume.recap))
+        try await Self.probe(transport, route: "gemini-api")
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BENTO_VOICE_HELPER_RUNTIME"] != nil, "set BENTO_VOICE_HELPER_RUNTIME"))
+    func theVertexHelperAnswersFromTheRecap() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["BENTO_VOICE_HELPER_RUNTIME"])
+        let vertex = try VertexRuntimeConfig.load(from: URL(fileURLWithPath: path))
+        let key = vertex.bifrostKey
+        let transport = try GeminiHelperResumeTransport(
+            socket: WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationResumeEndpoint, requestTimeout: 120),
+            recap: Self.recap)
+        try await Self.probe(transport, route: "vertex-helper")
+    }
+
+    final class Events: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [(at: Date, event: [String: Any])] = []
+        var ended: Error?
+        var answeredTool: Date?
+        func append(_ event: [String: Any]) { lock.withLock { items.append((Date(), event)) } }
+        func all() -> [(at: Date, event: [String: Any])] { lock.withLock { items } }
+    }
+
+    /// Anything Gemini generates: audio, a transcript of its speech, a tool call or a finished turn.
+    static func isOutput(_ event: [String: Any]) -> Bool {
+        let content = event["serverContent"] as? [String: Any] ?? [:]
+        return content["modelTurn"] != nil || content["outputTranscription"] != nil || content["turnComplete"] != nil
+            || content["generationComplete"] != nil || event["toolCall"] != nil || event["outputTranscription"] != nil
+    }
+
+    static func spoken(_ text: String) throws -> Data {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bento-probe-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let say = Process()
+        say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-o", url.path, "--file-format=WAVE", "--data-format=LEI16@16000", text]
+        try say.run(); say.waitUntilExit()
+        let wav = try Data(contentsOf: url)
+        let marker = Data("data".utf8)
+        let range = try #require(wav.range(of: marker))
+        return wav.subdata(in: (range.upperBound + 4)..<wav.count)
+    }
+
+    static func probe(_ transport: LiveTransport, route: String) async throws {
+        // Asked not to use Hermes: its instructions send memory questions there, and Hermes isn't in this test.
+        let speech = try spoken("Don't ask Hermes, just tell me yourself: what was the codeword I gave you earlier?")
+        let events = Events()
+        defer { transport.close() }
+        try await transport.connect()
+        let reader = Task {
+            do {
+                while !Task.isCancelled {
+                    let data = try await transport.receive()
+                    let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? ["unparsed": data.count]
+                    events.append(event)
+                    // Answer an ask_hermes call so the turn can finish; it says nothing about the codeword.
+                    for call in (event["toolCall"] as? [String: Any])?["functionCalls"] as? [[String: Any]] ?? [] {
+                        guard let id = call["id"] as? String else { continue }
+                        let reply = GeminiLiveProtocol.response(id: id, message: "Not executed: Hermes is unavailable in this test.", executed: false)
+                        try await transport.send(try JSONSerialization.data(withJSONObject: reply))
+                        events.answeredTool = Date()
+                    }
+                }
+            } catch { events.ended = error }
+        }
+        defer { reader.cancel() }
+        func waitFor(_ seconds: Double, until done: () -> Bool) async {
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end, !done(), events.ended == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        }
+        await waitFor(20) { events.all().contains { $0.event["setupComplete"] != nil } }
+        _ = try #require(events.all().first { $0.event["setupComplete"] != nil }?.at,
+                                   "No setupComplete: \(events.all().map { Array($0.event.keys) }), ended: \(String(describing: events.ended))")
+        // Five quiet seconds after the recap: Gemini must not answer it.
+        try await Task.sleep(for: .seconds(5))
+        let early = events.all().filter { isOutput($0.event) }
+        let audioAt = Date()
+        // The question at real-time pace, then a second and a half of silence and the end of the stream.
+        let chunk = 3200
+        for offset in stride(from: 0, to: speech.count + 48000, by: chunk) {
+            let pcm = offset < speech.count ? speech.subdata(in: offset..<min(offset + chunk, speech.count)) : Data(count: chunk)
+            let event: [String: Any] = ["realtimeInput": ["audio": ["mimeType": "audio/pcm;rate=16000", "data": pcm.base64EncodedString()]]]
+            try await transport.send(try JSONSerialization.data(withJSONObject: event))
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await transport.send(try JSONSerialization.data(withJSONObject: ["realtimeInput": ["audioStreamEnd": true]]))
+        // Speech after the question (and after any tool call was answered), then the end of that turn.
+        func answered() -> Bool {
+            let since = max(audioAt, events.answeredTool ?? audioAt)
+            guard let spoke = events.all().first(where: { $0.at > since && isOutput($0.event) && $0.event["toolCall"] == nil
+                && ($0.event["serverContent"] as? [String: Any])?["turnComplete"] == nil
+                && ($0.event["serverContent"] as? [String: Any])?["generationComplete"] == nil })?.at else { return false }
+            return events.all().contains { $0.at >= spoke && ($0.event["serverContent"] as? [String: Any])?["turnComplete"] as? Bool == true }
+        }
+        await waitFor(45, until: answered)
+        // A reply after a tool result can follow in a later turn.
+        try await Task.sleep(for: .seconds(6))
+        let after = events.all().filter { $0.at > audioAt }
+        func text(_ key: String) -> String {
+            after.compactMap { (($0.event["serverContent"] as? [String: Any])?[key] as? [String: Any])?["text"] as? String }.joined()
+        }
+        let heard = text("inputTranscription"), said = text("outputTranscription")
+        let audioChunks = after.filter { (($0.event["serverContent"] as? [String: Any])?["modelTurn"]) != nil }.count
+        let toolCalls = after.filter { $0.event["toolCall"] != nil }.count
+        print("PROBE \(route): setupComplete after connect; early output events in 5 s: \(early.count) "
+              + "\(early.map { Array($0.event.keys) }); after audio: \(after.count) events, \(audioChunks) audio, \(toolCalls) tool calls, "
+              + "turnComplete: \(answered()); heard: \"\(heard)\"; said: \"\(said)\"; ended: \(events.ended.map { "\($0)" } ?? "no")")
+        print("PROBE \(route) sequence: " + after.map { item in
+            let content = (item.event["serverContent"] as? [String: Any]).map { "serverContent" + $0.keys.sorted().description } ?? ""
+            return content.isEmpty ? item.event.keys.sorted().description : content
+        }.joined(separator: " "))
+        #expect(early.isEmpty, "Gemini answered the recap before any audio")
+        #expect(answered(), "No finished reply to the spoken question")
+        #expect(said.localizedCaseInsensitiveContains("marigold"), "The reply didn't use the recap")
+    }
+}
+
 /// What the user is told when a call's socket ends.
 @Suite struct GeminiLiveEndingTests {
     private func outcome(_ ending: LiveSocketEnding, goingAway: Bool = false, geminiAPI: Bool = true)
