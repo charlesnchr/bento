@@ -117,8 +117,9 @@ struct LauncherSettingsView: View {
 
     /// Adds the app (or finds its entry) and starts recording its shortcut.
     private func pick(_ app: AppCandidate, proxy: ScrollViewProxy, fromKeyboard: Bool) {
-        let entry = BoundApps(model.value.entries).entry(for: app)
-            ?? append(appEntry(url: app.url, name: app.name, bundleID: app.bundleID))
+        var settings = model.value
+        let entry = settings.entry(for: app)
+        if settings != model.value { model.value = settings }
         focus(entry, proxy: proxy, returnToSearch: fromKeyboard)
     }
 
@@ -135,13 +136,13 @@ struct LauncherSettingsView: View {
             if flashed == id { withAnimation(.easeOut(duration: 0.4)) { flashed = nil } }
         }
         let window = searchAnchor.view?.window ?? NSApp.keyWindow
-        RecorderFocus.begin(entry.actionID, in: window) { recorder in
+        RecorderFocus.begin(entry.actionID, in: window, started: { recorder in
             guard returnToSearch else { return }
             watcher.watch(recorder) {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(AppPickerSection.scrollID) }
                 focusSearchRequest += 1
             }
-        }
+        })
     }
 
     private func update(_ id: String, _ change: (inout LauncherEntry) -> Void) {

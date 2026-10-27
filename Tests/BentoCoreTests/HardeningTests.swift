@@ -332,6 +332,45 @@ private let isolatedHome: Bool = {
         #expect(reg.failed.isEmpty)
     }
 
+    @Test func selfStoredBindingsGetTheSameConflictHandling() throws {
+        try #require(isolatedHome)
+        // App Hotkeys entries (also the ones the keyboard overview adds) store
+        // their own shortcut through a bindingWriter.
+        final class Entries: BentoModule {
+            let id = "fakef"
+            let title = "Fake Entries"
+            let symbol = "star"
+            var stored: [String: Shortcut] = [:]
+            var actions: [BentoAction] {
+                ["fakef.app"].map { id in
+                    BentoAction(id, "Open App", shortcut: stored[id]?.configString, bindingWriter: { [weak self] sc in
+                        self?.stored[id] = sc
+                        ActionRegistry.shared.reload()
+                    }) {}
+                }
+            }
+            func start() {}
+            func stop() {}
+        }
+        let other = FakeModule("fakeg", [("fakeg.max", testKeys[2].configString)])
+        let entries = Entries()
+        reg.isModuleEnabled = { _ in true }
+        reg.setModules([other, entries])
+        reg.setShortcut(testKeys[2], for: "fakef.app")          // routed to the writer
+        #expect(entries.stored["fakef.app"] == testKeys[2])
+        #expect(ConfigStore.shared.shortcutOverrides["fakef.app"] == nil)
+        #expect(reg.failed == ["fakef.app"])                    // the earlier action keeps it
+        #expect(reg.failureReason(for: "fakef.app")?.contains("fakeg.max") == true)
+        #expect(reg.actionUsing(testKeys[2])?.id == "fakeg.max")
+        reg.setShortcut(nil, for: "fakeg.max")                  // what `assign` does to the old owner
+        #expect(reg.failed.isEmpty)
+        #expect(reg.actionUsing(testKeys[2])?.id == "fakef.app")
+        reg.setShortcut(nil, for: "fakef.app")
+        #expect(entries.stored["fakef.app"] == nil && reg.shortcut(for: "fakef.app") == nil)
+        reg.setShortcut(testKeys[2], for: "fakeg.max")          // back to its default: override cleared
+        reg.setModules([])
+    }
+
     @Test func systemShortcutsAreReportedNotSilentlyDead() throws {
         try #require(isolatedHome)
         // Whatever macOS has enabled on this machine (Spotlight's ⌘Space, …).

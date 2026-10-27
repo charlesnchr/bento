@@ -143,6 +143,171 @@ private func ids(_ sections: [OverviewSection]) -> [String] { sections.flatMap(\
     #expect(OverviewCatalog.filter(catalog(), query: "zzz").isEmpty)
 }
 
+// MARK: - Apps from the search
+
+private let hotkeys = FakeModule("launcher", "App Hotkeys", [
+    action("launcher.safari", "Open Safari", group: "Apps", "hyper+s"),
+    action("launcher.notes", "Open Notes", group: "Apps"),
+])
+
+private func found(_ name: String) -> FoundApp {
+    FoundApp(id: "com.example.\(name.lowercased())", name: name, url: URL(fileURLWithPath: "/Applications/\(name).app"),
+             bundleID: "com.example.\(name.lowercased())")
+}
+
+private func appCatalog(launcherOn: Bool = true) -> [OverviewSection] {
+    let all: [BentoModule] = [shot, hotkeys, AppActionsModule()]
+    let enabled: Set<String> = launcherOn ? ["shot", "launcher", "bento"] : ["shot", "bento"]
+    return OverviewCatalog.build(
+        modules: all, isEnabled: enabled.contains, actions: all.filter { enabled.contains($0.id) }.flatMap(\.actions),
+        shortcut: { id in all.flatMap(\.actions).first { $0.id == id }?.defaultShortcut }, problem: { _ in nil },
+        icon: { $0 == "launcher.safari" ? URL(fileURLWithPath: "/Applications/Safari.app") : nil })
+}
+
+@Test func entriesCarryTheirIcons() {
+    let items = Dictionary(uniqueKeysWithValues: appCatalog().flatMap(\.items).map { ($0.id, $0) })
+    #expect(items["launcher.safari"]?.icon?.path == "/Applications/Safari.app")
+    #expect(items["launcher.notes"]?.icon == nil)
+    #expect(items["shot.area"]?.icon == nil)
+}
+
+@Test func foundAppsFollowTheMatchingEntries() {
+    let all = appCatalog()
+    let filtered = OverviewCatalog.filter(all, query: "open")
+    #expect(ids(filtered) == ["launcher.safari", "launcher.notes"])
+    let sections = OverviewCatalog.adding([found("Opera"), found("OpenEmu")], to: filtered, from: all, in: "launcher")
+    #expect(sections.map(\.id) == ["launcher"])
+    #expect(ids(sections) == ["launcher.safari", "launcher.notes", "app:com.example.opera", "app:com.example.openemu"])
+    let opera = sections[0].items[2]
+    #expect(opera.title == "Open Opera")   // what the entry will be called
+    #expect(opera.moduleTitle == "App Hotkeys")
+    #expect(opera.shortcut == nil && opera.problem == nil)
+    #expect(opera.icon?.path == "/Applications/Opera.app")
+    #expect(opera.app == found("Opera"))
+}
+
+@Test func foundAppsBringBackTheirSectionInModuleOrder() {
+    let all = appCatalog()
+    // "capture" matches no entry: the section is added for the apps, after Capture.
+    let filtered = OverviewCatalog.filter(all, query: "capture")
+    let sections = OverviewCatalog.adding([found("Capture One")], to: filtered, from: all, in: "launcher")
+    #expect(sections.map(\.id) == ["shot", "launcher"])
+    #expect(sections[1].items.map(\.id) == ["app:com.example.capture one"])
+    #expect(sections[1].title == "App Hotkeys" && sections[1].isEnabled)
+    // Nothing found: unchanged.
+    #expect(OverviewCatalog.adding([], to: filtered, from: all, in: "launcher") == filtered)
+}
+
+@Test func noAppsWhileAppHotkeysIsOff() {
+    let all = appCatalog(launcherOn: false)
+    let filtered = OverviewCatalog.filter(all, query: "capture")
+    #expect(OverviewCatalog.adding([found("Capture One")], to: filtered, from: all, in: "launcher") == filtered)
+}
+
+@Test func foundAppsAreListedOnce() {
+    let all = appCatalog()
+    let once = OverviewCatalog.adding([found("Opera")], to: OverviewCatalog.filter(all, query: "op"), from: all, in: "launcher")
+    let twice = OverviewCatalog.adding([found("Opera")], to: once, from: all, in: "launcher")
+    #expect(ids(twice) == ids(once))
+}
+
+@Test func recordLinkFiltersToTheActionAndRecords() {
+    #expect(OverviewCatalog.recordPage(for: "launcher.ab12") == "record/launcher.ab12")
+    let nav = SettingsNavigator()
+    nav.actionTitle = { $0 == "launcher.ab12" ? "Open Opera" : nil }
+    nav.select("record/launcher.ab12")
+    #expect(nav.page == .shortcuts)
+    #expect(nav.shortcutsFilter == "Open Opera")
+    #expect(nav.recordRequest == "launcher.ab12")
+    // An action the registry doesn't know yet is filtered by its id.
+    nav.select("record/launcher.zz")
+    #expect(nav.shortcutsFilter == "launcher.zz")
+    nav.select("windows")
+    #expect(nav.recordRequest == nil)   // never records on a later visit
+}
+
+@MainActor @Suite(.serialized) struct SettingsRecordingTests {
+    private final class Button: NSView {
+        var presses = 0
+        override func accessibilityPerformPress() -> Bool { presses += 1; return true }
+    }
+
+    private func host() -> (NSWindow, Button, SettingsNavigator) {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let window = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let button = Button()
+        button.setAccessibilityIdentifier("recorder:launcher.test")
+        window.contentView?.addSubview(button)
+        let nav = SettingsNavigator()
+        nav.actionTitle = { _ in "Open Test" }
+        nav.select("record/launcher.test")
+        return (window, button, nav)
+    }
+
+    @Test func waitsForActivationAndStartsOnce() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        #expect(button.presses == 0)
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 1)
+    }
+
+    @Test func timeoutNeverStartsInAnInactiveWindow() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var checks = 0
+        nav.record("launcher.test", in: window, attempts: 2, ready: { _ in checks += 1; return false })
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(checks == 3)
+        #expect(button.presses == 0)
+    }
+
+    @Test func navigatingOrClosingCancelsActivationRetries() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.select("shortcuts")
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+        ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.cancelRecordingRequest()   // ShortcutsPane disappearing, including window close
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+    }
+
+    @Test func aNewRequestCancelsOldLayoutRetries() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        button.removeFromSuperview()
+        nav.record("launcher.test", in: window, ready: { _ in true })
+        nav.select("record/launcher.other")
+        window.contentView?.addSubview(button)
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+    }
+
+    @Test func oldPaneTeardownDoesNotCancelANewRequest() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        let old = try #require(nav.record("launcher.test", in: window, ready: { _ in ready }))
+        nav.select("record/launcher.test")
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.cancelRecordingRequest(old)
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 1)
+    }
+}
+
 // MARK: - Settings links
 
 @Test func settingsLinks() {

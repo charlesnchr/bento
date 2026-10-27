@@ -35,6 +35,16 @@ struct OverviewItem: Identifiable, Equatable {
     let shortcut: Shortcut?
     /// Why the shortcut isn't active (taken, used by macOS…).
     let problem: String?
+    /// The app, file or folder whose icon the row shows.
+    var icon: URL? = nil
+    /// An installed app without an entry, offered by the search: ⌘E gives it one.
+    var app: FoundApp? = nil
+
+    /// "Open <app>", in the App Hotkeys section: titled like the entry it becomes.
+    static func app(_ app: FoundApp, in section: OverviewSection) -> OverviewItem {
+        OverviewItem(id: "app:\(app.id)", title: "Open \(app.name)", group: nil, moduleTitle: section.title,
+                     shortcut: nil, problem: nil, icon: app.url, app: app)
+    }
 
     /// Every token must match: the title, group, module, id or the shortcut
     /// ("left", "windows", "ctrl", "⌘⇧2" in any modifier order).
@@ -86,7 +96,8 @@ enum OverviewCatalog {
     /// a shortcut come first (otherwise in the module's order), so the
     /// shortcuts are what you see at a glance.
     static func build(modules: [BentoModule], isEnabled: (String) -> Bool, actions: [BentoAction],
-                      shortcut: (String) -> Shortcut?, problem: (String) -> String?) -> [OverviewSection] {
+                      shortcut: (String) -> Shortcut?, problem: (String) -> String?,
+                      icon: (String) -> URL? = { _ in nil }) -> [OverviewSection] {
         let registered = Set(actions.map(\.id))
         var seen = Set<String>()
         return modules.map { m in
@@ -96,7 +107,7 @@ enum OverviewCatalog {
             // The registry's list decides which actions are live (it drops duplicate ids).
             let items = m.actions.filter { registered.contains($0.id) && seen.insert($0.id).inserted }.map { a in
                 OverviewItem(id: a.id, title: a.title, group: a.group, moduleTitle: m.title,
-                             shortcut: shortcut(a.id), problem: problem(a.id))
+                             shortcut: shortcut(a.id), problem: problem(a.id), icon: icon(a.id))
             }
             return OverviewSection(id: m.id, title: m.title, symbol: m.symbol, isEnabled: true,
                                    items: items.filter { $0.shortcut != nil } + items.filter { $0.shortcut == nil })
@@ -123,6 +134,21 @@ enum OverviewCatalog {
         }
     }
 
+    /// Search results plus installed apps without an entry, listed after the
+    /// matching entries of the App Hotkeys section (`sectionID`), which shows
+    /// up for them even when no entry matched. Not while that module is off.
+    static func adding(_ apps: [FoundApp], to filtered: [OverviewSection], from all: [OverviewSection],
+                       in sectionID: String) -> [OverviewSection] {
+        guard !apps.isEmpty, let base = all.first(where: { $0.id == sectionID && $0.isEnabled }) else { return filtered }
+        var section = filtered.first { $0.id == sectionID } ?? OverviewSection(
+            id: base.id, title: base.title, symbol: base.symbol, isEnabled: true, items: [])
+        let listed = Set(section.items.map(\.id))
+        section.items += apps.map { OverviewItem.app($0, in: base) }.filter { !listed.contains($0.id) }
+        let order = all.map(\.id)
+        return (filtered.filter { $0.id != sectionID } + [section])
+            .sorted { (order.firstIndex(of: $0.id) ?? .max) < (order.firstIndex(of: $1.id) ?? .max) }
+    }
+
     /// True when some shortcut holds all four modifiers (what the config calls "hyper").
     static func usesHyper(_ sections: [OverviewSection]) -> Bool {
         let hyper: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
@@ -147,6 +173,9 @@ enum OverviewCatalog {
 
     /// Settings → Shortcuts, filtered to one action.
     static func shortcutsPage(for item: OverviewItem) -> String { "shortcuts/\(item.title)" }
+
+    /// Settings → Shortcuts, filtered to one action and recording its shortcut.
+    static func recordPage(for actionID: String) -> String { "record/\(actionID)" }
 }
 
 // MARK: - Panel
@@ -292,6 +321,16 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
     private func run(_ item: OverviewItem) {
         close()
         guard item.id != Self.actionID else { return }
+        if let app = item.app {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: app.url, configuration: config) { _, error in
+                if let error {
+                    DispatchQueue.main.async { HUD.show("Couldn't open: \(error.localizedDescription)", symbol: "exclamationmark.triangle") }
+                }
+            }
+            return
+        }
         DispatchQueue.main.async { ActionRegistry.shared.perform(item.id) }
     }
 
@@ -322,7 +361,9 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         case (kVK_ANSI_Comma, [.command, .shift]):
             openSettings(model.selectedSection.map { OverviewCatalog.settingsPage(for: $0.id) })
         case (kVK_ANSI_E, [.command]):
-            if let item = model.selectedItem { openSettings(OverviewCatalog.shortcutsPage(for: item)) } else { NSSound.beep() }
+            if let item = model.selectedItem { model.editShortcut(item) } else { NSSound.beep() }
+        case (kVK_Delete, [.command]) where model.selectedItem.map(model.canRemove) == true:
+            model.selectedItem.map(model.remove)   // otherwise ⌘⌫ edits the search field
         case (kVK_ANSI_W, [.command]): close()
         default:
             // Its own shortcut closes it even when the global hotkey couldn't be registered.
@@ -364,6 +405,7 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         ["open": isVisible, "opened": opened, "closed": closed, "modelAlive": lastModel != nil,
          "query": model?.query ?? "", "selected": model?.selectedID ?? "", "listed": model?.items.map(\.id) ?? [],
          "problems": model?.items.filter { $0.problem != nil }.map(\.id) ?? [],
+         "apps": model?.items.filter { $0.app != nil }.map(\.id) ?? [],
          "hintSeen": UserDefaults.standard.bool(forKey: Self.hintKey)]
     }
 }
@@ -386,6 +428,12 @@ final class OverviewModel: ObservableObject {
     var onRun: (OverviewItem) -> Void = { _ in }
     var onOpenSettings: (String?) -> Void = { _ in }
     private var all: [OverviewSection] = []
+    /// App Hotkeys, while it's on: finds installed apps and adds their entries.
+    private var apps: (moduleID: String, provider: AppHotkeyProvider)?
+    private var appSearch: AppSearch?
+    /// Row icons, dropped with the panel.
+    let icons = IconCache()
+    static let appResults = 6
 
     /// Listed actions, in order.
     var items: [OverviewItem] { sections.flatMap(\.items) }
@@ -394,8 +442,17 @@ final class OverviewModel: ObservableObject {
 
     func reload() {
         let reg = ActionRegistry.shared
+        let module = reg.modules.first { $0 is AppHotkeyProvider && reg.isModuleEnabled($0.id) }
+        apps = module.flatMap { m in (m as? AppHotkeyProvider).map { (m.id, $0) } }
+        if let provider = apps?.provider {
+            // Indexed once per panel; results come in while the user types.
+            if appSearch == nil { appSearch = provider.makeAppSearch { [weak self] in self?.refilter(keepSelection: true) } }
+        } else {
+            appSearch = nil
+        }
         all = OverviewCatalog.build(modules: reg.modules, isEnabled: reg.isModuleEnabled, actions: reg.allActions,
-                                    shortcut: reg.shortcut(for:), problem: reg.failureReason(for:))
+                                    shortcut: reg.shortcut(for:), problem: reg.failureReason(for:),
+                                    icon: { [apps] id in apps?.provider.iconFile(for: id) })
         usesHyper = OverviewCatalog.usesHyper(all)
         ownShortcut = reg.shortcut(for: KeyboardOverview.actionID)
         // No notification exists for permission changes; the panel is short-lived.
@@ -406,6 +463,10 @@ final class OverviewModel: ObservableObject {
 
     private func refilter(keepSelection: Bool) {
         sections = OverviewCatalog.filter(all, query: query)
+        if let apps, let appSearch {
+            sections = OverviewCatalog.adding(appSearch.results(query, limit: Self.appResults), to: sections,
+                                              from: all, in: apps.moduleID)
+        }
         let ids = items.map(\.id)
         if !keepSelection || !(selectedID.map(ids.contains) ?? false) {
             selectedID = ids.first
@@ -429,7 +490,26 @@ final class OverviewModel: ObservableObject {
     }
 
     func run(_ item: OverviewItem) { onRun(item) }
-    func editShortcut(_ item: OverviewItem) { onOpenSettings(OverviewCatalog.shortcutsPage(for: item)) }
+
+    /// An app found by the search gets its entry first, then records straight away.
+    func editShortcut(_ item: OverviewItem) {
+        if let app = item.app, let provider = apps?.provider {
+            onOpenSettings(OverviewCatalog.recordPage(for: provider.addApp(app)))
+        } else {
+            onOpenSettings(OverviewCatalog.shortcutsPage(for: item))
+        }
+    }
+
+    /// App Hotkeys entries can be removed from here.
+    func canRemove(_ item: OverviewItem) -> Bool {
+        item.app == nil && sections.contains { $0.id == apps?.moduleID && $0.items.contains { $0.id == item.id } }
+    }
+
+    func remove(_ item: OverviewItem) {
+        guard canRemove(item) else { return }
+        apps?.provider.removeEntry(item.id)   // the registry reloads, and this list with it
+    }
+
     func openSettings(_ page: String? = nil) { onOpenSettings(page) }
 }
 
@@ -529,7 +609,7 @@ struct OverviewSearchField: NSViewRepresentable {
         f.drawsBackground = false
         f.focusRingType = .none
         f.font = .systemFont(ofSize: 16)
-        f.placeholderString = "Search actions, modules or keys"
+        f.placeholderString = "Search actions, keys or apps"
         f.cell?.usesSingleLineMode = true
         f.cell?.lineBreakMode = .byTruncatingTail
         f.delegate = context.coordinator
@@ -563,7 +643,7 @@ struct OverviewList: View {
                     .font(.system(size: 28, weight: .light))
                     .foregroundStyle(.tertiary)
                 Text("No Matches").font(.system(size: 13, weight: .semibold))
-                Text("Nothing matches “\(model.query)”. Try a module like “Windows” or keys like “⌘⇧”.")
+                Text("Nothing matches “\(model.query)”. Try a module like “Windows”, keys like “⌘⇧” or an app.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -580,7 +660,9 @@ struct OverviewList: View {
                                 model.openSettings(OverviewCatalog.settingsPage(for: section.id))
                             }
                             ForEach(section.items) { item in
-                                OverviewRow(item: item, selected: item.id == model.selectedID) { model.editShortcut(item) }
+                                OverviewRow(item: item, selected: item.id == model.selectedID, icons: model.icons,
+                                            edit: { model.editShortcut(item) },
+                                            remove: model.canRemove(item) ? { model.remove(item) } : nil)
                                     .id(item.id)
                                     .contentShape(Rectangle())
                                     .onTapGesture(count: 2) {
@@ -645,10 +727,16 @@ struct OverviewSectionHeader: View {
 struct OverviewRow: View {
     let item: OverviewItem
     let selected: Bool
+    let icons: IconCache
     let edit: () -> Void
+    /// Set for App Hotkeys entries.
+    var remove: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
+            if let icon = item.icon {
+                FileIcon(url: icon, side: 20, cache: icons)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
                     .font(.system(size: 13))
@@ -662,13 +750,21 @@ struct OverviewRow: View {
                 }
             }
             Spacer(minLength: 8)
+            if selected, let remove {
+                Button(action: remove) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .help("Remove App Hotkey (⌘⌫)")
+            }
             if selected {
                 Button(action: edit) {
                     Image(systemName: "pencil")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.borderless)
-                .help("Change Shortcut in Settings (⌘E)")
+                .help(item.app == nil ? "Change Shortcut in Settings (⌘E)" : "Add Shortcut in Settings (⌘E)")
             }
             if let shortcut = item.shortcut {
                 HStack(spacing: 3) {
@@ -720,7 +816,7 @@ struct OverviewFooter: View {
             Spacer(minLength: 6)
             OverviewFooterButton(title: "Run", keys: ["↩"]) { model.selectedItem.map(model.run) }
                 .disabled(model.selectedItem == nil)
-            OverviewFooterButton(title: "Change Shortcut", keys: ["⌘", "E"]) { model.selectedItem.map(model.editShortcut) }
+            OverviewFooterButton(title: model.selectedItem?.app == nil ? "Change Shortcut" : "Add Shortcut", keys: ["⌘", "E"]) { model.selectedItem.map(model.editShortcut) }
                 .disabled(model.selectedItem == nil)
             Divider().frame(height: 16)
             OverviewFooterButton(title: "Settings", keys: ["⌘", ","]) { model.openSettings() }

@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+import BentoCore
 @testable import Launcher
 
 @Test func entryDecodesWithOnlyTarget() throws {
@@ -383,4 +384,118 @@ private func wide(_ px: Int) -> CGImage {
     #expect(cache.cached(finder, side: 24) == nil)
     cache.removeAll()
     #expect(cache.cached(finder, side: 48) == nil)
+}
+
+// MARK: - Apps from the keyboard overview
+
+@Test func addingAnAppAppendsOneEntryWithoutAShortcut() {
+    var s = LauncherSettings(entries: [LauncherEntry(kind: .app, target: "com.apple.Safari", shortcut: "hyper+s")])
+    let none: (String) -> URL? = { _ in nil }
+    let opera = app("Opera", "com.operasoftware.Opera")
+    let added = s.entry(for: opera, resolve: none, bundleID: { _ in nil })
+    #expect(s.entries.count == 2)
+    #expect(added.kind == .app && added.target == "com.operasoftware.Opera" && added.name == "Opera")
+    #expect(added.shortcut == nil && added.behavior == .toggle)
+    #expect(added.actionTitle == "Open Opera")
+    // Again: the same entry, nothing appended.
+    #expect(s.entry(for: opera, resolve: none, bundleID: { _ in nil }) == added)
+    #expect(s.entries.count == 2)
+    // An app that already has an entry (bundle ids compare case-insensitively) keeps it.
+    #expect(s.entry(for: app("Safari", "com.apple.safari"), resolve: none, bundleID: { _ in nil }).shortcut == "hyper+s")
+    #expect(s.entries.count == 2)
+    // Without a bundle id the entry names the app by path.
+    #expect(s.entry(for: app("Tool", nil, path: "/Applications/Tool.app"), resolve: none, bundleID: { _ in nil }).target
+        == "/Applications/Tool.app")
+}
+
+@Test func removingAnEntryByActionID() {
+    var s = LauncherSettings(entries: [LauncherEntry(kind: .app, target: "Safari"), LauncherEntry(kind: .url, target: "github.com")])
+    let id = s.entries[0].actionID
+    let removed = s.removeEntry(id)
+    #expect(removed)
+    #expect(s.entries.map(\.target) == ["github.com"])
+    let again = s.removeEntry(id), other = s.removeEntry("windows.left-half")
+    #expect(!again && !other)
+    #expect(s.entries.count == 1)
+}
+
+@Test func addedEntriesSurviveAConfigRoundTrip() throws {
+    var s = LauncherSettings()
+    let a = s.entry(for: app("Opera", "com.operasoftware.Opera"), resolve: { _ in nil }, bundleID: { _ in nil })
+    s.entries[0].shortcut = "hyper+o"
+    let decoded = try JSONDecoder().decode(LauncherSettings.self, from: JSONEncoder().encode(s))
+    #expect(decoded == s)
+    #expect(decoded.entries[0].actionID == a.actionID)   // the key is stored, so the action id is stable
+    #expect(decoded.entries[0].shortcut == "hyper+o")
+}
+
+@Test func overviewSearchLeavesOutAppsWithEntries() {
+    let apps = [app("Safari", "com.apple.Safari"), app("Slack", "com.tinyspeck.slackmacgap"), app("Notes", "com.apple.Notes")]
+    let bound = BoundApps([LauncherEntry(kind: .app, target: "com.apple.Safari")], resolve: { _ in nil }, bundleID: { _ in nil })
+    #expect(AppPicker.unboundResults(apps, query: "s", bound: bound, limit: 10).map(\.name) == ["Slack"])
+    #expect(AppPicker.unboundResults(apps, query: "safari", bound: bound, limit: 10).isEmpty)
+    #expect(AppPicker.unboundResults(apps, query: "notes", bound: bound, limit: 10).map(\.name) == ["Notes"])
+    // The overview lists every action for an empty query, no apps.
+    #expect(AppPicker.unboundResults(apps, query: "  ", bound: bound, limit: 10).isEmpty)
+    let many = ["Signal", "Spotify", "Sketch", "Slack"].map { app($0, "id.\($0)") }
+    #expect(AppPicker.unboundResults(many, query: "s", bound: BoundApps([]), limit: 2).count == 2)
+}
+
+@Test func overviewSearchResolvesEntriesOnlyWhenTheyChange() {
+    var entries = [LauncherEntry(kind: .app, target: "Safari")]
+    var reads = 0, resolutions = 0
+    let search = InstalledAppSearch(entries: { reads += 1; return entries }, changed: {}, index: nil,
+                                    makeBoundApps: { entries in
+        BoundApps(entries, resolve: { _ in resolutions += 1; return nil }, bundleID: { _ in nil })
+    })
+    #expect(search.results("  ", limit: 6).isEmpty)
+    #expect(search.results("s", limit: 0).isEmpty)
+    #expect(reads == 0 && resolutions == 0)
+    for query in ["s", "sa", "saf", "safari", "notes"] { _ = search.results(query, limit: 6) }
+    #expect(reads == 5 && resolutions == 1)
+    entries.append(LauncherEntry(kind: .app, target: "Notes"))
+    _ = search.results("notes", limit: 6)
+    #expect(resolutions == 3)
+    _ = search.results("note", limit: 6)
+    #expect(resolutions == 3)
+    entries.removeAll()
+    _ = search.results("safari", limit: 6)
+    #expect(resolutions == 3)
+}
+
+/// LauncherModule reads and writes ConfigStore.shared: point it at a temp dir
+/// first, and refuse to run if anything already resolved the real config. The
+/// same dir as BentoCoreTests' registry tests (one process runs every target,
+/// and whichever resolves the config dir first decides it for both).
+private let isolatedHome: Bool = {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("bento-test-home-\(getpid())").path
+    setenv("BENTO_HOME", home, 1)
+    return AppPaths.configDir.path.hasPrefix(home)
+}()
+
+@MainActor @Suite(.serialized) struct OverviewProviderTests {
+    init() throws { try #require(isolatedHome) }
+
+    @Test func addedAppsAreStoredAsEntriesAndRemovable() throws {
+        let module = LauncherModule()
+        ConfigStore.shared.setSection("launcher", LauncherSettings())
+        let finder = FoundApp(id: "com.apple.finder", name: "Finder",
+                              url: URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app"), bundleID: "com.apple.finder")
+        let id = module.addApp(finder)
+        #expect(module.addApp(finder) == id)   // found again, not added twice
+        let stored = ConfigStore.shared.section("launcher", default: LauncherSettings()).entries
+        #expect(stored.map(\.target) == ["com.apple.finder"])
+        #expect(stored[0].shortcut == nil)
+        // An ordinary action of the module: bindable through the registry's writer.
+        let action = try #require(module.actions.first { $0.id == id })
+        #expect(action.title == "Open Finder" && action.bindingWriter != nil && action.defaultShortcut == nil)
+        action.bindingWriter?(Shortcut("hyper+f17"))
+        #expect(module.actions.first { $0.id == id }?.defaultShortcut == Shortcut("hyper+f17"))
+        #expect(module.iconFile(for: id)?.lastPathComponent == "Finder.app")
+        #expect(module.iconFile(for: "windows.left-half") == nil)
+
+        #expect(module.removeEntry(id))
+        #expect(!module.removeEntry(id))
+        #expect(ConfigStore.shared.section("launcher", default: LauncherSettings()).entries.isEmpty)
+    }
 }

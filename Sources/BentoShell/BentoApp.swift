@@ -448,9 +448,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func showSettings(page: String?) {
         // Unknown pages (typos in bento://settings/<id>) fall back to General.
-        // "shortcuts/<text>" is the Shortcuts page filtered to <text>.
+        // "shortcuts/<text>" is the Shortcuts page filtered to <text>;
+        // "record/<action id>" filters it to that action and records its shortcut.
         let known = page.map { p in
-            ["general", "shortcuts"].contains(p) || p.hasPrefix("shortcuts/") || modules.contains { $0.id == p }
+            ["general", "shortcuts"].contains(p) || p.hasPrefix("shortcuts/") || p.hasPrefix("record/")
+                || modules.contains { $0.id == p }
         } ?? true
         navigator.select(known ? page : nil)
         showSettings(nil)

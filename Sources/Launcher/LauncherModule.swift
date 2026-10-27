@@ -65,6 +65,33 @@ public final class LauncherModule: BentoModule {
     }
 }
 
+// MARK: - Keyboard overview
+
+extension LauncherModule: AppHotkeyProvider {
+    public func makeAppSearch(changed: @escaping () -> Void) -> AppSearch {
+        InstalledAppSearch(entries: { [weak self] in self?.settings.entries ?? [] }, changed: changed)
+    }
+
+    public func addApp(_ app: FoundApp) -> String {
+        var s = settings
+        let entry = s.entry(for: AppCandidate(url: app.url, name: app.name, bundleID: app.bundleID))
+        if s != settings { ConfigStore.shared.setSection(id, s) }
+        return entry.actionID
+    }
+
+    @discardableResult
+    public func removeEntry(_ actionID: String) -> Bool {
+        var s = settings
+        guard s.removeEntry(actionID) else { return false }
+        ConfigStore.shared.setSection(id, s)
+        return true
+    }
+
+    public func iconFile(for actionID: String) -> URL? {
+        settings.entries.first { $0.actionID == actionID }?.iconFile
+    }
+}
+
 // MARK: - Model
 
 struct LauncherSettings: Codable, Equatable {
@@ -84,6 +111,22 @@ struct LauncherSettings: Codable, Equatable {
             BentoLog.make("launcher").error("Skipped \(raw.count - valid.count) invalid launcher entries")
         }
         entries = LauncherSettings.uniquingKeys(valid)
+    }
+
+    /// The entry that opens `app`, appending one without a shortcut when no
+    /// entry does (the overview's ⌘E and a click in the picker).
+    mutating func entry(for app: AppCandidate, resolve: (String) -> URL? = AppResolver.url(for:),
+                        bundleID: (URL) -> String? = AppResolver.bundleID(for:)) -> LauncherEntry {
+        if let existing = BoundApps(entries, resolve: resolve, bundleID: bundleID).entry(for: app) { return existing }
+        entries = LauncherSettings.uniquingKeys(entries + [LauncherEntry(kind: .app, target: app.bundleID ?? app.url.path, name: app.name)])
+        return entries[entries.count - 1]
+    }
+
+    /// False when no entry has that action id.
+    mutating func removeEntry(_ actionID: String) -> Bool {
+        let before = entries.count
+        entries.removeAll { $0.actionID == actionID }
+        return entries.count < before
     }
 
     /// Duplicate entries (same target twice, "Safari" and "safari", copied
@@ -162,6 +205,17 @@ struct LauncherEntry: Codable, Equatable, Identifiable {
     }
 
     var actionID: String { "launcher.\(keyBase)" }
+
+    /// What the entry's icon is drawn from: the app, file or folder it opens.
+    var iconFile: URL? {
+        switch kind {
+        case .app: return AppResolver.url(for: target)
+        case .path:
+            let path = (target as NSString).expandingTildeInPath
+            return FileManager.default.fileExists(atPath: path) ? URL(fileURLWithPath: path) : nil
+        case .url, .command: return nil
+        }
+    }
 
     var actionTitle: String {
         kind == .command ? "Run \(displayName)" : "Open \(displayName)"
