@@ -137,6 +137,9 @@ private struct DictationSettingsForm: View {
     private var isDirect: Bool { runtime.config?.isDirect == true }
     /// The Bifrost transport is verbatim Gemini only: formatting has nowhere to run.
     private var verbatimOnly: Bool { runtime.isRequested && !isDirect }
+    /// No runtime and no Gemini API key: Parakeet transcribes, and there is no
+    /// cleanup model to format with.
+    private var noCloud: Bool { !settings.cloudTranscriptionAvailable }
 
     var body: some View {
         let _ = revision.value
@@ -214,6 +217,7 @@ private struct DictationSettingsForm: View {
                         ForEach(Engine.dualPairs, id: \.self) { Text(Engine.pairName($0)).tag($0) }
                     }
                 }
+                localModelRow
                 Picker("Retry with", selection: binding({ settings.retryEngine }, { settings.setRetryEngine($0) })) {
                     ForEach(Engine.singles, id: \.self) { Text($0.displayName).tag($0) }
                     Divider()
@@ -224,6 +228,25 @@ private struct DictationSettingsForm: View {
             } footer: {
                 Footnote("Switch quickly from Bento's menu. Meetings and the assistant follow GPT and MAI; with the others they stay on Gemini. Retry Last Transcription re-runs your last recording and replaces the text it inserted; if that text is no longer selectable, the new version goes to the clipboard.")
             }
+        } else if !runtime.isRequested {
+            Section {
+                Picker("Transcribe with", selection: binding({ settings.transcriptionEngine }, { settings.setTranscriptionEngine($0) })) {
+                    ForEach(settings.selectableEngines, id: \.self) { engine in
+                        Text(engine.isLocal || !noCloud ? engine.displayName : "\(engine.displayName) (needs an API key)")
+                            .tag(engine)
+                            .selectionDisabled(!engine.isLocal && noCloud)
+                    }
+                }
+                Text(engineCaption(settings.transcriptionEngine)).font(.caption).foregroundStyle(.secondary)
+                localModelRow
+            } header: {
+                Text("Transcription")
+            } footer: {
+                Footnote((noCloud
+                    ? "No Gemini API key yet, so dictation runs Parakeet v3 on this Mac. Add a key under Advanced to use Gemini."
+                    : "Gemini through your API key, or Parakeet on this Mac. With Parakeet, meetings, voice editing and the assistant stay on Gemini.")
+                    + " GPT, MAI, Dual review and retry need the local Vertex helper (see helper/README.md).")
+            }
         } else {
             Section {
                 LabeledContent("Backend") { Text("Gemini Transcribe").foregroundStyle(.secondary) }
@@ -232,16 +255,26 @@ private struct DictationSettingsForm: View {
             } footer: {
                 Footnote(verbatimOnly
                     ? "Vertex through the gateway transcribes word for word with Gemini. Other backends and retry need the direct helper runtime."
-                    : "Gemini through your API key. Other backends and retry need the local Vertex helper (see helper/README.md).")
+                    : "The helper runtime config is invalid; see Advanced.")
             }
+        }
+    }
+
+    /// Download state for the on-device model dictation uses, either half of a dual pair included.
+    @ViewBuilder
+    private var localModelRow: some View {
+        let engine = settings.transcriptionEngine
+        if let local = engine == .dual ? settings.dualEngines.first(where: \.isLocal) : (engine.isLocal ? engine : nil) {
+            ParakeetDownloadRow(engine: local)
         }
     }
 
     private func engineCaption(_ engine: Engine) -> String {
         switch engine {
-        case .gemini: return "Vertex AI. Live previews; smart formatting in the same call."
-        case .parakeetV3: return "On this Mac. Fastest, nothing uploaded."
-        case .parakeetUltra: return "On this Mac. Larger than v3 and usually cleaner."
+        case .gemini: return isDirect ? "Vertex AI. Live previews; smart formatting in the same call."
+            : "The Gemini API with your key. Smart formatting in the same call."
+        case .parakeetV3: return "On this Mac. Fastest, nothing uploaded. A one-time \(ParakeetModels.downloadSize(of: engine)) download."
+        case .parakeetUltra: return "On this Mac. Larger than v3 and usually cleaner. A one-time \(ParakeetModels.downloadSize(of: engine)) download."
         case .mai: return "OpenRouter. Most accurate in testing; dictionary terms go as hints."
         case .gpt: return "Azure. Word for word; the cleanup model formats."
         case .dual: return "Two recognisers, then Gemini 3.8 Flash listens and decides. Slower."
@@ -260,12 +293,12 @@ private struct DictationSettingsForm: View {
                      ? "Removes filler words and applies self-corrections. \(engine.shortName) is word for word, so this uses the cleanup pass."
                      : "Removes filler words and applies self-corrections in the transcription call itself.")
             }
-            .disabled(verbatimOnly || (engine.isVerbatim && !cleanup))
+            .disabled(verbatimOnly || noCloud || (engine.isVerbatim && !cleanup))
             Toggle(isOn: binding({ settings.cleanupEnabled }, { settings.setCleanupEnabled($0) })) {
                 Text("Cleanup pass")
                 Text("A second model over the transcript text. Off means no second call, whatever is below.")
             }
-            .disabled(verbatimOnly)
+            .disabled(verbatimOnly || noCloud)
             Group {
                 if isDirect {
                     Picker("Cleanup model", selection: binding({ settings.geminiConfig.cleanupModel }, { settings.setCleanupModelOverride($0) })) {
@@ -284,7 +317,7 @@ private struct DictationSettingsForm: View {
                         .accessibilityLabel("Custom instructions text")
                 }
             }
-            .disabled(verbatimOnly || !cleanup)
+            .disabled(verbatimOnly || noCloud || !cleanup)
         } header: {
             Text("Formatting")
         } footer: {
@@ -295,6 +328,7 @@ private struct DictationSettingsForm: View {
     /// Says whether the cleanup call actually happens.
     private var formattingFooter: String {
         if verbatimOnly { return "Formatting is unavailable on this transport." }
+        if noCloud { return "Formatting runs on a cloud model, which needs a Gemini API key (Advanced). Until then Parakeet's words go in as heard." }
         let engine = settings.transcriptionEngine
         if !settings.cleanupEnabled { return "No cleanup call is made. Tone and instructions keep their settings for when you turn it back on." }
         if engine == .dual { return "Dual review applies smart formatting, tone and instructions in its review call; there is no separate cleanup call." }
@@ -412,6 +446,45 @@ private struct DictationSettingsForm: View {
         if settings.transcriptionEngine != .gemini { return "Gemini only: streams while you speak." }
         if let summary = LiveStats().summary { return "Streams while you speak and falls back to upload if it stumbles. \(summary)" }
         return "Streams while you speak and falls back to upload if it stumbles."
+    }
+}
+
+/// Whether a Parakeet model is on this Mac, with the button that fetches it.
+private struct ParakeetDownloadRow: View {
+    let engine: SettingsStore.TranscriptionEngine
+    @ObservedObject private var models = ParakeetModels.shared
+
+    var body: some View {
+        HStack(spacing: 8) {
+            switch models.status(engine) {
+            case .ready:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("\(engine.displayName) is downloaded")
+                Spacer()
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([ParakeetModels.cacheDirectory(of: engine)])
+                }
+            case .notDownloaded:
+                Image(systemName: "arrow.down.circle").foregroundStyle(.orange)
+                Text("Not downloaded yet")
+                Spacer()
+                Button("Download \(engine.displayName) (~\(ParakeetModels.downloadSize(of: engine)))") { models.download(engine) }
+                    .buttonStyle(.borderedProminent)
+            case .downloading(let fraction):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(models.progressLine(engine) ?? "")
+                    if let fraction { ProgressView(value: fraction) } else { ProgressView().progressViewStyle(.linear) }
+                }
+            case .failed(let reason):
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Download failed")
+                    Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Button("Retry") { models.download(engine) }
+            }
+        }
     }
 }
 
