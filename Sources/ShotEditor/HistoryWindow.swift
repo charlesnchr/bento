@@ -52,11 +52,11 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSCollectionVie
         let background = ThemedBackgroundView(material: .contentBackground)
         background.effect.state = .followsWindowActiveState
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(scroll)
+        background.effect.addSubview(scroll)
         emptyLabel.font = .systemFont(ofSize: 15)
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(emptyLabel)
+        background.effect.addSubview(emptyLabel)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),

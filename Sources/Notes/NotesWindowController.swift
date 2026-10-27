@@ -84,7 +84,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
         for v in [tint, header, scroll, footer, formatBar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
-            background.addSubview(v)
+            background.effect.addSubview(v)
         }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true

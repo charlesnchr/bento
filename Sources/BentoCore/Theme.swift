@@ -75,11 +75,18 @@ public final class ThemeCenter: ObservableObject {
     init() {
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            self.reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-            self.increaseContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-            self.update()
+            self?.updateAccessibility(
+                reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+                increaseContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
         }
+    }
+
+    deinit { if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) } }
+
+    func updateAccessibility(reduceTransparency: Bool, increaseContrast: Bool) {
+        if self.reduceTransparency != reduceTransparency { self.reduceTransparency = reduceTransparency }
+        self.increaseContrast = increaseContrast
+        update()
     }
 
     public func select(_ theme: Theme) {
@@ -100,7 +107,8 @@ public final class ThemeCenter: ObservableObject {
 
 /// A window's background that follows the theme: `material` (or the window's
 /// own background when nil) in the standard theme, glass in the others. Add
-/// the window's views as subviews (or pass `content`); they sit above the glass.
+/// the window's views to `effect` (or pass `content`); they sit above the glass
+/// and keep AppKit's vibrant appearance.
 ///
 ///     let background = ThemedBackgroundView(material: .popover, content: host)
 ///     window.contentView = background
@@ -119,17 +127,18 @@ public final class ThemedBackgroundView: NSView {
         effect.blendingMode = .behindWindow
         effect.state = .active
         for v in [effect, glaze] + (content.map { [$0] } ?? []) {
+            let parent: NSView = v === effect || (v === content && material == nil) ? self : effect
             v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
+            parent.addSubview(v)
             NSLayoutConstraint.activate([
-                v.leadingAnchor.constraint(equalTo: leadingAnchor),
-                v.trailingAnchor.constraint(equalTo: trailingAnchor),
-                v.topAnchor.constraint(equalTo: topAnchor),
-                v.bottomAnchor.constraint(equalTo: bottomAnchor),
+                v.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+                v.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+                v.topAnchor.constraint(equalTo: parent.topAnchor),
+                v.bottomAnchor.constraint(equalTo: parent.bottomAnchor),
             ])
         }
         apply(ThemeCenter.shared.style)
-        observer = NotificationCenter.default.addObserver(forName: ThemeCenter.didChange, object: nil, queue: .main) { [weak self] _ in
+        observer = NotificationCenter.default.addObserver(forName: ThemeCenter.didChange, object: ThemeCenter.shared, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.apply(ThemeCenter.shared.style)
             self.onChange?(ThemeCenter.shared.style)
