@@ -14,13 +14,11 @@ import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.automirrored.rounded.StickyNote2
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,8 +36,10 @@ import androidx.navigation.toRoute
 import com.charles.bento.MainActivity
 import com.charles.bento.graph
 import com.charles.bento.settings.Pairing
-import com.charles.bento.settings.save
+import com.charles.bento.ui.settings.PairingDialog
 import com.charles.bento.ui.settings.SettingsScreen
+import com.charles.bento.ui.settings.WelcomeSheet
+import com.charles.bento.ui.settings.scanPairingCode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 
@@ -136,20 +136,14 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         composable<ModesRoute> { Screens.modes(nav) }
     }
 
-    pairing?.let { p ->
-        AlertDialog(
-            onDismissRequest = { pairing = null },
-            title = { Text("Pair with ${p.macName.ifBlank { "this Mac" }}?") },
-            text = {
-                Text(
-                    "Notes, tasks and your dictionary will sync with ${p.server}." +
-                        if (p.geminiKey != null) " The Gemini API key from the Mac will be used for dictation." else "",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { p.save(graph.prefs, graph.secrets); pairing = null }) { Text("Pair") }
-            },
-            dismissButton = { TextButton(onClick = { pairing = null }) { Text("Cancel") } },
+    pairing?.let { p -> PairingDialog(p) { pairing = null } }
+
+    val onboarded by graph.prefs.onboarded.flow.collectAsStateWithLifecycle()
+    val server by graph.prefs.server.flow.collectAsStateWithLifecycle()
+    if (!onboarded && server.isBlank()) {
+        WelcomeSheet(
+            onScan = { graph.prefs.onboarded.value = true; scanPairingCode(activity) { pairing = it } },
+            onDismiss = { graph.prefs.onboarded.value = true },
         )
     }
 }

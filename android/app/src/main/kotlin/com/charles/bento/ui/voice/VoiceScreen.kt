@@ -58,7 +58,6 @@ import com.charles.bento.ui.MeetingRoute
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.settings.Setup
 import com.charles.bento.ui.settings.scanPairingCode
-import com.charles.bento.settings.save
 import com.charles.bento.voice.DictationState
 import com.charles.bento.voice.DictationTarget
 import com.charles.bento.voice.FieldContext
@@ -139,10 +138,12 @@ private fun SetupCard(tick: Int) {
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     val secrets by graph.secrets.version.collectAsStateWithLifecycle()
     val server by graph.prefs.server.flow.collectAsStateWithLifecycle()
+    var pairing by remember { mutableStateOf<com.charles.bento.settings.Pairing?>(null) }
+    pairing?.let { p -> com.charles.bento.ui.settings.PairingDialog(p) { pairing = null } }
     val steps = remember(tick, secrets, server) {
         listOf(
             Step("Pair with your Mac", "Sync notes, tasks and your dictionary", server.isNotBlank() && graph.secrets.syncToken != null) {
-                scanPairingCode(context) { p -> p.save(graph.prefs, graph.secrets) }
+                scanPairingCode(context) { p -> pairing = p }
             },
             Step("Gemini API key", "Comes with the pairing code, or add it in Settings", graph.secrets.geminiKey != null, null),
             Step("Microphone", "Allow Bento to listen when you ask it to", Setup.hasMic(context)) { mic.launch(Manifest.permission.RECORD_AUDIO) },

@@ -162,15 +162,7 @@ private fun SyncSection(context: Context) {
         }
     }
 
-    pendingPair?.let { p ->
-        AlertDialog(
-            onDismissRequest = { pendingPair = null },
-            title = { Text("Pair with ${p.macName.ifBlank { "this Mac" }}?") },
-            text = { Text("Sync with ${p.server}" + if (p.geminiKey != null) ", and use the Mac's Gemini API key for dictation." else ".") },
-            confirmButton = { TextButton(onClick = { p.save(prefs, graph.secrets); pendingPair = null }) { Text("Pair") } },
-            dismissButton = { TextButton(onClick = { pendingPair = null }) { Text("Cancel") } },
-        )
-    }
+    pendingPair?.let { p -> PairingDialog(p) { pendingPair = null } }
     if (manual) {
         var s by remember { mutableStateOf(server) }
         var t by remember { mutableStateOf("") }
@@ -185,7 +177,7 @@ private fun SyncSection(context: Context) {
             },
             confirmButton = {
                 TextButton(enabled = s.isNotBlank() && t.isNotBlank(), onClick = {
-                    Pairing(s.trim(), t.trim(), "", null).save(prefs, graph.secrets)
+                    pendingPair = Pairing(s.trim(), t.trim(), "", null)
                     manual = false
                 }) { Text("Save") }
             },
