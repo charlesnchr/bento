@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -21,6 +22,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
     var onHide: (() -> Void)?
     private var origin: NSRunningApplication?
     private lazy var placement = AssistantWindowPlacement(window: panel)
+    private var sidebarSub: AnyCancellable?
     var isKey: Bool { panel.isKeyWindow }
     var frame: NSRect { panel.frame }
     /// Dev harness only: moves the window as a user drag would (saved like one).
@@ -42,7 +44,6 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 610, height: 420)
         panel.delegate = self
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -56,6 +57,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         panel.contentView = host
         panel.hide = { [weak self] in self?.hide() }
         panel.key = { [weak self] in self?.handle($0) ?? false }
+        sidebarSub = model.$historyVisible.removeDuplicates().sink { [weak self] in self?.placement.sidebar = $0 }
     }
 
     /// Window-scoped shortcuts. Escape closes the innermost transient UI, then hides the window.
@@ -136,6 +138,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
     // change; saving those is what used to lose the frame set on the big screen.
     func windowDidMove(_ notification: Notification) { if panel.isVisible { placement.save() } }
     func windowDidResize(_ notification: Notification) { if panel.isVisible { placement.save() } }
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize { placement.resizing(to: frameSize) }
     func windowDidBecomeKey(_ notification: Notification) {
         if let id = model.sessionID { model.unread.remove(id) }
     }
