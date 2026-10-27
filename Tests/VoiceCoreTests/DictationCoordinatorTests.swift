@@ -178,6 +178,7 @@ import Testing
         #expect(c.state == .done(.inserted))
         #expect(inserter.insertedText == "clean")
         #expect(c.lastResult == "clean")
+        #expect(c.lastDictation?.text == "clean")
     }
 
     /// Capture Thought to Note: a supplied context reaches the inserter intact, which
@@ -195,6 +196,8 @@ import Testing
         #expect(c.state == .done(.inserted))
         #expect(inserter.insertedText == "clean")
         #expect(inserter.insertedContext?.captureToNote == true)
+        #expect(c.lastResult == "clean")
+        #expect(c.lastDictation == nil)
     }
 
     @Test func lockInMarksHandsFree() async {

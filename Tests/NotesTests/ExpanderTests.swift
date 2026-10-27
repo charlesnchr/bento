@@ -33,6 +33,28 @@ import Testing
         #expect(MarkdownParser.expanderEnd(after: NSRange(location: 0, length: last.length), in: last) == nil)
     }
 
+    @Test func closingLineSupportsCRLF() {
+        let text = "::: details A\r\nbody\r\n:::\r\nafter" as NSString
+        let summary = text.lineRange(for: NSRange(location: 0, length: 0))
+        #expect(MarkdownParser.expanderEnd(after: summary, in: text) == NSRange(location: 21, length: 3))
+    }
+
+    @Test func strayEndsRemainVisibleInPlainText() {
+        let text = "before\n:::\nafter"
+        #expect(MarkdownExport.plainText(text) == text)
+        #expect(NoteText.plainText(of: text) == text)
+        #expect(NoteText.title(of: ":::\nafter") == ":::")
+    }
+
+    @Test func unclosedSummaryDoesNotHideTheRestOfHTML() {
+        let html = MarkdownExport.html("::: details A\nbody", standalone: false)
+        #expect(!html.contains("<details>"))
+        #expect(html.contains("<p>body</p>"))
+        let nested = MarkdownExport.html("::: details A\nouter\n::: details B\ninner\n:::\nafter\n:::", standalone: false)
+        #expect(nested.components(separatedBy: "<details>").count == 2)
+        #expect(nested.contains("</details>\n<p>after</p>\n<p>:::</p>"))
+    }
+
     @Test func titlesCountsAndExportsUseTheSummary() {
         let body = "::: details 2026-10-26 14:05 · Idea\nThe **full** idea.\n:::"
         #expect(NoteText.title(of: body) == "2026-10-26 14:05 · Idea")
@@ -107,7 +129,7 @@ import Testing
     @Test func selectionInsideOpensIt() {
         let (s, st) = styled(text, caret: 20)
         #expect(deco(s, 0)?.kind == .summary(collapsed: false))
-        #expect(st.expanded.contains("Idea"))
+        #expect(st.expanded.count == 1)
         // a find match inside a collapsed one, after loading
         let (s2, st2) = styled(text)
         st2.selectionChanged(s2, to: NSRange(location: 17, length: 4))
@@ -170,12 +192,90 @@ import Testing
         s.replaceCharacters(in: NSRange(location: 16, length: 0), with: "s")
         st.didEdit(s, editedRange: NSRange(location: 16, length: 1))
         #expect(deco(s, 0)?.kind == .summary(collapsed: false))
-        #expect(st.expanded.contains("Ideas"))
+        #expect(st.expanded.contains("::: details Ideas\u{0}0"))
         // removing the closing line: no body any more
         s.replaceCharacters(in: NSRange(location: 23, length: 3), with: "")
         st.didEdit(s, editedRange: NSRange(location: 23, length: 0))
         #expect(deco(s, 0)?.kind == .summary(collapsed: nil))
         #expect(deco(s, 18)?.inDetails == false)
+    }
+
+    @Test func deletingAnInnerSummaryRestylesTheOuterOne() {
+        let (s, st) = styled("::: details Outer\nbody\n::: details Inner\nx\n:::\nafter")
+        let inner = (s.string as NSString).range(of: "::: details Inner\n")
+        s.replaceCharacters(in: inner, with: "")
+        st.didEdit(s, editedRange: NSRange(location: inner.location, length: 0))
+        #expect(deco(s, 0)?.kind == .summary(collapsed: false))
+        #expect(deco(s, 18)?.inDetails == true)
+        #expect(deco(s, 25)?.kind == .detailsEnd(revealed: false))
+        #expect(s.string == "::: details Outer\nbody\nx\n:::\nafter")
+    }
+
+    @Test func CRLFBodiesCollapseWithoutHidingTheirTerminators() {
+        let (s, st) = styled("::: details A\r\nbody\r\n:::\r\nafter")
+        #expect(deco(s, 0)?.kind == .summary(collapsed: true))
+        #expect(deco(s, 15)?.kind == .folded)
+        #expect(!hidden(s, 19) && !hidden(s, 20))
+        #expect(MarkdownStyler.collapsedExpander(at: 16, in: s)?.hidden == NSRange(location: 15, length: 9))
+        #expect(st.toggleExpander(s, summaryAt: 0))
+        #expect(deco(s, 15)?.inDetails == true)
+    }
+
+    @Test func identicalSummariesToggleIndependently() {
+        let entry = "::: details Same\nbody\n:::\n"
+        let (s, st) = styled(entry + entry + "after")
+        #expect(st.toggleExpander(s, summaryAt: 0))
+        st.styleAll(s)
+        #expect(deco(s, 0)?.kind == .summary(collapsed: false))
+        #expect(deco(s, (entry as NSString).length)?.kind == .summary(collapsed: true))
+        #expect(st.toggleExpander(s, summaryAt: (entry as NSString).length))
+        #expect(st.toggleExpander(s, summaryAt: 0))
+        #expect(deco(s, 0)?.kind == .summary(collapsed: true))
+        #expect(deco(s, (entry as NSString).length)?.kind == .summary(collapsed: false))
+    }
+
+    @Test func selectionSpanningTheSummaryAndBodyOpensIt() {
+        let (s, st) = styled(text)
+        st.selectionChanged(s, to: NSRange(location: 12, length: 10))
+        #expect(deco(s, 0)?.kind == .summary(collapsed: false))
+        #expect(!hidden(s, 17))
+    }
+
+    @Test func invalidFoldAndSummaryLocationsAreRejected() {
+        let (s, st) = styled(text)
+        for loc in [-1, NSNotFound, s.length + 1] {
+            #expect(MarkdownStyler.collapsedExpander(at: loc, in: s) == nil)
+            #expect(!st.toggleExpander(s, summaryAt: loc))
+        }
+        #expect(MarkdownParser.expanderEnd(after: NSRange(location: NSNotFound, length: 1), in: s.string as NSString) == nil)
+    }
+
+    @Test func randomEditsKeepFoldRangesInsideTheDocument() {
+        var rng = CommandFuzz.RNG(state: 73)
+        let (s, st) = styled(text + "\n::: details B\n😀\n:::\n")
+        let lm = NotesLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        lm.addTextContainer(container)
+        s.addLayoutManager(lm)
+        let pieces = ["::: details A\n", ":::\n", "```\n", "\r\n", "😀", "- [ ] task\n", "", "text"]
+        for _ in 0..<400 {
+            let a = Int.random(in: 0...s.length, using: &rng)
+            let b = Int.random(in: a...min(s.length, a + 12), using: &rng)
+            let rep = pieces.randomElement(using: &rng)!
+            s.replaceCharacters(in: NSRange(location: a, length: b - a), with: rep)
+            st.didEdit(s, editedRange: NSRange(location: a, length: (rep as NSString).length))
+            let caret = Int.random(in: 0...s.length, using: &rng)
+            st.selectionChanged(s, to: NSRange(location: caret, length: 0))
+            let ns = s.string as NSString
+            let line = ns.lineRange(for: NSRange(location: caret, length: 0))
+            _ = st.toggleExpander(s, summaryAt: line.location)
+            lm.ensureLayout(for: container)
+            if let e = MarkdownStyler.collapsedExpander(at: caret, in: s) {
+                #expect(e.summary.location >= 0 && NSMaxRange(e.summary) <= s.length)
+                #expect(e.hidden.location >= NSMaxRange(e.summary) && NSMaxRange(e.hidden) <= s.length)
+                #expect(MarkdownParser.expanderEnd(after: e.summary, in: ns) != nil)
+            }
+        }
     }
 }
 
@@ -198,10 +298,28 @@ import Testing
         #expect(ThoughtCapture.summary(of: "one\ntwo  three") == "one two three")
     }
 
+    @Test func trimmingCannotTurnIndentedTextIntoAnExpanderDelimiter() {
+        #expect(ThoughtCapture.cleaned("    :::\nbody") == "\\:::\nbody")
+        #expect(ThoughtCapture.cleaned("    ::: details Nested\nbody") == "\\::: details Nested\nbody")
+        let entry = ThoughtCapture.entry("    :::\nbody", at: date, timeZone: utc)!
+        let ns = entry as NSString
+        let end = MarkdownParser.expanderEnd(after: ns.lineRange(for: NSRange(location: 0, length: 0)), in: ns)
+        #expect(end == NSRange(location: ns.length - 3, length: 3))
+    }
+
     @Test func appendsAsSeparateEntries() {
         #expect(ThoughtCapture.append("E1", to: "") == "E1\n")
-        #expect(ThoughtCapture.append("E1", to: "  \n") == "E1\n")
-        #expect(ThoughtCapture.append("E2", to: "# Random snippets\nold text\n\n\n") == "# Random snippets\nold text\n\nE2\n")
+        #expect(ThoughtCapture.append("E1", to: "  \n") == "  \n\nE1\n")
+        #expect(ThoughtCapture.append("E2", to: "# Random snippets\nold text\n\n\n") == "# Random snippets\nold text\n\n\nE2\n")
+    }
+
+    @Test func appendPreservesExistingWhitespaceAndClosesAnOpenFence() {
+        let body = "# Note\nA hard break  \n\n\n"
+        #expect(ThoughtCapture.append("E", to: body) == body + "E\n")
+        let fenced = "# Note\n~~~~swift\nlet x = 1"
+        #expect(ThoughtCapture.append("E", to: fenced) == fenced + "\n~~~~\n\nE\n")
+        #expect(ThoughtCapture.cleaned("~~~~swift\nlet x = 1") == "~~~~swift\nlet x = 1\n~~~~")
+        #expect(ThoughtCapture.cleaned("~~~```lang\ncode") == "~~~```lang\ncode\n~~~")
     }
 
     /// Captures appended to an existing note parse back as one closed, collapsed expander

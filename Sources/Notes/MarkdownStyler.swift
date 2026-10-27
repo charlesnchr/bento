@@ -91,6 +91,7 @@ final class MarkdownStyler {
     /// (up to the closing line's newline). nil when `loc` isn't hidden in one.
     static func collapsedExpander(at loc: Int, in s: NSTextStorage) -> (summary: NSRange, hidden: NSRange)? {
         let text = s.string as NSString
+        guard loc >= 0, loc <= text.length else { return nil }
         func deco(_ i: Int) -> BlockDecoration? { s.attribute(.notesBlock, at: i, effectiveRange: nil) as? BlockDecoration }
         // the end of a last line without a newline still belongs to that line
         let probe = loc == text.length && loc > 0 && text.character(at: loc - 1) != 10 ? loc - 1 : loc
@@ -109,8 +110,9 @@ final class MarkdownStyler {
         while end < text.length, deco(end)?.kind == .folded {
             end = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
         }
-        // the closing line's newline is not hidden
-        if end > start, text.character(at: end - 1) == 10 { end -= 1 }
+        // the closing line's terminator is not hidden
+        let last = text.lineRange(for: NSRange(location: end - 1, length: 0))
+        end = NSMaxRange(MarkdownParser.contentRange(last, in: text))
         return (summary, NSRange(location: start, length: end - start))
     }
 
@@ -133,7 +135,7 @@ final class MarkdownStyler {
             }
             break
         }
-        from = expanderStart(s, before: from, editedSyntax: hasExpanderSyntax(text, from: start, to: end))
+        from = expanderStart(s, before: from, editedSyntax: editing || hasExpanderSyntax(text, from: start, to: end))
         let inCode: Bool
         if from == 0 {
             inCode = false
@@ -170,9 +172,7 @@ final class MarkdownStyler {
 
     /// A line range without its newline.
     private static func contentRange(_ full: NSRange, in text: NSString) -> NSRange {
-        var end = NSMaxRange(full)
-        if end > full.location, text.character(at: end - 1) == 10 { end -= 1 }
-        return NSRange(location: full.location, length: end - full.location)
+        MarkdownParser.contentRange(full, in: text)
     }
 
     /// Where a restyle from `loc` has to start so the expander containing it (whose
@@ -191,12 +191,21 @@ final class MarkdownStyler {
         return loc
     }
 
-    /// Identifies an expander across restyles and notes: its summary text.
+    /// Identifies an expander across restyles. Repeated captures can have identical
+    /// summaries, so include the occurrence of the full header line.
     private func summaryKey(_ text: NSMutableString, line full: NSRange) -> String {
         let r = MarkdownStyler.contentRange(full, in: text)
-        let p = MarkdownParser.parseLine(MarkdownParser.utf16(text, r), inCode: false)
-        return text.substring(with: NSRange(location: r.location + p.contentRange.location, length: p.contentRange.length))
-            .trimmingCharacters(in: .whitespaces)
+        let header = text.substring(with: r)
+        var occurrence = 0, loc = 0
+        while loc < full.location {
+            let found = text.range(of: header, range: NSRange(location: loc, length: full.location - loc))
+            guard found.location != NSNotFound else { break }
+            let end = NSMaxRange(found)
+            if (found.location == 0 || [10, 13].contains(text.character(at: found.location - 1))),
+               end < text.length, [10, 13].contains(text.character(at: end)) { occurrence += 1 }
+            loc = end
+        }
+        return header + "\u{0}" + String(occurrence)
     }
 
     /// Whether the expander with summary line `full` is collapsed; nil when it has no
@@ -209,8 +218,9 @@ final class MarkdownStyler {
         // A caret at the end of the closing line is inside only while typing there (a note
         // that ends with an expander opens with the caret at its end).
         let end = NSMaxRange(close)
-        let inside = selection.location >= NSMaxRange(full) && NSMaxRange(selection) <= end
-            && (selection.location < end || editing)
+        let body = NSRange(location: NSMaxRange(full), length: end - NSMaxRange(full))
+        let inside = selection.length > 0 ? NSIntersectionRange(selection, body).length > 0
+            : selection.location >= body.location && (selection.location < end || (selection.location == end && editing))
         let wasOpen = editing && decoration(s, at: full.location)?.kind == .summary(collapsed: false)
         guard inside || wasOpen else { return true }
         expanded.insert(key)
@@ -218,7 +228,7 @@ final class MarkdownStyler {
     }
 
     private func decoration(_ s: NSTextStorage, at loc: Int) -> BlockDecoration? {
-        guard loc < s.length else { return nil }
+        guard loc >= 0, loc < s.length else { return nil }
         return s.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration
     }
 
@@ -234,9 +244,7 @@ final class MarkdownStyler {
 
         while loc <= length {
             let full = text.lineRange(for: NSRange(location: loc, length: 0))
-            var contentEnd = NSMaxRange(full)
-            if contentEnd > full.location, text.character(at: contentEnd - 1) == 10 { contentEnd -= 1 }
-            let r = NSRange(location: full.location, length: contentEnd - full.location)
+            let r = MarkdownStyler.contentRange(full, in: text)
             let p = MarkdownParser.parseLine(MarkdownParser.utf16(text, r), inCode: inCode)
             var inCodeAfter = inCode
             if case .fence(let opening, _) = p.kind { inCodeAfter = opening }

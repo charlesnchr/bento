@@ -801,7 +801,7 @@ public final class DictationCoordinator: ObservableObject {
         lastResult = outcome.cleanedTranscript
         if !context.isAssistant, let folder = session?.folder {
             // A voice edit's audio is an instruction, not the words on screen.
-            lastDictation = context.editingSession == nil
+            lastDictation = context.editingSession == nil && !context.captureToNote
                 ? LastDictation(folder: folder, context: context, durationSeconds: session?.meta.audioDurationSeconds,
                                 text: outcome.cleanedTranscript)
                 : nil

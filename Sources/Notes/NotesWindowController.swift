@@ -179,12 +179,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     @discardableResult
     func toggleExpander(summaryAt lineStart: Int) -> Bool {
         let text = storage.string as NSString
+        guard lineStart >= 0, lineStart < text.length else { return false }
         let summary = text.lineRange(for: NSRange(location: lineStart, length: 0))
         guard let end = MarkdownParser.expanderEnd(after: summary, in: text) else { return false }
         let body = NSRange(location: NSMaxRange(summary), length: NSMaxRange(end) - NSMaxRange(summary))
         let sel = textView.selectedRange()
         if NSLocationInRange(sel.location, body) || sel.location == NSMaxRange(body) || NSIntersectionRange(sel, body).length > 0 {
-            textView.setSelectedRange(NSRange(location: NSMaxRange(summary) - 1, length: 0))
+            textView.setSelectedRange(NSRange(location: NSMaxRange(MarkdownParser.contentRange(summary, in: text)), length: 0))
         }
         guard styler.toggleExpander(storage, summaryAt: summary.location) else { return false }
         textView.needsDisplay = true
@@ -451,9 +452,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         guard new.length == 0, !loadingNote else { return new }
         if let e = MarkdownStyler.collapsedExpander(at: new.location, in: storage) {
             // the caret skips a collapsed body: past it going forward, else to the summary's end
-            let summaryEnd = NSMaxRange(e.summary) - 1
-            let after = NSMaxRange(e.hidden) + 1
-            return NSRange(location: new.location > old.location && after <= storage.length ? after : summaryEnd, length: 0)
+            let text = storage.string as NSString
+            let summaryEnd = NSMaxRange(MarkdownParser.contentRange(e.summary, in: text))
+            let end = NSMaxRange(e.hidden)
+            let after = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
+            let target = new.location > old.location && end < storage.length ? after : summaryEnd
+            return NSRange(location: snap(target, previous: old.location) ?? target, length: 0)
         }
         return snap(new.location, previous: old.location).map { NSRange(location: $0, length: 0) } ?? new
     }

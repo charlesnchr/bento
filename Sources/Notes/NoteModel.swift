@@ -137,7 +137,7 @@ enum NoteText {
         let ns = line as NSString
         if case .rule = parsed.kind { return "" }
         if case .fence = parsed.kind { return "" }
-        if case .detailsEnd = parsed.kind { return "" }
+        if case .detailsEnd = parsed.kind { return line }
         let content = ns.substring(with: parsed.contentRange)
         return MarkdownParser.stripInline(content)
     }
@@ -146,15 +146,25 @@ enum NoteText {
     static func plainText(of body: String) -> String {
         var lines: [String] = []
         var inCode = false
+        let text = body as NSString
+        var loc = 0
+        var detailsEnd: Int?
         body.enumerateLines { line, _ in
+            let full = text.lineRange(for: NSRange(location: loc, length: 0))
+            defer { loc = NSMaxRange(full) }
             let p = MarkdownParser.parseLine(line, inCode: inCode)
             switch p.kind {
             case .fence(let opening, _):
                 inCode = opening
             case .code:
                 lines.append(line)
-            case .rule, .detailsEnd:
+            case .rule:
                 break
+            case .detailsEnd:
+                if detailsEnd == loc { detailsEnd = nil } else { lines.append(line) }
+            case .details:
+                detailsEnd = MarkdownParser.expanderEnd(after: full, in: text)?.location
+                lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))
             default:
                 lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))
             }

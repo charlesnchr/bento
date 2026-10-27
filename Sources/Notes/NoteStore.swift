@@ -109,14 +109,18 @@ final class NoteStore: NoteRepository {
         save(note, notify: true, remote: false)
     }
 
-    func save(_ note: Note, notify: Bool, remote: Bool) {
+    @discardableResult
+    func save(_ note: Note, notify: Bool, remote: Bool, requirePersistence: Bool = false) -> Bool {
+        guard !requirePersistence || isPersistent else { return false }
         var note = note
         // The SQLite layer passes text as C strings: a NUL would truncate the body on disk.
         if note.body.utf8.contains(0) { note.body = note.body.replacingOccurrences(of: "\u{0}", with: "") }
-        if cache[note.id] == note { return }
+        if cache[note.id] == note { return true }
+        let saved = write(note)
+        guard saved || !requirePersistence else { return false }
         cache[note.id] = note
-        write(note)
         if notify { post([note.id], remote: remote) }
+        return saved
     }
 
     func allNotes(includeTombstones: Bool = false) -> [Note] {
@@ -189,7 +193,7 @@ final class NoteStore: NoteRepository {
 
     // MARK: Private
 
-    private func write(_ n: Note) {
+    private func write(_ n: Note) -> Bool {
         do {
             try db?.run("""
             INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash)
@@ -200,8 +204,10 @@ final class NoteStore: NoteRepository {
               base_hash = excluded.base_hash
             """, [n.id, n.body, n.createdAt, n.updatedAt, n.deleted, n.seq, n.device, NoteStore.encodeMeta(n.meta), n.dirty, n.openedAt,
                   n.baseHash.map { Int64(bitPattern: $0) }])
+            return db != nil
         } catch {
             log.error("Saving note failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 

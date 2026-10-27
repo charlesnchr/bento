@@ -247,14 +247,16 @@ enum MarkdownParser {
     /// The closing ":::" line (without newline) of the expander whose summary line is
     /// `summary`; nil when another expander or the end of the note comes first.
     static func expanderEnd(after summary: NSRange, in text: NSString) -> NSRange? {
+        guard summary.location >= 0, summary.length > 0, summary.location <= text.length,
+              summary.length <= text.length - summary.location else { return nil }
         var loc = NSMaxRange(summary)
-        guard loc > summary.location, text.character(at: loc - 1) == 10 else { return nil }
+        let header = contentRange(summary, in: text)
+        guard header.length < summary.length,
+              parseLine(utf16(text, header), inCode: false).kind == .details else { return nil }
         var inCode = false
         while loc < text.length {
             let full = text.lineRange(for: NSRange(location: loc, length: 0))
-            var lineEnd = NSMaxRange(full)
-            if lineEnd > full.location, text.character(at: lineEnd - 1) == 10 { lineEnd -= 1 }
-            let r = NSRange(location: full.location, length: lineEnd - full.location)
+            let r = contentRange(full, in: text)
             switch parseLine(utf16(text, r), inCode: inCode).kind {
             case .detailsEnd: return r
             case .details: return nil
@@ -264,6 +266,14 @@ enum MarkdownParser {
             loc = NSMaxRange(full)
         }
         return nil
+    }
+
+    /// A full line range without its LF, CRLF or CR terminator.
+    static func contentRange(_ full: NSRange, in text: NSString) -> NSRange {
+        var end = NSMaxRange(full)
+        if end > full.location, text.character(at: end - 1) == 10 { end -= 1 }
+        if end > full.location, text.character(at: end - 1) == 13 { end -= 1 }
+        return NSRange(location: full.location, length: end - full.location)
     }
 
     static func utf16(_ text: NSString, _ r: NSRange) -> [UInt16] {
@@ -282,9 +292,7 @@ enum MarkdownParser {
             // cheap pre-check before decoding the line
             let first = firstNonSpace(text, lr)
             if first == backtick || first == tilde {
-                var end = NSMaxRange(lr)
-                if end > lr.location, text.character(at: end - 1) == 10 { end -= 1 }
-                let u = utf16(text, NSRange(location: lr.location, length: end - lr.location))
+                let u = utf16(text, contentRange(lr, in: text))
                 if let f = isFence(u) {
                     if inCode { if f.lang.isEmpty { inCode = false } } else { inCode = true }
                 }

@@ -55,8 +55,8 @@ struct NotesSettingsView: View {
     @StateObject private var model = ConfigSection("notes", default: NotesSettings())
     @ObservedObject var status: SyncStatus
     let actions: [BentoAction]
-    /// Live notes for the capture note picker.
-    let notes: [NoteChoice]
+    let store: NoteStore
+    @State private var notes: [NoteChoice] = []
     let syncNow: () -> Void
 
     struct NoteChoice: Identifiable {
@@ -180,5 +180,11 @@ struct NotesSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshNotes() }
+        .onReceive(NotificationCenter.default.publisher(for: NoteStore.didChange, object: store).receive(on: RunLoop.main)) { _ in refreshNotes() }
+    }
+
+    private func refreshNotes() {
+        notes = store.liveNotes.map { NoteChoice(id: $0.id, title: NoteText.displayTitle(of: $0.body)) }
     }
 }

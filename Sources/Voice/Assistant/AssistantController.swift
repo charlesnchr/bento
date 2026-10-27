@@ -772,7 +772,19 @@ final class AssistantController: AssistantActions {
 final class VoiceOutputRouter: TextInserting {
     let composer: ComposerWindow
     let assistant: AssistantController
-    init(composer: ComposerWindow, assistant: AssistantController) { self.composer = composer; self.assistant = assistant }
+    private let noteCapture: (String) -> String?
+    private let pasteboard: NSPasteboard
+    private let secureInputActive: () -> Bool
+
+    init(composer: ComposerWindow, assistant: AssistantController,
+         noteCapture: @escaping (String) -> String? = { DictationModule.noteCapture?($0) },
+         pasteboard: NSPasteboard = .general, secureInputActive: @escaping () -> Bool = { SecureInput.isActive }) {
+        self.composer = composer
+        self.assistant = assistant
+        self.noteCapture = noteCapture
+        self.pasteboard = pasteboard
+        self.secureInputActive = secureInputActive
+    }
     func insert(_ text: String, context: DictationContext) async -> InsertionOutcome {
         if context.isAssistant { assistant.respond(to: text, activate: false); return .inserted }
         if context.captureToNote { return captureToNote(text) }
@@ -783,8 +795,8 @@ final class VoiceOutputRouter: TextInserting {
     /// Appends to the capture note through Notes; when Notes can't take it (off, or not
     /// in this build) the text goes to the clipboard rather than being lost.
     private func captureToNote(_ text: String) -> InsertionOutcome {
-        if DictationModule.noteCapture?(text) != nil { return .inserted }
-        let pasteboard = NSPasteboard.general
+        guard !secureInputActive() else { return .blockedSecureField }
+        if noteCapture(text) != nil { return .inserted }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         return .fellBackToClipboard

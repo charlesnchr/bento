@@ -23,8 +23,11 @@ enum ThoughtCapture {
     /// `body` with `entry` appended after a blank line.
     static func append(_ entry: String, to body: String) -> String {
         var head = body
-        while let last = head.last, last.isWhitespace { head.removeLast() }
-        return head.isEmpty ? entry + "\n" : head + "\n\n" + entry + "\n"
+        if let fence = unclosedFence(in: head) {
+            head += (head.hasSuffix("\n") ? "" : "\n") + fence + "\n"
+        }
+        let separator = head.isEmpty || head.hasSuffix("\n\n") ? "" : head.hasSuffix("\n") ? "\n" : "\n\n"
+        return head + separator + entry + "\n"
     }
 
     /// "2026-10-26 14:05".
@@ -48,6 +51,7 @@ enum ThoughtCapture {
     static func cleaned(_ text: String) -> String {
         let normalised = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "\u{0}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         var lines: [String] = []
         for line in normalised.components(separatedBy: "\n") {
             let blank = line.trimmingCharacters(in: .whitespaces).isEmpty
@@ -59,7 +63,20 @@ enum ThoughtCapture {
         }
         var body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         // an unclosed code fence would swallow the closing ":::"
-        if MarkdownParser.isInCode(body + "\n" as NSString, lineStart: (body as NSString).length + 1) { body += "\n```" }
+        if let fence = unclosedFence(in: body) { body += "\n" + fence }
         return body
+    }
+
+    private static func unclosedFence(in body: String) -> String? {
+        let text = body as NSString
+        var fence: String?
+        for (range, line) in MarkdownParser.parseLines(text) {
+            if case .fence(let opening, _) = line.kind {
+                let raw = text.substring(with: range).trimmingCharacters(in: .whitespaces)
+                let marker = raw.first ?? "`"
+                fence = opening ? String(raw.prefix { $0 == marker }) : nil
+            }
+        }
+        return fence
     }
 }
