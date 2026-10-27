@@ -25,8 +25,8 @@ import Testing
             let id = c.settings.captureNoteID
             #expect(!id.isEmpty)
             let note = try #require(NoteStore(url: url).note(id))
-            #expect(note.body.hasPrefix("# Thoughts\n\n::: details "))
-            #expect(note.body.hasSuffix("\nFirst thought\n:::\n"))
+            #expect(note.body.hasPrefix("# Thoughts\n\n<details><summary>"))
+            #expect(note.body.hasSuffix("\nFirst thought\n</details>\n"))
             #expect(note.dirty)
             #expect(c.capture("Second thought") == "Thoughts")
             #expect(c.store.liveNotes.count == 1)
@@ -46,19 +46,19 @@ import Testing
             #expect(typed == "# Note\nold unsaved")
             #expect(c.capture("Captured thought") == "Note")
             let captured = w.currentText
-            #expect(captured.hasPrefix(typed + "\n\n::: details "))
-            #expect(captured.hasSuffix("\nCaptured thought\n:::\n"))
+            #expect(captured.hasPrefix(typed + "\n\n<details><summary>"))
+            #expect(captured.hasSuffix("\nCaptured thought\n</details>\n"))
             w.textView.insertText(" later", replacementRange: NSRange(location: NSNotFound, length: 0))
             c.flushPendingSave()
             let saved = try #require(NoteStore(url: url).note(note.id))
             #expect(saved.body.contains("old unsaved later"))
-            #expect(saved.body.hasSuffix("\nCaptured thought\n:::\n"))
+            #expect(saved.body.hasSuffix("\nCaptured thought\n</details>\n"))
             w.hide()
             #expect(c.capture("With the window closed") == "Note")
             c.open(note.id)
             #expect(w.currentText == NoteStore(url: url).note(note.id)?.body)
-            #expect(w.currentText.contains("\nCaptured thought\n:::\n"))
-            #expect(w.currentText.hasSuffix("\nWith the window closed\n:::\n"))
+            #expect(w.currentText.contains("\nCaptured thought\n</details>\n"))
+            #expect(w.currentText.hasSuffix("\nWith the window closed\n</details>\n"))
         }
     }
 
@@ -95,7 +95,7 @@ import Testing
             #expect(c.engine.applyRemote(remote) == .adopted)
             let copy = try #require(c.store.liveNotes.first { $0.id != note.id })
             #expect(copy.body.contains("base pending"))
-            #expect(copy.body.hasSuffix("\nA captured thought\n:::\n"))
+            #expect(copy.body.hasSuffix("\nA captured thought\n</details>\n"))
             #expect(w.currentText == remote.body)
             #expect(c.capture("After sync") == "Note")
             #expect(c.store.note(note.id)?.body.hasPrefix(remote.body + "\n\n") == true)
@@ -122,7 +122,7 @@ import Testing
             let saved = try #require(c.store.note(note.id))
             #expect(saved.pinned && saved.seq == 2 && saved.dirty)
             #expect(saved.body.hasPrefix("# Note\nbase pending\n\n"))
-            #expect(saved.body.hasSuffix("\nAfter the merge\n:::\n"))
+            #expect(saved.body.hasSuffix("\nAfter the merge\n</details>\n"))
             #expect(w.currentText == saved.body)
         }
     }

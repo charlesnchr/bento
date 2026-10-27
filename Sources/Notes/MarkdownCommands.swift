@@ -113,10 +113,13 @@ enum MarkdownCommands {
             return EditResult(edits: [TextEdit(range: sel, replacement: "\n\n" + fence)],
                               selection: NSRange(location: sel.location + 1, length: 0))
         case .details:
-            // Return at the end of an unclosed expander's summary closes it, like a code fence
-            guard sel.length == 0, rel == l.range.length, MarkdownParser.expanderEnd(after: l.full, in: text) == nil else { return nil }
-            return EditResult(edits: [TextEdit(range: sel, replacement: "\n\n:::")],
-                              selection: NSRange(location: sel.location + 1, length: 0))
+            // Return at the end of a summary starts the body; an unclosed expander gets its
+            // closing line, like a code fence
+            guard sel.length == 0, rel >= NSMaxRange(l.parsed.contentRange) else { return nil }
+            let html = l.parsed.markerRange.map { text.character(at: l.range.location + $0.location) == 60 } ?? false
+            let close = MarkdownParser.expanderEnd(after: l.full, in: text) == nil ? "\n" + (html ? "</details>" : ":::") : ""
+            return EditResult(edits: [TextEdit(range: NSRange(location: l.end, length: 0), replacement: "\n" + close)],
+                              selection: NSRange(location: l.end + 1, length: 0))
         case .bullet, .ordered, .task, .quote:
             let p = l.parsed
             let content = (text.substring(with: NSRange(location: l.contentStart, length: l.end - l.contentStart)))
@@ -321,6 +324,28 @@ enum MarkdownCommands {
     }
 
     // MARK: Block formats
+
+    /// Wraps the selected lines in an expander ("<details>"), with "Details" selected as
+    /// the summary to type over. A single line with text becomes the summary instead,
+    /// with the caret on the empty body line below.
+    static func wrapInExpander(_ text: NSString, selection sel: NSRange) -> EditResult? {
+        let ls = lines(in: sel, of: text)
+        guard let first = ls.first, let last = ls.last, !ls.contains(where: { $0.inCode }) else { return nil }
+        if ls.count == 1, case .details = first.parsed.kind { return nil }
+        let range = NSRange(location: first.range.location, length: last.end - first.range.location)
+        let body = text.substring(with: range)
+        let open = "<details><summary>"
+        if ls.count == 1, sel.length == 0, !body.trimmingCharacters(in: .whitespaces).isEmpty {
+            let summary = body.trimmingCharacters(in: .whitespaces)
+            let replacement = open + summary + "</summary>\n\n</details>"
+            let bodyStart = range.location + (open as NSString).length + (summary as NSString).length + ("</summary>\n" as NSString).length
+            return EditResult(edits: [TextEdit(range: range, replacement: replacement)], selection: NSRange(location: bodyStart, length: 0))
+        }
+        let inner = body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : body
+        let replacement = open + "Details</summary>\n" + inner + "\n</details>"
+        return EditResult(edits: [TextEdit(range: range, replacement: replacement)],
+                          selection: NSRange(location: range.location + (open as NSString).length, length: 7))
+    }
 
     static func setBlock(_ text: NSString, selection sel: NSRange, format: BlockFormat) -> EditResult? {
         let ls = lines(in: sel, of: text)

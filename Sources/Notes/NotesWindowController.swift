@@ -182,7 +182,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         let body = NSRange(location: NSMaxRange(summary), length: NSMaxRange(end) - NSMaxRange(summary))
         let sel = textView.selectedRange()
         if NSLocationInRange(sel.location, body) || sel.location == NSMaxRange(body) || NSIntersectionRange(sel, body).length > 0 {
-            textView.setSelectedRange(NSRange(location: NSMaxRange(MarkdownParser.contentRange(summary, in: text)), length: 0))
+            textView.setSelectedRange(NSRange(location: MarkdownParser.visibleEnd(ofLine: summary, in: text), length: 0))
         }
         guard styler.toggleExpander(storage, summaryAt: summary.location) else { return false }
         textView.needsDisplay = true
@@ -401,7 +401,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     private func slashItems(_ query: String) -> [InlineMenu.Item] {
-        let cmds: [NotesCommand] = [.paragraph, .heading1, .heading2, .heading3, .bulletList, .orderedList, .taskList, .quote, .codeBlock]
+        let cmds: [NotesCommand] = [.paragraph, .heading1, .heading2, .heading3, .bulletList, .orderedList, .taskList, .quote, .codeBlock, .expander]
         var items = cmds.map { cmd in
             InlineMenu.Item(title: cmd.title, symbol: cmd.symbol, shortcut: cmd.shortcut) { [weak self] in
                 self?.applyInline(replacement: "")
@@ -445,16 +445,33 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange) -> NSRange {
         guard new.length == 0, !loadingNote else { return new }
-        if let e = MarkdownStyler.collapsedExpander(at: new.location, in: storage) {
+        let loc = snapSuffix(new.location, previous: old.location) ?? new.location
+        if let e = MarkdownStyler.collapsedExpander(at: loc, in: storage) {
             // the caret skips a collapsed body: past it going forward, else to the summary's end
             let text = storage.string as NSString
-            let summaryEnd = NSMaxRange(MarkdownParser.contentRange(e.summary, in: text))
+            let summaryEnd = MarkdownParser.visibleEnd(ofLine: e.summary, in: text)
             let end = NSMaxRange(e.hidden)
             let after = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
-            let target = new.location > old.location && end < storage.length ? after : summaryEnd
+            let target = loc > old.location && end < storage.length ? after : summaryEnd
             return NSRange(location: snap(target, previous: old.location) ?? target, length: 0)
         }
-        return snap(new.location, previous: old.location).map { NSRange(location: $0, length: 0) } ?? new
+        return NSRange(location: snap(loc, previous: old.location) ?? loc, length: 0)
+    }
+
+    /// Keeps the caret out of a summary's hidden "</summary>": moving right from the
+    /// summary's end goes to the next line.
+    private func snapSuffix(_ loc: Int, previous: Int) -> Int? {
+        let text = storage.string as NSString
+        guard loc > 0, loc <= storage.length else { return nil }
+        let line = text.lineRange(for: NSRange(location: loc == storage.length ? loc - 1 : loc, length: 0))
+        var lineEnd = NSMaxRange(line)
+        if lineEnd > line.location, text.character(at: lineEnd - 1) == 10 { lineEnd -= 1 }
+        if lineEnd > line.location, text.character(at: lineEnd - 1) == 13 { lineEnd -= 1 }
+        guard lineEnd > line.location, let len = storage.attribute(.notesSuffixLen, at: lineEnd - 1, effectiveRange: nil) as? Int else { return nil }
+        let contentEnd = max(line.location, lineEnd - len)
+        guard loc > contentEnd, loc <= lineEnd else { return nil }
+        if previous == contentEnd, NSMaxRange(line) > lineEnd, NSMaxRange(line) < storage.length { return NSMaxRange(line) }
+        return contentEnd
     }
 
     /// Keeps the caret out of hidden block prefixes using the styler's attributes.
@@ -547,6 +564,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         case .paragraph: result = MarkdownCommands.setBlock(text, selection: sel, format: .paragraph)
         case .codeBlock: result = MarkdownCommands.setBlock(text, selection: sel, format: .codeBlock)
         case .quote: result = MarkdownCommands.setBlock(text, selection: sel, format: .quote)
+        case .expander: result = MarkdownCommands.wrapInExpander(text, selection: sel)
         case .orderedList: result = MarkdownCommands.setBlock(text, selection: sel, format: .ordered)
         case .bulletList: result = MarkdownCommands.setBlock(text, selection: sel, format: .bullet)
         case .taskList: result = MarkdownCommands.setBlock(text, selection: sel, format: .task)

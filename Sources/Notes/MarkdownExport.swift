@@ -184,7 +184,7 @@ enum MarkdownExport {
                 if !quoteOpen { out += "<blockquote>\n"; quoteOpen = true }
                 out += "<p>" + inlineHTML(content) + "</p>\n"
             case .rule: out += "<hr>\n"
-            case .detailsEnd: out += "<p>:::</p>\n"
+            case .detailsEnd: out += "<p>" + inlineHTML(line.trimmingCharacters(in: .whitespaces)) + "</p>\n"
             case .paragraph:
                 if content.trimmingCharacters(in: .whitespaces).isEmpty { out += "<p><br></p>\n" } else { out += "<p>" + inlineHTML(content) + "</p>\n" }
             default: break

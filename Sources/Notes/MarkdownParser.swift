@@ -14,9 +14,10 @@ enum BlockKind: Equatable {
     case fence(opening: Bool, lang: String)
     /// A line inside a fenced code block.
     case code
-    /// "::: details Summary": opens an expander (VitePress / markdown-it-container syntax).
+    /// "<details><summary>Summary</summary>" (GitHub's HTML) or "::: details Summary"
+    /// (VitePress / markdown-it-container syntax): opens an expander.
     case details
-    /// ":::": closes an expander.
+    /// "</details>" or ":::": closes an expander.
     case detailsEnd
 
     var isList: Bool {
@@ -34,8 +35,10 @@ struct ParsedLine: Equatable {
     var level = 0
     /// Block syntax at the start of the line (indentation + marker), hidden in the editor.
     var prefixRange: NSRange
-    /// Everything after the prefix.
+    /// Everything after the prefix (up to the suffix).
     var contentRange: NSRange
+    /// Syntax after the content, hidden in the editor: an expander summary's "</summary>".
+    var suffixRange: NSRange?
     /// Bullet char / "1." / "[ ]" etc. inside the prefix.
     var markerRange: NSRange?
     /// The literal list marker character(s): "-", "*", "+", or "." / ")" for ordered lists.
@@ -65,7 +68,10 @@ enum MarkdownParser {
     private static let backtick: UInt16 = 96, tilde: UInt16 = 126, lbracket: UInt16 = 91, rbracket: UInt16 = 93
     private static let dot: UInt16 = 46, rparen: UInt16 = 41, x: UInt16 = 120, X: UInt16 = 88
     private static let colon: UInt16 = 58
+    private static let lt: UInt16 = 60
     private static let detailsWord = Array("details".utf16)
+    private static let detailsTag = Array("<details".utf16), detailsClose = Array("</details>".utf16)
+    private static let summaryTag = Array("<summary>".utf16), summaryClose = Array("</summary>".utf16)
 
     /// Number of spaces one list nesting level is written with.
     static let indentUnit = "    "
@@ -98,7 +104,7 @@ enum MarkdownParser {
             return ParsedLine(kind: .fence(opening: true, lang: f.lang), prefixRange: whole, contentRange: empty)
         }
 
-        if cols <= 3, let d = detailsLine(u, from: i) { return d }
+        if cols <= 3, let d = detailsLine(u, from: i) ?? detailsTagLine(u, from: i) { return d }
 
         // Heading: up to 6 '#' followed by a space.
         if cols <= 3, i < n, u[i] == hash {
@@ -204,6 +210,60 @@ enum MarkdownParser {
                           markerRange: NSRange(location: i, length: j + w - i))
     }
 
+    /// "<details>" / "<details open>", optionally followed by "<summary>Summary</summary>"
+    /// on the same line (an expander's header), or "</details>" (its end). Tags are
+    /// matched case-insensitively.
+    private static func detailsTagLine(_ u: [UInt16], from i: Int) -> ParsedLine? {
+        let n = u.count
+        guard i < n, u[i] == lt else { return nil }
+        func at(_ j: Int, _ word: [UInt16]) -> Bool {
+            guard j + word.count <= n else { return false }
+            for k in 0..<word.count where lower(u[j + k]) != word[k] { return false }
+            return true
+        }
+        if at(i, detailsClose) {
+            var j = i + detailsClose.count
+            while j < n, u[j] == space || u[j] == tab { j += 1 }
+            guard j == n else { return nil }
+            return ParsedLine(kind: .detailsEnd, prefixRange: NSRange(location: 0, length: n), contentRange: NSRange(location: n, length: 0))
+        }
+        guard at(i, detailsTag) else { return nil }
+        var j = i + detailsTag.count
+        guard j < n, u[j] == gt || u[j] == space || u[j] == tab else { return nil }
+        while j < n, u[j] != gt { j += 1 }
+        guard j < n else { return nil }
+        let tagEnd = j + 1
+        var k = tagEnd
+        while k < n, u[k] == space || u[k] == tab { k += 1 }
+        if at(k, summaryTag) { k += summaryTag.count }
+        var end = n
+        var suffix: NSRange?
+        if let c = (k..<n).first(where: { at($0, summaryClose) }) {
+            end = c
+            suffix = NSRange(location: c, length: n - c)
+        }
+        return ParsedLine(kind: .details, prefixRange: NSRange(location: 0, length: k), contentRange: NSRange(location: k, length: end - k),
+                          suffixRange: suffix, markerRange: NSRange(location: i, length: tagEnd - i))
+    }
+
+    private static func lower(_ c: UInt16) -> UInt16 { c >= 65 && c <= 90 ? c + 32 : c }
+
+    /// Whether an expander header line asks to start open ("<details open>").
+    static func detailsStartsOpen(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces).lowercased()
+        guard t.hasPrefix("<details"), let close = t.firstIndex(of: ">") else { return false }
+        return t[..<close].split(whereSeparator: { $0 == " " || $0 == "\t" }).dropFirst().contains { $0 == "open" || $0.hasPrefix("open=") }
+    }
+
+    /// End of the visible text of the line `full`: before a summary's "</summary>",
+    /// else before the line terminator.
+    static func visibleEnd(ofLine full: NSRange, in text: NSString) -> Int {
+        let r = contentRange(full, in: text)
+        let p = parseLine(utf16(text, r), inCode: false)
+        guard p.kind == .details, let sr = p.suffixRange else { return NSMaxRange(r) }
+        return r.location + sr.location
+    }
+
     static func isRule(_ s: String) -> Bool { isRule(Array(s.utf16), from: 0) }
 
     static func isRule(_ u: [UInt16], from start: Int) -> Bool {
@@ -244,7 +304,7 @@ enum MarkdownParser {
         return out
     }
 
-    /// The closing ":::" line (without newline) of the expander whose summary line is
+    /// The closing "</details>" or ":::" line (without newline) of the expander whose summary line is
     /// `summary`; nil when another expander or the end of the note comes first.
     static func expanderEnd(after summary: NSRange, in text: NSString) -> NSRange? {
         guard summary.location >= 0, summary.length > 0, summary.location <= text.length,
