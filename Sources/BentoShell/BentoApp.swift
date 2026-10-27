@@ -9,7 +9,8 @@ public struct GeneralSettings: Codable, Equatable {
     public var showMenuBarIcon = true
     /// Look for a new release once a day (Homebrew installs install it from the menu).
     public var checkForUpdates = true
-    /// Look of Bento's windows: "standard", "glass" or "aero".
+    /// Look of Bento's windows: "standard", "glass", "tinted", "graphite" or "paper"
+    /// ("aero", from earlier versions, reads as "tinted").
     public var theme: Theme = .standard
     public init() {}
 }
@@ -29,6 +30,11 @@ public enum BentoApp {
 
     public static func run(modules: [BentoModule]) -> Never {
         let app = NSApplication.shared
+        // Dev only: BENTO_APPEARANCE=dark|light pins every window, for screenshots.
+        if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil,
+           let a = ProcessInfo.processInfo.environment["BENTO_APPEARANCE"] {
+            app.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua)
+        }
         let delegate = AppDelegate(modules: modules)
         app.delegate = delegate
         app.setActivationPolicy(.accessory)

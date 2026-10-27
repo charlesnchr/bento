@@ -24,13 +24,28 @@ private func tempConfig(_ json: String) throws -> URL {
     let url = try tempConfig(#"{"general":{}}"#)
     let store = ConfigStore(url: url)
     var general = store.section("general", default: GeneralSettings())
-    general.theme = .aero
+    general.theme = .paper
     store.setSection("general", general)
     store.flush()
 
     let object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-    #expect((object["general"] as? [String: Any])?["theme"] as? String == "aero")
-    #expect(ConfigStore(url: url).section("general", default: GeneralSettings()).theme == .aero)
+    #expect((object["general"] as? [String: Any])?["theme"] as? String == "paper")
+    #expect(ConfigStore(url: url).section("general", default: GeneralSettings()).theme == .paper)
+}
+
+@Test func aeroConfigsMoveToTinted() throws {
+    let url = try tempConfig(#"{"general":{"theme":"aero","checkForUpdates":false}}"#)
+    let store = ConfigStore(url: url)
+    var general = store.section("general", default: GeneralSettings())
+    #expect(general.theme == .tinted)
+    #expect(!general.checkForUpdates)
+
+    // The next save writes the new name.
+    general.showMenuBarIcon = false
+    store.setSection("general", general)
+    store.flush()
+    let object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    #expect((object["general"] as? [String: Any])?["theme"] as? String == "tinted")
 }
 
 @Test func unknownThemeFallsBackWithoutLosingOtherSettings() throws {

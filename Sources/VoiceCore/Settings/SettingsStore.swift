@@ -67,7 +67,8 @@ public struct SettingsStore: Sendable {
         Self.set(enabled, forKey: "assistantLiveCall")
     }
 
-    /// Which voice model answers a call. Gemini goes through the direct Vertex helper.
+    /// Which voice model answers a call. Gemini uses dictation's Google connection
+    /// (`geminiLiveRoute`); GPT-Live is Azure, whatever dictation uses.
     public enum AssistantLiveProvider: String, CaseIterable, Sendable {
         case gpt
         case gemini
@@ -87,6 +88,48 @@ public struct SettingsStore: Sendable {
 
     public func setAssistantLiveProvider(_ provider: AssistantLiveProvider) {
         Self.set(provider.rawValue, forKey: "assistantLiveProvider")
+    }
+
+    /// Where a Gemini Live call goes: the same Google connection as dictation, so
+    /// a Mac on the Gemini API never needs the Vertex helper and one on Vertex
+    /// never needs a key.
+    public enum GeminiLiveRoute: Equatable, Sendable {
+        /// The Gemini API's Live socket, with the user's key. Bento sends the call setup.
+        case geminiAPI
+        /// The direct helper's /conversation route, which owns the setup and Google credentials.
+        case vertexHelper(VertexRuntimeConfig)
+        /// Why a call can't start, worded for the assistant window and Settings.
+        case unavailable(String)
+
+        /// The Gemini API's name for the call model (the helper names the Vertex one).
+        public static let geminiAPIModel = "gemini-3.8-live"
+    }
+
+    public var geminiLiveRoute: GeminiLiveRoute {
+        Self.geminiLiveRoute(runtime: VertexRuntimeConfig.state(), hasAPIKey: Self.hasGeminiAPIKey,
+                             hasEndpointOverride: Self.usableEndpointURL(Self.defaults.string(forKey: "endpointOverride")) != nil)
+    }
+
+    /// The runtime file decides, as it does for dictation: none is the Gemini API,
+    /// the direct helper is Vertex. A gateway only transcribes, so it has no call
+    /// route. The Live socket always goes to Google itself, as live dictation's
+    /// does: an endpoint override carries uploads only, so a call needs the key.
+    static func geminiLiveRoute(runtime: VertexRuntimeConfig.State, hasAPIKey: () -> Bool,
+                                hasEndpointOverride: Bool) -> GeminiLiveRoute {
+        switch runtime {
+        case .configured(let config) where config.isDirect:
+            return .vertexHelper(config)
+        case .configured:
+            return .unavailable("Gemini Live calls on Vertex AI need the local Vertex helper; the gateway only transcribes. Choose Azure GPT-Live instead.")
+        case .invalid:
+            let path = VertexRuntimeConfig.defaultURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+            return .unavailable("Vertex configuration is invalid — check \(path)")
+        case .notConfigured:
+            if hasAPIKey() { return .geminiAPI }
+            return .unavailable(hasEndpointOverride
+                ? "Gemini Live calls need a Gemini API key: the endpoint override carries uploads only. Add one in Settings → Dictation → Advanced."
+                : "Gemini Live calls need a Gemini API key. Add one in Settings → Dictation → Advanced, or choose Azure GPT-Live.")
+        }
     }
 
     /// Single source of truth for endpoint-override validity — the Settings UI

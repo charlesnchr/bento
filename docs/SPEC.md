@@ -45,7 +45,8 @@ Assistant modules, which share one engine, `VoiceApp`, and so live in one target
 composer, meeting capsule and notes, assistant window, settings panes). Ported from Jot
 (Apache 2.0, see THIRD_PARTY_NOTICES.md); Jot's tests live in `Tests/VoiceCoreTests`.
 `helper/` holds the Python pieces: the loopback voice helper (Vertex/Azure/OpenRouter/gateway),
-the Azure GPT-Live transport and the Hermes ACP launcher (`helper/README.md`). build.sh copies
+the Azure GPT-Live transport, the Hermes ACP launcher and the Gemini Live call setup the helper
+and the app's Gemini API path share (`gemini_live_setup.json`; `helper/README.md`). build.sh copies
 `Resources/Voice` and `helper/` into `Contents/Resources/Voice`; Swift finds them through
 `VoiceResources` (not `Bundle.module`, which looks only in the bundle root and the build
 machine's `.build`). Voice settings live in UserDefaults and are mirrored both ways into the
@@ -72,10 +73,13 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 - `Permissions`, `Keyboard.paste()/copy()/post(...)`, `HUD.show("Left Half", symbol:)`,
   `KeyablePanel`, `AppActivation.activateSelf()/previousApp`, `AppPaths.support("name")`,
   `SQLiteDB` (tiny sqlite3 wrapper), `BentoLog.make("category")`.
-- `Theme` / `ThemeCenter` (Theme.swift) — Standard, Glass or Aero; `ThemeCenter.shared.style`
-  says what to draw (standard under Reduce Transparency), `didChange` when it changes.
+- `Theme` / `ThemeCenter` (Theme.swift) — Standard, Glass, Tinted, Graphite or Paper;
+  `ThemeCenter.shared.style` says what to draw (a surface over an optional blur, an accent
+  tint, a pinned light/dark appearance; glass is standard under Reduce Transparency),
+  `didChange` when it changes.
   `ThemedBackgroundView(material:content:)`, SwiftUI `ThemeBackdrop`, `themedBackground(_:)`,
-  `themedScrollBackground()`.
+  `themedSidebarBackground(_:)` (sidebars and list columns keep a subtle split),
+  `themedScrollBackground()`; child panels call `followAppearance(of: parent)` when shown.
 
 ## Rules for module work
 
@@ -108,7 +112,7 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
    reference app has it. Keyboard-first: every panel fully usable without the mouse.
    Main windows follow the theme (`general.theme`): put content on a `ThemedBackgroundView`
    (or `ThemeBackdrop` in SwiftUI) instead of a bare NSVisualEffectView, and wrap opaque
-   backgrounds in `themedBackground(_:)` so the glass shows through.
+   backgrounds in `themedBackground(_:)` so the theme's surface shows through.
 7. Settings: each module provides `makeSettingsView()` (SwiftUI `Form { … }.formStyle(.grouped)`)
    with its options and a "Shortcuts" section listing its actions with `ShortcutRecorder(actionID:)`.
 8. Action ids are `<module>.<kebab-name>`. Titles are short ("Left Half", "Capture Area").

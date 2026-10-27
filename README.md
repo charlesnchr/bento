@@ -129,8 +129,11 @@ Without a key nothing formats the text, so Parakeet's words go in as heard. Add
 a Gemini API key (Settings → Dictation → Advanced) for Gemini Transcribe and the
 cleanup model; Parakeet v3 and Ultra stay selectable beside it. Adding a key
 switches the fallback back to Gemini unless you downloaded or picked Parakeet.
-The other transcription models, meeting notes through Vertex AI and Gemini Live
-calls go through a small local helper you run yourself: see `helper/README.md`.
+The key also carries Gemini 3.8 Live voice calls in the assistant. The other
+transcription models, meeting notes through Vertex AI and Gemini Live calls on
+Vertex go through a small local helper you run yourself: see `helper/README.md`.
+Gemini Live always uses dictation's Google connection, the key or the helper,
+never both; Azure GPT-Live is the alternative either way.
 
 ## Configuration
 
@@ -143,11 +146,18 @@ the key left of the right Shift (`-`), and the keyboard overview says so.
 
 **Themes.** Settings → General → Appearance switches Bento's windows (Settings,
 Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search, Capture History)
-between **Standard**, the native look, **Glass**, frosted glass that lets the
-desktop show through, and **Aero**, glass tinted with your accent colour and a
-gloss across the top, after Windows Vista. It's `general.theme` in the config
-(`"standard"`, `"glass"`, `"aero"`). With Reduce Transparency on, every theme
-looks like Standard; Increase Contrast frosts the glass more.
+between:
+
+- **Standard**: the native look.
+- **Glass**: frosted glass that lets the desktop show through.
+- **Tinted**: Glass washed with your accent colour.
+- **Graphite**: near-black and high-contrast, dark even in light mode.
+- **Paper**: warm off-white, light even in dark mode.
+
+It's `general.theme` in the config (`"standard"`, `"glass"`, `"tinted"`,
+`"graphite"`, `"paper"`). Configs that still say `"aero"`, from before Aero was
+removed, get Tinted. With Reduce Transparency on, Glass and Tinted look like
+Standard; Increase Contrast frosts them more.
 
 Any action can be triggered from scripts, Karabiner, etc.:
 

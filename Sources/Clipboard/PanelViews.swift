@@ -26,6 +26,7 @@ struct ClipboardPanelView: View {
             HStack(spacing: 0) {
                 ClipListView(model: model)
                     .frame(width: 320)
+                    .themedSidebarBackground()
                 Divider()
                 PreviewPane(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

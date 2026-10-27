@@ -10,7 +10,7 @@ struct TodoRootView: View {
             if c.sidebarVisible {
                 TodoSidebar(c: c)
                     .frame(width: 220)
-                    .themedBackground(VisualEffect(material: .sidebar))
+                    .themedSidebarBackground(VisualEffect(material: .sidebar))
                 Divider()
             }
             VStack(spacing: 0) {

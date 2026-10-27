@@ -387,6 +387,21 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(setup['inputAudioTranscription']['customVocabulary'], ['Hermes', 'Bento'])
         self.assertEqual(setup['outputAudioTranscription'], {})
         self.assertIn('ask_hermes', setup['systemInstruction']['parts'][0]['text'])
+        self.assertEqual(setup['tools'][0]['functionDeclarations'][0]['name'], helper.CONVERSATION_TOOL)
+        self.assertEqual(set(setup), {'model', 'generationConfig', 'systemInstruction', 'tools',
+                                      'inputAudioTranscription', 'outputAudioTranscription'},
+                         'The app sends the same file to the Gemini API, so it holds nothing Vertex-only')
+
+    async def test_conversation_without_its_setup_file_fails_only_the_call(self):
+        upstream = self.upstream([], None)
+        bridge, client = await self.conversation_client(upstream)
+        try:
+            with patch.object(helper, 'CONVERSATION_SETUP', Path(tempfile.gettempdir()) / 'missing-gemini-live-setup.json'):
+                async with client.ws_connect('/conversation') as ws:
+                    self.assertEqual(await ws.receive_json(), {'error': {'message': 'Gemini Live call ended', 'code': 'transport_error'}})
+        finally:
+            await client.close()
+        self.assertEqual(upstream.sent, [], 'Nothing reached Gemini')
 
     def test_conversation_accepts_only_audio_and_function_results(self):
         audio = {'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000', 'data': 'AAA='}}}
