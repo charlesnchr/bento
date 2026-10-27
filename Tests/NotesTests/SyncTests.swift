@@ -8,6 +8,11 @@ final class MemoryRepo: NoteRepository {
     var notes: [String: Note] = [:]
     var lastSeq: Int64 = 0
     var installID = UUID().uuidString
+    var retiredInstallIDs: Set<String> = []
+    func renewInstallID() {
+        retiredInstallIDs.insert(installID)
+        installID = UUID().uuidString
+    }
     func note(_ id: String) -> Note? { notes[id] }
     func save(_ note: Note) { notes[note.id] = note }
     func allNotes(includeTombstones: Bool) -> [Note] { Array(notes.values).filter { includeTombstones || !$0.deleted } }
@@ -494,6 +499,37 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(s2.trashedNotes.map(\.id) == ["t"])
     }
 
+    @Test func installIDBelongsToThisMac() {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = NoteStore(url: url, hostID: "host-1").installID
+        #expect(NoteStore(url: url, hostID: "host-1").installID == first)
+        // the database restored onto another Mac: a new id there, kept from then on
+        let moved = NoteStore(url: url, hostID: "host-2").installID
+        #expect(moved != first && !moved.isEmpty)
+        #expect(NoteStore(url: url, hostID: "host-2").installID == moved)
+    }
+
+    @Test func headsLeftBehindByAnOlderBuildAreDropped() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let s = NoteStore(url: url)
+            var n = Note(id: "a", body: "synced text", createdAt: 1, updatedAt: 2)
+            n.syncHeads = ["install-1": SyncHead(at: 2, hash: NoteText.hash("synced text"))]
+            s.save(n)
+            s.save(Note(id: "b", body: "other", createdAt: 1, updatedAt: 2))
+            var b = s.note("b")!
+            b.syncHeads = ["install-1": SyncHead(at: 2, hash: 9)]
+            s.save(b)
+        }
+        // an older build (no heads column) edits note a: the stored heads stay behind
+        try SQLiteDB(path: url.path).exec("UPDATE notes SET body = 'edited by an older build' WHERE id = 'a'")
+        let s = NoteStore(url: url)
+        #expect(s.note("a")?.syncHeads == nil)
+        #expect(s.note("b")?.syncHeads == ["install-1": SyncHead(at: 2, hash: 9)]) // still its text
+    }
+
     @Test func migratesOldDatabasesAndKeepsBaseHash() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -872,7 +908,7 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         }
     }
 
-    enum Fuzz { case insertOnly, withDeletes, threeMacs, sameName, metaAndRelaunch }
+    enum Fuzz { case insertOnly, withDeletes, threeMacs, sameName, metaAndRelaunch, sharedInstallID }
 
     /// Two Macs (or three) typing, mostly at their caret, also after sending a put and
     /// before the other's arrives; random delivery delays and reconnects; then quiet.
@@ -881,6 +917,7 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         let start = "# Notes\nfirst line\n\nsecond line\n"
         let names = kind == .threeMacs ? ["A", "B", "C"] : kind == .sameName ? ["MacBook Pro", "MacBook Pro"] : ["A", "B"]
         let macs = names.map { Mac($0, body: start) }
+        if kind == .sharedInstallID { macs[1].repo.installID = macs[0].repo.installID } // a copied database
         let net = Network(macs, body: start)
         var next: UInt32 = 0x4E00 // every typed character is unique (CJK block)
         var typed = Set<Character>()
@@ -936,7 +973,7 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
             #expect(String(a.filter { !typed.contains($0) }) == start, "seed \(seed): base text changed: \(a)")
             #expect(Set(marks) == typed, "seed \(seed): lost typing")
             #expect(macs.allSatisfy { $0.copies.isEmpty }, "seed \(seed): conflicted copy")
-        case .threeMacs, .metaAndRelaunch:
+        case .threeMacs, .metaAndRelaunch, .sharedInstallID:
             // Three at once may not merge (no text holds exactly what all share), nor can a
             // Mac that just relaunched (its history is gone): whatever doesn't merge is in a
             // conflicted copy, never lost (unless the note was deleted).
@@ -954,6 +991,7 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
     @Test(arguments: 0..<150) func threeMacsTypingAtOnceNeverLoseOrDuplicate(seed: Int) { fuzz(seed: seed, .threeMacs) }
     @Test(arguments: 0..<150) func macsWithTheSameNameStillMerge(seed: Int) { fuzz(seed: seed, .sameName) }
     @Test(arguments: 0..<150) func pinsTrashDeletesAndRelaunchesNeverLoseTyping(seed: Int) { fuzz(seed: seed, .metaAndRelaunch) }
+    @Test(arguments: 0..<150) func macsSharingAnInstallIDNeverLoseTyping(seed: Int) { fuzz(seed: seed, .sharedInstallID) }
 
     @Test func aDeferredVersionSurvivesACrash() {
         // B's put is stored; A's concurrent put never reaches the server; B's version
@@ -1100,6 +1138,62 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         e.applyRemote(r)
         #expect(repo.notes["a"]!.deleted && repo.notes["a"]!.body.isEmpty)
         #expect(repo.notes.values.contains { $0.body == "# Their text (conflicted copy, B)" })
+    }
+
+    @Test func aCopiedDatabaseOnASecondMacIsDetected() {
+        // B runs from a copy of A's database: same install id, another computer name.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        b.repo.installID = a.repo.installID
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(0); net.send(1)
+        #expect(net.settle())
+        #expect(a.repo.installID != b.repo.installID) // one of them took a new id
+        let everything = [a, b].flatMap { m in m.repo.notes.values.map(\.body) }.joined()
+        #expect(everything.contains(" from A") && everything.contains("B: "))
+        #expect(a.note.body == b.note.body)
+    }
+
+    @Test func anUnsendableNoteLetsTheWaitingVersionIn() {
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        net.send(0)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(1)
+        net.serve(lose: true)
+        net.serve()
+        net.deliver(0)            // waits for A's put
+        net.reconnect(0)          // that put may still land: keeps waiting
+        #expect(a.repo.lastSeq == 1)
+        a.e.markUnsendable(a.note) // never resent: nothing else would resolve it
+        #expect(a.note.body == "B: " + base + " from A")
+        #expect(a.repo.lastSeq == 2)
+    }
+
+    @Test func noOrphanPinOrder() {
+        // we reordered pins while they unpinned
+        let m = SyncEngine.mergeMeta(base: ["pinned": .bool(true), "pinOrder": .number(1)],
+                                     local: ["pinned": .bool(true), "pinOrder": .number(2)],
+                                     remote: [:], remoteNewer: true)
+        #expect(m.isEmpty)
+    }
+
+    @Test func anOlderClientsMetaChangeMergesKeyByKey() {
+        // We edited the text and pinned; an older client (no heads) trashed the note.
+        let a = Mac("A", body: base)
+        a.typeAtCaret(" mine", elsewhere: nil, backspace: false)
+        a.mutate { $0.pinned = true }
+        var n = a.note
+        n.baseHash = NoteText.hash(base)
+        a.repo.save(n)
+        var r = remote("a", base, updated: a.note.updatedAt + 50, seq: 2)
+        r.device = "Old Mac"
+        r.meta = ["trashedAt": .number(5)]
+        #expect(a.e.applyRemote(r) == .merged)
+        #expect(a.note.body == base + " mine")
+        #expect(a.note.pinned && a.note.meta["trashedAt"] == .number(5))
     }
 
     @Test func crissCrossMergesDontDuplicate() {

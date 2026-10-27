@@ -27,7 +27,9 @@ different text from another device and the two can't be merged, the client keeps
 losing text as a new note titled "‹title› (conflicted copy, ‹device›)" instead of
 discarding it), `base` (written on Notes puts: `{"at": updated_at, "from": "<install
 id>", "heads": {"<install id>": [updated_at, "<hash>"], ...}}`: `from` is the sending
-install's random id (computer names can repeat); `heads`, absent when the sender doesn't
+install's random id (computer names can repeat; the id is tied to the Mac's hardware UUID, so
+a database restored onto another Mac gets a new one); `retired` (optional) lists ids its
+sender found in use by two Macs at once; `heads`, absent when the sender doesn't
 know them, says for each install the newest version of that install's text this version
 contains, as its `updated_at` and the hex FNV-1a hash of its UTF-8 body, like a version
 vector, at most 16 (the most recently edited); only valid while `at` equals the note's
@@ -171,7 +173,15 @@ so it can adopt it. `created_at` is kept from the first version.
   locally keeps the local value.
 - A remote version that waits for an ack holds `last_seq` just below its seq, so after a
   crash the next hello fetches it again.
-- Heads are stored with each note; the texts merges start from are kept in memory only,
+- Two Macs using one install id (a copied database while the old Mac still syncs: a
+  version arrives with our id and another computer name, or with our id in `retired`):
+  pick a new id, retire the old one, forget all heads. Heads naming a retired id aren't
+  trusted (last-writer-wins with conflicted copies until new history arrives).
+- A version from a client that sends `from` but no heads (its history is gone) that would
+  remove text from a synced local note keeps the local text as a conflicted copy first.
+- Heads are stored with each note, tagged with the hash of the body they describe (an
+  older build that edits the note leaves them behind; they're dropped on load). The
+  texts merges start from are kept in memory only,
   so right after a relaunch a concurrent edit falls back to last-writer-wins, keeping
   the local text as a conflicted copy when the heads show the remote one lacks it. A
   put without heads counts as the start of a note's history.

@@ -5,13 +5,15 @@ enum NoteWire {
     /// JSON object for a client put (no `seq`). `origin`: this install's id; `heads`:
     /// which versions of each Mac's text it contains (nil: unknown, e.g. right after a
     /// relaunch).
-    static func encode(_ n: Note, device: String, origin: String? = nil, heads: SyncHeads? = nil) -> [String: Any] {
+    static func encode(_ n: Note, device: String, origin: String? = nil, heads: SyncHeads? = nil,
+                       retired: Set<String> = []) -> [String: Any] {
         var meta = n.meta
         meta.removeValue(forKey: baseKey)
         if let origin, !n.deleted {
             // Tied to this version's updated_at: an older client that edits the note keeps
             // the key but not the timestamp, so a stale base is never trusted.
             var base: [String: JSONValue] = ["at": .number(Double(n.updatedAt)), "from": .string(origin)]
+            if !retired.isEmpty { base["retired"] = .array(retired.sorted().prefix(8).map { .string($0) }) }
             if let heads {
                 base["heads"] = .object(heads.mapValues { .array([.number(Double($0.at)), .string(String($0.hash, radix: 16))]) })
             }
@@ -47,6 +49,9 @@ enum NoteWire {
         if let m = d["meta"] as? [String: Any] { n.meta = m.mapValues { JSONValue(any: $0) } }
         if case .object(let b)? = n.meta.removeValue(forKey: baseKey), b["at"]?.double == Double(updated) {
             if case .string(let from)? = b["from"], !from.isEmpty { n.remoteOrigin = from }
+            if case .array(let ids)? = b["retired"] {
+                n.remoteRetired = ids.prefix(8).compactMap { if case .string(let s) = $0 { return s }; return nil }
+            }
             if case .object(let heads)? = b["heads"], heads.count <= 64 {
                 var out: SyncHeads = [:]
                 for (mac, v) in heads {
@@ -93,6 +98,8 @@ final class SyncEngine {
         let bodyHash: UInt64
         let body: String
         let meta: [String: JSONValue]
+        /// The install id it was sent under.
+        let origin: String
     }
 
     let repo: NoteRepository
@@ -142,8 +149,20 @@ final class SyncEngine {
     // MARK: Incoming
 
     @discardableResult
-    func applyRemote(_ r: Note) -> RemoteResult {
+    func applyRemote(_ incoming: Note) -> RemoteResult {
+        var r = incoming
         if let s = r.seq { advanceSeq(to: s) }
+        // another Mac uses our id (a copied database), or found that and retired it
+        if r.remoteOrigin == installID && !r.device.isEmpty && r.device != device || r.remoteRetired.contains(installID) {
+            installIDCollision()
+        }
+        let fromNewClient = r.remoteOrigin != nil
+        let retired = repo.retiredInstallIDs
+        if !retired.isEmpty {
+            // history naming an id two Macs shared can't be trusted: no merge from it
+            if r.remoteHeads.map({ !retired.isDisjoint(with: $0.keys) }) == true { r.remoteHeads = nil }
+            if let o = r.remoteOrigin, retired.contains(o) { r.remoteOrigin = nil }
+        }
         beforeApply?(r.id)
         guard let local = repo.note(r.id) else {
             var n = r
@@ -170,9 +189,10 @@ final class SyncEngine {
             let remoteBodyChanged = local.baseHash.map { $0 != NoteText.hash(r.body) } ?? true
             if r.updatedAt > local.updatedAt {
                 if concurrent, localBodyChanged, !remoteBodyChanged, !r.deleted {
-                    // They only changed meta (pin, trash…), we changed the text: keep both.
+                    // They only changed meta (pin, trash…), we changed the text: keep both,
+                    // and of the meta what each changed (all theirs when we can't tell).
                     var n = local
-                    n.meta = r.meta
+                    n.meta = baseMeta(of: local).map { Self.mergeMeta(base: $0, local: local.meta, remote: r.meta, remoteNewer: true) } ?? r.meta
                     n.seq = r.seq
                     n.updatedAt = Note.nextUpdate(after: r.updatedAt, local.updatedAt)
                     n.dirty = true
@@ -189,8 +209,10 @@ final class SyncEngine {
             var n = local
             if concurrent, remoteBodyChanged, !r.deleted {
                 if !localBodyChanged {
-                    // We only changed meta, they changed the text: take their text.
+                    // We only changed meta, they changed the text: take their text (and
+                    // their meta changes, when we can tell them from ours).
                     n.body = r.body
+                    if let b = baseMeta(of: local) { n.meta = Self.mergeMeta(base: b, local: local.meta, remote: r.meta, remoteNewer: false) }
                     n.updatedAt = Note.nextUpdate(after: local.updatedAt)
                     n.seq = r.seq
                     n.baseHash = NoteText.hash(r.body)
@@ -207,6 +229,12 @@ final class SyncEngine {
             if let s = r.seq, local.seq ?? -1 < s { n.seq = s }
             if n != local { repo.save(n) }
             return .keptLocal
+        }
+        if fromNewClient, r.remoteHeads == nil, !r.deleted, !local.deleted,
+           TextMerge.edits(from: local.body, to: r.body).contains(where: { $0.range.length > 0 }) {
+            // A version that can't say what it contains (its Mac lost its history) would
+            // remove text from our synced one: it may never have had it, keep ours.
+            conflictCopy(body: local.body, from: device, of: local)
         }
         var n = merged(local: local, remote: r)
         n.baseHash = NoteText.hash(r.body)
@@ -376,8 +404,9 @@ final class SyncEngine {
             n.seq = max(n.seq ?? 0, seq)
         }
         if let sent, n.updatedAt == sent.updatedAt { n.dirty = false }
-        if let sent, n.syncHeads == nil, !n.deleted {
-            // sent without heads (unknown): to everyone else it starts the history
+        if let sent, n.syncHeads == nil, !n.deleted, inflight[id] == nil, sent.origin == installID {
+            // sent without heads (unknown): to everyone else it starts the history (only the
+            // last one sent: an earlier one would describe less than our text holds)
             let h: SyncHeads = [installID: SyncHead(at: sent.updatedAt, hash: sent.bodyHash)]
             n.syncHeads = h
             record(id, h, sent.body, sent.meta)
@@ -398,7 +427,13 @@ final class SyncEngine {
     }
 
     /// The note can't be sent (too large to ever be accepted): park it until edited again.
-    func markUnsendable(_ n: Note) { failed[n.id] = n.updatedAt }
+    func markUnsendable(_ n: Note) {
+        failed[n.id] = n.updatedAt
+        // it won't be resent, so nothing will resolve a version waiting for it
+        uncertain.remove(n.id)
+        if inflight[n.id] == nil, let d = deferred.removeValue(forKey: n.id) { applyRemote(d) }
+        storeSeq()
+    }
 
     /// Dirty notes the server refused in their current version (kept locally, not resent).
     var blockedNotes: [Note] {
@@ -417,6 +452,20 @@ final class SyncEngine {
         return sent
     }
 
+    /// Another Mac sends with our install id (a copied database): our history may mix both
+    /// Macs' versions. Take a new id, retire the old and forget all heads, so nothing is
+    /// merged from that history (last-writer-wins with conflicted copies until new history
+    /// arrives).
+    private func installIDCollision() {
+        repo.renewInstallID()
+        for var n in repo.allNotes(includeTombstones: true) where n.syncHeads != nil {
+            n.syncHeads = nil
+            repo.save(n)
+        }
+        versions.removeAll()
+        versionNotes.removeAll()
+    }
+
     // MARK: Outgoing
 
     /// Dirty notes that aren't already in flight in their current version.
@@ -432,11 +481,13 @@ final class SyncEngine {
             record(n.id, h, n.body, n.meta)
         }
         inflight[n.id, default: []].append(Sent(updatedAt: n.updatedAt, bodyHash: NoteText.hash(n.deleted ? "" : n.body),
-                                                body: n.deleted ? "" : n.body, meta: n.meta))
+                                                body: n.deleted ? "" : n.body, meta: n.meta, origin: installID))
     }
 
     /// The put for a note.
-    func encode(_ n: Note) -> [String: Any] { NoteWire.encode(n, device: device, origin: installID, heads: sentHeads(n)) }
+    func encode(_ n: Note) -> [String: Any] {
+        NoteWire.encode(n, device: device, origin: installID, heads: sentHeads(n), retired: repo.retiredInstallIDs)
+    }
 
     /// What a version we send contains: what the local text contains, plus itself (the
     /// Macs edited longest ago left out past `headsSent`: then nothing older is merged).
@@ -516,6 +567,11 @@ final class SyncEngine {
         versions[id]?.last { $0.heads == want }
     }
 
+    /// The meta of the text the local version was made from, when known.
+    private func baseMeta(of local: Note) -> [String: JSONValue]? {
+        local.syncHeads.flatMap { version(local.id, containing: $0)?.meta }
+    }
+
     /// Meta merged key by key: what changed here since the base stays, the rest is theirs
     /// (both changed one: the newer note's).
     static func mergeMeta(base: [String: JSONValue], local: [String: JSONValue], remote: [String: JSONValue],
@@ -525,6 +581,7 @@ final class SyncEngine {
             let ours = local[k] != base[k], theirs = remote[k] != base[k]
             out[k] = ours && (!theirs || !remoteNewer) ? local[k] : remote[k]
         }
+        if out["pinned"] == nil { out.removeValue(forKey: "pinOrder") } // as Note.pinned does
         return out
     }
 
