@@ -67,6 +67,12 @@ class BentoKeyboardService : InputMethodService() {
 
     override fun onEvaluateFullscreenMode() = false
 
+    /** Shown even with a hardware keyboard attached: the mic is the point. */
+    override fun onEvaluateInputViewShown(): Boolean {
+        super.onEvaluateInputViewShown()
+        return true
+    }
+
     private val actions = object : KeyboardActions {
         override fun mic(handsFree: Boolean) {
             val d = graph.dictation

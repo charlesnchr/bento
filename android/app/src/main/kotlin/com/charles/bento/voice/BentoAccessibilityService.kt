@@ -89,7 +89,8 @@ class BentoAccessibilityService : AccessibilityService() {
         val pkg = node.packageName?.toString() ?: return null
         if (pkg == packageName) return null // Bento's own editors have their own mic
         if (hiddenIn != null && hiddenIn != pkg) hiddenIn = null
-        if (ime == null && !usingBentoKeyboard()) { trace("no keyboard window (${windows.size} windows)"); return null }
+        if (usingBentoKeyboard()) return null // the Bento keyboard has its own mic
+        if (ime == null) { trace("no keyboard window (${windows.size} windows)"); return null }
         val top = ime?.let { Rect().also(it::getBoundsInScreen).top }
         val screen = Rect().also { r -> windows.firstOrNull { it.isActive }?.getBoundsInScreen(r) }
         return FocusedField(node, pkg, appLabel(pkg), node.hintText?.toString(), node.isMultiLine.not(), top, screen)

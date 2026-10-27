@@ -293,7 +293,8 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
         tonalElevation = 6.dp,
         shadowElevation = 8.dp,
     ) {
-        AnimatedContent(state::class, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "pill") { _ ->
+        // no size animation: the overlay window would resize every frame
+        AnimatedContent(state::class, transitionSpec = { (fadeIn() togetherWith fadeOut()).using(null) }, label = "pill") { _ ->
             when (val s = state) {
                 is DictationState.Listening -> Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { dictation.cancel() }) { Icon(Icons.Rounded.Close, "Cancel") }
