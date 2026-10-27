@@ -9,12 +9,12 @@ enum SettingsPage: Hashable {
 /// Selected settings page, shared so deep links can switch it while open.
 final class SettingsNavigator: ObservableObject {
     @Published var page: SettingsPage? = .general
-    /// Filter for the Shortcuts page from a "shortcuts/<text>" link (the
-    /// keyboard overview's Change Shortcut); the page takes it once. Plain
+    /// Filter for the Shortcuts page from a "shortcuts/<text>" link
+    /// (bento://settings/shortcuts/<text>); the page takes it once. Plain
     /// "shortcuts" clears a filter left from before.
     @Published var shortcutsFilter: String?
     /// Action whose shortcut the Shortcuts page starts recording, from a
-    /// "record/<action id>" link (⌘E on an app found in the overview).
+    /// "record/<action id>" link (bento://settings/record/<action id>).
     @Published var recordRequest: String?
     /// The filter for a recording request (the action's title).
     var actionTitle: (String) -> String? = { ActionRegistry.shared.action($0)?.title }

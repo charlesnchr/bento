@@ -264,6 +264,33 @@ private let testKeys = ["hyper+f17", "hyper+f18", "hyper+f19", "ctrl+opt+shift+f
         #expect(hc.isActive(t2))
         hc.unregister(t2)
     }
+
+    /// The recorder suspends global hotkeys while it records and reports both
+    /// edges (the keyboard overview puts its row's keycaps back on the second).
+    @Test func recorderReportsRecordingAndHoldsOneSuspension() throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)   // never activate the test process
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 40), styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let recorder = RecorderView(frame: NSRect(x: 0, y: 0, width: 150, height: 24))
+        window.contentView?.addSubview(recorder)
+        var changes: [Bool] = []
+        recorder.onRecordingChange = { changes.append($0) }
+        let hc = HotkeyCenter.shared
+        #expect(!hc.isSuspended)
+        #expect(recorder.accessibilityPerformPress())
+        #expect(changes == [true] && recorder.isRecording && RecorderFocus.isRecording(recorder))
+        #expect(hc.isSuspended)
+        #expect(recorder.accessibilityPerformPress())   // pressing again stops, nothing stored
+        #expect(changes == [true, false] && !recorder.isRecording)
+        #expect(!hc.isSuspended)
+        // Leaving the window mid-recording ends it and releases the suspension.
+        #expect(recorder.accessibilityPerformPress())
+        #expect(hc.isSuspended)
+        recorder.removeFromSuperview()
+        #expect(changes == [true, false, true, false])
+        #expect(!hc.isSuspended)
+    }
 }
 
 // MARK: - ActionRegistry
