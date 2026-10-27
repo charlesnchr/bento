@@ -164,9 +164,12 @@ final class NotesController {
     func hideWindow() {
         guard let w = windowController, w.isVisible else { return }
         let wasActive = NSApp.isActive && (w.isKey || NSApp.keyWindow == nil)
-        w.hide()
-        if wasActive, NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey && !($0 is NSPanel) }).isEmpty {
-            if let prev = AppActivation.previousApp, prev.processIdentifier != getpid() { prev.activate() } else { NSApp.hide(nil) }
+        let refocus = wasActive && NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey && !($0 is NSPanel) }).isEmpty
+        if refocus, let prev = AppActivation.previousApp, prev.processIdentifier != getpid() {
+            w.hide(activating: prev)
+        } else {
+            w.hide()
+            if refocus { NSApp.hide(nil) }
         }
     }
 

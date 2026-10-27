@@ -147,10 +147,8 @@ final class DictationController {
                 // to the selected text's original app for replacement safety.
                 if $0.editingSession != nil { return $0 }
                 let app = Self.dictationTargetApp()
-                var context = DictationContext(targetAppBundleID: app?.bundleIdentifier,
+                return DictationContext(targetAppBundleID: app?.bundleIdentifier,
                     targetAppName: app?.localizedName, targetPID: app?.processIdentifier)
-                context.keepOutputSelected = true
-                return context
             }
         )
         pill = PillPresenter(coordinator: coordinator, vertexState: state)
@@ -185,13 +183,6 @@ final class DictationController {
                 else { self.assistant.finishRecording() }
             }
         }
-    }
-
-    /// Bento has no setup wizard: Accessibility is granted in Settings → General
-    /// like every other module's, and the microphone is asked for the first
-    /// time it is needed (see `microphoneReady`).
-    private var setupIncomplete: Bool {
-        !AXIsProcessTrusted() || (!vertexState.isRequested && KeychainStore.loadAPIKey() == nil)
     }
 
     func start() {
@@ -247,6 +238,9 @@ final class DictationController {
         observe(.gtSettingDidChange) { controller, note in
             controller.applySettingChange(key: note.object as? String)
         }
+        observe(.voiceLocalModelDidChange) { controller, note in
+            controller.localModelChanged(note.object as? String)
+        }
         // Auto-degrade must never be silent: the user's next dictations arrive
         // verbatim, and they deserve to know why and where to turn it back on.
         observe(.gtSmartFormattingAutoDegraded) { controller, _ in
@@ -292,8 +286,52 @@ final class DictationController {
     private var engineActive = false
 
     private var readyStatus: String {
-        let prefix = vertexState.config?.isDirect == true ? "Vertex" : (vertexState.isRequested ? "Vertex verbatim" : "Ready")
-        return "\(prefix) — hold \(SettingsStore().hotkeyKey.displayName) to dictate"
+        let settings = SettingsStore()
+        let engine = settings.transcriptionEngine
+        let prefix = vertexState.config?.isDirect == true ? "Vertex"
+            : vertexState.isRequested ? "Vertex verbatim"
+            : engine.isLocal ? "\(engine.displayName) on this Mac" : "Ready"
+        return "\(prefix) — hold \(settings.hotkeyKey.displayName) to dictate"
+    }
+
+    /// What stops a dictation before the key is even pressed, for the menu's
+    /// status line; nil when it's ready.
+    private var attentionStatus: String? {
+        if case .invalid = vertexState {
+            return "Vertex configuration is invalid — check \(VertexRuntimeConfig.defaultURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))"
+        }
+        let settings = SettingsStore()
+        let engine = settings.transcriptionEngine
+        guard engine.isLocal else { return nil }
+        let models = ParakeetModels.shared
+        switch models.status(engine) {
+        case .ready:
+            return nil
+        case .downloading:
+            return models.progressLine(engine)
+        case .notDownloaded:
+            // New-user path: no key, no runtime. Say exactly where to go.
+            return settings.usesLocalFallback
+                ? "Download Parakeet v3 or add a Gemini API key in Settings → Dictation"
+                : "Download \(engine.displayName) in Settings → Dictation"
+        case .failed:
+            return "\(engine.displayName) download failed — retry in Settings → Dictation"
+        }
+    }
+
+    /// Rewrites the status line after something it depends on changed. The
+    /// indicator is left alone mid-session: it's showing listening or processing.
+    private func refreshStatus() {
+        guard engineActive else { return }
+        let resting = (coordinator.state == .idle || coordinator.state.isTerminal) && !assistant.isBusy
+        if let attention = attentionStatus {
+            onStatusChange?(attention)
+            if resting { onStatusItemState?(.attention) }
+        } else {
+            onStatusChange?(readyStatus)
+            if resting { onStatusItemState?(.idle) }
+            warmEngines.prewarmNext()
+        }
     }
 
     private func activateEngine() {
@@ -305,12 +343,9 @@ final class DictationController {
             return
         }
         engineActive = true
-        if case .invalid = vertexState {
-            onStatusChange?("Vertex configuration is invalid — check \(VertexRuntimeConfig.defaultURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))")
-            onStatusItemState?(.attention)
-        } else if !vertexState.isRequested && KeychainStore.loadAPIKey() == nil {
-            // New-user path: dictation can't work yet — say exactly where to go.
-            onStatusChange?("Add your Gemini API key in Settings → Dictation")
+        if let attention = attentionStatus {
+            // The key still works: pressing it explains, or offers the download.
+            onStatusChange?(attention)
             onStatusItemState?(.attention)
         } else {
             onStatusChange?(readyStatus)
@@ -334,12 +369,10 @@ final class DictationController {
         } else if !wantsEngine {
             onStatusChange?("Dictation is off")
             return
-        } else if case .invalid = vertexState {
-            onStatusChange?("Vertex configuration is invalid — check \(VertexRuntimeConfig.defaultURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))")
-        } else if !vertexState.isRequested {
-            onStatusChange?("Add your Gemini API key in Settings → Dictation")
+        } else if let attention = attentionStatus {
+            onStatusChange?(attention)
         } else {
-            onStatusChange?("Vertex configured — finish permission setup")
+            onStatusChange?(vertexState.isRequested ? "Vertex configured — finish permission setup" : "Finish permission setup")
         }
         onStatusItemState?(.attention)
     }
@@ -363,7 +396,7 @@ final class DictationController {
             applyHotkeySettings()
             // The menu-bar status line names the key — keep it truthful, but
             // never overwrite an attention message ("Grant Accessibility…").
-            if engineActive, vertexState.isRequested || KeychainStore.loadAPIKey() != nil {
+            if engineActive, attentionStatus == nil {
                 onStatusChange?(readyStatus)
             }
         case "accessibility":
@@ -373,16 +406,12 @@ final class DictationController {
             }
         case "apiKey":
             guard !vertexState.isRequested else { return }
-            if KeychainStore.loadAPIKey() != nil {
-                // Covers the "I'll add it later" onboarding path, where the
-                // engine was never started: a key arriving in Settings must
-                // bring the whole app to life, not just flip a badge.
-                // engine.start() is reentrant; hud.show() is idempotent.
-                activateEngine()
-            } else {
-                onStatusChange?("Add your Gemini API key in Settings → Dictation")
-                onStatusItemState?(.attention)
-            }
+            // A key arriving switches a Parakeet fallback back to Gemini; one
+            // removed falls back to Parakeet. Either way the line must follow.
+            // engine.start() is reentrant; hud.show() is idempotent.
+            if engineActive { refreshStatus() } else { activateEngine() }
+        case "transcriptionBackend", "dualTranscription", "gptTranscription":
+            refreshStatus()
         default:
             break
         }
@@ -565,9 +594,9 @@ final class DictationController {
                 return
             }
             let outcome = await self.replace(last.text, with: text, context: last.context)
-            self.coordinator.noteRetried(text: text, inserted: outcome == .inserted || outcome == .insertedWithoutSelection)
+            self.coordinator.noteRetried(text: text, inserted: outcome == .inserted)
             switch outcome {
-            case .inserted, .insertedWithoutSelection:
+            case .inserted:
                 self.pill.showNotice("Replaced with \(name)", for: 2.5, sound: nil)
             case .fellBackToClipboard, .frontmostChanged:
                 self.pill.showNotice("\(name)'s version copied — press ⌘V", for: 4.0, sound: nil)
@@ -579,15 +608,9 @@ final class DictationController {
 
     private func replace(_ old: String, with new: String, context: DictationContext) async -> InsertionOutcome {
         var target = context
+        // The inserter selects the old words only if they are still selected or
+        // end at the caret; otherwise the new version goes to the clipboard.
         target.editingSession = EditingSession(seed: old)
-        target.keepOutputSelected = true
-        // Dictation leaves its output selected; if the user has since moved the
-        // caret, select back over the old words. Both paths are verified by the
-        // inserter, which never replaces a selection that isn't the old text.
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == context.targetPID,
-           !OutputSelection.equivalent(OutputSelection.selectedText(targetPID: context.targetPID), old) {
-            _ = await KeyboardSelection.select(old, targetPID: context.targetPID)
-        }
         return await InsertionCoordinator().insert(new, context: target)
     }
 
@@ -618,7 +641,8 @@ final class DictationController {
             if !AXIsProcessTrusted() { SettingsRouter.open() } else { NSSound.beep() }
             return
         }
-        guard !assistant.isBusy, coordinator.state == .idle || coordinator.state.isTerminal, microphoneReady() else { return }
+        guard !assistant.isBusy, coordinator.state == .idle || coordinator.state.isTerminal, microphoneReady(),
+              localModelReady() else { return }
         var context = DictationContext()
         context.captureToNote = true
         if coordinator.handle(.begin, context: context) { coordinator.handle(.lockIn) }
@@ -634,6 +658,8 @@ final class DictationController {
         if intent == .begin || intent == .beginEditing {
             guard !assistant.isBusy else { return false }
             guard microphoneReady() else { return false }
+            // Editing and voice requests go to Gemini; only dictation uses Parakeet.
+            if intent == .begin { guard localModelReady() else { return false } }
             if !SettingsStore().useDictationComposer {
                 guard coordinator.state == .idle || coordinator.state.isTerminal else { return false }
                 let app = Self.dictationTargetApp()
@@ -642,7 +668,8 @@ final class DictationController {
                 if intent == .beginEditing {
                     if context.targetPID != ProcessInfo.processInfo.processIdentifier,
                        let chain = coordinator.recentEditingSession(for: context),
-                       chain.matchesSelection(OutputSelection.selectedText(targetPID: context.targetPID)) {
+                       OutputSelection.isRecentOutput(chain.currentText, targetPID: context.targetPID,
+                                                      atCaret: chain.editsAtCaret(at: Date())) {
                         context.editingSession = chain
                         return coordinator.handle(.beginEditing, context: context)
                     }
@@ -696,6 +723,90 @@ final class DictationController {
         }
     }
 
+    /// An on-device model that isn't on this Mac yet can't transcribe, so a key
+    /// press explains, or offers the download, instead of recording words that
+    /// have nowhere to go.
+    private func localModelReady() -> Bool {
+        let engine = SettingsStore().transcriptionEngine
+        guard engine.isLocal else { return true }
+        let models = ParakeetModels.shared
+        switch models.status(engine) {
+        case .ready:
+            return true
+        case .downloading:
+            pill.showNotice("\(models.progressLine(engine) ?? "Downloading \(engine.displayName)…") — dictate when it's ready",
+                            for: 3.0, sound: nil)
+        case .notDownloaded, .failed:
+            // After this intent returns: the alert is modal, and the key's release
+            // must reach a grammar that has already been reset.
+            DispatchQueue.main.async { [weak self] in self?.offerDownload(engine) }
+        }
+        return false
+    }
+
+    private var offeringDownload = false
+
+    private func offerDownload(_ engine: SettingsStore.TranscriptionEngine) {
+        guard !offeringDownload else { return }
+        offeringDownload = true
+        defer { offeringDownload = false }
+        let fallback = SettingsStore().usesLocalFallback
+        let name = engine.displayName
+        let alert = NSAlert()
+        var details = (fallback ? "Bento has no transcription model yet. " : "")
+            + "\(name) runs on this Mac, so what you say isn't uploaded. It's a one-time \(ParakeetModels.downloadSize(of: engine)) download."
+        if case .failed(let reason) = ParakeetModels.shared.status(engine) {
+            alert.messageText = "Try Downloading \(name) Again?"
+            details += "\n\nThe last attempt failed: \(reason)"
+        } else {
+            alert.messageText = "Download \(name) to Dictate?"
+        }
+        if fallback { details += "\n\nTo use Gemini instead, add a Gemini API key in Settings → Dictation." }
+        alert.informativeText = details
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Not Now")
+        // The app being dictated into, to hand focus back to unless Settings opens.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let previous = frontmost?.processIdentifier == getpid() ? AppActivation.previousApp : frontmost
+        AppActivation.activateSelf()
+        let choice = alert.runModal()
+        if choice != .alertSecondButtonReturn, let previous, !previous.isTerminated, previous.processIdentifier != getpid() {
+            previous.activate()
+        }
+        switch choice {
+        case .alertFirstButtonReturn:
+            ParakeetModels.shared.download(engine)
+            pill.showNotice("Downloading \(name) — progress is in Bento's menu", for: 3.0, sound: nil)
+        case .alertSecondButtonReturn:
+            SettingsRouter.open("dictation")
+        default:
+            break
+        }
+    }
+
+    /// Models whose download this run has watched, so finishing one is news
+    /// while loading an already-downloaded model at launch is not.
+    private var watchedDownloads: Set<SettingsStore.TranscriptionEngine> = []
+
+    private func localModelChanged(_ raw: String?) {
+        refreshStatus()
+        guard let engine = raw.flatMap(SettingsStore.TranscriptionEngine.init(rawValue:)) else { return }
+        switch ParakeetModels.shared.status(engine) {
+        case .downloading:
+            watchedDownloads.insert(engine)
+        case .ready:
+            guard watchedDownloads.remove(engine) != nil, engine == SettingsStore().transcriptionEngine else { return }
+            pill.showBackgroundNotice("\(engine.displayName) is ready — hold \(SettingsStore().hotkeyKey.displayName) to dictate",
+                                      for: 3.0, sound: nil)
+        case .failed:
+            guard watchedDownloads.remove(engine) != nil else { return }
+            pill.showBackgroundNotice("\(engine.displayName) didn't download — retry in Settings → Dictation", for: 4.0, sound: nil)
+        case .notDownloaded:
+            watchedDownloads.remove(engine)
+        }
+    }
+
     /// Where dictation types: Bento itself while one of its windows has a text
     /// field focused (Notes, Todo, the assistant; Quick Add is a non-activating
     /// panel, so another app stays frontmost meanwhile), else the frontmost app.
@@ -731,7 +842,7 @@ final class DictationController {
                 targetPID: app?.processIdentifier
             )
             switch await InsertionCoordinator().insert(text, context: context) {
-            case .inserted, .insertedWithoutSelection:
+            case .inserted:
                 break
             case .fellBackToClipboard, .frontmostChanged:
                 self?.pill.showNotice("Copied — press ⌘V to paste", for: 3.0, sound: nil)

@@ -92,18 +92,22 @@ final class VoiceApp {
     private func startLocalSpeech() {
         LocalSpeech.recognizer = recognizer
         observers.append(NotificationCenter.default.addObserver(forName: .gtSettingDidChange, object: nil, queue: .main) { [weak self] note in
-            guard ["transcriptionBackend", "dualTranscription", "dualEngines"].contains(note.object as? String ?? "") else { return }
+            guard ["transcriptionBackend", "dualTranscription", "dualEngines", "apiKey"].contains(note.object as? String ?? "") else { return }
             MainActor.assumeIsolated { self?.prepareLocalSpeech() }
         })
     }
 
     /// Only the dictation engine is preloaded; one model stays in memory, so a
-    /// Parakeet retry or dual draft loads on demand.
+    /// Parakeet retry or dual draft loads on demand. A model the user picked
+    /// downloads on the spot; the no-credentials fallback waits to be asked
+    /// (Settings, the menu, or the offer at the first dictation): 480 MB is
+    /// not something to fetch unannounced at launch.
     private func prepareLocalSpeech() {
         guard enabled.contains(.dictation) else { return }
         let settings = SettingsStore()
         let engine = settings.transcriptionEngine
         guard let model = engine == .dual ? settings.dualEngines.first(where: \.isLocal)?.rawValue : settings.localTranscriptionModel else { return }
+        if settings.usesLocalFallback, !ParakeetModels.shared.isReady(engine) { return }
         let recognizer = recognizer
         Task.detached(priority: .utility) { try? await recognizer.prepare(model: model) }
     }
@@ -188,13 +192,20 @@ final class VoiceApp {
     }
 
     func diagnostics() -> [String: Any] {
-        [
+        let settings = SettingsStore()
+        return [
             "status": statusLine,
             "indicator": String(describing: indicator),
             "enabled": enabled.map(\.rawValue).sorted(),
             "meeting": String(describing: meetingState),
             "microphone": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
             "runtime": VertexRuntimeConfig.state().isRequested,
+            "transcription": [
+                "engine": settings.transcriptionEngine.rawValue,
+                "localFallback": settings.usesLocalFallback,
+                "models": Dictionary(uniqueKeysWithValues: SettingsStore.TranscriptionEngine.singles.filter(\.isLocal)
+                    .map { ($0.rawValue, String(describing: ParakeetModels.shared.status($0))) }),
+            ] as [String: Any],
         ]
     }
 }
@@ -231,17 +242,29 @@ extension VoiceApp {
             }
             retryWith.submenu = retryMenu
             menu.addItem(retryWith)
+        }
 
-            // One-click backend switching. Only the direct runtime can reach more than Gemini.
+        // One-click backend switching: every engine behind the direct helper,
+        // Gemini and Parakeet without a runtime, nothing to switch through a gateway.
+        let engines = settings.selectableEngines
+        let current = settings.transcriptionEngine
+        if engines.count > 1 {
             menu.addItem(.separator())
             menu.addItem(NSMenuItem.sectionHeader(title: "Transcription"))
-            let current = settings.transcriptionEngine
-            for engine in SettingsStore.TranscriptionEngine.singles {
-                let item = ClosureMenuItem(title: engine.displayName) { SettingsStore().setTranscriptionEngine(engine) }
+            let cloud = settings.cloudTranscriptionAvailable
+            for engine in engines {
+                let item: NSMenuItem
+                if !engine.isLocal, !cloud {
+                    item = ClosureMenuItem(title: "\(engine.displayName) (needs an API key)") { SettingsRouter.open("dictation") }
+                } else {
+                    item = ClosureMenuItem(title: engineMenuTitle(engine)) { SettingsStore().setTranscriptionEngine(engine) }
+                }
                 item.image = NSImage(systemSymbolName: engine.isLocal ? "laptopcomputer" : "cloud", accessibilityDescription: nil)
                 item.state = engine == current ? .on : .off
                 menu.addItem(item)
             }
+        }
+        if direct {
             let dual = NSMenuItem(title: current == .dual ? settings.name(of: .dual) : "Dual Review", action: nil, keyEquivalent: "")
             dual.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: nil)
             dual.state = current == .dual ? .on : .off
@@ -260,11 +283,44 @@ extension VoiceApp {
             menu.addItem(dual)
         }
 
+        if current.isLocal, let item = localModelItem(current) {
+            if engines.count <= 1 { menu.addItem(.separator()) }
+            menu.addItem(item)
+        }
+
         menu.addItem(.separator())
         menu.addItem(microphoneItem())
         menu.addItem(action("dictation.history"))
         menu.addItem(ClosureMenuItem(title: "Dictation Settings…") { SettingsRouter.open("dictation") })
         return menu
+    }
+
+    /// An on-device engine names its download until it's on this Mac.
+    private func engineMenuTitle(_ engine: SettingsStore.TranscriptionEngine) -> String {
+        guard engine.isLocal, !ParakeetModels.shared.isReady(engine) else { return engine.displayName }
+        return "\(engine.displayName) (\(ParakeetModels.downloadSize(of: engine)) download)"
+    }
+
+    /// Download, progress or retry for the selected on-device model; nil once it's here.
+    private func localModelItem(_ engine: SettingsStore.TranscriptionEngine) -> NSMenuItem? {
+        let models = ParakeetModels.shared
+        let size = ParakeetModels.downloadSize(of: engine)
+        switch models.status(engine) {
+        case .ready:
+            return nil
+        case .downloading:
+            let item = NSMenuItem(title: models.progressLine(engine) ?? "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return item
+        case .notDownloaded:
+            let item = ClosureMenuItem(title: "Download \(engine.displayName) (\(size))…") { ParakeetModels.shared.download(engine) }
+            item.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+            return item
+        case .failed:
+            let item = ClosureMenuItem(title: "Retry \(engine.displayName) Download (\(size))") { ParakeetModels.shared.download(engine) }
+            item.image = NSImage(systemSymbolName: "exclamationmark.arrow.circlepath", accessibilityDescription: nil)
+            return item
+        }
     }
 
     /// Which mic Bento hears through: moves the system default input, exactly

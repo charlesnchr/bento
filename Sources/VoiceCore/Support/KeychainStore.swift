@@ -50,6 +50,23 @@ public enum KeychainStore {
         return nil
     }
 
+    private static let presenceLock = NSLock()
+    nonisolated(unsafe) private static var presence: Bool?
+
+    /// Whether a key is stored, without a Keychain read on every ask: Settings
+    /// renders and each dictation check it. Every save and delete below resets it.
+    public static var hasAPIKey: Bool {
+        presenceLock.lock(); defer { presenceLock.unlock() }
+        if let presence { return presence }
+        let stored = loadAPIKey() != nil
+        presence = stored
+        return stored
+    }
+
+    private static func forgetPresence() {
+        presenceLock.lock(); presence = nil; presenceLock.unlock()
+    }
+
     @discardableResult
     public static func saveAPIKey(_ key: String) -> Bool {
         deleteAPIKey()
@@ -62,6 +79,7 @@ public enum KeychainStore {
             }
             let status = SecItemAdd(attributes as CFDictionary, nil)
             if status == errSecSuccess {
+                forgetPresence()
                 Log.permissions.info("KeychainStore: key saved (\(dataProtection ? "data-protection" : "login", privacy: .public) keychain)")
                 NotificationCenter.default.post(name: .gtSettingDidChange, object: "apiKey")
                 return true
@@ -82,6 +100,7 @@ public enum KeychainStore {
             let status = SecItemDelete(baseQuery(dataProtection: dataProtection) as CFDictionary)
             deleted = deleted || status == errSecSuccess
         }
+        if deleted { forgetPresence() }
         // saveAPIKey's internal delete-before-add must not announce "key removed"
         // mid-save — only user-initiated removal notifies.
         if deleted, notify {
