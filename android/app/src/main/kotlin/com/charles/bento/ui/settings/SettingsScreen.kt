@@ -75,7 +75,6 @@ import com.charles.bento.BuildConfig
 import com.charles.bento.core.sync.SyncState
 import com.charles.bento.graph
 import com.charles.bento.settings.Pairing
-import com.charles.bento.settings.save
 import com.charles.bento.ui.DictionaryRoute
 import com.charles.bento.ui.ModesRoute
 import com.charles.bento.update.Updater
