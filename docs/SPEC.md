@@ -161,13 +161,16 @@ click or reposition them manually. See QA.md for safe validation.
 
 ## Expanders and thought capture
 
-Notes render `::: details <summary>` … `:::` (VitePress / markdown-it-container syntax) as an
-expander, collapsed to its summary line until opened with its chevron or ⌘↩ on the summary.
-The body is any markdown; an unclosed `::: details` line has no body. Collapse state is per
-window and never written to the note, so the body stays plain text for sync and other clients.
+Notes render GitHub's `<details><summary>Summary</summary>` … `</details>` as an expander,
+collapsed to its summary line until opened with its chevron or ⌘↩ on the summary (`<details open>`
+starts open). The tags are hidden; the body is any markdown. Format → Expander (⌥⌘E, or `/expander`)
+wraps the current line or selection in one; Return at the end of a summary starts its body (and
+closes an unclosed expander). `::: details Summary` … `:::` (VitePress / markdown-it-container)
+also works. An expander without its closing line has no body. Collapse state is per window and
+never written to the note, so the body stays plain markdown for sync and other clients.
 Dictation's Capture Thought to Note records hands-free and appends the transcript to the
 note set in Settings → Notes (`notes.captureNoteID`; unset or deleted: a new "Thoughts" note) as
-`::: details yyyy-MM-dd HH:mm · <first words>` / text / `:::`, after a blank line. The modules
+`<details><summary>yyyy-MM-dd HH:mm · <first words></summary>` / text / `</details>`, after a blank line. The modules
 don't depend on each other: `main.swift` connects `DictationModule.noteCapture` to
 `NotesModule.capture`; without Notes the transcript goes to the clipboard.
 

@@ -5,6 +5,8 @@ extension NSAttributedString.Key {
     static let notesHidden = NSAttributedString.Key("notesHidden")
     /// On heading/list/quote prefix characters: the prefix length (for caret snapping).
     static let notesPrefixLen = NSAttributedString.Key("notesPrefixLen")
+    /// On an expander summary's hidden "</summary>": its length (for caret snapping).
+    static let notesSuffixLen = NSAttributedString.Key("notesSuffixLen")
     /// `BlockDecoration` for the whole line (incl. its newline).
     static let notesBlock = NSAttributedString.Key("notesBlock")
     /// Inline code pill background (on the code span incl. backticks).

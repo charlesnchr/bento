@@ -24,6 +24,8 @@ final class MarkdownStyler {
 
     /// Summaries of the expanders that are open; collapsed is the default.
     private(set) var expanded: Set<String> = []
+    /// Summaries of "<details open>" expanders that were closed; open is their default.
+    private(set) var closedOpen: Set<String> = []
     /// Restyling after a text edit: an open expander whose summary is being edited stays open.
     private var editing = false
 
@@ -80,7 +82,9 @@ final class MarkdownStyler {
         let full = text.lineRange(for: NSRange(location: lineStart, length: 0))
         guard let close = MarkdownParser.expanderEnd(after: full, in: text) else { return false }
         let key = summaryKey(text, line: full)
-        if collapsed { expanded.insert(key) } else { expanded.remove(key) }
+        if MarkdownParser.detailsStartsOpen(text.substring(with: MarkdownStyler.contentRange(full, in: text))) {
+            if collapsed { closedOpen.remove(key) } else { closedOpen.insert(key) }
+        } else if collapsed { expanded.insert(key) } else { expanded.remove(key) }
         s.beginEditing()
         restyle(s, start: full.location, end: NSMaxRange(close))
         s.endEditing()
@@ -214,7 +218,8 @@ final class MarkdownStyler {
         let text = s.mutableString
         guard let close = MarkdownParser.expanderEnd(after: full, in: text) else { return nil }
         let key = summaryKey(text, line: full)
-        if expanded.contains(key) { return false }
+        let startsOpen = MarkdownParser.detailsStartsOpen(text.substring(with: MarkdownStyler.contentRange(full, in: text)))
+        if startsOpen ? !closedOpen.contains(key) : expanded.contains(key) { return false }
         // A caret at the end of the closing line is inside only while typing there (a note
         // that ends with an expander opens with the caret at its end).
         let end = NSMaxRange(close)
@@ -223,7 +228,7 @@ final class MarkdownStyler {
             : selection.location >= body.location && (selection.location < end || (selection.location == end && editing))
         let wasOpen = editing && decoration(s, at: full.location)?.kind == .summary(collapsed: false)
         guard inside || wasOpen else { return true }
-        expanded.insert(key)
+        if startsOpen { closedOpen.remove(key) } else { expanded.insert(key) }
         return false
     }
 
@@ -413,6 +418,9 @@ final class MarkdownStyler {
             if p.prefixRange.length > 0 {
                 let pr = NSRange(location: r.location + p.prefixRange.location - base, length: p.prefixRange.length)
                 out.addAttributes([.notesHidden: true, .notesPrefixLen: p.prefixRange.length], range: pr)
+            }
+            if let sr = p.suffixRange, sr.length > 0 {
+                out.addAttributes([.notesHidden: true, .notesSuffixLen: sr.length], range: NSRange(location: r.location + sr.location - base, length: sr.length))
             }
         case .rule(let revealed):
             if !revealed, r.length > 0 { out.addAttribute(.notesHidden, value: true, range: NSRange(location: r.location - base, length: r.length)) }

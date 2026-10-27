@@ -69,8 +69,11 @@ import Testing
         let r = MarkdownCommands.newline(text, selection: NSRange(location: text.length, length: 0))
         #expect(r?.edits.first?.replacement == "\n\n:::")
         #expect(r?.selection == NSRange(location: text.length + 1, length: 0))
+        // a closed one: a new first body line
         let closed = "::: details Idea\nbody\n:::" as NSString
-        #expect(MarkdownCommands.newline(closed, selection: NSRange(location: 16, length: 0)) == nil)
+        #expect(MarkdownCommands.newline(closed, selection: NSRange(location: 16, length: 0))?.apply(to: closed as String) == "::: details Idea\n\nbody\n:::")
+        // mid-summary: the default split
+        #expect(MarkdownCommands.newline(closed, selection: NSRange(location: 14, length: 0)) == nil)
     }
 }
 
@@ -285,8 +288,10 @@ import Testing
 
     @Test func entryHasTimestampSummaryAndBody() {
         let e = ThoughtCapture.entry("  Add a capture mode to the transcribe shortcut that appends to a note.\n", at: date, timeZone: utc)
-        #expect(e == "::: details 2026-10-26 13:25 · Add a capture mode to the…\nAdd a capture mode to the transcribe shortcut that appends to a note.\n:::")
-        #expect(ThoughtCapture.entry("Short one", at: date, timeZone: utc) == "::: details 2026-10-26 13:25 · Short one\nShort one\n:::")
+        #expect(e == "<details><summary>2026-10-26 13:25 · Add a capture mode to the…</summary>\nAdd a capture mode to the transcribe shortcut that appends to a note.\n</details>")
+        #expect(ThoughtCapture.entry("Short one", at: date, timeZone: utc) == "<details><summary>2026-10-26 13:25 · Short one</summary>\nShort one\n</details>")
+        // a "<" in the first words can't end the summary early
+        #expect(ThoughtCapture.entry("a </summary> b", at: date, timeZone: utc)?.hasPrefix("<details><summary>2026-10-26 13:25 · a ‹/summary> b</summary>\n") == true)
         #expect(ThoughtCapture.entry(" \n\n ", at: date) == nil)
         #expect(ThoughtCapture.timestamp(date, timeZone: TimeZone(identifier: "Europe/London")!) == "2026-10-26 13:25")
     }
@@ -294,6 +299,7 @@ import Testing
     @Test func bodyIsCleaned() {
         #expect(ThoughtCapture.cleaned("a\r\n\r\n\r\nb\n\n") == "a\n\nb")
         #expect(ThoughtCapture.cleaned("a\n:::\n::: details x\nb") == "a\n\\:::\n\\::: details x\nb")
+        #expect(ThoughtCapture.cleaned("a\n</details>\n<details>\nb") == "a\n\\</details>\n\\<details>\nb")
         #expect(ThoughtCapture.cleaned("look:\n```\ncode") == "look:\n```\ncode\n```")
         #expect(ThoughtCapture.summary(of: "one\ntwo  three") == "one two three")
     }
@@ -304,7 +310,7 @@ import Testing
         let entry = ThoughtCapture.entry("    :::\nbody", at: date, timeZone: utc)!
         let ns = entry as NSString
         let end = MarkdownParser.expanderEnd(after: ns.lineRange(for: NSRange(location: 0, length: 0)), in: ns)
-        #expect(end == NSRange(location: ns.length - 3, length: 3))
+        #expect(end == NSRange(location: ns.length - 10, length: 10))
     }
 
     @Test func appendsAsSeparateEntries() {
@@ -343,6 +349,78 @@ import Testing
         #expect(summaries == [.summary(collapsed: true), .summary(collapsed: true)])
         #expect(NoteText.title(of: body) == "Random snippets")
         #expect((s.attribute(.notesBlock, at: 18, effectiveRange: nil) as? BlockDecoration)?.kind == .task(level: 0, checked: false))
-        #expect(body.hasSuffix("with a stray fence\nSecond:\n\n\\:::\nwith a stray fence\n:::\n"))
+        #expect(body.hasSuffix("with a stray fence</summary>\nSecond:\n\n\\:::\nwith a stray fence\n</details>\n"))
+    }
+}
+
+@Suite struct HTMLExpanderTests {
+    @Test func parsesGitHubDetails() {
+        let line = "<details><summary>Some **idea**</summary>"
+        let p = MarkdownParser.parseLine(line, inCode: false)
+        #expect(p.kind == .details)
+        #expect((line as NSString).substring(with: p.contentRange) == "Some **idea**")
+        #expect(p.suffixRange == NSRange(location: 31, length: 10))
+        #expect(MarkdownParser.parseLine("<DETAILS open> <Summary>X</Summary>", inCode: false).kind == .details)
+        #expect(MarkdownParser.parseLine("<details>", inCode: false).kind == .details)
+        #expect(MarkdownParser.parseLine("</details>", inCode: false).kind == .detailsEnd)
+        #expect(MarkdownParser.parseLine("  </details>  ", inCode: false).kind == .detailsEnd)
+        for line in ["<detailsx>", "</details> more", "<details", "    <details>", "a <details>"] {
+            #expect(MarkdownParser.parseLine(line, inCode: false).kind == .paragraph, "\(line)")
+        }
+        #expect(MarkdownParser.parseLine("<details>", inCode: true).kind == .code)
+        #expect(MarkdownParser.detailsStartsOpen("<details open><summary>X</summary>"))
+        #expect(!MarkdownParser.detailsStartsOpen("<details><summary>open</summary>"))
+    }
+
+    @Test func titlesAndExportsUseTheSummary() {
+        let body = "<details><summary>Idea</summary>\nThe **full** idea.\n</details>"
+        #expect(NoteText.title(of: body) == "Idea")
+        #expect(MarkdownExport.plainText(body) == "Idea\nThe full idea.")
+        #expect(MarkdownExport.html(body, standalone: false).contains("<details><summary>Idea</summary>\n<p>The <strong>full</strong> idea.</p>\n</details>"))
+        #expect(MarkdownExport.html("a\n</details>", standalone: false).contains("<p>&lt;/details&gt;</p>"))
+    }
+
+    @Test func tagsAreHiddenAndOpenStartsOpen() {
+        let text = "<details><summary>Idea</summary>\nbody\n</details>\n<details open><summary>Open</summary>\nshown\n</details>\nend"
+        let s = NSTextStorage(string: text)
+        let st = MarkdownStyler()
+        st.selectionChanged(s, to: NSRange(location: (text as NSString).length, length: 0))
+        st.styleAll(s)
+        func kind(_ loc: Int) -> BlockDecoration.Kind? { (s.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration)?.kind }
+        let ns = text as NSString
+        #expect(kind(0) == .summary(collapsed: true))
+        #expect(kind(ns.range(of: "body").location) == .folded)
+        #expect(kind(ns.range(of: "<details open>").location) == .summary(collapsed: false))
+        #expect(kind(ns.range(of: "shown").location) == .paragraph(empty: false))
+        #expect(s.attribute(.notesHidden, at: 0, effectiveRange: nil) != nil)
+        #expect(s.attribute(.notesHidden, at: ns.range(of: "Idea").location, effectiveRange: nil) == nil)
+        #expect(s.attribute(.notesSuffixLen, at: ns.range(of: "</summary>").location, effectiveRange: nil) as? Int == 10)
+        let open = ns.range(of: "<details open>").location
+        #expect(st.toggleExpander(s, summaryAt: open))
+        #expect(kind(ns.range(of: "shown").location) == .folded)
+        #expect(st.toggleExpander(s, summaryAt: open))
+        #expect(kind(ns.range(of: "shown").location) == .paragraph(empty: false))
+    }
+
+    @Test func returnAtTheSummaryEndStartsTheBody() {
+        let text = "<details><summary>Idea</summary>" as NSString
+        let r = MarkdownCommands.newline(text, selection: NSRange(location: 22, length: 0))
+        #expect(r?.apply(to: text as String) == "<details><summary>Idea</summary>\n\n</details>")
+        #expect(r?.selection == NSRange(location: text.length + 1, length: 0))
+    }
+
+    @Test func expanderCommandWraps() {
+        let line = "An idea" as NSString
+        let r = MarkdownCommands.wrapInExpander(line, selection: NSRange(location: 3, length: 0))
+        #expect(r?.apply(to: line as String) == "<details><summary>An idea</summary>\n\n</details>")
+        #expect(r?.selection == NSRange(location: 36, length: 0))
+        let empty = "" as NSString
+        let e = MarkdownCommands.wrapInExpander(empty, selection: NSRange(location: 0, length: 0))
+        #expect(e?.apply(to: "") == "<details><summary>Details</summary>\n\n</details>")
+        #expect(e?.selection == NSRange(location: 18, length: 7))
+        let lines = "top\none\ntwo\nbottom" as NSString
+        let w = MarkdownCommands.wrapInExpander(lines, selection: NSRange(location: 5, length: 5))
+        #expect(w?.apply(to: lines as String) == "top\n<details><summary>Details</summary>\none\ntwo\n</details>\nbottom")
+        #expect(MarkdownCommands.wrapInExpander("<details><summary>X</summary>" as NSString, selection: NSRange(location: 20, length: 0)) == nil)
     }
 }

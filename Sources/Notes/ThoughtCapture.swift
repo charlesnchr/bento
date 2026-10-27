@@ -3,13 +3,14 @@ import Foundation
 /// Dictated thoughts appended to the capture note (`notes.captureNoteID`), one
 /// expander each:
 ///
-///     ::: details 2026-10-26 14:05 · Add a capture mode to the…
+///     <details><summary>2026-10-26 14:05 · Add a capture mode to the…</summary>
 ///     Add a capture mode to the transcribe shortcut that appends to a note.
-///     :::
+///     </details>
 ///
 /// The summary is the local date and time (no seconds) and the first few words; the
 /// body is the full text. Entries are separated by a blank line. Plain markdown text, so
-/// sync and other clients see an ordinary note body.
+/// sync and other clients see an ordinary note body (GitHub and most renderers show the
+/// same expander).
 enum ThoughtCapture {
     /// Words of the text shown in the summary.
     static let summaryWords = 6
@@ -17,7 +18,8 @@ enum ThoughtCapture {
     static func entry(_ text: String, at date: Date = Date(), timeZone: TimeZone = .current) -> String? {
         let body = cleaned(text)
         guard !body.isEmpty else { return nil }
-        return "::: details \(timestamp(date, timeZone: timeZone)) · \(summary(of: body))\n\(body)\n:::"
+        let summary = summary(of: body).replacingOccurrences(of: "<", with: "‹")
+        return "<details><summary>\(timestamp(date, timeZone: timeZone)) · \(summary)</summary>\n\(body)\n</details>"
     }
 
     /// `body` with `entry` appended after a blank line.
@@ -62,7 +64,7 @@ enum ThoughtCapture {
             }
         }
         var body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        // an unclosed code fence would swallow the closing ":::"
+        // an unclosed code fence would swallow the closing "</details>"
         if let fence = unclosedFence(in: body) { body += "\n" + fence }
         return body
     }
