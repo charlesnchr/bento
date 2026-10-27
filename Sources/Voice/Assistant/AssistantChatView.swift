@@ -117,8 +117,6 @@ private struct AssistantConversation: View, Equatable {
 }
 
 struct AssistantChatView: View {
-    @AppStorage("assistantLiveCall") private var assistantLiveCall = true
-    @AppStorage("assistantLiveProvider") private var assistantLiveProvider = SettingsStore.AssistantLiveProvider.gpt.rawValue
     @ObservedObject var model: AssistantChatModel
     @State private var dropping = false
     private let accent = Color(red: 0.10, green: 0.55, blue: 0.47)
@@ -185,11 +183,6 @@ struct AssistantChatView: View {
 
     @ViewBuilder
     private var chatTools: some View {
-            let provider = SettingsStore.AssistantLiveProvider(rawValue: assistantLiveProvider) ?? .gpt
-            tool(model.liveVoice || model.recording ? "mic.fill" : "mic", model.liveVoice ? "End \(model.liveName) call" :
-                 (model.recording ? "Finish voice request" : (assistantLiveCall ? "Start \(provider.displayName) call" : "Dictate to Hermes"))) {
-                model.actions?.liveVoice()
-            }.disabled(!model.liveVoice && !model.recording && (model.busy || model.historyBusy))
             tool("square.and.pencil", "New chat (⌘N)") { model.perform(.newChat) }.disabled(!model.idle)
             Menu {
                 Button("Command Palette   ⌘K") { model.perform(.palette) }

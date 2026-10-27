@@ -511,6 +511,13 @@ final class AssistantController: AssistantActions {
         else { onLegacyDictation?() }
     }
 
+    func call() { toggleLive() }
+
+    func dictate() {
+        guard !isLive else { return }
+        onLegacyDictation?()
+    }
+
     func hide() { window.hide() }
 
     func regenerate() {
