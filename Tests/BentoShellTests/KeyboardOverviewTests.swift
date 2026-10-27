@@ -539,6 +539,21 @@ private final class FakeHotkeys: BentoModule, AppHotkeyProvider, AppSearch {
         model.recordingChanged("fakeov.two", true)
         model.recordingChanged("fakeov.two", false)
         #expect(model.editingID == nil && reg.shortcut(for: "fakeov.two") == keyC)
+        // Before the recorder starts (a layout pass later), Esc or typing drops the edit.
+        model.editShortcut(try #require(model.selectedItem))
+        #expect(model.cancelPendingEdit() && model.editingID == nil)
+        #expect(!model.cancelPendingEdit())
+        model.editShortcut(try #require(model.selectedItem))
+        model.query = "second t"
+        #expect(model.editingID == nil)
+        model.query = "second"
+        // Once recording, Esc belongs to the recorder, and typing can't drop it.
+        model.editShortcut(try #require(model.selectedItem))
+        model.recordingChanged("fakeov.two", true)
+        #expect(!model.cancelPendingEdit() && model.editingID == "fakeov.two")
+        model.query = "second th"
+        #expect(model.editingID == "fakeov.two")
+        model.recordingChanged("fakeov.two", false)
         // Another row's recorder can't end this one's editing.
         model.editShortcut(try #require(model.selectedItem))
         model.recordingChanged("fakeov.one", false)

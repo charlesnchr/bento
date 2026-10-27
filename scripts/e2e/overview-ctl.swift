@@ -7,7 +7,7 @@
 //   overview-ctl press <pid> <title>             AXPress the first button/link titled <title> in its windows
 //   overview-ctl search-value <pid> <window>     value of the search field in the window whose title contains <window>
 //   overview-ctl menu <pid> <title>              open the process's menu bar (status item) menu, print the item's
-//                                                shortcut ("⌃⌥/") and choose it
+//                                                shortcut ("⌥/") and choose it
 //   overview-ctl status-menu <pid> <window-id> <submenu> <title> choose an item in the known status icon's submenu
 //   overview-ctl spawn-disclaimed <log> <cmd…>   start <cmd> as its own TCC responsible process (so it runs without
 //                                                this shell's Accessibility/Screen Recording grants); prints the pid

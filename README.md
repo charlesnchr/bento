@@ -38,7 +38,8 @@ another action already has moves to this one. The search also finds installed
 apps without a hotkey (with their icons): ⌘E adds the app to App Hotkeys and
 records its shortcut the same way, and ⌘⌫ removes an app hotkey again. The
 header shows whether Accessibility and Screen Recording are granted. A hint
-points to it once after launch. ⌥/ types “÷” on a US layout; if you need that
+points to it once after launch. ⌥/ types “÷” on a US layout, and on Danish, Nordic
+and German layouts the same key is ⌥- (an en dash); if you need either
 character, give the list another shortcut (earlier versions used ⌃⌥/, and a
 shortcut you chose yourself is kept).
 

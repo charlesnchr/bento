@@ -378,7 +378,10 @@ final class KeyboardOverview: NSObject, NSWindowDelegate {
         case (kVK_UpArrow, [.command]), (kVK_Home, []): model.moveToEnd(false)
         case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []):
             if let item = model.selectedItem { run(item) } else { NSSound.beep() }
-        case (kVK_Escape, []): if model.query.isEmpty { close() } else { model.query = "" } // clears, then closes (Spotlight)
+        case (kVK_Escape, []):
+            // ⌘E's recorder not started yet: Esc drops that, the panel stays.
+            if model.cancelPendingEdit() { break }
+            if model.query.isEmpty { close() } else { model.query = "" } // clears, then closes (Spotlight)
         case (kVK_ANSI_Comma, [.command]): openSettings(nil)
         case (kVK_ANSI_Comma, [.command, .shift]):
             openSettings(model.selectedSection.map { OverviewCatalog.settingsPage(for: $0.id) })
@@ -440,6 +443,7 @@ final class OverviewModel: ObservableObject {
         didSet {
             guard query != oldValue else { return }
             pinnedID = nil
+            if !isRecording { editingID = nil }   // typing drops an edit whose recorder hasn't started
             refilter(keepSelection: false)
         }
     }
@@ -549,6 +553,14 @@ final class OverviewModel: ObservableObject {
         selectedID = id
         scrollToken &+= 1
         onRecord(id)
+    }
+
+    /// Drops an edit whose recorder hasn't started yet (it starts after a
+    /// layout pass). False when there's none, or it's already recording.
+    func cancelPendingEdit() -> Bool {
+        guard editingID != nil, !isRecording else { return false }
+        editingID = nil
+        return true
     }
 
     /// From the row's recorder. Ending (a shortcut typed, Esc, a click
