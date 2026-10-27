@@ -16,7 +16,7 @@ object Screens {
     @Composable fun voice(modifier: Modifier, nav: NavController) = com.charles.bento.ui.voice.VoiceScreen(modifier, nav)
     @Composable fun noteEditor(id: String, nav: NavController) = Placeholder("Note $id")
     @Composable fun trash(nav: NavController) = Placeholder("Recently Deleted")
-    @Composable fun meeting(id: String, nav: NavController) = Placeholder("Meeting $id")
+    @Composable fun meeting(id: String, nav: NavController) = com.charles.bento.ui.voice.MeetingScreen(id, nav)
     @Composable fun dictionary(nav: NavController) = Placeholder("Dictionary")
     @Composable fun modes(nav: NavController) = Placeholder("Modes")
 }

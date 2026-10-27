@@ -64,6 +64,12 @@ class AppGraph(val app: Application) {
         override fun retry(historyId: String) {}
     }
 
+    var meetingSource: com.charles.bento.ui.voice.MeetingSource = object : com.charles.bento.ui.voice.MeetingSource {
+        override fun meeting(id: String) = kotlinx.coroutines.flow.MutableStateFlow<com.charles.bento.ui.voice.MeetingUi?>(null)
+        override fun stop(id: String) {}
+        override fun retry(id: String) {}
+    }
+
     val dictation = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() })
 
     fun start() {
