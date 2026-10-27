@@ -191,6 +191,15 @@ public enum AppActivation {
             window.orderOut(nil)
             return
         }
+        // Already in front, as behind a non-activating panel (the assistant
+        // kept on top): activating it changes nothing and Bento never resigns,
+        // so don't wait out the timeout. Deactivating first keeps AppKit from
+        // keying another Bento window as this one goes.
+        if target.isActive {
+            NSApp.deactivate()
+            window.orderOut(nil)
+            return
+        }
         orderOutOnResign(window)
     }
 
