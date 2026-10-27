@@ -8,6 +8,7 @@ import com.charles.bento.core.notes.NoteQueries
 import com.charles.bento.core.notes.NoteText
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.notes.NotesModule
+import com.charles.bento.ui.notes.sections
 import com.charles.bento.ui.notes.snippet
 
 /** Notes for the widgets, from the store's snapshot; checklist taps go through the notes module. */
@@ -33,7 +34,13 @@ class NotesWidgetSource(private val notes: NotesModule) : AppWidgetData.WidgetNo
         val title = NoteText.title(body)
         var titleSkipped = false
         var inCode = false
+        // captured thoughts show as their headings, as they start folded in the editor
+        val folded = sections(body).filter { it.entry }
+        var offset = 0
         return body.split('\n').mapIndexedNotNull { i, raw ->
+            val lineStart = offset
+            offset += raw.length + 1
+            if (folded.any { lineStart > it.start && lineStart <= it.end }) return@mapIndexedNotNull null
             val p = MarkdownParser.parseLine(raw, inCode)
             if (p.kind is BlockKind.Fence) inCode = (p.kind as BlockKind.Fence).opening
             val content = raw.substring(p.contentRange.location, p.contentRange.end).let { MarkdownParser.stripInline(it) }.trim()

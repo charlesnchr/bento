@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Title
+import androidx.compose.material.icons.rounded.UnfoldLess
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -131,7 +132,9 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         accent = MaterialTheme.colorScheme.primary,
         codeBackground = bento.codeBackground,
     )
-    val visual = remember(colors) { MarkdownVisual(colors) }
+    val folds = remember(id) { FoldState() }
+    // a new transformation when a fold toggles, so the field re-lays out the text
+    val visual = remember(colors, folds.version) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
 
     fun post(text: String) {
         posted = text
@@ -228,6 +231,14 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 onInline = { f -> applyResult(MarkdownCommands.toggleInline(value.text, value.sel(), f)) },
                 onLink = { applyResult(MarkdownCommands.insertLink(value.text, value.sel(), null)) },
                 onIndent = { out -> applyResult(MarkdownCommands.indent(value.text, value.sel(), out)) },
+                onFold = {
+                    sectionAt(value.text, value.selection.start)?.let { s ->
+                        val folding = !folds.isFolded(s.key, s.entry)
+                        folds.toggle(s)
+                        // never leave the caret in hidden text: it goes to the heading's end
+                        if (folding && value.selection.start > s.start) set(value.copy(selection = UiRange(s.start)), false)
+                    }
+                },
                 onMic = {
                     if (dictation is DictationState.Listening) graph.dictation.stop()
                     else graph.dictation.start(DictationTarget.Editor({ spoken ->
@@ -249,7 +260,15 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())) {
             BasicTextField(
                 value = value,
-                onValueChange = { new -> handleChange(value, new, ::set, ::applyResult) },
+                onValueChange = { new ->
+                    // a tap on a folded heading's " ⋯" (either side of it), or typing at its end, opens it;
+                    // the end of the note doesn't count (a tap below the text lands there)
+                    fun tapped(f: Section) = new.selection.collapsed && new.selection != value.selection && new.text == value.text &&
+                        (new.selection.start == f.start || new.selection.start == f.end && f.end < value.text.length)
+                    val atFold = foldedSections(value.text, folds).firstOrNull { tapped(it) || new.text != value.text && it.start == value.selection.start }
+                    if (atFold != null) folds.toggle(atFold)
+                    handleChange(value, new, ::set, ::applyResult)
+                },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -364,7 +383,7 @@ private class EditHistory {
 private fun Toolbar(
     listening: Boolean, canUndo: Boolean, canRedo: Boolean,
     onUndo: () -> Unit, onRedo: () -> Unit, onTask: () -> Unit, onBullet: () -> Unit, onHeading: () -> Unit,
-    onInline: (InlineFormat) -> Unit, onLink: () -> Unit, onIndent: (Boolean) -> Unit,
+    onInline: (InlineFormat) -> Unit, onLink: () -> Unit, onIndent: (Boolean) -> Unit, onFold: () -> Unit,
     onMic: () -> Unit, onHideKeyboard: () -> Unit, status: String?,
 ) {
     Surface(tonalElevation = 2.dp, modifier = Modifier.imePadding()) {
@@ -385,6 +404,7 @@ private fun Toolbar(
                     ToolButton(Icons.Rounded.Link, "Link", onClick = onLink)
                     ToolButton(Icons.AutoMirrored.Rounded.FormatIndentIncrease, "Indent") { onIndent(false) }
                     ToolButton(Icons.AutoMirrored.Rounded.FormatIndentDecrease, "Outdent") { onIndent(true) }
+                    ToolButton(Icons.Rounded.UnfoldLess, "Fold or unfold this section", onClick = onFold)
                     ToolButton(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = canUndo, onClick = onUndo)
                     ToolButton(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = canRedo, onClick = onRedo)
                     ToolButton(Icons.Rounded.KeyboardArrowDown, "Hide keyboard", onClick = onHideKeyboard)
