@@ -40,15 +40,16 @@ class AppGraph(val app: Application) {
     val sync = SyncHub(app, prefs, secrets, http, engine)
     val updater = Updater(app, http, prefs)
 
+    val notes = com.charles.bento.notes.NotesModule(app, prefs, sync, engineDispatcher, engine)
     val todo = com.charles.bento.todo.TodoModule(app, prefs, sync, engineDispatcher)
     val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
 
-    /** Files text as a new Bento note; returns its id (set by the notes module). */
-    var createNote: suspend (body: String) -> String? = { null }
+    /** Files text as a new Bento note; returns its id. */
+    val createNote: suspend (body: String) -> String? = { body -> notes.create(body) }
     val voice = com.charles.bento.voice.GeminiVoice(app, prefs, secrets, voiceSync, main)
     val voicePipeline: VoicePipeline get() = voice
     val meetings = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main) { _, md -> createNote(md) }
-    var captureThought: suspend (noteId: String?, text: String) -> String? = { _, _ -> null }
+    val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
         override suspend fun addTask(text: String): String? = todo.perform {
@@ -59,7 +60,7 @@ class AppGraph(val app: Application) {
     var voiceModes: () -> List<Pair<String, String>> = {
         com.charles.bento.voice.VoiceSyncModule.modes(voiceSync.docs.value).map { it.id to it.name }
     }
-    val widgetData = com.charles.bento.widget.AppWidgetData(this)
+    val widgetData = com.charles.bento.widget.AppWidgetData(this).also { it.attachNotes(com.charles.bento.widget.NotesWidgetSource(notes)) }
 
     val voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
         override val meetings get() = this@AppGraph.meetings.list

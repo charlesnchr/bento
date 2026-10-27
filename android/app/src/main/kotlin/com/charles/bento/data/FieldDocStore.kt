@@ -78,7 +78,7 @@ class FieldDocStore(context: Context, file: String) : FieldDocRepository {
         db.db.insertWithOnConflict("docs", null, ContentValues().apply {
             put("id", d.id); put("type", d.type); put("body", FieldDocRow.bodyColumn(d))
             put("created_at", d.createdAt); put("updated_at", d.updatedAt); put("deleted", if (d.deleted) 1 else 0)
-            if (d.seq != null) put("seq", d.seq) else putNull("seq")
+            d.seq?.let { put("seq", it) } ?: putNull("seq")
             put("device", d.device); put("meta", FieldDocRow.metaJson(d)); put("dirty", if (d.dirty) 1 else 0)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
