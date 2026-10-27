@@ -47,7 +47,14 @@ composer, meeting capsule and notes, assistant window, settings panes). Ported f
 `helper/` holds the Python pieces: the loopback voice helper (Vertex/Azure/OpenRouter/gateway),
 the Azure GPT-Live transport, the Hermes ACP launcher and the Gemini Live call setup the helper
 and the app's Gemini API path share (`gemini_live_setup.json`, and `live_resume.json` for a call that
-resumes an earlier one; `helper/README.md`). build.sh copies
+resumes an earlier one; `helper/README.md`). A resumed call's recap is untrusted (Hermes replies may
+carry web or tool content), so it stays out of the system instruction where the protocol allows:
+Gemini Live gets only a fixed line there and the fenced recap as the first user turn
+(`clientContent`, `turnComplete: false`, after `setupComplete` and before any audio), on Vertex and
+the Gemini API alike. GPT-Live has no user-content event, and its quiet context
+(`session.thinking.append`) takes at most 500 tokens an append with no sign it was used, so there
+the fenced recap ends the session instructions. The fence, the reference-only wording and the
+length limit apply on every route. build.sh copies
 `Resources/Voice` and `helper/` into `Contents/Resources/Voice`; Swift finds them through
 `VoiceResources` (not `Bundle.module`, which looks only in the bundle root and the build
 machine's `.build`). Voice settings live in UserDefaults and are mirrored both ways into the

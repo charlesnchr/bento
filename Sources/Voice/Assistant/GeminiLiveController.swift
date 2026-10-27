@@ -4,7 +4,7 @@ import VoiceCore
 
 /// A voice call with Gemini 3.8 Live over dictation's Google connection: the Gemini API with
 /// the user's key, or the direct Vertex helper's /conversation route (`routedTransport`).
-/// A call can resume an earlier one, told what was said (`LiveResumeNote`).
+/// A call can resume an earlier one, told what was said (`LiveResume`).
 /// Bento sends microphone audio and function results and plays the reply. Same contract as
 /// `AzureLiveController`.
 @MainActor

@@ -15,8 +15,8 @@ import VoiceCore
         func close() { events.append("close") }
     }
 
-    private func setup(recap: String = "") throws -> [String: Any] {
-        let frame = try #require(GeminiAPILiveTransport.setupFrame(recap: recap))
+    private func setup(instruction: String = "") throws -> [String: Any] {
+        let frame = try #require(GeminiAPILiveTransport.setupFrame(instruction: instruction))
         let object = try #require(try JSONSerialization.jsonObject(with: frame) as? [String: Any])
         #expect(Set(object.keys) == ["setup"])
         return try #require(object["setup"] as? [String: Any])
@@ -39,22 +39,51 @@ import VoiceCore
         ((setup["systemInstruction"] as? [String: Any])?["parts"] as? [[String: Any]])?.first?["text"] as? String
     }
 
-    @Test func aResumedCallsInstructionsEndWithTheRecap() throws {
-        let fresh = try setup(), resumed = try setup(recap: "User: book a table\nHermes: Booked for 7pm.")
+    @Test func aResumedCallsInstructionsEndWithOnlyTheFixedLine() throws {
+        let fresh = try setup()
+        let resume = try #require(try LiveResume.context("User: book a table\nHermes: Booked for 7pm."))
+        let resumed = try setup(instruction: resume.instruction)
         let base = try #require(instruction(fresh))
-        #expect(!base.contains("earlier_conversation"))
-        // The helper's wording, from the same file (LiveResumeNoteTests).
-        #expect(instruction(resumed) == base + " " + LiveResumeNoteTests.instruction
-                + "\n<earlier_conversation>\nUser: book a table\nHermes: Booked for 7pm.\n</earlier_conversation>")
+        // The helper's wording, from the same file (LiveResumeTests); the transcript isn't in the setup.
+        #expect(instruction(resumed) == base + LiveResumeTests.instruction)
+        #expect(!(instruction(resumed) ?? "").contains("book a table"))
         // Nothing else changes.
         var a = fresh, b = resumed
         a["systemInstruction"] = nil; b["systemInstruction"] = nil
         #expect(NSDictionary(dictionary: a) == NSDictionary(dictionary: b))
-        #expect(instruction(try setup(recap: " \n")) == base)
     }
 
-    @Test func aRecapOverTheLimitHasNoSetup() {
-        #expect(GeminiAPILiveTransport.setupFrame(recap: String(repeating: "x", count: 8001)) == nil)
+    @Test func theRecapIsAUserTurnGeminiDoesntAnswer() throws {
+        let frame = try JSONSerialization.jsonObject(with: try GeminiAPILiveTransport.recapFrame("transcript")) as? [String: Any]
+        let expected: [String: Any] = ["clientContent": ["turns": [["role": "user", "parts": [["text": "transcript"]]]], "turnComplete": false]]
+        #expect(NSDictionary(dictionary: frame ?? [:]) == NSDictionary(dictionary: expected))
+    }
+
+    @Test func theRecapGoesStraightAfterSetupCompleteOnce() async throws {
+        final class Socket: FakeSocket, @unchecked Sendable {
+            var replies = [#"{"serverContent":{}}"#, #"{"setupComplete":{}}"#, #"{"setupComplete":{}}"#]
+            override func receive() async throws -> Data { events.append("receive"); return Data(replies.removeFirst().utf8) }
+        }
+        let socket = Socket()
+        let setup = try #require(GeminiAPILiveTransport.setupFrame()), recap = try GeminiAPILiveTransport.recapFrame("transcript")
+        let transport = GeminiAPILiveTransport(socket: socket, setup: setup, recap: recap)
+        try await transport.connect()
+        _ = try await transport.receive()
+        #expect(socket.sent == [setup], "Nothing before setupComplete")
+        let event = try await transport.receive()
+        #expect(String(decoding: event, as: UTF8.self) == #"{"setupComplete":{}}"#)
+        #expect(socket.sent == [setup, recap])
+        _ = try await transport.receive()
+        #expect(socket.events == ["connect", "send", "receive", "receive", "send", "receive"])
+    }
+
+    @Test func aNewCallSendsNoRecap() async throws {
+        let socket = FakeSocket()
+        let setup = try #require(GeminiAPILiveTransport.setupFrame())
+        let transport = GeminiAPILiveTransport(socket: socket, setup: setup)
+        try await transport.connect()
+        _ = try await transport.receive()
+        #expect(socket.sent == [setup])
     }
 
     @Test func aResumeThroughTheHelperSendsOnlyTheRecapFirst() async throws {

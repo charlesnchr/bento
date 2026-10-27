@@ -17,11 +17,13 @@ extension GeminiLiveController {
                 socket: WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationResumeEndpoint, requestTimeout: 660),
                 recap: recap)
         case .geminiAPI:
-            guard let setup = GeminiAPILiveTransport.setupFrame(recap: recap ?? "") else {
-                throw ACPClient.Failure(message: "Gemini Live's call setup is missing from Bento.")
+            let resume = try LiveResume.context(recap ?? "")
+            guard let setup = GeminiAPILiveTransport.setupFrame(instruction: resume?.instruction ?? "") else {
+                throw ACPClient.Failure(message: "Gemini Live's call setup (gemini_live_setup.json) is missing from Bento.")
             }
             return GeminiAPILiveTransport(
-                socket: WebSocketTransport(apiKey: { KeychainStore.loadAPIKey() ?? "" }, requestTimeout: 660), setup: setup)
+                socket: WebSocketTransport(apiKey: { KeychainStore.loadAPIKey() ?? "" }, requestTimeout: 660), setup: setup,
+                recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) })
         case .unavailable(let reason):
             throw ACPClient.Failure(message: reason)
         }
@@ -30,14 +32,18 @@ extension GeminiLiveController {
 
 /// A call on the Gemini API's Live socket. No helper sits in between, so this sends
 /// the setup the helper sends to Vertex (`helper/gemini_live_setup.json`) as soon as
-/// it connects; after that the controller sees the same events either way.
-final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting {
+/// it connects, and a resumed call's recap as the helper does; after that the
+/// controller sees the same events either way.
+final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @unchecked Sendable {
     private let socket: LiveTransport
     private let setup: Data
+    private var recap: Data?
+    private let lock = NSLock()
 
-    init(socket: LiveTransport, setup: Data) {
+    init(socket: LiveTransport, setup: Data, recap: Data? = nil) {
         self.socket = socket
         self.setup = setup
+        self.recap = recap
     }
 
     func connect() async throws {
@@ -46,30 +52,53 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting {
     }
 
     func send(_ data: Data) async throws { try await socket.send(data) }
-    func receive() async throws -> Data { try await socket.receive() }
+
+    /// Gemini takes nothing before setupComplete. The recap goes straight after it, before
+    /// the controller sees it and starts the microphone.
+    func receive() async throws -> Data {
+        let data = try await socket.receive()
+        if let recap = takeRecap(after: data) { try await socket.send(recap) }
+        return data
+    }
+
+    /// The recap, once, when `data` is setupComplete.
+    private func takeRecap(after data: Data) -> Data? {
+        lock.withLock {
+            guard let recap, ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["setupComplete"] != nil else { return nil }
+            self.recap = nil
+            return recap
+        }
+    }
     func close() { socket.close() }
     var ending: LiveSocketEnding { (socket as? LiveSocketReporting)?.ending ?? LiveSocketEnding() }
 
     /// `{"setup": …}`: the shared setup with the Gemini API's model name. A resumed call's
-    /// instructions end with the earlier call's transcript, as the helper's do (`LiveResumeNote`).
+    /// instructions end with `LiveResume`'s fixed line, as the helper's do.
     static func setupFrame(from url: URL? = VoiceResources.url("gemini_live_setup", "json", in: "helper"),
-                           recap: String = "") -> Data? {
+                           instruction resume: String = "") -> Data? {
         guard let url, let data = try? Data(contentsOf: url),
               var setup = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         setup["model"] = "models/" + SettingsStore.GeminiLiveRoute.geminiAPIModel
-        if !recap.isEmpty {
-            guard let note = LiveResumeNote.note(recap), var instruction = setup["systemInstruction"] as? [String: Any],
+        if !resume.isEmpty {
+            guard var instruction = setup["systemInstruction"] as? [String: Any],
                   var parts = instruction["parts"] as? [[String: Any]], let text = parts.first?["text"] as? String else { return nil }
-            parts[0]["text"] = text + note
+            parts[0]["text"] = text + resume
             instruction["parts"] = parts
             setup["systemInstruction"] = instruction
         }
         return try? JSONSerialization.data(withJSONObject: ["setup": setup])
     }
+
+    /// The earlier call's transcript as the first user turn, reference rather than instructions.
+    /// turnComplete false: it joins the context without Gemini answering it.
+    static func recapFrame(_ recap: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["clientContent": [
+            "turns": [["role": "user", "parts": [["text": recap]]]], "turnComplete": false]])
+    }
 }
 
 /// A resumed call through the helper's /conversation/resume. Its first message carries the
-/// earlier call's transcript, which the helper puts in the setup it sends to Vertex; a helper
+/// earlier call's transcript, which the helper hands Vertex as the first user turn; a helper
 /// older than the route refuses the upgrade (`GeminiLiveEnding`).
 final class GeminiHelperResumeTransport: LiveTransport, LiveSocketReporting {
     private let socket: LiveTransport

@@ -68,27 +68,31 @@ def inline_audio(parts, body):
 CONVERSATION_SETUP = Path(__file__).with_name('gemini_live_setup.json')
 
 
-def conversation_setup(resource, recap=''):
+def conversation_setup(resource, resume=None):
     """The whole call setup lives in gemini_live_setup.json, as GPT-Live's lives in azure_live.py:
-    Bento sends only audio and results, and for a resumed call (/conversation/resume) first the earlier
-    call's transcript, which ends the instructions as reference (azure_live.resume_note). Read on use,
-    so a missing file fails the call, not the helper."""
-    from azure_live import resume_note
+    Bento sends only audio and results. A resumed call (/conversation/resume, azure_live.resume_context)
+    adds a fixed line to the instructions; its transcript follows as a user turn (conversation_recap).
+    Read on use, so a missing file fails the call, not the helper."""
     setup = {**json.loads(CONVERSATION_SETUP.read_text()), 'model': resource}
-    note = resume_note(recap)
-    if note:
-        setup['systemInstruction']['parts'][0]['text'] += note
+    if resume:
+        setup['systemInstruction']['parts'][0]['text'] += resume['instruction']
     return setup
 
 
+def conversation_recap(resume):
+    """The earlier call's transcript as the first user turn, reference rather than instructions.
+    turnComplete false: it joins the context without Gemini answering it."""
+    return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': resume['recap']}]}], 'turnComplete': False}}
+
+
 def conversation_resume(payload):
-    """A resumed call's first message: the earlier call's transcript, nothing else."""
-    from azure_live import resume_note
+    """A resumed call's first message: the earlier call's transcript, nothing else. Returns how the call
+    is told about it (azure_live.resume_context)."""
+    from azure_live import resume_context
     if not isinstance(payload, dict) or set(payload) != {'resume'} or not isinstance(payload['resume'], dict) \
             or set(payload['resume']) != {'recap'}:
         raise ValueError('Expected the resumed call')
-    resume_note(payload['resume']['recap'])
-    return payload['resume']['recap']
+    return resume_context(payload['resume']['recap'])
 
 
 def conversation_input(payload):
@@ -398,15 +402,19 @@ class VertexBridge:
         # Only fixed codes, an HTTP status and a WebSocket close code leave on failure; never upstream text.
         failure = {}
         try:
-            recap = ''
+            context = None
             if resume:
                 # Read before Vertex is contacted, so a bad first message costs nothing upstream.
                 async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
                     frame = await ws.receive()
                 if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     raise ValueError('Expected the resumed call')
-                recap = conversation_resume(json.loads(frame.data))
-            setup = conversation_setup(self.resource(CONVERSATION_MODEL, CONVERSATION_LOCATION), recap)
+                context = conversation_resume(json.loads(frame.data))
+            setup = conversation_setup(self.resource(CONVERSATION_MODEL, CONVERSATION_LOCATION), context)
+            # Gemini takes nothing before setupComplete; the recap goes first after it, before any audio.
+            seeded = asyncio.Event()
+            if not context:
+                seeded.set()
             url = (f'wss://{CONVERSATION_LOCATION}-aiplatform.googleapis.com'
                    '/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent')
             async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
@@ -418,9 +426,16 @@ class VertexBridge:
                     async for frame in ws:
                         if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                             break
-                        await upstream.send_json(conversation_input(json.loads(frame.data)))
+                        message = conversation_input(json.loads(frame.data))
+                        await seeded.wait()
+                        await upstream.send_json(message)
                 async def receive():
                     async for frame in upstream:
+                        if not seeded.is_set() and frame.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                            event = json.loads(frame.data)
+                            if isinstance(event, dict) and 'setupComplete' in event:
+                                await upstream.send_json(conversation_recap(context))
+                                seeded.set()
                         if frame.type == aiohttp.WSMsgType.TEXT:
                             await ws.send_str(frame.data)
                         elif frame.type == aiohttp.WSMsgType.BINARY:

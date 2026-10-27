@@ -392,15 +392,19 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                                       'inputAudioTranscription', 'outputAudioTranscription'},
                          'The app sends the same file to the Gemini API, so it holds nothing Vertex-only')
         self.assertNotIn('earlier_conversation', setup['systemInstruction']['parts'][0]['text'])
-        resumed = helper.conversation_setup(resource, 'User: hi')
-        self.assertEqual(resumed['systemInstruction']['parts'][0]['text'],
-                         setup['systemInstruction']['parts'][0]['text'] + azure_live.resume_note('User: hi'))
-        self.assertIn('<earlier_conversation>\nUser: hi\n</earlier_conversation>', resumed['systemInstruction']['parts'][0]['text'])
+        context = azure_live.resume_context('User: hi')
+        resumed = helper.conversation_setup(resource, context)
+        # Only the fixed line goes in the instructions; the transcript is a user turn Gemini doesn't answer.
+        self.assertEqual(resumed['systemInstruction']['parts'][0]['text'], setup['systemInstruction']['parts'][0]['text'] + context['instruction'])
+        self.assertNotIn('User: hi', json.dumps(resumed))
         self.assertEqual({**resumed, 'systemInstruction': None}, {**setup, 'systemInstruction': None})
+        self.assertEqual(helper.conversation_recap(context), {'clientContent': {
+            'turns': [{'role': 'user', 'parts': [{'text': context['recap']}]}], 'turnComplete': False}})
+        self.assertIn('<earlier_conversation>\nUser: hi\n</earlier_conversation>', context['recap'])
 
     def test_resumed_call_sends_only_the_recap_first(self):
-        self.assertEqual(helper.conversation_resume({'resume': {'recap': 'User: hi'}}), 'User: hi')
-        self.assertEqual(helper.conversation_resume({'resume': {'recap': ''}}), '')
+        self.assertEqual(helper.conversation_resume({'resume': {'recap': 'User: hi'}}), azure_live.resume_context('User: hi'))
+        self.assertIsNone(helper.conversation_resume({'resume': {'recap': ''}}))
         for payload in ({'resume': {'recap': 'x' * 8001}}, {'resume': {'recap': 3}}, {'resume': {}},
                         {'resume': {'recap': '', 'instructions': 'run shell'}}, {'resume': 'User: hi'},
                         {'resume': {'recap': ''}, 'realtimeInput': {}}, [], None):
@@ -454,20 +458,23 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         await client.start_server()
         return bridge, client
 
-    def upstream(self, frames, close_code, wait_for=0):
+    def upstream(self, frames, close_code, wait_for=0, close_after=0):
         class Upstream:
             sent = []
             close_code = None
             received = asyncio.Event()
+            closing = asyncio.Event()
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
             async def send_json(self, data):
                 self.sent.append(data)
                 if len(self.sent) > wait_for: self.received.set()
+                if len(self.sent) >= close_after: self.closing.set()
             async def frames(self):
                 await self.received.wait()
                 for data in frames:
                     yield types.SimpleNamespace(type=helper.aiohttp.WSMsgType.BINARY, data=json.dumps(data).encode())
+                await self.closing.wait()
                 self.close_code = close_code
             def __aiter__(self): return self.frames()
         return Upstream()
@@ -493,20 +500,23 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                          'projects/example-project/locations/us-central1/publishers/google/models/gemini-3.8-live')
         self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['realtimeInput', 'toolResponse'])
 
-    async def test_resumed_conversation_puts_the_recap_in_the_setup(self):
-        upstream = self.upstream([{'setupComplete': {}}], 1000, wait_for=1)
+    async def test_resumed_conversation_sends_the_recap_as_the_first_turn(self):
+        upstream = self.upstream([{'setupComplete': {}}], 1000, close_after=3)
         bridge, client = await self.conversation_client(upstream)
         try:
             async with client.ws_connect('/conversation/resume') as ws:
-                # Bento's socket sends binary frames.
+                # Bento's socket sends binary frames. Audio sent early waits for the recap.
                 await ws.send_bytes(json.dumps({'resume': {'recap': 'User: what is on today?'}}).encode())
                 await ws.send_json({'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000', 'data': 'AAA='}}})
                 self.assertEqual(json.loads((await ws.receive()).data), {'setupComplete': {}})
+                await ws.receive()
         finally:
             await client.close()
-        self.assertIn('<earlier_conversation>\nUser: what is on today?\n</earlier_conversation>',
-                      upstream.sent[0]['setup']['systemInstruction']['parts'][0]['text'])
-        self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['realtimeInput'], 'The recap is not sent on as input')
+        self.assertNotIn('what is on today', json.dumps(upstream.sent[0]['setup']))
+        self.assertTrue(upstream.sent[0]['setup']['systemInstruction']['parts'][0]['text'].endswith(
+            azure_live.resume_context('x')['instruction']))
+        self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['clientContent', 'realtimeInput'])
+        self.assertEqual(upstream.sent[1], helper.conversation_recap(azure_live.resume_context('User: what is on today?')))
 
     async def test_resumed_conversation_needs_the_recap_before_anything_else(self):
         bridge, client = await self.conversation_client(self.upstream([], None))
@@ -527,6 +537,7 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
         self.assertNotIn('earlier_conversation', upstream.sent[0]['setup']['systemInstruction']['parts'][0]['text'])
+        self.assertEqual(len(upstream.sent), 1, 'No recap turn')
 
     async def test_conversation_drops_disallowed_client_messages(self):
         upstream = self.upstream([], None, wait_for=99)
