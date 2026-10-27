@@ -180,6 +180,13 @@ Assistant is on. Settings → Dictation → Sync dictionary and instructions tur
 shows how it's going. The first sync merges what each Mac already had (entries by id,
 settings one by one); if two devices added the same word, it shows up once.
 
+**Pair Android Phone…** under Settings → Notes or Todo → Sync shows a QR code for the Bento
+Android app: it carries the server, the token and the Mac's name, and the Gemini API key if
+you tick Include Gemini API key. The code stays hidden until you click Show Code, since
+anyone who scans it can read and edit your notes and tasks. Copy Link copies the same
+`bento://pair` link instead (clipboard managers that honour concealed items, Bento's
+included, don't record it).
+
 ## Development
 
 ```sh

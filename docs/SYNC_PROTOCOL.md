@@ -261,3 +261,19 @@ The token file contains only the token (mode 600) and is never written into conf
 The `voice` collection uses `notes.sync`, while a voice module runs and
 `dictation.syncDictionary` (Settings → Dictation → Sync dictionary and instructions) isn't
 `false`.
+
+## Pairing link (Android)
+
+Settings → Notes or Todo → Pair Android Phone… shows this as a QR code, and Copy Link
+copies it:
+
+```
+bento://pair?v=1&server=<server>&token=<token>&name=<computer name>[&gemini=<Gemini API key>]
+```
+
+Every value is percent-encoded except the RFC 3986 unreserved characters
+(`A–Z a–z 0–9 - . _ ~`), so `+` is `%2B` and a space is `%20`. `server` is the base URL as
+clients use it: `https://` added when the config leaves out the scheme, no trailing
+slash. It comes from `notes.sync` when that names a server, else `todo.sync` (one that is
+switched on first), and `token` from its token file. `gemini` is present only when the
+Mac has a key and the user ticks Include Gemini API key. `v` is the link's version.

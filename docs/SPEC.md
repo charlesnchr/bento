@@ -97,6 +97,9 @@ documents are in `Voice/voice-sync.sqlite`.
   acks, tombstones), `FieldDocStore` (SQLite, `last_seq`), `FieldSyncClient` (WebSocket/REST
   transport, configured with a `FieldSyncProfile` and `SyncServerSettings`) and its
   `FieldSyncStatus`. Todo (`todos`) and the voice modules (`voice`) use them; Notes has its own.
+- `PhonePairing` / `PairPhoneButton` — the Android pairing sheet (QR code and `bento://pair`
+  link) Notes and Todo show in their sync settings. `main.swift` sets
+  `PhonePairing.geminiAPIKey` from the voice modules.
 
 ## Rules for module work
 
@@ -189,4 +192,5 @@ See `docs/SYNC_PROTOCOL.md`. Self-hosted `bento-sync` (`server/`); no server by 
 `notes.sync.server` / `todo.sync.server` in the config. Token in `~/.config/bento/sync-token`.
 Collections: `notes` (Notes), `todos` (Todo), `voice` (dictation's dictionary and cleanup
 settings, following `notes.sync`). Todo and voice share BentoCore's field-document engine and
-client.
+client. Pair Android Phone… (Notes and Todo sync settings) hands the server and token to the
+Android app as a QR code.
