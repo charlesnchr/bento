@@ -134,7 +134,7 @@ class SyncHub(
     fun syncNow() { engine.launch { connections.forEach { it.syncNow() } } }
 
     /** One REST round trip per collection (background). */
-    suspend fun syncOnce(): Boolean = withContext(engine.coroutineContext) {
+    suspend fun syncOnce(): Boolean = withContext(engine.coroutineContext[kotlin.coroutines.ContinuationInterceptor]!!) {
         if (live) return@withContext true
         entries.map { it.second.syncOnce() }.all { it }
     }
