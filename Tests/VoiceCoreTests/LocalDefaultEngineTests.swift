@@ -101,6 +101,20 @@ extension SharedStateTests {
             #expect(settings.transcriptionEngine == .parakeetUltra)
         }
 
+        /// A key-less endpoint override (a local proxy holding its own credentials)
+        /// reaches Gemini, as it did before the Parakeet fallback.
+        @Test func aUsableEndpointOverrideWithoutAKeyKeepsGemini() {
+            state.useAPIKey(false)
+            let settings = SettingsStore()
+            settings.setEndpointOverride("http://127.0.0.1:9000")
+            #expect(settings.transcriptionEngine == .gemini)
+            #expect(!settings.usesLocalFallback)
+            #expect(settings.cloudTranscriptionAvailable)
+            #expect(settings.effectiveFormattingPolicy() == settings.formattingPolicy)
+            settings.setEndpointOverride("not a url")
+            #expect(settings.transcriptionEngine == .parakeetV3, "An unusable override is ignored, as everywhere else")
+        }
+
         /// With no key there is no cleanup model, so smart formatting can't ask for one.
         @Test func noKeyMeansNoCleanupCall() {
             state.useAPIKey(false)

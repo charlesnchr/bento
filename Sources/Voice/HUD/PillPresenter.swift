@@ -370,6 +370,11 @@ final class PillPresenter {
     // MARK: - Copy
 
     private func copy(for failure: DictationFailure) -> String {
+        // On Parakeet a model failure is the on-device model, not a key or a Vertex model.
+        let engine = SettingsStore().transcriptionEngine
+        if failure == .modelAccess, engine.isLocal {
+            return "\(engine.displayName) couldn't load — retry in Settings → Dictation. Saved to History"
+        }
         if vertexState.isRequested {
             switch failure {
             case .network: return "Couldn't reach the local Vertex gateway — saved to History"

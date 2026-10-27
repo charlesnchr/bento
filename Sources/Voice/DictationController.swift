@@ -766,8 +766,15 @@ final class DictationController {
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Not Now")
+        // The app being dictated into, to hand focus back to unless Settings opens.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let previous = frontmost?.processIdentifier == getpid() ? AppActivation.previousApp : frontmost
         AppActivation.activateSelf()
-        switch alert.runModal() {
+        let choice = alert.runModal()
+        if choice != .alertSecondButtonReturn, let previous, !previous.isTerminated, previous.processIdentifier != getpid() {
+            previous.activate()
+        }
+        switch choice {
         case .alertFirstButtonReturn:
             ParakeetModels.shared.download(engine)
             pill.showNotice("Downloading \(name) — progress is in Bento's menu", for: 3.0, sound: nil)

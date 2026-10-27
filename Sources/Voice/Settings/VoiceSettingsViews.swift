@@ -253,9 +253,11 @@ private struct DictationSettingsForm: View {
             } header: {
                 Text("Transcription")
             } footer: {
-                Footnote(verbatimOnly
-                    ? "Vertex through the gateway transcribes word for word with Gemini. Other backends and retry need the direct helper runtime."
-                    : "The helper runtime config is invalid; see Advanced.")
+                if case .invalid = runtime {
+                    Footnote("The helper runtime config is invalid, so dictation can't run until it's fixed; see Advanced.")
+                } else {
+                    Footnote("Vertex through the gateway transcribes word for word with Gemini. Other backends and retry need the direct helper runtime.")
+                }
             }
         }
     }

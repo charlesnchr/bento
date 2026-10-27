@@ -30,10 +30,13 @@ final class ParakeetModels: ObservableObject {
     /// Loaded this run: ready even if the cache check ever disagreed, so it can't block dictation.
     private var loaded: Set<Engine> = []
 
+    /// A failure sticks until a retry succeeds: a model whose files are all
+    /// there but won't load (a corrupt file, a full disk while compiling) is
+    /// not ready, and must keep offering Retry.
     func status(_ engine: Engine) -> Status {
-        if case .downloading = inFlight[engine] { return inFlight[engine]! }
+        if let status = inFlight[engine] { return status }
         if loaded.contains(engine) || Self.isOnDisk(engine) { return .ready }
-        return inFlight[engine] ?? .notDownloaded
+        return .notDownloaded
     }
 
     func isReady(_ engine: Engine) -> Bool { status(engine) == .ready }
@@ -42,9 +45,14 @@ final class ParakeetModels: ObservableObject {
     /// for it). A second call while one runs joins it. Downloading the
     /// fallback makes it the user's choice: a Gemini key added later (for the
     /// assistant, say) mustn't switch dictation away from a model they fetched.
+    /// Retrying a model that failed to load from a complete cache fetches it
+    /// afresh: the files on disk are what failed.
     func download(_ engine: Engine) {
-        guard engine.isLocal, status(engine) != .ready else { return }
-        if case .downloading = status(engine) { return }
+        let current = status(engine)
+        guard engine.isLocal, current != .ready else { return }
+        if case .downloading = current { return }
+        var purge = false
+        if case .failed = current { purge = Self.isOnDisk(engine) }
         let settings = SettingsStore()
         if settings.usesLocalFallback, settings.transcriptionEngine == engine { settings.setTranscriptionEngine(engine) }
         guard let recognizer = LocalSpeech.recognizer else {
@@ -52,7 +60,10 @@ final class ParakeetModels: ObservableObject {
             return
         }
         began(engine)
-        Task.detached(priority: .userInitiated) { try? await recognizer.prepare(model: engine.rawValue) }
+        Task.detached(priority: .userInitiated) {
+            if purge { try? FileManager.default.removeItem(at: Self.cacheDirectory(of: engine)) }
+            try? await recognizer.prepare(model: engine.rawValue)
+        }
     }
 
     // MARK: Reports from the recognizer
@@ -84,7 +95,7 @@ final class ParakeetModels: ObservableObject {
 
     func finished(_ engine: Engine, error: String?) {
         inFlight[engine] = error.map { .failed($0) }
-        if error == nil { loaded.insert(engine) }
+        if error == nil { loaded.insert(engine) } else { loaded.remove(engine) }
         announce(engine)
     }
 

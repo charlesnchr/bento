@@ -64,7 +64,7 @@ final class SharedStateGuard {
             if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
         }
         if let savedRuntime { setenv("BENTO_VOICE_RUNTIME", savedRuntime, 1) } else { unsetenv("BENTO_VOICE_RUNTIME") }
-        SettingsStore.hasGeminiAPIKey = { KeychainStore.loadAPIKey() != nil }
+        SettingsStore.hasGeminiAPIKey = { KeychainStore.hasAPIKey }
         for url in files { try? FileManager.default.removeItem(at: url) }
     }
 }
