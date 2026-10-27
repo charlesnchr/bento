@@ -174,6 +174,7 @@ final class SyncEngine {
             repo.save(n)
             adoptHeads(of: r)
             onRemoteChange?(n, .inserted)
+            dedupeConflictCopy(n)
             return .inserted
         }
         let wasResyncing = resyncing.remove(r.id) != nil
@@ -230,10 +231,12 @@ final class SyncEngine {
             if n != local { repo.save(n) }
             return .keptLocal
         }
-        if fromNewClient, r.remoteHeads == nil, !r.deleted, !local.deleted,
+        if fromNewClient, r.remoteHeads == nil, local.syncHeads != nil, !r.deleted, !local.deleted,
            TextMerge.edits(from: local.body, to: r.body).contains(where: { $0.range.length > 0 }) {
             // A version that can't say what it contains (its Mac lost its history) would
-            // remove text from our synced one: it may never have had it, keep ours.
+            // remove text from our synced one, whose history we know: it may never have had
+            // it, keep ours. (Without history on both sides, e.g. right after upgrading,
+            // it's an ordinary edit.)
             conflictCopy(body: local.body, from: device, of: local)
         }
         var n = merged(local: local, remote: r)
@@ -522,9 +525,29 @@ final class SyncEngine {
         conflictCopy(body: body, from: device, of: original)
     }
 
+    /// Two Macs kept the same text as a copy of the same note: the one with the smaller id
+    /// stays (both Macs pick the same), the other is deleted.
+    private func dedupeConflictCopy(_ n: Note) {
+        guard let of = n.meta["conflictOf"], n.isLive,
+              let twin = repo.allNotes(includeTombstones: false).first(where: {
+                  $0.id != n.id && $0.isLive && $0.meta["conflictOf"] == of && $0.body == n.body
+              }) else { return }
+        var extra = n.id < twin.id ? twin : n
+        extra.deleted = true
+        extra.body = ""
+        extra.updatedAt = Note.nextUpdate(after: extra.updatedAt)
+        extra.dirty = true
+        repo.save(extra)
+        onRemoteChange?(extra, .overwritten)
+    }
+
     /// Keeps a body that lost a last-writer-wins race as its own note (synced like any edit).
     private func conflictCopy(body: String, from loser: String, of original: Note) {
         guard let copyBody = NoteText.conflictCopyBody(body, device: loser) else { return }
+        // already kept (e.g. the other Mac's copy of the same text arrived first)
+        if repo.allNotes(includeTombstones: false).contains(where: {
+            $0.isLive && $0.meta["conflictOf"] == .string(original.id) && $0.body == copyBody
+        }) { return }
         let key = original.id + "|" + loser
         let now = Note.now()
         if let c = conflictCopies[key], now - c.created < 10 * 60_000, var existing = repo.note(c.id),

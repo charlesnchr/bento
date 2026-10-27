@@ -1196,6 +1196,52 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(a.note.pinned && a.note.meta["trashedAt"] == .number(5))
     }
 
+    @Test func firstEditsAfterUpgradingMakeNoCopies() {
+        // Both databases come from a build without heads: every note's first put has none.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        for m in [a, b] {
+            var n = m.note
+            n.syncHeads = nil
+            m.repo.save(n)
+            m.relaunch()
+        }
+        let net = Network([a, b], body: base)
+        a.type { String($0.dropLast()) } // deletes a character
+        net.send(0)
+        #expect(net.settle())
+        #expect(b.note.body == String(base.dropLast()))
+        #expect(a.copies.isEmpty && b.copies.isEmpty)
+        // later edits merge with history
+        b.typeAtCaret(" B", elsewhere: 1000, backspace: false)
+        a.typeAtCaret("A ", elsewhere: 0, backspace: false)
+        net.send(0); net.send(1)
+        #expect(net.settle())
+        #expect(a.note.body == b.note.body && a.copies.isEmpty && b.copies.isEmpty)
+    }
+
+    @Test func identicalConflictedCopiesFromTwoMacsBecomeOne() {
+        // Each Mac kept the same losing text as a copy: one survives, on both.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        var copy = Note(id: "copy-b", body: "# Plan (conflicted copy, A)\nlost", createdAt: 1, updatedAt: 10)
+        copy.meta["conflictOf"] = .string("a")
+        var mine = copy
+        mine.id = "copy-a"
+        a.repo.save(mine)
+        var r = copy
+        r.seq = 5
+        r.device = "B"
+        a.e.applyRemote(r)
+        #expect(a.repo.notes.values.filter { $0.isLive && $0.meta["conflictOf"] != nil }.map(\.id) == ["copy-a"])
+        #expect(a.repo.notes["copy-b"]?.deleted == true && a.repo.notes["copy-b"]?.dirty == true)
+        // B, the other way round, deletes the same one
+        var theirs = mine
+        theirs.seq = 6
+        theirs.device = "A"
+        b.repo.save(copy)
+        b.e.applyRemote(theirs)
+        #expect(b.repo.notes["copy-b"]?.deleted == true && b.repo.notes["copy-a"]?.isLive == true)
+    }
+
     @Test func crissCrossMergesDontDuplicate() {
         // The reviewer's case: A sends "abc" and keeps typing "def"; B's concurrent "xyz"
         // was made without "abc". Only one side may merge the pair.

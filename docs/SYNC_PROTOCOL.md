@@ -178,7 +178,10 @@ so it can adopt it. `created_at` is kept from the first version.
   pick a new id, retire the old one, forget all heads. Heads naming a retired id aren't
   trusted (last-writer-wins with conflicted copies until new history arrives).
 - A version from a client that sends `from` but no heads (its history is gone) that would
-  remove text from a synced local note keeps the local text as a conflicted copy first.
+  remove text from a synced local note whose heads are known keeps the local text as a
+  conflicted copy first (without heads on either side, e.g. right after upgrading, it's an
+  ordinary edit). Identical conflicted copies of one note (same `conflictOf` and body)
+  are kept once: the one with the smaller id stays, the other becomes a tombstone.
 - Heads are stored with each note, tagged with the hash of the body they describe (an
   older build that edits the note leaves them behind; they're dropped on load). The
   texts merges start from are kept in memory only,
