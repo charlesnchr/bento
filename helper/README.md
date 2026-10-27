@@ -6,9 +6,13 @@ key (Settings → Dictation → Advanced). Everything else goes through
 the app never does:
 
 - Vertex AI: Gemini Transcribe (batch and live), cleanup and editing models,
-  meeting notes, and Gemini 3.8 Live voice calls (`/conversation`). Calls follow
+  meeting notes, and Gemini 3.8 Live voice calls (`/conversation`, and
+  `/conversation/resume` for a call that continues an earlier one; run
+  `scripts/voice-helper.sh update` after upgrading Bento to get it). Calls follow
   dictation: with a key and no runtime file the app calls the Gemini API itself,
   sending the same setup (`gemini_live_setup.json`) the helper sends to Vertex.
+  A resumed call's instructions end with the earlier transcript as reference
+  only, worded by `live_resume.json` on every route, GPT-Live's too.
 - Azure OpenAI: GPT Transcribe and the Luna cleanup model (`azure_live.py` also
   carries GPT-Live voice calls; the app runs it directly).
 - OpenRouter: MAI-Transcribe-2.

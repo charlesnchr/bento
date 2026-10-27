@@ -58,6 +58,24 @@ struct AssistantMessage: Identifiable, Equatable {
 }
 
 enum AssistantTranscript {
+    /// What a resumed voice call is told about the conversation it continues: what was
+    /// said and Hermes' replies, newest last, within `limit` Unicode scalars (the bridges
+    /// accept 8,000). Nil when the conversation on screen isn't a voice call.
+    static func liveRecap(_ messages: [AssistantMessage], limit: Int = 6000) -> String? {
+        guard messages.contains(where: { $0.speaker != nil }) else { return nil }
+        var lines: [String] = [], size = 0
+        for message in messages.reversed() where message.isTurn || message.role == "assistant" {
+            var text = message.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !text.isEmpty else { continue }
+            if text.count > 600 { text = text.prefix(600) + "..." }
+            let line = (message.role == "user" ? "User" : message.speaker ?? "Hermes") + ": " + text
+            guard size + line.unicodeScalars.count + 1 <= limit else { break }
+            lines.append(line)
+            size += line.unicodeScalars.count + 1
+        }
+        return lines.reversed().joined(separator: "\n")
+    }
+
     static func appendReply(_ text: String, id: UUID, speaker: String, to messages: inout [AssistantMessage]) {
         guard !text.isEmpty else { return }
         if let index = messages.firstIndex(where: { $0.id == id }) {

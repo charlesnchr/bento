@@ -3,15 +3,21 @@ import VoiceCore
 
 extension GeminiLiveController {
     /// A call goes where dictation's Gemini goes (`SettingsStore.geminiLiveRoute`):
-    /// the Gemini API with the user's key, or the direct Vertex helper.
-    nonisolated static func routedTransport() throws -> LiveTransport {
+    /// the Gemini API with the user's key, or the direct Vertex helper. `recap` is the
+    /// earlier call's transcript when this one resumes it.
+    nonisolated static func routedTransport(recap: String?) throws -> LiveTransport {
         switch SettingsStore().geminiLiveRoute {
         case .vertexHelper(let vertex):
             let key = vertex.bifrostKey
             // The call runs up to ten minutes; a quiet stretch must not time the socket out.
-            return WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationEndpoint, requestTimeout: 660)
+            guard let recap else {
+                return WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationEndpoint, requestTimeout: 660)
+            }
+            return try GeminiHelperResumeTransport(
+                socket: WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationResumeEndpoint, requestTimeout: 660),
+                recap: recap)
         case .geminiAPI:
-            guard let setup = GeminiAPILiveTransport.setupFrame() else {
+            guard let setup = GeminiAPILiveTransport.setupFrame(recap: recap ?? "") else {
                 throw ACPClient.Failure(message: "Gemini Live's call setup is missing from Bento.")
             }
             return GeminiAPILiveTransport(
@@ -44,13 +50,45 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting {
     func close() { socket.close() }
     var ending: LiveSocketEnding { (socket as? LiveSocketReporting)?.ending ?? LiveSocketEnding() }
 
-    /// `{"setup": …}`: the shared setup with the Gemini API's model name.
-    static func setupFrame(from url: URL? = VoiceResources.url("gemini_live_setup", "json", in: "helper")) -> Data? {
+    /// `{"setup": …}`: the shared setup with the Gemini API's model name. A resumed call's
+    /// instructions end with the earlier call's transcript, as the helper's do (`LiveResumeNote`).
+    static func setupFrame(from url: URL? = VoiceResources.url("gemini_live_setup", "json", in: "helper"),
+                           recap: String = "") -> Data? {
         guard let url, let data = try? Data(contentsOf: url),
               var setup = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         setup["model"] = "models/" + SettingsStore.GeminiLiveRoute.geminiAPIModel
+        if !recap.isEmpty {
+            guard let note = LiveResumeNote.note(recap), var instruction = setup["systemInstruction"] as? [String: Any],
+                  var parts = instruction["parts"] as? [[String: Any]], let text = parts.first?["text"] as? String else { return nil }
+            parts[0]["text"] = text + note
+            instruction["parts"] = parts
+            setup["systemInstruction"] = instruction
+        }
         return try? JSONSerialization.data(withJSONObject: ["setup": setup])
     }
+}
+
+/// A resumed call through the helper's /conversation/resume. Its first message carries the
+/// earlier call's transcript, which the helper puts in the setup it sends to Vertex; a helper
+/// older than the route refuses the upgrade (`GeminiLiveEnding`).
+final class GeminiHelperResumeTransport: LiveTransport, LiveSocketReporting {
+    private let socket: LiveTransport
+    private let resume: Data
+
+    init(socket: LiveTransport, recap: String) throws {
+        self.socket = socket
+        resume = try JSONSerialization.data(withJSONObject: ["resume": ["recap": recap]])
+    }
+
+    func connect() async throws {
+        try await socket.connect()
+        try await socket.send(resume)
+    }
+
+    func send(_ data: Data) async throws { try await socket.send(data) }
+    func receive() async throws -> Data { try await socket.receive() }
+    func close() { socket.close() }
+    var ending: LiveSocketEnding { (socket as? LiveSocketReporting)?.ending ?? LiveSocketEnding() }
 }
 
 /// A transport that can say how its socket ended.
@@ -61,10 +99,15 @@ extension WebSocketTransport: LiveSocketReporting {}
 /// What the user hears when a call's socket ends without the helper's error event.
 /// The Gemini API has no helper to name the failure, so its close says it instead.
 enum GeminiLiveEnding {
-    static func outcome(_ ending: LiveSocketEnding, goingAway: Bool, geminiAPI: Bool)
+    static func outcome(_ ending: LiveSocketEnding, goingAway: Bool, geminiAPI: Bool, helperResume: Bool = false)
         -> (message: String, code: AzureLiveDiagnostics.Code) {
         // Gemini warns with goAway before closing a call at its time limit.
         if goingAway { return ("Gemini ended the call at its time limit. Start again to continue.", .sessionLimit) }
+        // A helper older than /conversation/resume has no such route. New calls still work.
+        if helperResume, ending.httpStatus == 404 {
+            return ("Gemini voice couldn't resume the call: the voice helper is out of date. "
+                    + "Run scripts/voice-helper.sh update, or press New Chat to start a new call.", .bridgeFailure)
+        }
         // A bad key upgrades and then closes with 1007; a key without access is refused with 403.
         let keyRejected = [401, 403].contains(ending.httpStatus)
             || ending.closeCode == 1007 && ending.closeReason?.localizedCaseInsensitiveContains("API key") == true

@@ -46,7 +46,8 @@ composer, meeting capsule and notes, assistant window, settings panes). Ported f
 (Apache 2.0, see THIRD_PARTY_NOTICES.md); Jot's tests live in `Tests/VoiceCoreTests`.
 `helper/` holds the Python pieces: the loopback voice helper (Vertex/Azure/OpenRouter/gateway),
 the Azure GPT-Live transport, the Hermes ACP launcher and the Gemini Live call setup the helper
-and the app's Gemini API path share (`gemini_live_setup.json`; `helper/README.md`). build.sh copies
+and the app's Gemini API path share (`gemini_live_setup.json`, and `live_resume.json` for a call that
+resumes an earlier one; `helper/README.md`). build.sh copies
 `Resources/Voice` and `helper/` into `Contents/Resources/Voice`; Swift finds them through
 `VoiceResources` (not `Bundle.module`, which looks only in the bundle root and the build
 machine's `.build`). Voice settings live in UserDefaults and are mirrored both ways into the

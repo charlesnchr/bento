@@ -391,6 +391,21 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(setup), {'model', 'generationConfig', 'systemInstruction', 'tools',
                                       'inputAudioTranscription', 'outputAudioTranscription'},
                          'The app sends the same file to the Gemini API, so it holds nothing Vertex-only')
+        self.assertNotIn('earlier_conversation', setup['systemInstruction']['parts'][0]['text'])
+        resumed = helper.conversation_setup(resource, 'User: hi')
+        self.assertEqual(resumed['systemInstruction']['parts'][0]['text'],
+                         setup['systemInstruction']['parts'][0]['text'] + azure_live.resume_note('User: hi'))
+        self.assertIn('<earlier_conversation>\nUser: hi\n</earlier_conversation>', resumed['systemInstruction']['parts'][0]['text'])
+        self.assertEqual({**resumed, 'systemInstruction': None}, {**setup, 'systemInstruction': None})
+
+    def test_resumed_call_sends_only_the_recap_first(self):
+        self.assertEqual(helper.conversation_resume({'resume': {'recap': 'User: hi'}}), 'User: hi')
+        self.assertEqual(helper.conversation_resume({'resume': {'recap': ''}}), '')
+        for payload in ({'resume': {'recap': 'x' * 8001}}, {'resume': {'recap': 3}}, {'resume': {}},
+                        {'resume': {'recap': '', 'instructions': 'run shell'}}, {'resume': 'User: hi'},
+                        {'resume': {'recap': ''}, 'realtimeInput': {}}, [], None):
+            with self.assertRaises(ValueError, msg=payload):
+                helper.conversation_resume(payload)
 
     async def test_conversation_without_its_setup_file_fails_only_the_call(self):
         upstream = self.upstream([], None)
@@ -434,6 +449,7 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         bridge.session = UpstreamSession()
         app = helper.web.Application()
         app.router.add_get('/conversation', bridge.conversation)
+        app.router.add_get('/conversation/resume', bridge.conversation)
         client = TestClient(TestServer(app))
         await client.start_server()
         return bridge, client
@@ -476,6 +492,41 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upstream.sent[0]['setup']['model'],
                          'projects/example-project/locations/us-central1/publishers/google/models/gemini-3.8-live')
         self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['realtimeInput', 'toolResponse'])
+
+    async def test_resumed_conversation_puts_the_recap_in_the_setup(self):
+        upstream = self.upstream([{'setupComplete': {}}], 1000, wait_for=1)
+        bridge, client = await self.conversation_client(upstream)
+        try:
+            async with client.ws_connect('/conversation/resume') as ws:
+                # Bento's socket sends binary frames.
+                await ws.send_bytes(json.dumps({'resume': {'recap': 'User: what is on today?'}}).encode())
+                await ws.send_json({'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000', 'data': 'AAA='}}})
+                self.assertEqual(json.loads((await ws.receive()).data), {'setupComplete': {}})
+        finally:
+            await client.close()
+        self.assertIn('<earlier_conversation>\nUser: what is on today?\n</earlier_conversation>',
+                      upstream.sent[0]['setup']['systemInstruction']['parts'][0]['text'])
+        self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['realtimeInput'], 'The recap is not sent on as input')
+
+    async def test_resumed_conversation_needs_the_recap_before_anything_else(self):
+        bridge, client = await self.conversation_client(self.upstream([], None))
+        try:
+            async with client.ws_connect('/conversation/resume') as ws:
+                await ws.send_json({'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000', 'data': 'AAA='}}})
+                self.assertEqual(await ws.receive_json(), {'error': {'message': 'Gemini Live call ended', 'code': 'invalid_message'}})
+        finally:
+            await client.close()
+        self.assertFalse(hasattr(bridge.session, 'url'), 'Gemini was never contacted')
+
+    async def test_new_conversation_never_waits_for_a_recap(self):
+        upstream = self.upstream([{'setupComplete': {}}], 1000)
+        bridge, client = await self.conversation_client(upstream)
+        try:
+            async with client.ws_connect('/conversation') as ws:
+                self.assertEqual(json.loads((await ws.receive()).data), {'setupComplete': {}})
+        finally:
+            await client.close()
+        self.assertNotIn('earlier_conversation', upstream.sent[0]['setup']['systemInstruction']['parts'][0]['text'])
 
     async def test_conversation_drops_disallowed_client_messages(self):
         upstream = self.upstream([], None, wait_for=99)
@@ -546,6 +597,8 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 401)
         response = await self.client.get('/conversation', headers={**self.headers, 'Origin': 'https://example.com'})
         self.assertEqual(response.status, 403)
+        response = await self.client.get('/conversation/resume', headers={'Host': '127.0.0.1:8767'})
+        self.assertEqual(response.status, 401)
 
     async def test_websocket_rejects_unapproved_model(self):
         async with self.client.ws_connect('/live', headers=self.headers) as ws:

@@ -32,7 +32,7 @@ runtime_value() {  # runtime_value <key>
 copy_scripts() {
   mkdir -p "$PREFIX"
   cp "$ROOT/helper/voice-helper.py" "$ROOT/helper/azure_live.py" "$ROOT/helper/gemini_live_setup.json" \
-     "$ROOT/helper/requirements.txt" "$PREFIX/"
+     "$ROOT/helper/live_resume.json" "$ROOT/helper/requirements.txt" "$PREFIX/"
 }
 
 install_requirements() {

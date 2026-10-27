@@ -52,7 +52,7 @@ cp "$ROOT/Resources/Bento.icns" "$APP/Contents/Resources/Bento.icns"
 # Python helpers they run (VoiceResources.swift reads Contents/Resources/Voice).
 ditto "$ROOT/Resources/Voice" "$APP/Contents/Resources/Voice"
 mkdir -p "$APP/Contents/Resources/Voice/helper"
-cp "$ROOT"/helper/*.py "$ROOT/helper/gemini_live_setup.json" "$ROOT/helper/requirements.txt" "$APP/Contents/Resources/Voice/helper/"
+cp "$ROOT"/helper/*.py "$ROOT/helper/gemini_live_setup.json" "$ROOT/helper/live_resume.json" "$ROOT/helper/requirements.txt" "$APP/Contents/Resources/Voice/helper/"
 # Licences of the code compiled into the binary.
 mkdir -p "$APP/Contents/Resources/Licenses"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/Licenses/"

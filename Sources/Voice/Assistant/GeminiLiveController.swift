@@ -4,12 +4,13 @@ import VoiceCore
 
 /// A voice call with Gemini 3.8 Live over dictation's Google connection: the Gemini API with
 /// the user's key, or the direct Vertex helper's /conversation route (`routedTransport`).
+/// A call can resume an earlier one, told what was said (`LiveResumeNote`).
 /// Bento sends microphone audio and function results and plays the reply. Same contract as
 /// `AzureLiveController`.
 @MainActor
 final class GeminiLiveController {
     private let audio = AzureLiveAudio(inputRate: 16000, maxQueuedSeconds: 120, realTimeOutput: false)
-    private let makeTransport: () throws -> LiveTransport
+    private let makeTransport: (_ recap: String?) throws -> LiveTransport
     private var transport: LiveTransport?
     private var reader: Task<Void, Never>?
     private var sender: Task<Void, Never>?
@@ -32,26 +33,27 @@ final class GeminiLiveController {
     var onEnd: (() -> Void)?
     var onTool: ((AzureLiveProtocol.Call) async -> String)?
 
-    init(makeTransport: @escaping () throws -> LiveTransport = GeminiLiveController.routedTransport) {
+    init(makeTransport: @escaping (_ recap: String?) throws -> LiveTransport = GeminiLiveController.routedTransport) {
         self.makeTransport = makeTransport
     }
 
     private var now: Double { ProcessInfo.processInfo.systemUptime }
     private static let listening = "Gemini Live listening. Use headphones. Stop ends voice and tools."
 
-    func start() throws {
+    func start(recap: String?) throws {
         guard !active else { return }
         guard !SecureInput.isActive, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             throw ACPClient.Failure(message: "Allow microphone access and leave secure input before starting Gemini voice.")
         }
-        let transport = try makeTransport()
+        let recap = recap?.isEmpty == false ? recap : nil
+        let transport = try makeTransport(recap)
         self.transport = transport
         active = true; generation = UUID(); protocolState = GeminiLiveProtocol(); started = now
         lastCaptureAt = nil; runningTurn = nil; cancelledCalls = []; goingAway = false
         inputChunks = 0; outputChunks = 0; outputBytes = 0
         AzureLiveDiagnostics.record(.connecting, log: .gemini)
         let token = generation
-        onStatus?("Connecting to Gemini 3.8 Live...")
+        onStatus?(recap == nil ? "Connecting to Gemini 3.8 Live..." : "Resuming the call with Gemini 3.8 Live...")
         reader = Task { [weak self] in
             do {
                 try await transport.connect()
@@ -63,7 +65,8 @@ final class GeminiLiveController {
             } catch { }
             guard let self else { return }
             let ending = (transport as? LiveSocketReporting)?.ending ?? LiveSocketEnding()
-            let outcome = GeminiLiveEnding.outcome(ending, goingAway: self.goingAway, geminiAPI: transport is GeminiAPILiveTransport)
+            let outcome = GeminiLiveEnding.outcome(ending, goingAway: self.goingAway, geminiAPI: transport is GeminiAPILiveTransport,
+                                                   helperResume: transport is GeminiHelperResumeTransport)
             self.failed(outcome.message, token: token, code: outcome.code, httpStatus: ending.httpStatus, closeCode: ending.closeCode)
         }
         watchdog = Task { [weak self] in

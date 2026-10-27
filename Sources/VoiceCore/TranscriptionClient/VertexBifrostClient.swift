@@ -9,6 +9,8 @@ public struct VertexRuntimeConfig: Codable, Equatable, Sendable {
     public var liveEndpoint: URL { socketURL("live") }
     /// The helper's Gemini Live voice call route.
     public var conversationEndpoint: URL { socketURL("conversation") }
+    /// A call that continues an earlier one; older helpers lack it.
+    public var conversationResumeEndpoint: URL { socketURL("conversation/resume") }
     private func socketURL(_ path: String) -> URL {
         var components = URLComponents(url: bifrostBaseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "https" ? "wss" : "ws"

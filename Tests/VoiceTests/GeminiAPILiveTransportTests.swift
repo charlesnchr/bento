@@ -15,8 +15,8 @@ import VoiceCore
         func close() { events.append("close") }
     }
 
-    private func setup() throws -> [String: Any] {
-        let frame = try #require(GeminiAPILiveTransport.setupFrame())
+    private func setup(recap: String = "") throws -> [String: Any] {
+        let frame = try #require(GeminiAPILiveTransport.setupFrame(recap: recap))
         let object = try #require(try JSONSerialization.jsonObject(with: frame) as? [String: Any])
         #expect(Set(object.keys) == ["setup"])
         return try #require(object["setup"] as? [String: Any])
@@ -33,6 +33,42 @@ import VoiceCore
         let instruction = ((setup["systemInstruction"] as? [String: Any])?["parts"] as? [[String: Any]])?.first?["text"] as? String
         #expect(instruction?.contains(GeminiLiveProtocol.tool) == true)
         #expect(setup["outputAudioTranscription"] != nil && setup["inputAudioTranscription"] != nil)
+    }
+
+    private func instruction(_ setup: [String: Any]) -> String? {
+        ((setup["systemInstruction"] as? [String: Any])?["parts"] as? [[String: Any]])?.first?["text"] as? String
+    }
+
+    @Test func aResumedCallsInstructionsEndWithTheRecap() throws {
+        let fresh = try setup(), resumed = try setup(recap: "User: book a table\nHermes: Booked for 7pm.")
+        let base = try #require(instruction(fresh))
+        #expect(!base.contains("earlier_conversation"))
+        // The helper's wording, from the same file (LiveResumeNoteTests).
+        #expect(instruction(resumed) == base + " " + LiveResumeNoteTests.instruction
+                + "\n<earlier_conversation>\nUser: book a table\nHermes: Booked for 7pm.\n</earlier_conversation>")
+        // Nothing else changes.
+        var a = fresh, b = resumed
+        a["systemInstruction"] = nil; b["systemInstruction"] = nil
+        #expect(NSDictionary(dictionary: a) == NSDictionary(dictionary: b))
+        #expect(instruction(try setup(recap: " \n")) == base)
+    }
+
+    @Test func aRecapOverTheLimitHasNoSetup() {
+        #expect(GeminiAPILiveTransport.setupFrame(recap: String(repeating: "x", count: 8001)) == nil)
+    }
+
+    @Test func aResumeThroughTheHelperSendsOnlyTheRecapFirst() async throws {
+        let socket = FakeSocket()
+        let transport = try GeminiHelperResumeTransport(socket: socket, recap: "User: hi")
+        try await transport.connect()
+        #expect(socket.events == ["connect", "send"])
+        let first = try #require(try JSONSerialization.jsonObject(with: socket.sent[0]) as? [String: Any])
+        #expect(NSDictionary(dictionary: first) == NSDictionary(dictionary: ["resume": ["recap": "User: hi"]]))
+        _ = try await transport.receive()
+        try await transport.send(Data("audio".utf8))
+        transport.close()
+        #expect(socket.events == ["connect", "send", "receive", "send", "close"])
+        #expect(socket.sent.last == Data("audio".utf8))
     }
 
     @Test func connectSendsTheSetupFirst() async throws {
@@ -118,6 +154,19 @@ struct GeminiAPILiveProbeTests {
         #expect(throttled.message == "Gemini voice failed (HTTP 429). No task was retried.")
         #expect(throttled.code == .bridgeFailure)
         #expect(outcome(LiveSocketEnding(closeCode: 1011)).message.contains("close 1011"))
+    }
+
+    @Test func aHelperWithoutTheResumeRouteSaysToUpdateIt() {
+        let outdated = GeminiLiveEnding.outcome(LiveSocketEnding(httpStatus: 404), goingAway: false, geminiAPI: false, helperResume: true)
+        #expect(outdated.message == "Gemini voice couldn't resume the call: the voice helper is out of date. "
+                + "Run scripts/voice-helper.sh update, or press New Chat to start a new call.")
+        #expect(outdated.code == .bridgeFailure)
+        // A new call's 404 isn't about the resume route; neither is another failure while resuming.
+        #expect(outcome(LiveSocketEnding(httpStatus: 404), geminiAPI: false).message == "Gemini voice failed (HTTP 404). No task was retried.")
+        #expect(GeminiLiveEnding.outcome(LiveSocketEnding(httpStatus: 401), goingAway: false, geminiAPI: false, helperResume: true)
+                .message.contains("Vertex helper refused"))
+        #expect(GeminiLiveEnding.outcome(LiveSocketEnding(), goingAway: false, geminiAPI: false, helperResume: true)
+                .message == "Gemini voice disconnected. No task was retried.")
     }
 
     @Test func aDropWithNothingToSayIsADisconnect() {
