@@ -18,7 +18,9 @@ private func resignActive() {
 /// Hiding a window hands focus back first and orders the window out once Bento
 /// has resigned active, so no other Bento window is raised in between.
 @Suite(.serialized) @MainActor struct AppActivationOrderOutTests {
-    init() { NSApplication.shared.setActivationPolicy(.prohibited) }
+    /// Keeps the test process out of the Dock and app switcher; set once per run.
+    private static let prohibitActivation: Void = { NSApplication.shared.setActivationPolicy(.prohibited) }()
+    init() { _ = Self.prohibitActivation }
 
     @Test func ordersOutOnceBentoResignsActive() {
         let w = OrderingWindow()
@@ -67,5 +69,14 @@ private func resignActive() {
         AppActivation.orderOut(w, activating: NSWorkspace.shared.frontmostApplication)
         #expect(w.orderOuts == 1)
         #expect(!AppActivation.isOrderingOut(w))
+    }
+
+    @Test func focusFallsBackToThePreviousAppWhenTheOriginIsUnusable() throws {
+        let other = try #require(NSWorkspace.shared.runningApplications.first { $0.processIdentifier != getpid() })
+        let bento = NSRunningApplication.current
+        #expect(AppActivation.focusTarget(other, previous: nil) == other)
+        #expect(AppActivation.focusTarget(bento, previous: other) == other)
+        #expect(AppActivation.focusTarget(bento, previous: bento) == nil)
+        #expect(AppActivation.focusTarget(nil, previous: other) == nil)
     }
 }

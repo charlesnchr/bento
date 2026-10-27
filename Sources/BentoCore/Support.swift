@@ -177,15 +177,25 @@ public enum AppActivation {
     /// raise the next window that can take it (the Todo window left open
     /// behind the user's app, say) until `app`'s activation lands, a visible
     /// flash. So `app` is activated first and the window ordered out once
-    /// Bento has resigned active. Without an app to hand focus to, or with
-    /// Bento inactive, the window is ordered out at once.
+    /// Bento has resigned active. If `app` has quit or is Bento itself, focus
+    /// goes to `previousApp` instead. With `app` nil, nothing usable to hand
+    /// focus to, or Bento inactive, the window is ordered out at once.
     public static func orderOut(_ window: NSWindow, activating app: NSRunningApplication?) {
         cancelOrderOut(window)
-        guard NSApp.isActive, let app, app.processIdentifier != getpid(), app.activate(options: []) else {
+        guard NSApp.isActive, let target = focusTarget(app, previous: previousApp), target.activate(options: []) else {
             window.orderOut(nil)
             return
         }
         orderOutOnResign(window)
+    }
+
+    /// The app `orderOut` hands focus to: `app`, or `previous` when `app` has
+    /// quit or is Bento itself. Nil `app` means focus stays put.
+    static func focusTarget(_ app: NSRunningApplication?, previous: NSRunningApplication?) -> NSRunningApplication? {
+        guard let app else { return nil }
+        let usable = { (candidate: NSRunningApplication) in !candidate.isTerminated && candidate.processIdentifier != getpid() }
+        if usable(app) { return app }
+        return previous.flatMap { usable($0) ? $0 : nil }
     }
 
     /// Whether `orderOut` is about to order the window out (it counts as hidden).

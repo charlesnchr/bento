@@ -106,7 +106,7 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         guard panel.attachedSheet == nil else { return }
         onHide?()
         placement.save()
-        AppActivation.orderOut(panel, activating: panel.isKeyWindow ? origin : nil)
+        AppActivation.orderOut(panel, activating: panel.isKeyWindow ? (origin ?? AppActivation.previousApp) : nil)
     }
     func export(_ markdown: String, title: String) {
         let save = NSSavePanel()
