@@ -16,6 +16,16 @@ enum PillPlacement {
     /// screen's side edge, so the resting pill is always centred on it.
     private static let edgeInset: CGFloat = 62
 
+    /// The saved spot, or nil for nothing usable. Not NSPointFromString, which
+    /// reads garbage as (0, 0): the bottom-left corner.
+    static func parse(_ raw: String?) -> CGPoint? {
+        guard let raw, raw.hasPrefix("{"), raw.hasSuffix("}") else { return nil }
+        let parts = raw.dropFirst().dropLast().split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2, parts.allSatisfy(\.isFinite) else { return nil }
+        return CGPoint(x: parts[0], y: parts[1])
+    }
+
     /// The pill's bottom-centre in screen coordinates.
     static func anchor(relative: CGPoint?, in visible: NSRect) -> CGPoint {
         guard let relative, relative.x.isFinite, relative.y.isFinite else {

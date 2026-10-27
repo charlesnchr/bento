@@ -26,6 +26,14 @@ import Testing
         #expect(monitor.contains(there))
     }
 
+    @Test func onlyAWellFormedSpotCountsAsSaved() {
+        #expect(PillPlacement.parse(NSStringFromPoint(CGPoint(x: 0.25, y: 0.5))) == CGPoint(x: 0.25, y: 0.5))
+        #expect(PillPlacement.parse("{0, 0}") == .zero)
+        for raw in [nil, "", "nonsense", "{0.5}", "{a, b}", "{0.5, 0.5, 1}", "{nan, 0.5}", "0.5, 0.5"] {
+            #expect(PillPlacement.parse(raw) == nil, "\(raw ?? "nil")")
+        }
+    }
+
     @Test func aSpotOffTheScreenIsPulledBackOn() {
         for relative in [CGPoint(x: -3, y: 0.5), CGPoint(x: 4, y: 9), CGPoint(x: 0.5, y: -1), CGPoint(x: .nan, y: 0.2)] {
             let anchor = PillPlacement.anchor(relative: relative, in: laptop)

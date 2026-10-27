@@ -50,7 +50,7 @@ final class PillHUDController {
         panel.contentView = NSHostingView(
             rootView: PillRootView(
                 model: model,
-                onDrag: { [weak self] in self?.dragChanged(translation: $0) },
+                onDrag: { [weak self] in self?.dragChanged(from: $0) },
                 onDragEnd: { [weak self] in self?.dragEnded() }
             )
         )
@@ -58,8 +58,12 @@ final class PillHUDController {
         for name in [Notification.Name.pillPositionReset, NSApplication.didChangeScreenParametersNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 Task { @MainActor [weak self] in
-                    if note.name == .pillPositionReset { UserDefaults.standard.removeObject(forKey: PillPlacement.defaultsKey) }
-                    self?.reposition()
+                    if note.name == .pillPositionReset {
+                        UserDefaults.standard.removeObject(forKey: PillPlacement.defaultsKey)
+                        self?.reposition()
+                    } else {
+                        self?.screensChanged()
+                    }
                 }
             })
         }
@@ -90,8 +94,23 @@ final class PillHUDController {
             ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
             ?? NSScreen.main
         guard let screen else { return }
-        let saved = UserDefaults.standard.string(forKey: PillPlacement.defaultsKey).map(NSPointFromString)
+        let saved = PillPlacement.parse(UserDefaults.standard.string(forKey: PillPlacement.defaultsKey))
         place(PillPlacement.anchor(relative: saved, in: screen.visibleFrame), in: screen.visibleFrame)
+    }
+
+    /// A display came or went. At rest the pill goes where it would be shown;
+    /// mid-session it stays on its display (spec §1.1) and is only kept on it,
+    /// unless that display is the one that went.
+    private func screensChanged() {
+        switch model.state {
+        case .idleDot, .hidden:
+            reposition()
+        default:
+            guard let anchor, let screen = NSScreen.screens.first(where: { $0.frame.contains(anchor) }) else {
+                return reposition()
+            }
+            place(anchor, in: screen.visibleFrame)
+        }
     }
 
     private func place(_ point: CGPoint, in frame: NSRect) {
@@ -105,12 +124,14 @@ final class PillHUDController {
     // MARK: - Dragging
 
     /// Screen coordinates, not the gesture's: the panel moves under the pointer.
-    /// Only the first translation is used, before the panel has moved, to find
-    /// where the press was, so the pill keeps the movement under the threshold.
-    private func dragChanged(translation: CGSize) {
+    /// The press point (window coordinates, top-left origin) is mapped to the
+    /// screen once, before the panel has moved, so the pill keeps the movement
+    /// under the threshold.
+    private func dragChanged(from start: CGPoint) {
         let mouse = NSEvent.mouseLocation
         if dragStartMouse == nil {
-            dragStartMouse = NSPoint(x: mouse.x - translation.width, y: mouse.y + translation.height)
+            let height = panel.contentView?.bounds.height ?? panel.frame.height
+            dragStartMouse = panel.convertPoint(toScreen: NSPoint(x: start.x, y: height - start.y))
             dragStartAnchor = anchor
         }
         guard let start = dragStartMouse, let startAnchor = dragStartAnchor else { return }
@@ -121,6 +142,8 @@ final class PillHUDController {
         place(point, in: frame)
     }
 
+    /// Also runs when SwiftUI cancels the drag (the pill hidden mid-drag), so
+    /// the next drag starts afresh.
     private func dragEnded() {
         dragStartMouse = nil
         dragStartAnchor = nil
@@ -157,8 +180,10 @@ final class PillHUDController {
 
 private struct PillRootView: View {
     @ObservedObject var model: PillModel
-    let onDrag: (CGSize) -> Void
+    let onDrag: (CGPoint) -> Void
     let onDragEnd: () -> Void
+    /// Resets on cancel as well as on end, unlike onEnded.
+    @GestureState private var dragging = false
 
     var body: some View {
         PillAnchorLayout(anchorX: model.anchorX) {
@@ -167,12 +192,15 @@ private struct PillRootView: View {
                 // underneath; a click moves less than the minimum and still
                 // reaches it.
                 .highPriorityGesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { onDrag($0.translation) }
-                        .onEnded { _ in onDragEnd() }
+                    DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                        .updating($dragging) { _, state, _ in state = true }
+                        .onChanged { onDrag($0.startLocation) }
                 )
         }
         .padding(.bottom, PillPlacement.bottomInset)
+        .onChange(of: dragging) { _, active in
+            if !active { onDragEnd() }
+        }
     }
 }
 

@@ -350,8 +350,8 @@ private struct DictationSettingsForm: View {
             LabeledContent {
                 Button("Reset Position") { NotificationCenter.default.post(name: .pillPositionReset, object: nil) }
             } label: {
-                Text("Pill position")
-                Text("Drag the pill to move it; it stays where you leave it.")
+                Text("Indicator position")
+                Text("Drag the indicator to move it; it stays where you leave it.")
             }
         } header: {
             Text("Feedback")
