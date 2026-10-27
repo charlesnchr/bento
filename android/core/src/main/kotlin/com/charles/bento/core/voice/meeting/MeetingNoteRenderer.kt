@@ -1,5 +1,8 @@
 package com.charles.bento.core.voice.meeting
 
+import com.charles.bento.core.notes.BlockKind
+import com.charles.bento.core.notes.MarkdownParser
+import com.charles.bento.core.notes.SwiftText
 import java.time.ZoneId
 import java.util.Locale
 
@@ -12,19 +15,17 @@ import java.util.Locale
  *
  *     ## Summary / ## Decisions / ## Action items (as `- [ ]` tasks)
  *
- *     <details><summary>Transcript</summary>
+ *     ## Transcript
  *
  *     **[0:00]** First paragraph…
  *
- *     </details>
- *
- * The sections match the Mac's `notes.md`; the transcript sits in the Notes module's
- * GitHub-style `<details>` expander (collapsed to its summary line in Bento, rendered
- * the same by GitHub). Transcript lines that would end the expander early are escaped
- * and an unclosed code fence is closed, as Bento's thought capture does.
+ * The sections match the Mac's `notes.md`. The transcript is the last section, so the
+ * Notes editor collapses it with its heading like any section. Transcript lines the Notes
+ * parser would read as headings (they would end or split the section) are escaped and an
+ * unclosed code fence is closed, as Bento's thought capture does.
  */
 object MeetingNoteRenderer {
-    const val TRANSCRIPT_SUMMARY = "Transcript"
+    const val TRANSCRIPT_HEADING = "Transcript"
 
     fun render(document: MeetingDocument, locale: Locale = Locale.getDefault(), zone: ZoneId = ZoneId.systemDefault()): String {
         val lines = ArrayList<String>()
@@ -43,55 +44,31 @@ object MeetingNoteRenderer {
         val paragraphs = document.paragraphs
         val body = if (paragraphs.isEmpty()) "_Nothing was transcribed._"
         else paragraphs.joinToString("\n\n") { MeetingDocument.transcriptLine(it) }
-        lines += "<details><summary>$TRANSCRIPT_SUMMARY</summary>"
+        lines += "## $TRANSCRIPT_HEADING"
         lines += ""
         lines += escapeBody(body)
-        lines += ""
-        lines += "</details>"
         return lines.joinToString("\n") + "\n"
     }
 
     private fun oneLine(text: String) = text.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ').trim()
 
-    /** Escapes lines the Notes parser would read as an expander's start or end; closes an open fence. */
+    /** Escapes lines the Notes parser reads as headings (outside code); closes an open fence. */
     internal fun escapeBody(body: String): String {
         val out = ArrayList<String>()
+        var inCode = false
         var fence: String? = null
         for (line in body.replace("\r\n", "\n").replace('\r', '\n').split('\n')) {
-            val trimmed = line.trim()
-            val indent = line.length - line.trimStart().length
-            val fenceMarker = fenceMarker(trimmed, indent)
-            if (fenceMarker != null) {
-                fence = if (fence == null) fenceMarker else if (trimmed.startsWith(fence)) null else fence
-                out += line
-                continue
+            when (val k = MarkdownParser.parseLine(line, inCode).kind) {
+                is BlockKind.Fence -> {
+                    inCode = k.opening
+                    fence = if (k.opening) SwiftText.trimWhitespaces(line).let { t -> t.takeWhile { it == t[0] } } else null
+                    out += line
+                }
+                is BlockKind.Heading -> out += "\\" + SwiftText.trimWhitespaces(line)
+                else -> out += line
             }
-            if (fence == null && indent <= 3 && isExpanderSyntax(trimmed)) out += "\\" + trimmed else out += line
         }
         if (fence != null) out += fence
         return out.joinToString("\n")
-    }
-
-    private fun fenceMarker(trimmed: String, indent: Int): String? {
-        if (indent > 3) return null
-        val c = trimmed.firstOrNull() ?: return null
-        if (c != '`' && c != '~') return null
-        val run = trimmed.takeWhile { it == c }
-        return if (run.length >= 3) run else null
-    }
-
-    /** `<details…>`, `</details>`, `::: details …` and `:::` (both syntaxes the Notes parser accepts). */
-    internal fun isExpanderSyntax(trimmed: String): Boolean {
-        val lower = trimmed.lowercase(Locale.ROOT)
-        if (lower.startsWith("</details>")) return lower.removePrefix("</details>").isBlank()
-        if (lower.startsWith("<details")) {
-            val next = lower.getOrNull("<details".length)
-            return next == '>' || next == ' ' || next == '\t'
-        }
-        if (trimmed.startsWith(":::")) {
-            val rest = trimmed.removePrefix(":::").trim()
-            return rest.isEmpty() || rest.lowercase(Locale.ROOT).startsWith("details")
-        }
-        return false
     }
 }

@@ -9,9 +9,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-// Tests/NotesTests/MarkdownTests.swift and ExpanderTests.swift: the parser, NoteText,
-// MarkdownCommands, ThoughtCapture. (The AppKit styler, layout and MarkdownExport cases
-// aren't ported; neither is that code.)
+// Tests/NotesTests/MarkdownTests.swift and HeadingFoldTests.swift: the parser, NoteText,
+// MarkdownCommands, ThoughtCapture, HeadingFoldTests' parser parts. (The AppKit styler,
+// folding, layout and MarkdownExport cases aren't ported; neither is that code.)
 
 class BlockParsingTest {
     private fun kind(s: String, inCode: Boolean = false) = MarkdownParser.parseLine(s, inCode).kind
@@ -348,7 +348,6 @@ class CommandFuzzTest {
             check(MarkdownCommands.moveLines(text, sel, up = true), text, "moveUp", failures)
             check(MarkdownCommands.moveLines(text, sel, up = false), text, "moveDown", failures)
             check(MarkdownCommands.insertLink(text, sel, "https://a.b"), text, "link", failures)
-            check(MarkdownCommands.wrapInExpander(text, sel), text, "expander", failures)
             for (typed in listOf(" ", "-")) check(MarkdownCommands.inputRule(text, sel, typed), text, "inputRule", failures)
             for (f in InlineFormat.entries) check(MarkdownCommands.toggleInline(text, sel, f), text, "inline $f", failures)
             for (f in listOf(BlockFormat.Paragraph, BlockFormat.Heading(1), BlockFormat.Heading(3), BlockFormat.Bullet, BlockFormat.Ordered,
@@ -360,71 +359,38 @@ class CommandFuzzTest {
     }
 }
 
-class ExpanderParserTest {
-    @Test fun parsesSummaryAndEndLines() {
-        val line = "::: details 2026-10-26 14:05 · An idea"
-        val h = MarkdownParser.parseLine(line, inCode = false)
-        assertEquals(BlockKind.Details, h.kind)
-        assertEquals(TextRange(0, 12), h.prefixRange)
-        assertEquals("2026-10-26 14:05 · An idea", line.substring(h.contentRange.location, h.contentRange.end))
-        assertEquals(BlockKind.Details, MarkdownParser.parseLine(":::details Tight", false).kind)
-        assertEquals(BlockKind.Details, MarkdownParser.parseLine("  ::: details", false).kind)
-        assertEquals(BlockKind.DetailsEnd, MarkdownParser.parseLine(":::", false).kind)
-        assertEquals(BlockKind.DetailsEnd, MarkdownParser.parseLine(" :::  ", false).kind)
+/** HeadingFoldTests' parser parts (the folding itself is the Mac editor's). */
+class HeadingSectionTest {
+    private val text = "# Note\nintro\n## A\nline a\n### A1\ndeep\n## B\nline b"
+    private fun at(s: String) = text.indexOf(s)
+
+    @Test fun sectionEndsAtTheNextHeadingOfTheSameOrAHigherLevel() {
+        val a = SwiftText.lineRange(text, at("## A"))
+        assertEquals(at("## B"), MarkdownParser.sectionEnd(a, 2, text))
+        val a1 = SwiftText.lineRange(text, at("### A1"))
+        assertEquals(at("## B"), MarkdownParser.sectionEnd(a1, 3, text))
+        assertEquals(text.length, MarkdownParser.sectionEnd(SwiftText.lineRange(text, 0), 1, text))
+        // a "#" line in a code block isn't a heading
+        val code = "## A\n```\n# not\n```\nx\n# B"
+        assertEquals(code.indexOf("# B"), MarkdownParser.sectionEnd(SwiftText.lineRange(code, 0), 2, code))
     }
 
-    @Test fun otherColonLinesStayText() {
-        for (line in listOf("::::", "::: tip Careful", "::: detailsx", "a ::: details", "    ::: details deep", ":: details")) {
+    @Test fun crlfSections() {
+        val t = "## A\r\nbody\r\n## B"
+        assertEquals(12, MarkdownParser.sectionEnd(SwiftText.lineRange(t, 0), 2, t))
+    }
+
+    @Test fun capturedThoughtHeadings() {
+        assertTrue(ThoughtCapture.isEntryHeading("2026-10-26 14:05 · An idea"))
+        assertFalse(ThoughtCapture.isEntryHeading("Meeting 2026-10-26 14:05 · x"))
+    }
+
+    @Test fun expanderSyntaxIsPlainText() {
+        for (line in listOf("::: details A", ":::", "<details><summary>X</summary>", "</details>")) {
             assertEquals(BlockKind.Paragraph, MarkdownParser.parseLine(line, false).kind, line)
         }
-        assertEquals(BlockKind.Code, MarkdownParser.parseLine(":::", true).kind)
-        assertEquals(BlockKind.Code, MarkdownParser.parseLine("::: details x", true).kind)
-    }
-
-    @Test fun findsTheClosingLine() {
-        val text = "::: details A\nbody\n```\n:::\n```\n:::\nafter"
-        val summary = SwiftText.lineRange(text, 0)
-        // the ":::" inside the code fence doesn't close it
-        assertEquals(TextRange(31, 3), MarkdownParser.expanderEnd(summary, text))
-        val unclosed = "::: details A\nbody\n::: details B\nx\n:::"
-        assertNull(MarkdownParser.expanderEnd(SwiftText.lineRange(unclosed, 0), unclosed))
-        val last = "::: details A"
-        assertNull(MarkdownParser.expanderEnd(TextRange(0, last.length), last))
-    }
-
-    @Test fun closingLineSupportsCRLF() {
-        val text = "::: details A\r\nbody\r\n:::\r\nafter"
-        assertEquals(TextRange(21, 3), MarkdownParser.expanderEnd(SwiftText.lineRange(text, 0), text))
-    }
-
-    @Test fun strayEndsRemainVisibleInPlainText() {
-        val text = "before\n:::\nafter"
-        assertEquals(text, NoteText.plainText(text))
+        assertEquals("before\n:::\nafter", NoteText.plainText("before\n:::\nafter"))
         assertEquals(":::", NoteText.title(":::\nafter"))
-    }
-
-    @Test fun titlesAndCountsUseTheSummary() {
-        val body = "::: details 2026-10-26 14:05 · Idea\nThe **full** idea.\n:::"
-        assertEquals("2026-10-26 14:05 · Idea", NoteText.title(body))
-        assertEquals("2026-10-26 14:05 · Idea\nThe full idea.", NoteText.plainText(body))
-    }
-
-    @Test fun returnClosesAnOpenSummary() {
-        val text = "::: details Idea"
-        val r = MarkdownCommands.newline(text, TextRange(text.length, 0))
-        assertEquals("\n\n:::", r?.edits?.first()?.replacement)
-        assertEquals(TextRange(text.length + 1, 0), r?.selection)
-        // a closed one: a new first body line
-        val closed = "::: details Idea\nbody\n:::"
-        assertEquals("::: details Idea\n\nbody\n:::", MarkdownCommands.newline(closed, TextRange(16, 0))?.apply(closed))
-        // mid-summary: the default split
-        assertNull(MarkdownCommands.newline(closed, TextRange(14, 0)))
-    }
-
-    @Test fun invalidSummaryLocationsAreRejected() {
-        val text = "::: details Idea\nLine one\n- item\n:::\nafter"
-        assertNull(MarkdownParser.expanderEnd(TextRange(Int.MAX_VALUE, 1), text))
-        assertNull(MarkdownParser.expanderEnd(TextRange(-1, 1), text))
     }
 }
 
@@ -432,32 +398,21 @@ class ThoughtCaptureTest {
     private val date = Instant.ofEpochSecond(1_793_021_145) // 2026-10-26 13:25:45 UTC
     private val utc = ZoneId.of("UTC")
 
-    @Test fun entryHasTimestampSummaryAndBody() {
-        assertEquals(
-            "<details><summary>2026-10-26 13:25 · Add a capture mode to the…</summary>\nAdd a capture mode to the transcribe shortcut that appends to a note.\n</details>",
-            ThoughtCapture.entry("  Add a capture mode to the transcribe shortcut that appends to a note.\n", date, utc),
-        )
-        assertEquals("<details><summary>2026-10-26 13:25 · Short one</summary>\nShort one\n</details>", ThoughtCapture.entry("Short one", date, utc))
-        // a "<" in the first words can't end the summary early
-        assertTrue(ThoughtCapture.entry("a </summary> b", date, utc)!!.startsWith("<details><summary>2026-10-26 13:25 · a ‹/summary> b</summary>\n"))
+    @Test fun entryIsAHeadingWithTimestampAndFirstWords() {
+        val e = ThoughtCapture.entry("  Add a capture mode to the transcribe shortcut that appends to a note.\n", date, utc)
+        assertEquals("### 2026-10-26 13:25 · Add a capture mode to the…\nAdd a capture mode to the transcribe shortcut that appends to a note.", e)
+        assertEquals("### 2026-10-26 13:25 · Short one\nShort one", ThoughtCapture.entry("Short one", date, utc))
         assertNull(ThoughtCapture.entry(" \n\n ", date))
         assertEquals("2026-10-26 13:25", ThoughtCapture.timestamp(date, ZoneId.of("Europe/London")))
+        assertTrue(ThoughtCapture.isEntryHeading(e!!.drop(4).takeWhile { it != '\n' }))
     }
 
     @Test fun bodyIsCleaned() {
         assertEquals("a\n\nb", ThoughtCapture.cleaned("a\r\n\r\n\r\nb\n\n"))
-        assertEquals("a\n\\:::\n\\::: details x\nb", ThoughtCapture.cleaned("a\n:::\n::: details x\nb"))
-        assertEquals("a\n\\</details>\n\\<details>\nb", ThoughtCapture.cleaned("a\n</details>\n<details>\nb"))
+        // a heading would end the entry's section
+        assertEquals("a\n\\# Big\n\\### small\nb", ThoughtCapture.cleaned("a\n# Big\n  ### small\nb"))
         assertEquals("look:\n```\ncode\n```", ThoughtCapture.cleaned("look:\n```\ncode"))
         assertEquals("one two three", ThoughtCapture.summary("one\ntwo  three"))
-    }
-
-    @Test fun trimmingCannotTurnIndentedTextIntoAnExpanderDelimiter() {
-        assertEquals("\\:::\nbody", ThoughtCapture.cleaned("    :::\nbody"))
-        assertEquals("\\::: details Nested\nbody", ThoughtCapture.cleaned("    ::: details Nested\nbody"))
-        val entry = ThoughtCapture.entry("    :::\nbody", date, utc)!!
-        val end = MarkdownParser.expanderEnd(SwiftText.lineRange(entry, 0), entry)
-        assertEquals(TextRange(entry.length - 10, 10), end)
     }
 
     @Test fun appendsAsSeparateEntries() {
@@ -475,64 +430,37 @@ class ThoughtCaptureTest {
         assertEquals("~~~```lang\ncode\n~~~", ThoughtCapture.cleaned("~~~```lang\ncode"))
     }
 
-    /** Captures appended to an existing note parse back as one closed expander each. */
-    @Test fun appendedEntriesParseAsExpanders() {
+    /** Captures appended to an existing note are one section each, leaving the note's other lines alone. */
+    @Test fun appendedEntriesAreSections() {
         var body = "# Random snippets\n- [ ] a task"
-        for (text in listOf("First idea with quite a few words in it", "Second:\n\n:::\nwith a stray fence")) {
+        for (text in listOf("First idea with quite a few words in it", "Second:\n\n## a heading\nwith a stray heading")) {
             body = ThoughtCapture.append(ThoughtCapture.entry(text, date, utc)!!, body)
         }
-        val summaries = MarkdownParser.parseLines(body).filter { it.line.kind == BlockKind.Details }
-        assertEquals(2, summaries.size)
-        for (s in summaries) assertNotNull(MarkdownParser.expanderEnd(SwiftText.lineRange(body, s.range.location), body))
+        val lines = MarkdownParser.parseLines(body)
+        val headings = lines.filter { it.line.kind is BlockKind.Heading }
+        assertEquals(listOf(1, 3, 3), headings.map { (it.line.kind as BlockKind.Heading).level })
+        val entries = headings.drop(1).map { body.substring(it.range.location + 4, it.range.end) }
+        assertTrue(entries.all { ThoughtCapture.isEntryHeading(it) })
+        // each entry's section ends where the next one starts
+        val first = SwiftText.lineRange(body, headings[1].range.location)
+        assertEquals(headings[2].range.location, MarkdownParser.sectionEnd(first, 3, body))
         assertEquals("Random snippets", NoteText.title(body))
-        assertEquals(BlockKind.Task(false), MarkdownParser.parseLines(body)[1].line.kind)
-        assertTrue(body.endsWith("with a stray fence</summary>\nSecond:\n\n\\:::\nwith a stray fence\n</details>\n"))
-    }
-}
-
-class HTMLExpanderTest {
-    @Test fun parsesGitHubDetails() {
-        val line = "<details><summary>Some **idea**</summary>"
-        val p = MarkdownParser.parseLine(line, false)
-        assertEquals(BlockKind.Details, p.kind)
-        assertEquals("Some **idea**", line.substring(p.contentRange.location, p.contentRange.end))
-        assertEquals(TextRange(31, 10), p.suffixRange)
-        assertEquals(BlockKind.Details, MarkdownParser.parseLine("<DETAILS open> <Summary>X</Summary>", false).kind)
-        assertEquals(BlockKind.Details, MarkdownParser.parseLine("<details>", false).kind)
-        assertEquals(BlockKind.DetailsEnd, MarkdownParser.parseLine("</details>", false).kind)
-        assertEquals(BlockKind.DetailsEnd, MarkdownParser.parseLine("  </details>  ", false).kind)
-        for (l in listOf("<detailsx>", "</details> more", "<details", "    <details>", "a <details>")) {
-            assertEquals(BlockKind.Paragraph, MarkdownParser.parseLine(l, false).kind, l)
-        }
-        assertEquals(BlockKind.Code, MarkdownParser.parseLine("<details>", true).kind)
-        assertTrue(MarkdownParser.detailsStartsOpen("<details open><summary>X</summary>"))
-        assertFalse(MarkdownParser.detailsStartsOpen("<details><summary>open</summary>"))
+        assertEquals(BlockKind.Task(false), lines[1].line.kind)
+        assertTrue(body.endsWith("· Second: ## a heading with a…\nSecond:\n\n\\## a heading\nwith a stray heading\n"))
     }
 
-    @Test fun titlesUseTheSummary() {
-        assertEquals("Idea", NoteText.title("<details><summary>Idea</summary>\nThe **full** idea.\n</details>"))
-        val text = "<details><summary>Idea</summary>"
-        assertEquals(text.indexOf("</summary>"), MarkdownParser.visibleEnd(TextRange(0, text.length), text))
-    }
-
-    @Test fun returnAtTheSummaryEndStartsTheBody() {
-        val text = "<details><summary>Idea</summary>"
-        val r = MarkdownCommands.newline(text, TextRange(22, 0))
-        assertEquals("<details><summary>Idea</summary>\n\n</details>", r?.apply(text))
-        assertEquals(TextRange(text.length + 1, 0), r?.selection)
-    }
-
-    @Test fun expanderCommandWraps() {
-        val line = "An idea"
-        val r = MarkdownCommands.wrapInExpander(line, TextRange(3, 0))
-        assertEquals("<details><summary>An idea</summary>\n\n</details>", r?.apply(line))
-        assertEquals(TextRange(36, 0), r?.selection)
-        val e = MarkdownCommands.wrapInExpander("", TextRange(0, 0))
-        assertEquals("<details><summary>Details</summary>\n\n</details>", e?.apply(""))
-        assertEquals(TextRange(18, 7), e?.selection)
-        val lines = "top\none\ntwo\nbottom"
-        val w = MarkdownCommands.wrapInExpander(lines, TextRange(5, 5))
-        assertEquals("top\n<details><summary>Details</summary>\none\ntwo\n</details>\nbottom", w?.apply(lines))
-        assertNull(MarkdownCommands.wrapInExpander("<details><summary>X</summary>", TextRange(20, 0)))
+    /** CaptureControllerTests' expectations of the text a capture writes (NotesController.capture). */
+    @Test fun capturesIntoANewThoughtsNoteOrAnExistingOne() {
+        fun capture(body: String, text: String) = ThoughtCapture.append(ThoughtCapture.entry(text)!!, body)
+        val first = capture("# Thoughts", "First thought")
+        assertTrue(first.startsWith("# Thoughts\n\n### "))
+        assertTrue(first.endsWith("\nFirst thought\n"))
+        val second = capture(first, "Second thought")
+        assertTrue(second.startsWith(first + "\n### "))
+        assertTrue(second.endsWith("\nSecond thought\n"))
+        val typed = "# Note\nold unsaved"
+        val captured = capture(typed, "Captured thought")
+        assertTrue(captured.startsWith("$typed\n\n### "))
+        assertTrue(captured.endsWith("\nCaptured thought\n"))
     }
 }

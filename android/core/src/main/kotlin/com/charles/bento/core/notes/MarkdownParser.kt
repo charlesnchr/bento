@@ -19,13 +19,6 @@ sealed class BlockKind {
     data class Fence(val opening: Boolean, val lang: String) : BlockKind()
     /** A line inside a fenced code block. */
     data object Code : BlockKind()
-    /**
-     * "<details><summary>Summary</summary>" (GitHub's HTML) or "::: details Summary"
-     * (VitePress / markdown-it-container syntax): opens an expander.
-     */
-    data object Details : BlockKind()
-    /** "</details>" or ":::": closes an expander. */
-    data object DetailsEnd : BlockKind()
 
     val isList: Boolean get() = this is Bullet || this is Ordered || this is Task
 }
@@ -37,10 +30,8 @@ data class ParsedLine(
     val level: Int = 0,
     /** Block syntax at the start of the line (indentation + marker), hidden in the editor. */
     val prefixRange: TextRange,
-    /** Everything after the prefix (up to the suffix). */
+    /** Everything after the prefix. */
     val contentRange: TextRange,
-    /** Syntax after the content, hidden in the editor: an expander summary's "</summary>". */
-    val suffixRange: TextRange? = null,
     /** Bullet char / "1." / "[ ]" etc. inside the prefix. */
     val markerRange: TextRange? = null,
     /** The literal list marker character: '-', '*', '+', or '.' / ')' for ordered lists. */
@@ -86,13 +77,6 @@ object MarkdownParser {
     private const val RBRACKET = ']'
     private const val DOT = '.'
     private const val RPAREN = ')'
-    private const val COLON = ':'
-    private const val LT = '<'
-    private const val DETAILS_WORD = "details"
-    private const val DETAILS_TAG = "<details"
-    private const val DETAILS_CLOSE = "</details>"
-    private const val SUMMARY_TAG = "<summary>"
-    private const val SUMMARY_CLOSE = "</summary>"
 
     /** Number of spaces one list nesting level is written with. */
     const val INDENT_UNIT = "    "
@@ -121,11 +105,6 @@ object MarkdownParser {
         if (cols <= 3) {
             val f = isFence(u)
             if (f != null) return ParsedLine(BlockKind.Fence(opening = true, lang = f.lang), prefixRange = whole, contentRange = empty)
-        }
-
-        if (cols <= 3) {
-            val d = detailsLine(u, i) ?: detailsTagLine(u, i)
-            if (d != null) return d
         }
 
         // Heading: up to 6 '#' followed by a space.
@@ -220,101 +199,6 @@ object MarkdownParser {
         return false
     }
 
-    /** "::: details <summary>" (an expander's header) or a bare ":::" (its end). */
-    private fun detailsLine(u: String, i: Int): ParsedLine? {
-        val n = u.length
-        if (!(i + 2 < n && u[i] == COLON && u[i + 1] == COLON && u[i + 2] == COLON)) return null
-        var j = i + 3
-        while (j < n && (u[j] == SPACE || u[j] == TAB)) j++
-        if (j == n) {
-            return ParsedLine(BlockKind.DetailsEnd, prefixRange = TextRange(0, n), contentRange = TextRange(n, 0))
-        }
-        val w = DETAILS_WORD.length
-        if (!(j + w <= n && u.regionMatches(j, DETAILS_WORD, 0, w) && (j + w == n || u[j + w] == SPACE))) return null
-        var k = j + w
-        while (k < n && u[k] == SPACE) k++
-        return ParsedLine(BlockKind.Details, prefixRange = TextRange(0, k), contentRange = TextRange(k, n - k),
-            markerRange = TextRange(i, j + w - i))
-    }
-
-    /**
-     * "<details>" / "<details open>", optionally followed by "<summary>Summary</summary>"
-     * on the same line (an expander's header), or "</details>" (its end). Tags are
-     * matched case-insensitively.
-     */
-    private fun detailsTagLine(u: String, i: Int): ParsedLine? {
-        val n = u.length
-        if (!(i < n && u[i] == LT)) return null
-        fun at(j: Int, word: String): Boolean {
-            if (j + word.length > n) return false
-            for (k in word.indices) if (lower(u[j + k]) != word[k]) return false
-            return true
-        }
-        if (at(i, DETAILS_CLOSE)) {
-            var j = i + DETAILS_CLOSE.length
-            while (j < n && (u[j] == SPACE || u[j] == TAB)) j++
-            if (j != n) return null
-            return ParsedLine(BlockKind.DetailsEnd, prefixRange = TextRange(0, n), contentRange = TextRange(n, 0))
-        }
-        if (!at(i, DETAILS_TAG)) return null
-        var j = i + DETAILS_TAG.length
-        if (!(j < n && (u[j] == GT || u[j] == SPACE || u[j] == TAB))) return null
-        while (j < n && u[j] != GT) j++
-        if (j >= n) return null
-        val tagEnd = j + 1
-        var k = tagEnd
-        while (k < n && (u[k] == SPACE || u[k] == TAB)) k++
-        if (at(k, SUMMARY_TAG)) k += SUMMARY_TAG.length
-        var end = n
-        var suffix: TextRange? = null
-        val c = (k until n).firstOrNull { at(it, SUMMARY_CLOSE) }
-        if (c != null) {
-            end = c
-            suffix = TextRange(c, n - c)
-        }
-        return ParsedLine(BlockKind.Details, prefixRange = TextRange(0, k), contentRange = TextRange(k, end - k),
-            suffixRange = suffix, markerRange = TextRange(i, tagEnd - i))
-    }
-
-    private fun lower(c: Char): Char = if (c in 'A'..'Z') c + 32 else c
-
-    /** Whether an expander header line asks to start open ("<details open>"). */
-    fun detailsStartsOpen(line: String): Boolean {
-        val t = SwiftText.lowercased(SwiftText.trimWhitespaces(line))
-        if (!swiftHasPrefix(t, "<details")) return false
-        // by character, as Swift's firstIndex(of:) and split(whereSeparator:) see it
-        val chars = Graphemes.characters(t)
-        val close = chars.indexOf(">")
-        if (close < 0) return false
-        val words = ArrayList<List<String>>()
-        var cur = ArrayList<String>()
-        for (ch in chars.subList(0, close)) {
-            if (ch == " " || ch == "\t") {
-                if (cur.isNotEmpty()) words.add(cur)
-                cur = ArrayList()
-            } else {
-                cur.add(ch)
-            }
-        }
-        if (cur.isNotEmpty()) words.add(cur)
-        return words.drop(1).any { w -> w == OPEN || (w.size >= OPEN_EQ.size && w.subList(0, OPEN_EQ.size) == OPEN_EQ) }
-    }
-
-    private val OPEN = listOf("o", "p", "e", "n")
-    private val OPEN_EQ = listOf("o", "p", "e", "n", "=")
-
-    /**
-     * End of the visible text of the line `full`: before a summary's "</summary>", else
-     * before the line terminator.
-     */
-    fun visibleEnd(full: TextRange, text: String): Int {
-        val r = contentRange(full, text)
-        val p = parseLine(text.substring(r.location, r.end), inCode = false)
-        val sr = p.suffixRange
-        if (p.kind != BlockKind.Details || sr == null) return r.end
-        return r.location + sr.location
-    }
-
     fun isRule(s: String): Boolean = isRule(s, 0)
 
     fun isRule(u: String, start: Int): Boolean {
@@ -360,30 +244,24 @@ object MarkdownParser {
     }
 
     /**
-     * The closing "</details>" or ":::" line (without newline) of the expander whose
-     * summary line is `summary`; null when another expander or the end of the note comes
-     * first.
+     * End of the section under the heading line `heading` (level `level`): the start of
+     * the next heading of the same or a higher level outside code, else the text's end.
+     * (Any heading's section collapses in the Mac's editor.)
      */
-    fun expanderEnd(summary: TextRange, text: String): TextRange? {
-        if (!(summary.location >= 0 && summary.length > 0 && summary.location <= text.length &&
-                summary.length <= text.length - summary.location)) return null
-        var loc = summary.end
-        val header = contentRange(summary, text)
-        if (!(header.length < summary.length &&
-                parseLine(text.substring(header.location, header.end), inCode = false).kind == BlockKind.Details)) return null
+    fun sectionEnd(heading: TextRange, level: Int, text: String): Int {
+        var loc = heading.end
         var inCode = false
         while (loc < text.length) {
             val full = SwiftText.lineRange(text, loc)
             val r = contentRange(full, text)
             when (val k = parseLine(text.substring(r.location, r.end), inCode).kind) {
-                BlockKind.DetailsEnd -> return r
-                BlockKind.Details -> return null
+                is BlockKind.Heading -> if (k.level <= level) return full.location
                 is BlockKind.Fence -> inCode = k.opening
                 else -> {}
             }
             loc = full.end
         }
-        return null
+        return text.length
     }
 
     /** A full line range without its LF, CRLF or CR terminator. */
@@ -623,8 +501,8 @@ object MarkdownParser {
 }
 
 /**
- * Swift's `hasPrefix` for an ASCII prefix: by characters, so "<details" isn't a prefix of
- * "<detailś".
+ * Swift's `hasPrefix` for an ASCII prefix: by characters, so "```" isn't a prefix of
+ * "``" + a backtick carrying a combining mark.
  */
 internal fun swiftHasPrefix(s: String, prefix: String): Boolean {
     if (!s.startsWith(prefix)) return false

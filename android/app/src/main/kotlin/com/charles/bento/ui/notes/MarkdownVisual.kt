@@ -68,11 +68,6 @@ class MarkdownVisual(private val colors: MarkdownColors, private val baseSize: T
                 BlockKind.Rule -> span(whole, SpanStyle(color = colors.marker))
                 is BlockKind.Fence -> span(whole, SpanStyle(color = colors.marker, fontFamily = SansCode, fontSize = baseSize * 0.9f))
                 BlockKind.Code -> span(whole, SpanStyle(fontFamily = SansCode, background = colors.codeBackground, fontSize = baseSize * 0.9f))
-                BlockKind.Details -> {
-                    span(whole, SpanStyle(color = colors.marker))
-                    span(line.contentRange, SpanStyle(color = colors.text, fontWeight = FontWeight.SemiBold))
-                }
-                BlockKind.DetailsEnd -> span(whole, SpanStyle(color = colors.marker))
                 BlockKind.Paragraph -> {}
             }
             if (line.kind is BlockKind.Code || line.kind is BlockKind.Fence) continue

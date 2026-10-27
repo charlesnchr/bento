@@ -36,7 +36,6 @@ import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Title
-import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -228,7 +227,6 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 },
                 onInline = { f -> applyResult(MarkdownCommands.toggleInline(value.text, value.sel(), f)) },
                 onLink = { applyResult(MarkdownCommands.insertLink(value.text, value.sel(), null)) },
-                onExpander = { applyResult(MarkdownCommands.wrapInExpander(value.text, value.sel())) },
                 onIndent = { out -> applyResult(MarkdownCommands.indent(value.text, value.sel(), out)) },
                 onMic = {
                     if (dictation is DictationState.Listening) graph.dictation.stop()
@@ -366,7 +364,7 @@ private class EditHistory {
 private fun Toolbar(
     listening: Boolean, canUndo: Boolean, canRedo: Boolean,
     onUndo: () -> Unit, onRedo: () -> Unit, onTask: () -> Unit, onBullet: () -> Unit, onHeading: () -> Unit,
-    onInline: (InlineFormat) -> Unit, onLink: () -> Unit, onExpander: () -> Unit, onIndent: (Boolean) -> Unit,
+    onInline: (InlineFormat) -> Unit, onLink: () -> Unit, onIndent: (Boolean) -> Unit,
     onMic: () -> Unit, onHideKeyboard: () -> Unit, status: String?,
 ) {
     Surface(tonalElevation = 2.dp, modifier = Modifier.imePadding()) {
@@ -385,7 +383,6 @@ private fun Toolbar(
                     ToolButton(Icons.Rounded.FormatStrikethrough, "Strikethrough") { onInline(InlineFormat.Strike) }
                     ToolButton(Icons.Rounded.Code, "Code") { onInline(InlineFormat.Code) }
                     ToolButton(Icons.Rounded.Link, "Link", onClick = onLink)
-                    ToolButton(Icons.Rounded.UnfoldMore, "Collapsible section", onClick = onExpander)
                     ToolButton(Icons.AutoMirrored.Rounded.FormatIndentIncrease, "Indent") { onIndent(false) }
                     ToolButton(Icons.AutoMirrored.Rounded.FormatIndentDecrease, "Outdent") { onIndent(true) }
                     ToolButton(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = canUndo, onClick = onUndo)

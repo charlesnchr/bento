@@ -18,7 +18,7 @@ sealed interface DictationTarget {
     /** Bento's own note editor. */
     class Editor(val commit: (String) -> Unit, override val context: FieldContext) : DictationTarget
 
-    /** "Capture thought": appended to a note as a timestamped, collapsible entry (Mac: Capture Thought to Note). */
+    /** "Capture thought": appended to a note as a timestamped heading section (Mac: Capture Thought to Note). */
     class Thought(val noteId: String?) : DictationTarget {
         override val context = FieldContext(appLabel = "Bento Notes", hint = "A thought to keep in a note")
     }

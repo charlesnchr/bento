@@ -179,9 +179,9 @@ class NotesModule(
     // MARK: Thought capture
 
     /**
-     * Appends a dictated thought to the capture note as a timestamped, collapsible entry
-     * (the Mac's Capture Thought to Note), creating a "Thoughts" note when none is set or
-     * it was deleted. Returns the note's title.
+     * Appends a dictated thought to the capture note as a "### date time · first words"
+     * heading section (the Mac's Capture Thought to Note, whose editor shows it collapsed),
+     * creating a "Thoughts" note when none is set or it was deleted. Returns the note's title.
      */
     suspend fun captureThought(noteId: String?, text: String): String? = onEngine {
         val entry = ThoughtCapture.entry(text) ?: return@onEngine null
