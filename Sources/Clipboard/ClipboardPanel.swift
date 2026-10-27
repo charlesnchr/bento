@@ -66,10 +66,6 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
         w.isOpaque = false
         w.backgroundColor = .clear
         w.delegate = self
-        if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil,
-           let a = ProcessInfo.processInfo.environment["BENTO_APPEARANCE"] {
-            w.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua)
-        }
 
         let host = NSHostingView(rootView: ClipboardPanelView(model: model))
         host.sizingOptions = []

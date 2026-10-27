@@ -77,7 +77,8 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
   tint, a pinned light/dark appearance; glass is standard under Reduce Transparency),
   `didChange` when it changes.
   `ThemedBackgroundView(material:content:)`, SwiftUI `ThemeBackdrop`, `themedBackground(_:)`,
-  `themedScrollBackground()`.
+  `themedSidebarBackground(_:)` (sidebars and list columns keep a subtle split),
+  `themedScrollBackground()`; child panels call `followAppearance(of: parent)` when shown.
 
 ## Rules for module work
 

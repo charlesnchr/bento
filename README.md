@@ -147,7 +147,7 @@ between:
 
 - **Standard**: the native look.
 - **Glass**: frosted glass that lets the desktop show through.
-- **Tinted**: Glass with a light wash of your accent colour.
+- **Tinted**: Glass washed with your accent colour.
 - **Graphite**: near-black and high-contrast, dark even in light mode.
 - **Paper**: warm off-white, light even in dark mode.
 
