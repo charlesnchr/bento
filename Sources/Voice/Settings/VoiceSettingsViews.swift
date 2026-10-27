@@ -347,6 +347,12 @@ private struct DictationSettingsForm: View {
                 Text("Resting indicator")
                 Text("A dot at the bottom of the screen that grows into a Dictate button on hover.")
             }
+            LabeledContent {
+                Button("Reset Position") { NotificationCenter.default.post(name: .pillPositionReset, object: nil) }
+            } label: {
+                Text("Indicator position")
+                Text("Drag the indicator to move it; it stays where you leave it.")
+            }
         } header: {
             Text("Feedback")
         }

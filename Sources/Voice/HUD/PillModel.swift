@@ -45,4 +45,7 @@ final class PillModel: ObservableObject {
     @Published var corrected: String = ""
     /// The kept/cut runs to animate. Empty means show plain text.
     @Published var correction: [TranscriptDiff.Segment] = []
+    /// Where in the panel the pill is centred: the middle, unless it has been
+    /// dragged near a screen edge (PillPlacement).
+    @Published var anchorX: CGFloat = PillPlacement.panelSize.width / 2
 }

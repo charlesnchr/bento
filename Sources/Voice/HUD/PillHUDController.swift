@@ -19,14 +19,21 @@ import VoiceCore
 /// Owns the non-activating NSPanel that hosts the pill. Fixed-size panel; the pill
 /// animates its own bounds inside (avoids NSWindow frame-animation jank).
 /// The panel never becomes key except transiently for the locked-state stop button.
+/// Dragging the pill moves the panel; where it is dropped is remembered.
 @MainActor
 final class PillHUDController {
     let model = PillModel()
     private let panel: NSPanel
+    /// The visible frame of the screen the pill is on, and its bottom-centre there.
+    private var visible: NSRect?
+    private var anchor: CGPoint?
+    private var dragStartMouse: NSPoint?
+    private var dragStartAnchor: CGPoint?
+    private var observers: [NSObjectProtocol] = []
 
     init() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 96),
+            contentRect: NSRect(origin: .zero, size: PillPlacement.panelSize),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -41,9 +48,25 @@ final class PillHUDController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.acceptsMouseMovedEvents = true
         panel.contentView = NSHostingView(
-            rootView: PillRootView(model: model)
+            rootView: PillRootView(
+                model: model,
+                onDrag: { [weak self] in self?.dragChanged(from: $0) },
+                onDragEnd: { [weak self] in self?.dragEnded() }
+            )
         )
         reposition()
+        for name in [Notification.Name.pillPositionReset, NSApplication.didChangeScreenParametersNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                Task { @MainActor [weak self] in
+                    if note.name == .pillPositionReset {
+                        UserDefaults.standard.removeObject(forKey: PillPlacement.defaultsKey)
+                        self?.reposition()
+                    } else {
+                        self?.screensChanged()
+                    }
+                }
+            })
+        }
     }
 
     func show() {
@@ -61,20 +84,72 @@ final class PillHUDController {
         panel.orderOut(nil)
     }
 
-    /// Bottom-center of the screen hosting the FOCUSED window — where the text
-    /// will actually land. Mouse position is only a fallback: keyboard-first
-    /// users routinely dictate on one display with the pointer parked on
-    /// another (production pass 2). Doesn't jump mid-session (spec §1.1).
+    /// On the screen hosting the FOCUSED window — where the text will actually
+    /// land — at the spot the user dragged it to, bottom-centre by default.
+    /// Mouse position is only a fallback: keyboard-first users routinely
+    /// dictate on one display with the pointer parked on another (production
+    /// pass 2). Doesn't jump mid-session (spec §1.1).
     private func reposition() {
         let screen = Self.screenOfFocusedWindow()
             ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
             ?? NSScreen.main
         guard let screen else { return }
-        let frame = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(
-            x: frame.midX - panel.frame.width / 2,
-            y: frame.minY + 16
-        ))
+        let saved = PillPlacement.parse(UserDefaults.standard.string(forKey: PillPlacement.defaultsKey))
+        place(PillPlacement.anchor(relative: saved, in: screen.visibleFrame), in: screen.visibleFrame)
+    }
+
+    /// A display came or went. At rest the pill goes where it would be shown;
+    /// mid-session it stays on its display (spec §1.1) and is only kept on it,
+    /// unless that display is the one that went.
+    private func screensChanged() {
+        switch model.state {
+        case .idleDot, .hidden:
+            reposition()
+        default:
+            guard let anchor, let screen = NSScreen.screens.first(where: { $0.frame.contains(anchor) }) else {
+                return reposition()
+            }
+            place(anchor, in: screen.visibleFrame)
+        }
+    }
+
+    private func place(_ point: CGPoint, in frame: NSRect) {
+        let placement = PillPlacement.panelOrigin(anchor: point, in: frame)
+        visible = frame
+        anchor = PillPlacement.clampedAnchor(point, in: frame)
+        panel.setFrameOrigin(placement.origin)
+        if model.anchorX != placement.anchorX { model.anchorX = placement.anchorX }
+    }
+
+    // MARK: - Dragging
+
+    /// Screen coordinates, not the gesture's: the panel moves under the pointer.
+    /// The press point (window coordinates, top-left origin) is mapped to the
+    /// screen once, before the panel has moved, so the pill keeps the movement
+    /// under the threshold.
+    private func dragChanged(from start: CGPoint) {
+        let mouse = NSEvent.mouseLocation
+        if dragStartMouse == nil {
+            let height = panel.contentView?.bounds.height ?? panel.frame.height
+            dragStartMouse = panel.convertPoint(toScreen: NSPoint(x: start.x, y: height - start.y))
+            dragStartAnchor = anchor
+        }
+        guard let start = dragStartMouse, let startAnchor = dragStartAnchor else { return }
+        let point = CGPoint(x: startAnchor.x + mouse.x - start.x, y: startAnchor.y + mouse.y - start.y)
+        // It can be dragged onto another display; it stops at the screen's edges.
+        let frame = NSScreen.screens.first(where: { $0.frame.contains(mouse) })?.visibleFrame ?? visible
+        guard let frame else { return }
+        place(point, in: frame)
+    }
+
+    /// Also runs when SwiftUI cancels the drag (the pill hidden mid-drag), so
+    /// the next drag starts afresh.
+    private func dragEnded() {
+        dragStartMouse = nil
+        dragStartAnchor = nil
+        guard let anchor, let visible else { return }
+        let relative = PillPlacement.relative(anchor: anchor, in: visible)
+        UserDefaults.standard.set(NSStringFromPoint(relative), forKey: PillPlacement.defaultsKey)
     }
 
     /// Screen hosting the frontmost app's front window, via the window list —
@@ -105,13 +180,45 @@ final class PillHUDController {
 
 private struct PillRootView: View {
     @ObservedObject var model: PillModel
+    let onDrag: (CGPoint) -> Void
+    let onDragEnd: () -> Void
+    /// Resets on cancel as well as on end, unlike onEnded.
+    @GestureState private var dragging = false
 
     var body: some View {
-        VStack {
-            Spacer(minLength: 0)
+        PillAnchorLayout(anchorX: model.anchorX) {
             PillView(model: model)
+                // High priority so a drag cancels the Dictate/Stop button
+                // underneath; a click moves less than the minimum and still
+                // reaches it.
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                        .updating($dragging) { _, state, _ in state = true }
+                        .onChanged { onDrag($0.startLocation) }
+                )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, 8)
+        .padding(.bottom, PillPlacement.bottomInset)
+        .onChange(of: dragging) { _, active in
+            if !active { onDragEnd() }
+        }
+    }
+}
+
+/// Bottom-aligns the pill on the anchor, so a state change grows it about its
+/// centre, but never past the panel's sides.
+private struct PillAnchorLayout: Layout {
+    var anchorX: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let available = ProposedViewSize(bounds.size)
+        for subview in subviews {
+            let width = subview.sizeThatFits(available).width
+            let x = PillPlacement.pillMinX(anchorX: anchorX, width: width, panelWidth: bounds.width)
+            subview.place(at: CGPoint(x: bounds.minX + x, y: bounds.maxY), anchor: .bottomLeading, proposal: available)
+        }
     }
 }
