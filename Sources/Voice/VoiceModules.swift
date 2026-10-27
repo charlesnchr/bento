@@ -7,6 +7,9 @@ import VoiceCore
 /// (`VoiceApp`), created when the first of them starts.
 public enum VoiceModules {
     public static func all() -> [BentoModule] { [DictationModule(), MeetingsModule(), AssistantModule()] }
+
+    /// The Gemini API key from the Keychain, for pairing the Android app (`PhonePairing`).
+    public static func geminiAPIKey() -> String? { KeychainStore.loadAPIKey() }
 }
 
 /// Runs `body` on the main actor; Bento calls modules on the main thread.

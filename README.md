@@ -24,7 +24,7 @@ Idles at ~0 % CPU.
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, collapsible `<details>` expanders (⌥⌘E), live sync via `bento-sync` that merges edits made on two Macs at once (the caret and scroll position stay put) | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 | Menu Bar (off by default) | — | Visible, Hidden and Always Hidden sections; native manual Command-drag arrangement; chevron, shortcuts and optional hover/click/scroll reveal; automatic hiding; search and Bento Bar with Accessibility opening in place; per-item shortcuts and icon-change alerts; spacing and appearance | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
-| Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions, dictionary; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated; Capture Thought to Note appends what you say to a chosen note as a timestamped, collapsible entry | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
+| Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions and a dictionary that sync with your other Macs and the Android app; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated; Capture Thought to Note appends what you say to a chosen note as a timestamped, collapsible entry | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
 | Meetings (off by default) | Granola | records the mic plus system audio beside dictation; live transcript, tidied as it goes, gaps backfilled from the recording, summary with decisions and action items; a small capsule while recording; notes in Markdown | ⇧⌥F17 record/stop |
 | Assistant (off by default) | — | chat window for Hermes over ACP: Markdown, equations, images, tool steps, plan, attachments, `/` commands and `@` context, queue and steer, edit/regenerate/branch, history; keep on top like picture in picture, over full-screen apps and on every Space; continuous voice calls through Azure GPT-Live or Gemini 3.8 Live with Hermes doing the work, resumed where they left off until New Chat | ⇧⌥F18 window, ⌥F18 talk |
 
@@ -174,6 +174,19 @@ history and meetings under `Voice/`) is in `~/Library/Application Support/Bento/
 `bento-sync` server (`server/README.md`), set under Settings → Notes and Todo, and its token in
 `~/.config/bento/sync-token` (shared by Notes and Todo).
 
+With Notes sync on, dictation's dictionary, custom instructions and the cleanup pass
+switch sync too, with your other Macs and the Android app, while Dictation, Meetings or the
+Assistant is on. Settings → Dictation → Sync dictionary and instructions turns it off, and
+shows how it's going. The first sync merges what each Mac already had (entries by id,
+settings one by one); if two devices added the same word, it shows up once.
+
+**Pair Android Phone…** under Settings → Notes or Todo → Sync shows a QR code for the Bento
+Android app: it carries the server, the token and the Mac's name, and the Gemini API key if
+you tick Include Gemini API key. The code stays hidden until you click Show Code, since
+anyone who scans it can read and edit your notes and tasks. Copy Link copies the same
+`bento://pair` link instead (clipboard managers that honour concealed items, Bento's
+included, don't record it).
+
 ## Development
 
 ```sh
@@ -186,7 +199,7 @@ scripts/voice-dev assistant.send "Hello"      # drive DevVoice's assistant, prin
 
 Each module has a `Dev<Module>` harness that runs only that module, with config
 and data isolated under `/tmp/bento-dev/<module>`. Layout and conventions:
-`docs/SPEC.md`. Sync protocol (notes and todos): `docs/SYNC_PROTOCOL.md`. Server:
+`docs/SPEC.md`. Sync protocol (notes, todos, the dictation dictionary): `docs/SYNC_PROTOCOL.md`. Server:
 `server/README.md`.
 
 ## Releasing

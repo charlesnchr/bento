@@ -45,6 +45,8 @@ final class VoiceApp {
     let dictation: DictationController
     private(set) var meetings: MeetingController?
     private let settingsSync = SettingsSync()
+    /// The dictionary and cleanup settings in the `voice` sync collection, while a voice module runs.
+    let voiceSync = VoiceSync()
     private(set) var statusLine = "Starting up…"
     private(set) var indicator: VoiceIndicator = .idle
     private(set) var meetingState: MeetingController.MenuState = .idle
@@ -140,7 +142,12 @@ final class VoiceApp {
         }
         if feature == .dictation { if on { prepareLocalSpeech() } else { historyWindow?.close() } }
         dictation.setEnabled(dictation: enabled.contains(.dictation), assistant: enabled.contains(.assistant))
-        if enabled.isEmpty { settingsSync.flush() }
+        if enabled.isEmpty {
+            settingsSync.flush()
+            voiceSync.stop()
+        } else {
+            voiceSync.start()
+        }
     }
 
     private var meetingsRecovered = false
@@ -200,6 +207,7 @@ final class VoiceApp {
             "meeting": String(describing: meetingState),
             "microphone": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
             "runtime": VertexRuntimeConfig.state().isRequested,
+            "voiceSync": voiceSync.status.summary,
             "transcription": [
                 "engine": settings.transcriptionEngine.rawValue,
                 "localFallback": settings.usesLocalFallback,

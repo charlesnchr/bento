@@ -24,7 +24,7 @@ final class SharedStateGuard {
         "gateTrips", "gptTranscription", "hasCompletedOnboarding", "hotkeyKey", "legacyTranscribeEndpoint",
         "liveTranscription", "lowercaseProse", "meetingCaptureSystemAudio", "meetingExcludesDictation",
         "meetingSummaryEnabled", "retryEngine", "retryShortcut", "showIdleIndicator", "singleTapHandsFree",
-        "smartCleanupPass", "smartTranscription", "soundsEnabled", "transcribeModelOverride",
+        "smartCleanupPass", "smartTranscription", "soundsEnabled", "syncDictionary", "transcribeModelOverride",
         "transcriptionBackend", "useDictationComposer",
     ]
 

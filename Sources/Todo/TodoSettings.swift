@@ -71,6 +71,7 @@ struct TodoSettingsView: View {
                             .disabled(!model.value.sync.enabled)
                     }
                 }
+                LabeledContent("Android phone") { PairPhoneButton() }
             } header: {
                 Text("Sync")
             } footer: {

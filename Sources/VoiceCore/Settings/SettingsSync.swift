@@ -41,7 +41,7 @@ public final class SettingsSync {
         "transcribeModelOverride": .string, "cleanupModelOverride": .string,
         "meetingCaptureSystemAudio": .bool, "meetingSummaryEnabled": .bool, "meetingExcludesDictation": .bool,
         "audioRetentionDays": .int,
-        "assistantLiveCall": .bool, "assistantLiveProvider": .string,
+        "assistantLiveCall": .bool, "assistantLiveProvider": .string, "syncDictionary": .bool,
     ]
     static let dictionaryKey = "dictionary"
     static let dictionaryDefaultsKey = "dictionaryEntries"
@@ -292,7 +292,7 @@ public final class ConfigSectionStore: SettingsSyncStore {
 
 /// KVO on the synced keys only: unrelated defaults (drafts, stats, window
 /// frames) change all the time and shouldn't each cost a file read.
-private final class KeyObserver: NSObject {
+final class KeyObserver: NSObject {
     private let defaults: UserDefaults
     private let keys: [String]
     private let changed: () -> Void
