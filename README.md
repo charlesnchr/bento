@@ -129,8 +129,11 @@ Without a key nothing formats the text, so Parakeet's words go in as heard. Add
 a Gemini API key (Settings → Dictation → Advanced) for Gemini Transcribe and the
 cleanup model; Parakeet v3 and Ultra stay selectable beside it. Adding a key
 switches the fallback back to Gemini unless you downloaded or picked Parakeet.
-The other transcription models, meeting notes through Vertex AI and Gemini Live
-calls go through a small local helper you run yourself: see `helper/README.md`.
+The key also carries Gemini 3.8 Live voice calls in the assistant. The other
+transcription models, meeting notes through Vertex AI and Gemini Live calls on
+Vertex go through a small local helper you run yourself: see `helper/README.md`.
+Gemini Live always uses dictation's Google connection, the key or the helper,
+never both; Azure GPT-Live is the alternative either way.
 
 ## Configuration
 

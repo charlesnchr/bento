@@ -2,9 +2,10 @@ import AppKit
 import AVFoundation
 import VoiceCore
 
-/// A voice call with Gemini 3.8 Live through the direct Vertex helper's /conversation route.
-/// The helper owns the session setup and Google credentials; Bento sends microphone audio and
-/// function results and plays the reply. Same contract as `AzureLiveController`.
+/// A voice call with Gemini 3.8 Live over dictation's Google connection: the Gemini API with
+/// the user's key, or the direct Vertex helper's /conversation route (`routedTransport`).
+/// Bento sends microphone audio and function results and plays the reply. Same contract as
+/// `AzureLiveController`.
 @MainActor
 final class GeminiLiveController {
     private let audio = AzureLiveAudio(inputRate: 16000, maxQueuedSeconds: 120, realTimeOutput: false)
@@ -31,17 +32,8 @@ final class GeminiLiveController {
     var onEnd: (() -> Void)?
     var onTool: ((AzureLiveProtocol.Call) async -> String)?
 
-    init(makeTransport: @escaping () throws -> LiveTransport = GeminiLiveController.helperTransport) {
+    init(makeTransport: @escaping () throws -> LiveTransport = GeminiLiveController.routedTransport) {
         self.makeTransport = makeTransport
-    }
-
-    nonisolated static func helperTransport() throws -> LiveTransport {
-        guard let vertex = VertexRuntimeConfig.state().config, vertex.isDirect else {
-            throw ACPClient.Failure(message: "Gemini Live calls need Bento's local Vertex helper. Choose Azure GPT-Live in Settings instead.")
-        }
-        let key = vertex.bifrostKey
-        // The call runs up to ten minutes; a quiet stretch must not time the socket out.
-        return WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationEndpoint, requestTimeout: 660)
     }
 
     private var now: Double { ProcessInfo.processInfo.systemUptime }
