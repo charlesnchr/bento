@@ -158,6 +158,79 @@ public enum AppActivation {
 
     /// The app that was frontmost before Bento took focus. Updated by the shell.
     public static var previousApp: NSRunningApplication?
+
+    /// Shows one of Bento's windows in front; `activate` also focuses it
+    /// (activates Bento and makes it key). Cancels a pending `orderOut`.
+    public static func show(_ window: NSWindow, activate: Bool = true) {
+        cancelOrderOut(window)
+        if activate {
+            activateSelf()
+            window.makeKeyAndOrderFront(nil)
+        }
+        window.orderFrontRegardless()
+    }
+
+    /// Hides one of Bento's windows and gives focus to `app`, without another
+    /// of Bento's windows surfacing on the way.
+    ///
+    /// Ordering out the key window while Bento is active makes AppKit key and
+    /// raise the next window that can take it (the Todo window left open
+    /// behind the user's app, say) until `app`'s activation lands, a visible
+    /// flash. So `app` is activated first and the window ordered out once
+    /// Bento has resigned active. If `app` has quit or is Bento itself, focus
+    /// goes to `previousApp` instead. With `app` nil, nothing usable to hand
+    /// focus to, or Bento inactive, the window is ordered out at once.
+    public static func orderOut(_ window: NSWindow, activating app: NSRunningApplication?) {
+        cancelOrderOut(window)
+        guard NSApp.isActive, let target = focusTarget(app, previous: previousApp), target.activate(options: []) else {
+            window.orderOut(nil)
+            return
+        }
+        orderOutOnResign(window)
+    }
+
+    /// The app `orderOut` hands focus to: `app`, or `previous` when `app` has
+    /// quit or is Bento itself. Nil `app` means focus stays put.
+    static func focusTarget(_ app: NSRunningApplication?, previous: NSRunningApplication?) -> NSRunningApplication? {
+        guard let app else { return nil }
+        let usable = { (candidate: NSRunningApplication) in !candidate.isTerminated && candidate.processIdentifier != getpid() }
+        if usable(app) { return app }
+        return previous.flatMap { usable($0) ? $0 : nil }
+    }
+
+    /// Whether `orderOut` is about to order the window out (it counts as hidden).
+    public static func isOrderingOut(_ window: NSWindow) -> Bool {
+        pendingOrderOuts[ObjectIdentifier(window)] != nil
+    }
+
+    private final class PendingOrderOut {
+        var observer: NSObjectProtocol?
+    }
+    private static var pendingOrderOuts: [ObjectIdentifier: PendingOrderOut] = [:]
+
+    /// Orders `window` out when Bento next resigns active, or after `timeout`
+    /// if the other app's activation never lands.
+    static func orderOutOnResign(_ window: NSWindow, timeout: TimeInterval = 0.5) {
+        cancelOrderOut(window)
+        let id = ObjectIdentifier(window)
+        let pending = PendingOrderOut()
+        pendingOrderOuts[id] = pending
+        let finish = { [weak window] in
+            guard pendingOrderOuts[id] === pending else { return }
+            cancelOrderOut(id)
+            window?.orderOut(nil)
+        }
+        pending.observer = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                                                  object: nil, queue: nil) { _ in finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: finish)
+    }
+
+    static func cancelOrderOut(_ window: NSWindow) { cancelOrderOut(ObjectIdentifier(window)) }
+
+    private static func cancelOrderOut(_ id: ObjectIdentifier) {
+        guard let pending = pendingOrderOuts.removeValue(forKey: id) else { return }
+        if let observer = pending.observer { NotificationCenter.default.removeObserver(observer) }
+    }
 }
 
 // MARK: - Dock presence

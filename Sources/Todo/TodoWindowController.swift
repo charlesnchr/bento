@@ -50,19 +50,18 @@ final class TodoWindowController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = s.floatOnTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.moveToActiveSpace, .fullScreenAuxiliary]
     }
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible && !AppActivation.isOrderingOut(panel) }
     var isKey: Bool { panel.isKeyWindow }
 
     func show() {
-        AppActivation.activateSelf()
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
+        AppActivation.show(panel)
         installKeyMonitor()
         if controller.editor == nil, controller.picker == nil, controller.search == nil { focusList() }
     }
 
-    func hide() {
-        panel.orderOut(nil)
+    /// `app`: hand focus to it (see `AppActivation.orderOut`).
+    func hide(activating app: NSRunningApplication? = nil) {
+        AppActivation.orderOut(panel, activating: app)
         removeKeyMonitor()
     }
 
