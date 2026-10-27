@@ -4,6 +4,9 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,8 +71,13 @@ class NotesWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val notes = context.graph.widgetData.notes(30)
-        provideContent { GlanceTheme { NotesContent(context, notes) } }
+        val graph = context.graph
+        provideContent {
+            // collected here, so the widget recomposes when notes change (a session outlives update())
+            val all by graph.notes.notes.collectAsState()
+            val notes = remember(all) { graph.widgetData.notes(30) }
+            GlanceTheme { NotesContent(context, notes) }
+        }
     }
 }
 
@@ -125,10 +133,14 @@ class NoteWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val graph = context.graph
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
-        val noteId = context.graph.prefs.getString(noteWidgetKey(appWidgetId))
-        val note = noteId?.let { context.graph.widgetData.note(it) }
-        provideContent { GlanceTheme { NoteContent(context, appWidgetId, note) } }
+        provideContent {
+            val all by graph.notes.notes.collectAsState()
+            val noteId = graph.prefs.getString(noteWidgetKey(appWidgetId))
+            val note = remember(all, noteId) { noteId?.let { graph.widgetData.note(it) } }
+            GlanceTheme { NoteContent(context, appWidgetId, note) }
+        }
     }
 }
 
@@ -195,10 +207,14 @@ class TasksWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val graph = context.graph
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
-        val view = context.graph.prefs.getString(tasksWidgetKey(appWidgetId)) ?: "today"
-        val list = context.graph.widgetData.tasks(view, 40)
-        provideContent { GlanceTheme { TasksContent(context, appWidgetId, list) } }
+        provideContent {
+            val docs by graph.todo.docs.collectAsState()
+            val view = graph.prefs.getString(tasksWidgetKey(appWidgetId)) ?: "today"
+            val list = remember(docs, view) { graph.widgetData.tasks(view, 40) }
+            GlanceTheme { TasksContent(context, appWidgetId, list) }
+        }
     }
 }
 

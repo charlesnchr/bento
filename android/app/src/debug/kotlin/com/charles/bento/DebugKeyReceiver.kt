@@ -15,6 +15,12 @@ import com.charles.bento.voice.BentoAccessibilityService
  */
 class DebugKeyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == "com.charles.bento.debug.PIN") {
+            // `--es widget NotesWidgetReceiver`: the system's "Add to home screen" sheet for it
+            val provider = android.content.ComponentName(context.packageName, "com.charles.bento.widget." + intent.getStringExtra("widget"))
+            android.appwidget.AppWidgetManager.getInstance(context).requestPinAppWidget(provider, null, null)
+            return
+        }
         if (intent.action == "com.charles.bento.debug.MIC") {
             // `--es file <name in the app's files dir>` replaces the microphone; no extra: the real one again
             com.charles.bento.voice.AudioCapture.testSource = intent.getStringExtra("file")?.let { java.io.File(context.getExternalFilesDir(null), it) }

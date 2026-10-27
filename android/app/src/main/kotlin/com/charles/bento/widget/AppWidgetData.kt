@@ -26,11 +26,11 @@ class AppWidgetData(private val graph: AppGraph) : WidgetData {
 
     fun attachNotes(n: WidgetNotes) { notesSource = n }
 
-    override suspend fun notes(limit: Int) = notesSource?.notes(limit).orEmpty()
-    override suspend fun note(id: String) = notesSource?.note(id)
+    override fun notes(limit: Int) = notesSource?.notes(limit).orEmpty()
+    override fun note(id: String) = notesSource?.note(id)
     override suspend fun toggleChecklistItem(noteId: String, line: Int) { notesSource?.toggleChecklistItem(noteId, line) }
 
-    override suspend fun tasks(view: String, limit: Int): TaskList {
+    override fun tasks(view: String, limit: Int): TaskList {
         val todo = graph.todo
         val store = TodoStore(SnapshotRepo(todo.docs.value))
         val dates = todo.dates()
@@ -47,7 +47,7 @@ class AppWidgetData(private val graph: AppGraph) : WidgetData {
         }, overdue)
     }
 
-    override suspend fun taskViews(): List<Pair<String, String>> {
+    override fun taskViews(): List<Pair<String, String>> {
         val store = TodoStore(SnapshotRepo(graph.todo.docs.value))
         return listOf("today" to "Today", "inbox" to "Inbox", "upcoming" to "Upcoming") +
             store.projects.map { "project:${it.id}" to it.name } + store.labels.map { "label:$it" to "@$it" }

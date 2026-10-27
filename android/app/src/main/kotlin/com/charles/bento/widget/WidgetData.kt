@@ -7,13 +7,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** What the widgets show, read from the stores (on the engine thread). */
+/** What the widgets show, from the stores' snapshots (cheap, any thread). */
 interface WidgetData {
-    suspend fun notes(limit: Int): List<NoteCard>
-    suspend fun note(id: String): NoteCard?
-    suspend fun tasks(view: String, limit: Int): TaskList
+    fun notes(limit: Int): List<NoteCard>
+    fun note(id: String): NoteCard?
+    fun tasks(view: String, limit: Int): TaskList
     /** Inbox, Today, Upcoming, then projects: (view id, label). */
-    suspend fun taskViews(): List<Pair<String, String>>
+    fun taskViews(): List<Pair<String, String>>
     suspend fun toggleTask(id: String)
     /** Ticks or unticks the `- [ ]` item on a body line of a note. */
     suspend fun toggleChecklistItem(noteId: String, line: Int)

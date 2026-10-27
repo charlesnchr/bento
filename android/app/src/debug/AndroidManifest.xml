@@ -5,6 +5,7 @@
             <intent-filter>
                 <action android:name="com.charles.bento.debug.KEY" />
                 <action android:name="com.charles.bento.debug.MIC" />
+                <action android:name="com.charles.bento.debug.PIN" />
             </intent-filter>
         </receiver>
     </application>
