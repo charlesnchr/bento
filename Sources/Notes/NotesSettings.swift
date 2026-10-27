@@ -117,7 +117,7 @@ struct NotesSettingsView: View {
             } header: {
                 Text("Thought capture")
             } footer: {
-                Text("Dictation's Capture Thought to Note shortcut appends what you say to this note as a collapsed entry headed by the date, time and first words. ⌘↩ or the chevron opens an entry.")
+                Text("Dictation's Capture Thought to Note shortcut appends what you say to this note as a collapsed heading with the date, time and first words. ⌘↩ on a heading, or its chevron, opens or collapses it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

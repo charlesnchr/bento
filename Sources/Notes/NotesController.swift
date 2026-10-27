@@ -421,7 +421,7 @@ final class NotesController {
 
     // MARK: Thought capture
 
-    /// Appends a dictated thought to the capture note (Settings → Notes) as an expander,
+    /// Appends a dictated thought to the capture note (Settings → Notes) as a collapsed heading,
     /// first creating a "Thoughts" note when none is set or it was deleted. Returns the
     /// note's title, nil for empty text or when it cannot be saved.
     @discardableResult

@@ -78,7 +78,7 @@ enum NotesDebug {
                 tv.onToggleTask?(start, false)
             }
         case "chevron":
-            // a click on the expander chevron of line <n>, through the text view's hit testing
+            // a click on the fold chevron of heading line <n>, through the text view's hit testing
             if let tv = w?.textView, let lm = tv.notesLayoutManager, let n = Int(arg) {
                 let lines = (tv.string as NSString).components(separatedBy: "\n")
                 let start = lines.prefix(n).reduce(0) { $0 + ($1 as NSString).length + 1 }
