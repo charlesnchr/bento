@@ -153,6 +153,7 @@ object AtomicFile {
 /** Seconds as a double, the unit the Mac uses for every duration. */
 internal fun nowSeconds(clock: () -> Instant): Double = clock().toEpochMilli() / 1000.0
 
-internal fun Instant.secondsSince(other: Instant): Double = (toEpochMilli() - other.toEpochMilli()) / 1000.0
+/** Works for the extremes too (Instant.MIN stands in for Swift's `distantPast`; epoch millis would overflow). */
+internal fun Instant.secondsSince(other: Instant): Double = (epochSecond - other.epochSecond) + (nano - other.nano) / 1e9
 
 internal fun Instant.after(seconds: Double): Instant = plusMillis((seconds * 1000).toLong())

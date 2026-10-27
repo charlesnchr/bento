@@ -75,6 +75,7 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all { it.useJUnitPlatform() }
     }
 }
 
@@ -110,8 +111,9 @@ dependencies {
     implementation(libs.gms.code.scanner)
     implementation(libs.zxing.core)
 
-    testImplementation(kotlin("test"))
+    testImplementation(kotlin("test-junit5"))
     testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.uiautomator)

@@ -54,7 +54,7 @@ class AppGraph(val app: Application) {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
         override suspend fun addTask(text: String): String? = todo.perform {
             val (defaults, anchor) = addDefaults(TodoListView.Inbox)
-            quickAdd(text, defaults, anchor)?.title
+            quickAdd(spokenTask(text), defaults, anchor)?.title
         }
     }
     var voiceModes: () -> List<Pair<String, String>> = {
@@ -91,3 +91,9 @@ class AppGraph(val app: Application) {
     suspend fun onBackgroundSync() {}
 
 }
+
+/** Dictated task text as quick add expects it: "5 p.m." → "5 pm", no closing full stop. */
+internal fun spokenTask(text: String): String =
+    text.trim()
+        .replace(Regex("\\b([ap])\\.m\\.", RegexOption.IGNORE_CASE)) { "${it.groupValues[1].lowercase()}m" }
+        .trimEnd('.', '!', ' ')
