@@ -77,6 +77,8 @@ class DictationController(
     private var lastInserted: String? = null
     private var lastTarget: DictationTarget? = null
     private var lastRequest: VoiceRequest? = null
+    /** Loudest level heard this dictation: ~0 means the microphone delivered silence (privacy toggle off, mic in use). */
+    @Volatile private var peak = 0f
 
     private val sounds by lazy { Earcons(context) }
 
@@ -122,6 +124,7 @@ class DictationController(
 
     private fun begin(request: VoiceRequest, handsFree: Boolean) {
         lastRequest = request
+        peak = 0f
         _state.value = DictationState.Listening(0f, "", modeName(), handsFree, System.currentTimeMillis(), editing)
         job = scope.launch {
             if (!VoiceService.enter(context, VoiceService.KIND_DICTATION)) {
@@ -138,7 +141,10 @@ class DictationController(
                         if (_state.value is DictationState.Listening) { log("session ended itself"); stop() } else releaseMic()
                     }
                 },
-                onLevel = { level -> _state.update { st -> if (st is DictationState.Listening) st.copy(level = level) else st } },
+                onLevel = { level ->
+                    if (level > peak) peak = level
+                    _state.update { st -> if (st is DictationState.Listening) st.copy(level = level) else st }
+                },
             )
             if (!c.start()) {
                 s.cancel()
@@ -170,6 +176,10 @@ class DictationController(
             log("finished: ${text.exceptionOrNull()?.message ?: "${text.getOrNull()?.length} chars"}")
             releaseMic()
             VoiceService.exit(context)
+            if (peak < SILENT && (text.isFailure || text.getOrNull().isNullOrBlank())) {
+                fail("No sound reached the microphone. Is microphone access turned off in Quick Settings?")
+                return@launch
+            }
             text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true) }
                 .onSuccess { deliver(it.trim()) }
         }
@@ -263,6 +273,11 @@ class DictationController(
             }
         }
         if (prefs.sounds.value) sounds.play(Earcons.SUCCESS)
+    }
+
+    private companion object {
+        /** Below this the capture was digital silence, not a quiet room (levels are 0…1 over -55…-10 dBFS). */
+        const val SILENT = 0.02f
     }
 
     private fun fail(message: String, canRetry: Boolean = false) {

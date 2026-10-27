@@ -200,6 +200,9 @@ class BentoAccessibilityService : AccessibilityService() {
         return false
     }
 
+    /** Debug builds feed hardware-like key events here (see DebugKeyReceiver). */
+    fun debugKey(event: KeyEvent) = onKeyEvent(event)
+
     override fun onInterrupt() {}
 
     override fun onDestroy() {

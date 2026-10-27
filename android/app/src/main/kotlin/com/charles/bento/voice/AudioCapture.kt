@@ -29,6 +29,7 @@ class AudioCapture(
     @SuppressLint("MissingPermission") // callers check RECORD_AUDIO first
     fun start(): Boolean {
         if (running) return true
+        testSource?.let { f -> return startFromFile(f) }
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) return false
         val r = runCatching {
@@ -81,7 +82,30 @@ class AudioCapture(
         }
     }
 
+    /** Debug builds: plays a 16 kHz mono WAV through the capture path in real time, then silence. */
+    private fun startFromFile(file: java.io.File): Boolean {
+        val pcm = runCatching { file.readBytes().let { it.copyOfRange(44, it.size) } }.getOrNull() ?: return false
+        running = true
+        thread = Thread({
+            val frame = ShortArray(FRAME_SAMPLES)
+            var at = 0
+            while (running) {
+                for (i in frame.indices) {
+                    frame[i] = if (at + 1 < pcm.size) ((pcm[at].toInt() and 0xFF) or (pcm[at + 1].toInt() shl 8)).toShort() else 0
+                    at += 2
+                }
+                onFrame(frame.copyOf())
+                onLevel(level(frame))
+                Thread.sleep(20)
+            }
+        }, "bento-audio-test").apply { start() }
+        return true
+    }
+
     companion object {
+        /** Set only by debug builds' test receiver. */
+        @Volatile var testSource: java.io.File? = null
+
         const val SAMPLE_RATE = 16_000
         const val FRAME_SAMPLES = 320 // 20 ms
 
