@@ -292,12 +292,10 @@ func kindDesc(_ k: BlockKind) -> String {
     case .rule: return "rule"
     case .fence(let o, let lang): return "fence:\(o ? 1 : 0):\(lang)"
     case .code: return "code"
-    case .details: return "details"
-    case .detailsEnd: return "detailsEnd"
     }
 }
 func lineDesc(_ p: ParsedLine) -> [Any] {
-    [kindDesc(p.kind), p.level, rr(p.prefixRange), rr(p.contentRange), opt(p.suffixRange.map(rr)), opt(p.markerRange.map(rr)), String(p.bulletChar)]
+    [kindDesc(p.kind), p.level, rr(p.prefixRange), rr(p.contentRange), opt(p.markerRange.map(rr)), String(p.bulletChar)]
 }
 func inlineDesc(_ s: InlineSpan) -> [Any] {
     let kind: String
@@ -330,7 +328,7 @@ for line in lineSet.sorted() {
     let fence = MarkdownParser.isFence(Array(line.utf16)).map { [Int($0.char), $0.lang] as [Any] }
     emit(["t": "line", "s": line, "p0": lineDesc(p0), "p1": lineDesc(p1), "fence": opt(fence), "rule": MarkdownParser.isRule(line),
           "strip": MarkdownParser.stripInline(line), "spans": MarkdownParser.inlineSpans(line as NSString).map(inlineDesc),
-          "plainLine": NoteText.plainLine(line), "open": MarkdownParser.detailsStartsOpen(line), "title": NoteText.title(of: line)])
+          "plainLine": NoteText.plainLine(line), "title": NoteText.title(of: line)])
 }
 
 func docVector(_ body: String) {
@@ -338,8 +336,9 @@ func docVector(_ body: String) {
     var info: [[Any]] = []
     for (range, p) in MarkdownParser.parseLines(ns) {
         let full = ns.lineRange(for: NSRange(location: range.location, length: 0))
-        info.append([rr(range), lineDesc(p), MarkdownParser.isInCode(ns, lineStart: range.location),
-                     opt(MarkdownParser.expanderEnd(after: full, in: ns).map(rr)), MarkdownParser.visibleEnd(ofLine: full, in: ns), rr(full)])
+        var section: Any = NSNull()
+        if case .heading(let level) = p.kind { section = MarkdownParser.sectionEnd(after: full, level: level, in: ns) }
+        info.append([rr(range), lineDesc(p), MarkdownParser.isInCode(ns, lineStart: range.location), section, rr(full)])
     }
     var sub: [Any] = []
     if ns.length > 2 { // a sub-range parse, as the styler does
@@ -363,6 +362,8 @@ let fixedDocs = [
     "\n\n## **Meeting** notes\nbody", "```\ncode\n```", "---\n***\nTitle after rules", "Title\t \u{00A0}\nbody", "Title\r\nbody",
     "  Title \r\nbody", "Title \u{3000}", "😀\u{2028}second", "x\u{0085}y", "a\u{000B}b\nc", "<details open><summary>Open</summary>\nshown\n</details>\nend",
     "<details><summary>A</summary>\n<details><summary>B</summary>\nx\n</details>\n</details>", "```\n<details>\n```\n</details>",
+    "# Note\nintro\n## A\nline a\n### A1\ndeep\n## B\nline b", "## A\n```\n# not\n```\nx\n# B", "## A\r\nbody\r\n## B", "## Same\nbody\n## Same\nbody\nafter",
+    "# Thoughts\n\n### 2026-10-26 14:05 · An idea\nthe idea\n\n### 2026-10-26 14:06 · Another\nmore\n", "a\nb\n## X\nc", "### x\n#### y\n## z\n# w\n###### v",
     "Straße ΣΑΣ İ", "ΟΔΟΣ", "e\u{301}cole \u{e9}cole", "one\n\n\ntwo   three\tfour", "don't stop-believing 3.14 a.b", "日本語の文章です。中文。",
 ]
 var docs = Set(fixedDocs)
@@ -384,15 +385,17 @@ for d in docs.sorted() { docVector(d) }
 let date = Date(timeIntervalSince1970: 1_793_021_145)
 let utc = TimeZone(identifier: "UTC")!
 let captureAtoms = ["Add", "a", "capture", "mode", "to the", "transcribe shortcut", " ", "  ", "\n", "\n\n", "\r\n", "\r", "\t", ":::", "::: details x",
-                    "    :::", "</details>", "<details>", "<details open>", "```", "~~~~swift", "```js", "<", "</summary>", "😀", "日本語", "\u{0}",
+                    "    :::", "</details>", "<details>", "<details open>", "# Big", "  ### small", "####### seven", "#nospace", "## ", "```", "~~~~swift", "```js", "<", "</summary>", "😀", "日本語", "\u{0}",
                     "\u{00A0}", "\u{2028}", "\u{3000}", "e\u{301}", "- [ ] task", "# Heading", "word."]
 let captureBodies = ["", "  \n", "# Random snippets\nold text\n\n\n", "# Note\nA hard break  \n\n\n", "# Note\n~~~~swift\nlet x = 1", "x", "x\n",
-                     "x\n\n", "```\nopen", "~~~\ncode\n~~~", "# Thoughts", "a\r\n", "```js\n```\n```", "<details><summary>s</summary>\nb\n</details>\n"]
+                     "x\n\n", "```\nopen", "~~~\ncode\n~~~", "# Thoughts", "# Thoughts\n\n### 2026-10-26 14:05 · An idea\nthe idea\n", "a\r\n", "```js\n```\n```", "<details><summary>s</summary>\nb\n</details>\n"]
 var captures: [(String, String)] = [
     ("  Add a capture mode to the transcribe shortcut that appends to a note.\n", ""), ("Short one", ""), ("a </summary> b", ""),
     (" \n\n ", ""), ("a\r\n\r\n\r\nb\n\n", ""), ("a\n:::\n::: details x\nb", ""), ("a\n</details>\n<details>\nb", ""), ("look:\n```\ncode", ""),
     ("one\ntwo  three", ""), ("    :::\nbody", ""), ("    ::: details Nested\nbody", ""), ("~~~~swift\nlet x = 1", ""), ("~~~```lang\ncode", ""),
     ("First idea with quite a few words in it", "# Random snippets\n- [ ] a task"), ("Second:\n\n:::\nwith a stray fence", "x"),
+    ("a\n# Big\n  ### small\nb", "# Thoughts"), ("Second:\n\n## a heading\nwith a stray heading", "# Random snippets\n- [ ] a task\n"),
+    ("    # indented heading\ntext", ""), ("####### not a heading\n#nospace", ""),
     // Foundation's replacements and Swift's characters around combining marks and CR LF
     ("<\u{301}x y", "a\r\n"), ("a\r\n\u{301}b", "a\r\n\n"), ("<\u{200C} z", "```\u{301}\nx"), ("a\r\u{301}\nb", "x\r\n\r\n"),
     ("x <\u{200D} y", "~~~\u{301}x\ncode"), ("\u{301}lead \u{20}\u{301}word", ""), ("tab\t\u{301}x", "\n\u{301}"),
@@ -409,6 +412,14 @@ for (text, body) in captures {
           "summary": ThoughtCapture.summary(of: text), "appended": opt(e.map { ThoughtCapture.append($0, to: body) }),
           "appendRaw": ThoughtCapture.append(text, to: body)])
 }
+// captured thoughts' headings start collapsed
+var entryHeadings = ["2026-10-26 14:05 · An idea", "Meeting 2026-10-26 14:05 · x", "2026-10-26 14:05 ·", "2026-10-26 14:05 · ", "2026-1-26 14:05 · x",
+                     "٢٠٢٦-١٠-٢٦ ١٤:٠٥ · Arabic-Indic digits", "２０２６-１０-２６ １４:０５ · fullwidth", "2026-10-26  14:05 · two spaces",
+                     "2026-10-26 14:05 - dash", "2026-10-26 14:05 · \n", "\n2026-10-26 14:05 · x", "𝟐𝟎𝟐𝟔-𝟏𝟎-𝟐𝟔 𝟏𝟒:𝟎𝟓 · math digits", ""]
+for (text, _) in captures.prefix(60) {
+    if let e = ThoughtCapture.entry(text, at: date, timeZone: utc) { entryHeadings.append(String(e.dropFirst(4).prefix { $0 != "\n" })) }
+}
+for h in entryHeadings { emit(["t": "entryHeading", "s": h, "out": ThoughtCapture.isEntryHeading(h)]) }
 for (secs, tz) in [(1_793_021_145, "UTC"), (1_793_021_145, "Europe/London"), (1_793_021_145, "Asia/Kolkata"), (1_793_021_145, "America/Los_Angeles"),
                    (1_774_746_000, "Europe/London"), (0, "UTC"), (1_700_000_000, "Australia/Adelaide"), (1_740_000_000, "Europe/Copenhagen")] {
     let d = Date(timeIntervalSince1970: TimeInterval(secs))

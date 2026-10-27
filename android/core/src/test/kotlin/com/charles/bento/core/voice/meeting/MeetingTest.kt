@@ -320,10 +320,10 @@ class MeetingNoteRendererTest {
             summary = MeetingSummary("Budget sync", listOf("Q4 budget approved"), listOf("Hire two engineers"),
                 listOf(MeetingActionItem("Send the deck", "Priya", "Friday"), MeetingActionItem("Book a room")))),
         MeetingTranscript(segments = listOf(segment(1, 1, "a"), segment(2, 1, "b")), blocks = listOf(
-            MeetingBlock(1, 1, 2, 5.0, "We approved the budget.\n\nPriya will send the deck.\n</details>\n```kotlin", cleaned = true))),
+            MeetingBlock(1, 1, 2, 5.0, "We approved the budget.\n\nPriya will send the deck.\n## Next steps\n```kotlin", cleaned = true))),
     )
 
-    @Test fun rendersABentoNoteWithTheTranscriptInAnExpander() {
+    @Test fun rendersABentoNoteWithATranscriptSection() {
         val note = MeetingNoteRenderer.render(document, Locale.US, ZoneId.of("UTC"))
         val expected = """
             # Budget sync
@@ -340,18 +340,16 @@ class MeetingNoteRendererTest {
             - [ ] **Priya**: Send the deck (due Friday)
             - [ ] Book a room
 
-            <details><summary>Transcript</summary>
+            ## Transcript
 
             **[0:05]** We approved the budget.
 
             Priya will send the deck.
-            \</details>
+            \## Next steps
             ```kotlin
 
             **[1:40]** _0:25 of audio could not be transcribed. Retry from Bento's Meetings screen._
             ```
-
-            </details>
 
         """.trimIndent()
         assertEquals(expected, note)
@@ -359,18 +357,24 @@ class MeetingNoteRendererTest {
         assertEquals("# Budget sync", note.lines().first())
     }
 
-    @Test fun anEmptyMeetingStillRendersAClosedExpander() {
+    @Test fun anEmptyMeetingStillRendersATranscriptSection() {
         val empty = MeetingDocument(File("/tmp/e"), MeetingMeta(id = "e", startedAt = T0), MeetingTranscript())
         val note = MeetingNoteRenderer.render(empty, Locale.US, ZoneId.of("UTC"))
         val us = Locale.US to ZoneId.of("UTC")
-        assertTrue(note.startsWith("# ${empty.displayTitle(us.first, us.second)}\n\n_${empty.subtitle(us.first, us.second)}_\n\n<details><summary>Transcript</summary>"))
+        assertTrue(note.startsWith("# ${empty.displayTitle(us.first, us.second)}\n\n_${empty.subtitle(us.first, us.second)}_\n\n## Transcript\n\n"))
         assertTrue(empty.displayTitle(us.first, us.second).startsWith("Meeting, Oct 27, 2026"))
-        assertTrue(note.endsWith("_Nothing was transcribed._\n\n</details>\n"))
+        assertTrue(note.endsWith("## Transcript\n\n_Nothing was transcribed._\n"))
     }
 
-    @Test fun expanderSyntaxDetection() {
-        for (line in listOf("<details>", "<DETAILS open>", "</details>", "::: details Idea", ":::")) assertTrue(MeetingNoteRenderer.isExpanderSyntax(line), line)
-        for (line in listOf("details", "a <details>", "</details> more", "<detailsx>", "::: note")) assertFalse(MeetingNoteRenderer.isExpanderSyntax(line), line)
+    @Test fun transcriptHeadingsAreEscapedOutsideCode() {
+        assertEquals("a\n\\# Big\n\\### small\n#nospace\n    # code-ish", MeetingNoteRenderer.escapeBody("a\n# Big\n  ### small\n#nospace\n    # code-ish"))
+        assertEquals("```\n# in code\n```\n\\## after", MeetingNoteRenderer.escapeBody("```\n# in code\n```\n## after"))
+        assertEquals("~~~~py\n# x\n~~~~", MeetingNoteRenderer.escapeBody("~~~~py\n# x"))
+        // the transcript section runs to the end of the note
+        val note = MeetingNoteRenderer.render(document, Locale.US, ZoneId.of("UTC"))
+        val heading = note.indexOf("## Transcript")
+        val line = com.charles.bento.core.notes.SwiftText.lineRange(note, heading)
+        assertEquals(note.length, com.charles.bento.core.notes.MarkdownParser.sectionEnd(line, 2, note))
     }
 
     @Test fun macNotesMarkdownMatchesTheMacLayout() {
@@ -420,7 +424,7 @@ class MeetingSessionTest {
         assertEquals(MeetingParagraph.Kind.Cleaned, notes.document.paragraphs.single().kind)
         assertTrue(notes.noteMarkdown.contains("**[0:00]** So the q4 budget was approved"))
         assertTrue(notes.noteMarkdown.contains("- [ ] **Priya**: Send the deck (due Friday)"))
-        assertTrue(notes.noteMarkdown.contains("<details><summary>Transcript</summary>"))
+        assertTrue(notes.noteMarkdown.contains("\n## Transcript\n"))
         assertEquals(MeetingMeta.Status.COMPLETE, engine.load(session.id)!!.meta.status)
         assertEquals(2.0, notes.document.meta.durationSeconds)
         assertTrue(transports.single().sentKinds.contains("audioStreamEnd"))

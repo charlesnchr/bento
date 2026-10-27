@@ -255,7 +255,7 @@ class GeminiEndToEndTest {
         assertTrue(summary.actionItems.isNotEmpty())
         assertHeard(notes.document.plainTranscript, "budget", "engineers", "January", "Priya", "Friday", "Marcus")
         assertTrue(notes.noteMarkdown.startsWith("# ${summary.title}"))
-        assertTrue(notes.noteMarkdown.contains("<details><summary>Transcript</summary>"))
+        assertTrue(notes.noteMarkdown.contains("\n## Transcript\n"))
         assertTrue(notes.noteMarkdown.contains("- [ ] "))
         assertTrue(!notes.incomplete)
         engine.close()

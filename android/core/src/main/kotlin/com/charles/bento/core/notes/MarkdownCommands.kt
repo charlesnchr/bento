@@ -122,14 +122,6 @@ object MarkdownCommands {
                 val fence = fenceChars(text, l.range)
                 return EditResult(listOf(TextEdit(sel, "\n\n" + fence)), TextRange(sel.location + 1, 0))
             }
-            kind == BlockKind.Details -> {
-                // Return at the end of a summary starts the body; an unclosed expander gets its
-                // closing line, like a code fence
-                if (!(sel.length == 0 && rel >= l.parsed.contentRange.end)) return null
-                val html = l.parsed.markerRange?.let { text[l.range.location + it.location] == '<' } ?: false
-                val close = if (MarkdownParser.expanderEnd(l.full, text) == null) "\n" + (if (html) "</details>" else ":::") else ""
-                return EditResult(listOf(TextEdit(TextRange(l.end, 0), "\n" + close)), TextRange(l.end + 1, 0))
-            }
             kind == BlockKind.Bullet || kind is BlockKind.Ordered || kind is BlockKind.Task || kind is BlockKind.Quote -> {
                 val p = l.parsed
                 val content = text.substring(l.contentStart, l.end)
@@ -343,38 +335,13 @@ object MarkdownCommands {
 
     // MARK: Block formats
 
-    /**
-     * Wraps the selected lines in an expander ("<details>"), with "Details" selected as
-     * the summary to type over. A single line with text becomes the summary instead, with
-     * the caret on the empty body line below.
-     */
-    fun wrapInExpander(text: String, sel: TextRange): EditResult? {
-        val ls = lines(sel, text)
-        val first = ls.firstOrNull() ?: return null
-        val last = ls.last()
-        if (ls.any { it.inCode }) return null
-        if (ls.size == 1 && first.parsed.kind == BlockKind.Details) return null
-        val range = TextRange(first.range.location, last.end - first.range.location)
-        val body = sub(text, range)
-        val open = "<details><summary>"
-        if (ls.size == 1 && sel.length == 0 && SwiftText.trimWhitespaces(body).isNotEmpty()) {
-            val summary = SwiftText.trimWhitespaces(body)
-            val replacement = "$open$summary</summary>\n\n</details>"
-            val bodyStart = range.location + open.length + summary.length + "</summary>\n".length
-            return EditResult(listOf(TextEdit(range, replacement)), TextRange(bodyStart, 0))
-        }
-        val inner = if (SwiftText.trimWhitespacesAndNewlines(body).isEmpty()) "" else body
-        val replacement = open + "Details</summary>\n" + inner + "\n</details>"
-        return EditResult(listOf(TextEdit(range, replacement)), TextRange(range.location + open.length, 7))
-    }
-
     fun setBlock(text: String, sel: TextRange, format: BlockFormat): EditResult? {
         val ls = lines(sel, text)
         if (format == BlockFormat.CodeBlock) return toggleCodeBlock(text, sel, ls)
         val editable = ls.filter { l ->
             if (l.inCode) return@filter false
             when (l.parsed.kind) {
-                is BlockKind.Fence, BlockKind.Code, BlockKind.Rule, BlockKind.Details, BlockKind.DetailsEnd -> false
+                is BlockKind.Fence, BlockKind.Code, BlockKind.Rule -> false
                 else -> true
             }
         }

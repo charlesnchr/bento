@@ -6,28 +6,38 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Dictated thoughts appended to the capture note, one expander each:
+ * Dictated thoughts appended to the capture note, one heading each:
  *
- *     <details><summary>2026-10-26 14:05 · Add a capture mode to the…</summary>
+ *     ### 2026-10-26 14:05 · Add a capture mode to the…
  *     Add a capture mode to the transcribe shortcut that appends to a note.
- *     </details>
  *
- * The summary is the local date and time (no seconds) and the first few words; the body
- * is the full text. Entries are separated by a blank line. Plain markdown text, so sync
- * and other clients see an ordinary note body (GitHub and most renderers show the same
- * expander). A port of the Mac's ThoughtCapture.swift; the Mac's controller appends to
- * the note set in its settings, or to a new note with the body "# Thoughts".
+ * The heading is the local date and time (no seconds) and the first few words; the body
+ * is the full text. Entries are separated by a blank line. Plain markdown, so sync and
+ * other clients see an ordinary note. The Mac's editor shows these sections collapsed
+ * ([isEntryHeading]). A port of the Mac's ThoughtCapture.swift; the Mac's controller
+ * appends to the note set in its settings, or to a new note with the body "# Thoughts".
  */
 object ThoughtCapture {
-    /** Words of the text shown in the summary. */
+    /** Words of the text shown in the heading. */
     const val SUMMARY_WORDS = 6
 
     fun entry(text: String, at: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault()): String? {
         val body = cleaned(text)
         if (body.isEmpty()) return null
-        val summary = SwiftText.replacingOccurrences(summary(body), "<", "‹")
-        return "<details><summary>${timestamp(at, zone)} · $summary</summary>\n$body\n</details>"
+        // (the words of the text as given, as on the Mac)
+        return "### ${timestamp(at, zone)} · ${summary(text)}\n$body"
     }
+
+    /** ICU's `\d` is any decimal digit. */
+    private val entryHeading = Regex("^\\p{Nd}{4}-\\p{Nd}{2}-\\p{Nd}{2} \\p{Nd}{2}:\\p{Nd}{2} · ")
+
+    /**
+     * Whether a heading's text is a captured thought's ("2026-10-26 14:05 · …"): those
+     * sections start collapsed. (Foundation's `range(of:options: .regularExpression)`:
+     * a match ending inside a character, before a combining mark, doesn't count.)
+     */
+    fun isEntryHeading(text: String): Boolean =
+        entryHeading.find(text)?.let { SwiftText.foundationMatchEnds(text, it.range.last + 1) } ?: false
 
     /** `body` with `entry` appended after a blank line. */
     fun append(entry: String, body: String): String {
@@ -67,8 +77,9 @@ object ThoughtCapture {
     }
 
     /**
-     * Trimmed, "\n" line ends, no blank-line runs, and no line that would end the expander
-     * early (expander syntax is escaped, an open code fence closed).
+     * Trimmed, "\n" line ends, no blank-line runs, and nothing that would end the entry's
+     * section early or swallow the next entry (headings are escaped, an open code fence
+     * closed).
      */
     fun cleaned(text: String): String {
         val normalised = SwiftText.trimWhitespacesAndNewlines(
@@ -83,12 +94,12 @@ object ThoughtCapture {
             val blank = SwiftText.trimWhitespaces(line).isEmpty()
             if (blank && lines.lastOrNull()?.isEmpty() != false) continue
             when (MarkdownParser.parseLine(line, inCode = false).kind) {
-                BlockKind.Details, BlockKind.DetailsEnd -> lines.add("\\" + SwiftText.trimWhitespaces(line))
+                is BlockKind.Heading -> lines.add("\\" + SwiftText.trimWhitespaces(line))
                 else -> lines.add(if (blank) "" else line)
             }
         }
         var body = SwiftText.trimWhitespacesAndNewlines(lines.joinToString("\n"))
-        // an unclosed code fence would swallow the closing "</details>"
+        // an unclosed code fence would swallow the next entry
         unclosedFence(body)?.let { body += "\n" + it }
         return body
     }

@@ -121,15 +121,13 @@ class NotesCrossCheckTest {
         BlockKind.Rule -> "rule"
         is BlockKind.Fence -> "fence:${if (k.opening) 1 else 0}:${k.lang}"
         BlockKind.Code -> "code"
-        BlockKind.Details -> "details"
-        BlockKind.DetailsEnd -> "detailsEnd"
     }
 
     private fun lineDesc(p: ParsedLine): List<Any?> =
-        listOf(kindDesc(p.kind), p.level, p.prefixRange, p.contentRange, p.suffixRange, p.markerRange, p.bulletChar.toString())
+        listOf(kindDesc(p.kind), p.level, p.prefixRange, p.contentRange, p.markerRange, p.bulletChar.toString())
 
     private fun lineDesc(e: JsonElement): List<Any?> = e.jsonArray.let {
-        listOf(it[0].jsonPrimitive.content, it[1].jsonPrimitive.int, it[2].range(), it[3].range(), it[4].rangeOrNull(), it[5].rangeOrNull(), it[6].jsonPrimitive.content)
+        listOf(it[0].jsonPrimitive.content, it[1].jsonPrimitive.int, it[2].range(), it[3].range(), it[4].rangeOrNull(), it[5].jsonPrimitive.content)
     }
 
     private fun spanDesc(s: InlineSpan): List<Any> {
@@ -164,10 +162,9 @@ class NotesCrossCheckTest {
             r.eq(v.str("strip"), MarkdownParser.stripInline(s)) { "stripInline ${l()}" }
             r.eq(v.getValue("spans").jsonArray.map { spanDesc(it) }, MarkdownParser.inlineSpans(s).map { spanDesc(it) }) { "inlineSpans ${l()}" }
             r.eq(v.str("plainLine"), NoteText.plainLine(s)) { "plainLine ${l()}" }
-            r.eq(v.getValue("open").jsonPrimitive.boolean, MarkdownParser.detailsStartsOpen(s)) { "detailsStartsOpen ${l()}" }
             r.eq(v.str("title"), NoteText.title(s)) { "title ${l()}" }
         }
-        r.done(1500 * 9)
+        r.done(1500 * 8)
     }
 
     @Test
@@ -199,9 +196,9 @@ class NotesCrossCheckTest {
                 r.eq(a[0].range(), got.range) { "line $i range ${l()}" }
                 r.eq(lineDesc(a[1]), lineDesc(got.line)) { "line $i parse ${l()}" }
                 r.eq(a[2].jsonPrimitive.boolean, MarkdownParser.isInCode(body, got.range.location)) { "line $i isInCode ${l()}" }
-                r.eq(a[3].rangeOrNull(), MarkdownParser.expanderEnd(full, body)) { "line $i expanderEnd ${l()}" }
-                r.eq(a[4].jsonPrimitive.int, MarkdownParser.visibleEnd(full, body)) { "line $i visibleEnd ${l()}" }
-                r.eq(a[5].range(), full) { "line $i lineRange ${l()}" }
+                val heading = got.line.kind as? BlockKind.Heading
+                r.eq((a[3] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.int, heading?.let { MarkdownParser.sectionEnd(full, it.level, body) }) { "line $i sectionEnd ${l()}" }
+                r.eq(a[4].range(), full) { "line $i lineRange ${l()}" }
             }
             val sub = v.getValue("sub").jsonArray
             if (sub.isNotEmpty()) {
@@ -302,6 +299,9 @@ class NotesCrossCheckTest {
             r.eq(v.str("summary"), ThoughtCapture.summary(text)) { "summary ${l()}" }
             r.eq(v.strOrNull("appended"), e?.let { ThoughtCapture.append(it, body) }) { "append ${l()}" }
             r.eq(v.str("appendRaw"), ThoughtCapture.append(text, body)) { "append raw ${l()}" }
+        }
+        for (v in vectors.getValue("entryHeading")) {
+            r.eq(v.getValue("out").jsonPrimitive.boolean, ThoughtCapture.isEntryHeading(v.str("s"))) { "isEntryHeading ${esc(v.str("s"))}" }
         }
         for (v in vectors.getValue("stamp")) {
             val instant = Instant.ofEpochSecond(v.getValue("secs").jsonPrimitive.long)

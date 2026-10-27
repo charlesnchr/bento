@@ -45,7 +45,7 @@ class NotesWidgetSource(private val notes: NotesModule) : AppWidgetData.WidgetNo
                 is BlockKind.Task -> NoteLine.Check(i, content, k.checked)
                 BlockKind.Bullet, is BlockKind.Ordered -> NoteLine.Bullet(i, content)
                 is BlockKind.Heading -> NoteLine.Text(i, content, heading = true)
-                BlockKind.Rule, is BlockKind.Fence, BlockKind.DetailsEnd -> null
+                BlockKind.Rule, is BlockKind.Fence -> null
                 else -> if (content.isEmpty()) null else NoteLine.Text(i, content, heading = false)
             }
         }.take(60)

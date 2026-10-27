@@ -208,7 +208,6 @@ object NoteText {
         val parsed = MarkdownParser.parseLine(line, inCode = false)
         if (parsed.kind == BlockKind.Rule) return ""
         if (parsed.kind is BlockKind.Fence) return ""
-        if (parsed.kind == BlockKind.DetailsEnd) return line
         val content = line.substring(parsed.contentRange.location, parsed.contentRange.end)
         return MarkdownParser.stripInline(content)
     }
@@ -217,19 +216,12 @@ object NoteText {
     fun plainText(body: String): String {
         val lines = ArrayList<String>()
         var inCode = false
-        var detailsEnd: Int? = null
-        SwiftText.enumerateLines(body) { line, full ->
-            val loc = full.location
+        SwiftText.enumerateLines(body) { line, _ ->
             val p = MarkdownParser.parseLine(line, inCode)
             when (val k = p.kind) {
                 is BlockKind.Fence -> inCode = k.opening
                 BlockKind.Code -> lines.add(line)
                 BlockKind.Rule -> {}
-                BlockKind.DetailsEnd -> if (detailsEnd == loc) detailsEnd = null else lines.add(line)
-                BlockKind.Details -> {
-                    detailsEnd = MarkdownParser.expanderEnd(full, body)?.location
-                    lines.add(MarkdownParser.stripInline(line.substring(p.contentRange.location, p.contentRange.end)))
-                }
                 else -> lines.add(MarkdownParser.stripInline(line.substring(p.contentRange.location, p.contentRange.end)))
             }
         }
