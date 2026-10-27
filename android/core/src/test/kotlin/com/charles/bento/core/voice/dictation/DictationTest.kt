@@ -423,7 +423,8 @@ class DictationSessionTest {
         assertEquals(32_000L, scripted.enqueuedBytes, "every byte written reached the socket")
         assertTrue(result.corrections.any { it.isCut && it.text.contains("um") })
         assertEquals("Ship it Friday. (cleaned)", s.correctedTranscript.value)
-        assertTrue(scripted.aborted)
+        // the live socket is closed on the session's scope after stop returns
+        withTimeout(2_000) { while (!scripted.aborted) delay(5) }
     }
 
     @Test fun unusableLiveFallsBackToTheUpload() = blocking {
