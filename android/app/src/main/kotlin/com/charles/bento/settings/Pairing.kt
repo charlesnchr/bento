@@ -27,7 +27,7 @@ data class Pairing(val server: String, val token: String, val macName: String, v
 }
 
 /** Stores a pairing: the server in prefs, the token and key in the Keystore-backed store. */
-fun Pairing.apply(prefs: Prefs, secrets: SecretStore) {
+fun Pairing.save(prefs: Prefs, secrets: SecretStore) {
     prefs.server.value = server
     prefs.pairedWith.value = macName
     prefs.syncEnabled.value = true

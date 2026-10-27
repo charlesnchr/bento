@@ -55,6 +55,15 @@ class AppGraph(val app: Application) {
         override suspend fun toggleChecklistItem(noteId: String, line: Int) {}
     }
 
+    var voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
+        override val meetings = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.charles.bento.ui.voice.MeetingRow>())
+        override val history = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.charles.bento.ui.voice.HistoryRow>())
+        override val recordingMeeting = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+        override fun startMeeting(): String? = null
+        override fun stopMeeting() {}
+        override fun retry(historyId: String) {}
+    }
+
     val dictation = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() })
 
     fun start() {

@@ -38,7 +38,7 @@ import androidx.navigation.toRoute
 import com.charles.bento.MainActivity
 import com.charles.bento.graph
 import com.charles.bento.settings.Pairing
-import com.charles.bento.settings.apply
+import com.charles.bento.settings.save
 import com.charles.bento.ui.settings.SettingsScreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
@@ -136,7 +136,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                 )
             },
             confirmButton = {
-                TextButton(onClick = { p.apply(graph.prefs, graph.secrets); pairing = null }) { Text("Pair") }
+                TextButton(onClick = { p.save(graph.prefs, graph.secrets); pairing = null }) { Text("Pair") }
             },
             dismissButton = { TextButton(onClick = { pairing = null }) { Text("Cancel") } },
         )

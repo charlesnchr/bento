@@ -75,7 +75,7 @@ import com.charles.bento.BuildConfig
 import com.charles.bento.core.sync.SyncState
 import com.charles.bento.graph
 import com.charles.bento.settings.Pairing
-import com.charles.bento.settings.apply
+import com.charles.bento.settings.save
 import com.charles.bento.ui.DictionaryRoute
 import com.charles.bento.ui.ModesRoute
 import com.charles.bento.update.Updater
@@ -167,7 +167,7 @@ private fun SyncSection(context: Context) {
             onDismissRequest = { pendingPair = null },
             title = { Text("Pair with ${p.macName.ifBlank { "this Mac" }}?") },
             text = { Text("Sync with ${p.server}" + if (p.geminiKey != null) ", and use the Mac's Gemini API key for dictation." else ".") },
-            confirmButton = { TextButton(onClick = { p.apply(prefs, graph.secrets); pendingPair = null }) { Text("Pair") } },
+            confirmButton = { TextButton(onClick = { p.save(prefs, graph.secrets); pendingPair = null }) { Text("Pair") } },
             dismissButton = { TextButton(onClick = { pendingPair = null }) { Text("Cancel") } },
         )
     }
@@ -185,7 +185,7 @@ private fun SyncSection(context: Context) {
             },
             confirmButton = {
                 TextButton(enabled = s.isNotBlank() && t.isNotBlank(), onClick = {
-                    Pairing(s.trim(), t.trim(), "", null).apply(prefs, graph.secrets)
+                    Pairing(s.trim(), t.trim(), "", null).save(prefs, graph.secrets)
                     manual = false
                 }) { Text("Save") }
             },

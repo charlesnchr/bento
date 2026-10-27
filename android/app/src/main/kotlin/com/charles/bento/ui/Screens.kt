@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 object Screens {
     @Composable fun notes(modifier: Modifier, nav: NavController) = Placeholder("Notes", modifier)
     @Composable fun todo(modifier: Modifier, nav: NavController, action: MutableStateFlow<HomeAction?>) = Placeholder("Todo", modifier)
-    @Composable fun voice(modifier: Modifier, nav: NavController) = Placeholder("Voice", modifier)
+    @Composable fun voice(modifier: Modifier, nav: NavController) = com.charles.bento.ui.voice.VoiceScreen(modifier, nav)
     @Composable fun noteEditor(id: String, nav: NavController) = Placeholder("Note $id")
     @Composable fun trash(nav: NavController) = Placeholder("Recently Deleted")
     @Composable fun meeting(id: String, nav: NavController) = Placeholder("Meeting $id")

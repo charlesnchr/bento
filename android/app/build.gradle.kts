@@ -7,9 +7,9 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-// The release version lives in version.properties (scripts/release-android.sh bumps it).
+// The version: -PbentoVersion=X.Y.Z (scripts/release-android.sh), else version.properties.
 val versionProps = Properties().apply { rootProject.file("version.properties").inputStream().use(::load) }
-val appVersion: String = versionProps.getProperty("version")
+val appVersion: String = providers.gradleProperty("bentoVersion").orNull ?: versionProps.getProperty("version")
 val appVersionCode = appVersion.split(".").map(String::toInt).let { (a, b, c) -> a * 10_000 + b * 100 + c }
 
 // Release signing: a keystore outside the repo, described by
