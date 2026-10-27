@@ -9,6 +9,8 @@ public struct GeneralSettings: Codable, Equatable {
     public var showMenuBarIcon = true
     /// Look for a new release once a day (Homebrew installs install it from the menu).
     public var checkForUpdates = true
+    /// Look of Bento's windows: "standard", "glass" or "aero".
+    public var theme: Theme = .standard
     public init() {}
 }
 
@@ -83,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             HUD.show(problem, symbol: "exclamationmark.triangle", duration: 4)
         }
         ConfigStore.shared.materialize("general", default: GeneralSettings())
+        // Before the modules start, so their windows open in the right theme.
+        ThemeCenter.shared.select(general.theme)
 
         ActionRegistry.shared.isModuleEnabled = { [weak self] id in
             id == AppActionsModule.moduleID || (self?.running.contains(id) ?? false)
@@ -100,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             self?.showSettings(page: note.object as? String)
         })
         observers.append(ConfigStore.shared.observe("general") { [weak self] in
+            ThemeCenter.shared.select(self?.general.theme ?? .standard)
             self?.syncModules()
             self?.updateStatusItem()
             Updater.shared.setAutomatic(self?.general.checkForUpdates ?? true)

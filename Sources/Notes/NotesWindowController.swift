@@ -17,7 +17,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private let header = NotesHeaderView()
     private let footer = NotesFooterView()
     private let formatBar = NotesFormatBar()
-    private let background = NSVisualEffectView()
+    private let background = ThemedBackgroundView(material: .hudWindow)
     private let tint = TintView()
     private var footerHeight: NSLayoutConstraint!
     let palette = PalettePanel()
@@ -79,15 +79,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         panel.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         panel.tabbingMode = .disallowed
 
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .followsWindowActiveState
-        background.state = .active
+        background.onChange = { [weak self] _ in self?.tint.needsDisplay = true }
         panel.contentView = background
 
         for v in [tint, header, scroll, footer, formatBar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
-            background.addSubview(v)
+            background.effect.addSubview(v)
         }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -742,13 +739,16 @@ final class HairlineView: NSView {
 
 /// Darkens/lightens the vibrancy so the window reads like Raycast's (near-black in
 /// dark mode, light grey in light mode) while keeping a hint of translucency.
+/// Under a glass theme it mostly steps aside and lets the glass show.
 final class TintView: NSView {
     static let color = NotesTheme.dynamic(dark: NSColor(srgbRed: 0.05, green: 0.05, blue: 0.055, alpha: 0.88),
                                           light: NSColor(srgbRed: 0.965, green: 0.965, blue: 0.97, alpha: 0.82))
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
+        let glass = ThemeCenter.shared.style.isGlass
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = TintView.color.cgColor
+            let color = TintView.color
+            layer?.backgroundColor = (glass ? color.withAlphaComponent(color.alphaComponent * 0.35) : color).cgColor
         }
     }
     override func viewDidChangeEffectiveAppearance() {

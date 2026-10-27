@@ -71,21 +71,9 @@ final class ClipboardPanel: NSObject, NSWindowDelegate {
             w.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua)
         }
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
         let host = NSHostingView(rootView: ClipboardPanelView(model: model))
         host.sizingOptions = []
-        host.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            host.topAnchor.constraint(equalTo: effect.topAnchor),
-            host.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
-        w.contentView = effect
+        w.contentView = ThemedBackgroundView(material: .popover, content: host)
 
         let screen = NSScreen.underMouse ?? NSScreen.main
         if let vf = screen?.visibleFrame {

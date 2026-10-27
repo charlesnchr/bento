@@ -70,7 +70,9 @@ struct SettingsRootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .themedScrollBackground()
         }
+        .background(ThemeBackdrop().ignoresSafeArea())
     }
 
     private func isOn(_ m: BentoModule) -> Bool { general.value.enabledModules[m.id] ?? m.enabledByDefault }
@@ -133,6 +135,8 @@ struct GeneralPane: View {
                 }
             }
 
+            AppearanceSection(general: general)
+
             UpdatesSection(general: general)
 
             Section {
@@ -150,6 +154,32 @@ struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct AppearanceSection: View {
+    @ObservedObject var general: ConfigSection<GeneralSettings>
+    @ObservedObject private var themes = ThemeCenter.shared
+
+    var body: some View {
+        Section {
+            Picker("Theme", selection: $general.value.theme) {
+                ForEach(Theme.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("theme")
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Group {
+                if themes.reduceTransparency, general.value.theme != .standard {
+                    Text("Reduce Transparency is on in System Settings → Accessibility → Display, so Bento's windows use the standard look.")
+                } else {
+                    Text("Glass lets the desktop show through Settings, Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search and Capture History. Aero adds your accent colour and a gloss.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
