@@ -7,6 +7,12 @@ import Testing
 final class MemoryRepo: NoteRepository {
     var notes: [String: Note] = [:]
     var lastSeq: Int64 = 0
+    var installID = UUID().uuidString
+    var retiredInstallIDs: Set<String> = []
+    func renewInstallID() {
+        retiredInstallIDs.insert(installID)
+        installID = UUID().uuidString
+    }
     func note(_ id: String) -> Note? { notes[id] }
     func save(_ note: Note) { notes[note.id] = note }
     func allNotes(includeTombstones: Bool) -> [Note] { Array(notes.values).filter { includeTombstones || !$0.deleted } }
@@ -467,6 +473,7 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
             n.meta["custom"] = .string("kept")
             n.dirty = true
             n.seq = 4
+            n.syncHeads = ["install-1": SyncHead(at: 1_761_000_000_123, hash: 0xfeed_beef_0000_0001)]
             s.save(n)
             s.markOpened("a", at: 99)
             s.lastSeq = 42
@@ -484,10 +491,43 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(a.dirty)
         #expect(a.seq == 4)
         #expect(a.openedAt == 99)
+        #expect(a.syncHeads == ["install-1": SyncHead(at: 1_761_000_000_123, hash: 0xfeed_beef_0000_0001)])
         #expect(s2.lastSeq == 42)
+        #expect(s2.installID == NoteStore(url: url).installID) // stable across launches
         #expect(s2.kvJSON("nav.back", as: [String].self) == ["a", "b"])
         #expect(s2.liveNotes.map(\.id) == ["a"])
         #expect(s2.trashedNotes.map(\.id) == ["t"])
+    }
+
+    @Test func installIDBelongsToThisMac() {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = NoteStore(url: url, hostID: "host-1").installID
+        #expect(NoteStore(url: url, hostID: "host-1").installID == first)
+        // the database restored onto another Mac: a new id there, kept from then on
+        let moved = NoteStore(url: url, hostID: "host-2").installID
+        #expect(moved != first && !moved.isEmpty)
+        #expect(NoteStore(url: url, hostID: "host-2").installID == moved)
+    }
+
+    @Test func headsLeftBehindByAnOlderBuildAreDropped() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let s = NoteStore(url: url)
+            var n = Note(id: "a", body: "synced text", createdAt: 1, updatedAt: 2)
+            n.syncHeads = ["install-1": SyncHead(at: 2, hash: NoteText.hash("synced text"))]
+            s.save(n)
+            s.save(Note(id: "b", body: "other", createdAt: 1, updatedAt: 2))
+            var b = s.note("b")!
+            b.syncHeads = ["install-1": SyncHead(at: 2, hash: 9)]
+            s.save(b)
+        }
+        // an older build (no heads column) edits note a: the stored heads stay behind
+        try SQLiteDB(path: url.path).exec("UPDATE notes SET body = 'edited by an older build' WHERE id = 'a'")
+        let s = NoteStore(url: url)
+        #expect(s.note("a")?.syncHeads == nil)
+        #expect(s.note("b")?.syncHeads == ["install-1": SyncHead(at: 2, hash: 9)]) // still its text
     }
 
     @Test func migratesOldDatabasesAndKeepsBaseHash() throws {
@@ -630,5 +670,706 @@ func local(_ id: String, _ body: String, updated: Int64, dirty: Bool, seq: Int64
         #expect(EmojiIndex.search("face with tears").contains { $0.emoji == "😂" })
         #expect(EmojiIndex.search("zzzzqq").isEmpty)
         #expect(EmojiIndex.all.count > 800)
+    }
+}
+
+/// Live editing on two Macs: concurrent text edits merge like Google Docs instead of one
+/// side's typing vanishing into a conflicted copy.
+@Suite struct LiveMergeTests {
+    /// One Mac: its engine and repository, with note "a" synced at seq 1.
+    final class Mac {
+        let repo = MemoryRepo()
+        private(set) var e: SyncEngine
+        let name: String
+        var changes: [SyncEngine.RemoteResult] = []
+
+        init(_ name: String, body: String) {
+            self.name = name
+            e = SyncEngine(repo: repo)
+            e.device = name
+            var start = remote("a", body, updated: 100, seq: 1) // the note as it came from the server
+            start.device = "x"
+            e.applyRemote(start)
+            caret = (body as NSString).length
+            shown = body
+            e.onRemoteChange = { [unowned self] _, r in changes.append(r) }
+        }
+
+        /// Quit or crash and start again: only what's in the repository survives.
+        func relaunch() {
+            e = SyncEngine(repo: repo)
+            e.device = name
+            e.onRemoteChange = { [unowned self] _, r in changes.append(r) }
+        }
+
+        /// A meta-only change (pin, trash, delete), as NotesController.mutate makes it.
+        func mutate(_ change: (inout Note) -> Void) {
+            var n = note
+            change(&n)
+            n.updatedAt = Note.nextUpdate(after: n.updatedAt)
+            n.dirty = true
+            repo.save(n)
+        }
+
+        /// The server refused this version for good (e.g. too large): edit it again.
+        func touchBlocked() {
+            if e.blockedNotes.contains(where: { $0.id == "a" }) { mutate { _ in } }
+        }
+
+        var note: Note { repo.notes["a"]! }
+        var copies: [Note] { repo.notes.values.filter { $0.meta["conflictOf"] != nil } }
+
+        /// What NotesController.editorChanged + flushPendingSave do.
+        func type(_ edit: (String) -> String) {
+            var n = note
+            e.willEdit(n)
+            n.body = edit(n.body)
+            n.updatedAt = Note.nextUpdate(after: n.updatedAt)
+            n.dirty = true
+            repo.save(n)
+        }
+
+        var caret: Int
+        private var shown: String
+
+        /// Types at the caret (or at `elsewhere`, clamped), optionally deleting the
+        /// character before it first; the caret ends after the typing.
+        func typeAtCaret(_ text: String, elsewhere: Int?, backspace: Bool) {
+            followCaret()
+            type { body in
+                let s = NSMutableString(string: body)
+                var at = min(elsewhere ?? caret, s.length)
+                if backspace, at > 0 { s.deleteCharacters(in: NSRange(location: at - 1, length: 1)); at -= 1 }
+                s.insert(text, at: at)
+                caret = at + (text as NSString).length
+                return s as String
+            }
+            shown = note.body
+        }
+
+        /// What the editor does when the note changes underneath (TextMerge.map).
+        func followCaret() {
+            let body = note.body
+            guard body != shown else { return }
+            caret = TextMerge.map(NSRange(location: min(caret, (shown as NSString).length), length: 0),
+                                  through: TextMerge.edits(from: shown, to: body)).location
+            shown = body
+        }
+
+        func put() -> [String: Any]? {
+            guard let n = e.notesToSend().first(where: { $0.id == "a" }) else { return nil } // copies are other notes
+            e.markSent(n)
+            return wire(e.encode(n))
+        }
+
+        func receive(_ obj: [String: Any]) { e.applyRemote(NoteWire.decode(obj)!) }
+    }
+
+    /// bento-sync's rule: accept iff updated_at >= stored; broadcast to the others first.
+    final class Server {
+        var stored: [String: Any]
+        var seq: Int64 = 1
+        init(_ body: String) { stored = ["id": "a", "body": body, "created_at": 1, "updated_at": 100, "seq": 1, "device": "x", "meta": [:]] }
+
+        func sync(_ macs: [Mac], rounds: Int = 8) {
+            for _ in 0..<rounds {
+                // every Mac sends what it has before hearing from the others (concurrent puts)
+                let puts = macs.compactMap { m in m.put().map { (m, $0) } }
+                if puts.isEmpty { return }
+                for (m, p) in puts {
+                    let accepted = (p["updated_at"] as! NSNumber).int64Value >= (stored["updated_at"] as! NSNumber).int64Value
+                    if accepted {
+                        seq += 1
+                        stored = p
+                        stored["seq"] = seq
+                        for o in macs where o !== m { o.receive(stored) }
+                    }
+                    m.e.ack(id: "a", seq: (stored["seq"] as! NSNumber).int64Value, accepted: accepted)
+                    if !accepted { m.receive(stored) }
+                }
+            }
+        }
+    }
+
+    static func wire(_ obj: [String: Any]) -> [String: Any] {
+        try! JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: obj)) as! [String: Any]
+    }
+    func wire(_ obj: [String: Any]) -> [String: Any] { Self.wire(obj) }
+
+    let base = "# Plan\nintro\n\nend\n"
+
+    @Test func typingOnBothMacsAtOnceKeepsBoth() {
+        let a = Mac("A", body: base), b = Mac("B", body: base), server = Server(base)
+        a.type { $0.replacingOccurrences(of: "intro\n", with: "intro\nA line\n") }
+        b.type { $0.replacingOccurrences(of: "\nend", with: "\nB line\nend") }
+        server.sync([a, b], rounds: 1)
+        // each kept typing right after its own line before the merged text went out
+        a.type { $0.replacingOccurrences(of: "A line", with: "A line more") }
+        b.type { $0.replacingOccurrences(of: "B line", with: "B line too") }
+        server.sync([a, b])
+        #expect(a.note.body == "# Plan\nintro\nA line more\n\nB line too\nend\n")
+        #expect(b.note.body == a.note.body)
+        #expect(a.copies.isEmpty && b.copies.isEmpty)
+        #expect(!a.note.dirty && !b.note.dirty)
+        #expect(a.e.notesToSend().isEmpty && b.e.notesToSend().isEmpty)
+        #expect(a.changes.contains(.merged) && b.changes.contains(.merged))
+    }
+
+    /// Deterministic generator so failures reproduce.
+    struct SeededRNG: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return state >> 11 | state << 53
+        }
+    }
+
+    /// bento-sync over WebSockets, step by step: puts wait at the server and are handled
+    /// one at a time; every connection is a FIFO (so a broadcast with a lower seq always
+    /// arrives before an ack); a reconnect drops the old connection's queue, and a put it
+    /// left at the server comes back to the new connection as a broadcast.
+    final class Network {
+        enum Message { case note([String: Any]), ack(Int64, Bool), error }
+        let macs: [Mac]
+        var stored: [String: Any]
+        var seq: Int64 = 1
+        var inbox: [(mac: Int, conn: Int, put: [String: Any])] = []
+        var queues: [[Message]]
+        var conns: [Int]
+
+        init(_ macs: [Mac], body: String) {
+            self.macs = macs
+            stored = ["id": "a", "body": body, "created_at": 1, "updated_at": 100, "seq": 1, "device": "x", "meta": [:]]
+            queues = macs.map { _ in [] }
+            conns = macs.map { _ in 0 }
+        }
+
+        func send(_ i: Int) { if let p = macs[i].put() { inbox.append((i, conns[i], p)) } }
+
+        /// Handles the next put. `refuse`: as if it lost last-writer-wins; `fail`: an
+        /// error reply (validation, size); `lose`: it never arrives.
+        func serve(refuse: Bool = false, fail: Bool = false, lose: Bool = false) {
+            guard !inbox.isEmpty else { return }
+            let (i, conn, p) = inbox.removeFirst()
+            if lose { return }
+            if fail {
+                if conns[i] == conn { queues[i].append(.error) }
+                return
+            }
+            let accepted = !refuse && (p["updated_at"] as! NSNumber).int64Value >= (stored["updated_at"] as! NSNumber).int64Value
+            if accepted {
+                seq += 1
+                stored = p
+                stored["seq"] = seq
+                for j in macs.indices where !(j == i && conns[j] == conn) { queues[j].append(.note(stored)) }
+            }
+            guard conns[i] == conn else { return } // that connection is gone: no ack
+            queues[i].append(.ack(seq, accepted))
+            if !accepted { queues[i].append(.note(stored)) }
+        }
+
+        func deliver(_ i: Int) {
+            guard !queues[i].isEmpty else { return }
+            switch queues[i].removeFirst() {
+            case .note(let n): macs[i].receive(n)
+            case .ack(let s, let ok): macs[i].e.ack(id: "a", seq: ok ? s : nil, accepted: ok)
+            case .error: macs[i].e.putFailed(id: "a")
+            }
+            macs[i].followCaret()
+        }
+
+        /// A quit or crash and a fresh start, then a new connection.
+        func relaunch(_ i: Int) {
+            macs[i].relaunch()
+            reconnect(i)
+        }
+
+        func reconnect(_ i: Int) {
+            conns[i] += 1
+            queues[i] = []
+            macs[i].e.reset()
+            let s = (stored["seq"] as! NSNumber).int64Value
+            macs[i].e.applySnapshot(s > macs[i].repo.lastSeq ? [NoteWire.decode(stored)!] : [], seq: seq)
+            macs[i].followCaret()
+        }
+
+        var quiet: Bool { inbox.isEmpty && queues.allSatisfy(\.isEmpty) && macs.allSatisfy { $0.e.notesToSend().allSatisfy { $0.id != "a" } } }
+
+        /// Lets everything settle without typing; false if it never goes quiet.
+        func settle(steps: Int = 300) -> Bool {
+            for _ in 0..<steps {
+                macs.forEach { $0.touchBlocked() }
+                if quiet { return true }
+                for i in macs.indices { send(i) }
+                while !inbox.isEmpty { serve() }
+                for i in macs.indices { while !queues[i].isEmpty { deliver(i) } }
+            }
+            return quiet
+        }
+    }
+
+    enum Fuzz { case insertOnly, withDeletes, threeMacs, sameName, metaAndRelaunch, sharedInstallID }
+
+    /// Two Macs (or three) typing, mostly at their caret, also after sending a put and
+    /// before the other's arrives; random delivery delays and reconnects; then quiet.
+    func fuzz(seed: Int, _ kind: Fuzz) {
+        var rng = SeededRNG(state: UInt64(seed) &* 0x9E37_79B9_7F4A_7C15 &+ 1)
+        let start = "# Notes\nfirst line\n\nsecond line\n"
+        let names = kind == .threeMacs ? ["A", "B", "C"] : kind == .sameName ? ["MacBook Pro", "MacBook Pro"] : ["A", "B"]
+        let macs = names.map { Mac($0, body: start) }
+        if kind == .sharedInstallID { macs[1].repo.installID = macs[0].repo.installID } // a copied database
+        let net = Network(macs, body: start)
+        var next: UInt32 = 0x4E00 // every typed character is unique (CJK block)
+        var typed = Set<Character>()
+        var deleted = false
+        for _ in 0..<120 {
+            let i = Int.random(in: 0..<macs.count, using: &rng)
+            let extra = kind == .metaAndRelaunch
+            switch Int.random(in: 0..<1000, using: &rng) {
+            case 0..<350:
+                let m = macs[i]
+                guard !m.note.deleted else { break }
+                let run = (0..<Int.random(in: 1...3, using: &rng)).map { _ -> Character in
+                    next += 1
+                    return Character(Unicode.Scalar(next)!)
+                }
+                typed.formUnion(run)
+                let elsewhere = Int.random(in: 0..<10, using: &rng) == 0
+                let backspace = kind == .withDeletes && Int.random(in: 0..<4, using: &rng) == 0
+                m.typeAtCaret(String(run), elsewhere: elsewhere ? Int.random(in: 0...1000, using: &rng) : nil, backspace: backspace)
+            case 350..<550: net.send(i)
+            case 550..<680: net.serve()
+            case 680..<690: net.serve(refuse: true)
+            case 690..<700: net.serve(fail: true)
+            case 700..<960: net.deliver(i)
+            case 960..<975 where extra: macs[i].mutate { $0.pinned.toggle() }
+            case 975..<985 where extra:
+                macs[i].mutate { n in n.meta["trashedAt"] = n.meta["trashedAt"] == nil ? .number(Double(Note.now())) : nil }
+            case 985..<990 where extra: net.relaunch(i)
+            case 990..<991 where extra:
+                deleted = true
+                macs[i].mutate { $0.deleted = true; $0.body = "" }
+            default: net.reconnect(i)
+            }
+        }
+        #expect(net.settle(), "seed \(seed): never went quiet")
+        let a = macs[0].note.body
+        let server = NoteWire.decode(net.stored)!
+        #expect(macs.allSatisfy { $0.note.body == a }, "seed \(seed): diverged")
+        #expect(a == server.body, "seed \(seed): server differs")
+        #expect(macs.allSatisfy { $0.note.meta == server.meta && $0.note.deleted == server.deleted }, "seed \(seed): meta differs")
+        #expect(macs.allSatisfy { !$0.note.dirty })
+        // quiet rounds: nothing is sent and nothing grows
+        for _ in 0..<30 {
+            for i in macs.indices { net.send(i) }
+            #expect(net.inbox.isEmpty, "seed \(seed): put while quiet")
+            net.serve()
+        }
+        #expect(macs[0].note.body == a)
+        let marks = a.filter { typed.contains($0) }
+        #expect(marks.count == Set(marks).count, "seed \(seed): duplicated typing in \(a)")
+        switch kind {
+        case .insertOnly, .sameName:
+            #expect(String(a.filter { !typed.contains($0) }) == start, "seed \(seed): base text changed: \(a)")
+            #expect(Set(marks) == typed, "seed \(seed): lost typing")
+            #expect(macs.allSatisfy { $0.copies.isEmpty }, "seed \(seed): conflicted copy")
+        case .threeMacs, .metaAndRelaunch, .sharedInstallID:
+            // Three at once may not merge (no text holds exactly what all share), nor can a
+            // Mac that just relaunched (its history is gone): whatever doesn't merge is in a
+            // conflicted copy, never lost (unless the note was deleted).
+            guard !deleted else { break }
+            #expect(String(a.filter { !typed.contains($0) }) == start, "seed \(seed): base text changed: \(a)")
+            let kept = Set(macs.flatMap { m in m.repo.notes.values.map(\.body) }.joined())
+            #expect(typed.isSubset(of: kept), "seed \(seed): lost typing")
+        case .withDeletes:
+            break
+        }
+    }
+
+    @Test(arguments: 0..<150) func concurrentTypingNeverLosesOrDuplicates(seed: Int) { fuzz(seed: seed, .insertOnly) }
+    @Test(arguments: 0..<150) func concurrentTypingAndDeletingConverges(seed: Int) { fuzz(seed: seed, .withDeletes) }
+    @Test(arguments: 0..<150) func threeMacsTypingAtOnceNeverLoseOrDuplicate(seed: Int) { fuzz(seed: seed, .threeMacs) }
+    @Test(arguments: 0..<150) func macsWithTheSameNameStillMerge(seed: Int) { fuzz(seed: seed, .sameName) }
+    @Test(arguments: 0..<150) func pinsTrashDeletesAndRelaunchesNeverLoseTyping(seed: Int) { fuzz(seed: seed, .metaAndRelaunch) }
+    @Test(arguments: 0..<150) func macsSharingAnInstallIDNeverLoseTyping(seed: Int) { fuzz(seed: seed, .sharedInstallID) }
+
+    @Test func aDeferredVersionSurvivesACrash() {
+        // B's put is stored; A's concurrent put never reaches the server; B's version
+        // reaches A while A's put is in flight (so it waits) and A then crashes.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        net.send(0)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(1)
+        net.serve(lose: true) // A's
+        net.serve()           // B's, seq 2
+        net.deliver(0)
+        #expect(a.repo.lastSeq == 1) // held below the version that waits
+        net.relaunch(0)       // hello since 1 fetches B's version again
+        #expect(net.settle())
+        let everything = [a, b].flatMap { m in m.repo.notes.values.map(\.body) }.joined()
+        #expect(everything.contains("B: "), "B's text is somewhere")
+        #expect(everything.contains(" from A"), "A's text is somewhere")
+        #expect(a.note.body == b.note.body)
+    }
+
+    @Test func aFailedPutLetsTheWaitingVersionIn() {
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        net.send(0)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(1)
+        net.serve(fail: true) // A's put: an error reply
+        net.serve()           // B's
+        net.deliver(0)        // the error: B's version may come in now
+        #expect(!a.note.body.contains("B: "))
+        net.deliver(0)        // B's version
+        #expect(a.note.body == "B: " + base + " from A")
+        #expect(net.settle())
+        #expect(b.note.body == a.note.body)
+    }
+
+    @Test func macsWithTheSameNameKeepBothEdits() {
+        let a = Mac("MacBook Pro", body: base), b = Mac("MacBook Pro", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" mine", elsewhere: nil, backspace: false)
+        b.typeAtCaret("theirs ", elsewhere: 0, backspace: false)
+        net.send(0); net.send(1)
+        #expect(net.settle())
+        #expect(a.note.body == "theirs " + base + " mine")
+        #expect(b.note.body == a.note.body)
+        #expect(a.copies.isEmpty && b.copies.isEmpty)
+    }
+
+    @Test func aRelaunchedMacStillKeepsItsSyncedText() {
+        // A's edit is acked; A quits; B's version made without it overwrites it on the
+        // server. A's heads were stored with the note, so A knows its text isn't in B's.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(0); net.serve(); net.deliver(0) // A acked
+        net.send(1)
+        a.relaunch()
+        net.serve()                              // B's overwrites A's on the server
+        #expect(net.settle())
+        let everything = [a, b].flatMap { m in m.repo.notes.values.map(\.body) }.joined()
+        #expect(everything.contains(" from A") && everything.contains("B: "))
+        #expect(a.note.body == b.note.body)
+    }
+
+    @Test func headsInAPutAreCapped() {
+        let a = Mac("A", body: base)
+        var n = a.note
+        n.syncHeads = Dictionary(uniqueKeysWithValues: (0..<40).map { ("install-\($0)", SyncHead(at: Int64($0), hash: UInt64($0))) })
+        n.dirty = true
+        a.repo.save(n)
+        let h = a.e.sentHeads(a.note)!
+        #expect(h.count == SyncEngine.headsSent)
+        #expect(h[a.repo.installID] != nil) // our own always
+        #expect(h["install-39"] != nil && h["install-0"] == nil) // the newest others
+        let meta = try! JSONSerialization.data(withJSONObject: a.e.encode(a.note)["meta"]!)
+        #expect(meta.count < SyncSettings.maxMetaBytes)
+    }
+
+    @Test func ourPinSurvivesWhenTheyChangedTheText() {
+        // We edited the text and pinned; their newer version only has more text.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        a.typeAtCaret(" mine", elsewhere: nil, backspace: false)
+        a.mutate { $0.pinned = true }
+        b.typeAtCaret("theirs ", elsewhere: 0, backspace: false)
+        var bn = b.note
+        bn.updatedAt = a.note.updatedAt + 50 // theirs is newer
+        b.repo.save(bn)
+        var pb = b.put()!
+        pb["seq"] = 2
+        a.e.applyRemote(NoteWire.decode(pb)!)
+        #expect(a.note.body == "theirs " + base + " mine")
+        #expect(a.note.pinned)
+        #expect(a.note.dirty)
+    }
+
+    @Test func ourPinSurvivesAFastForward() {
+        // Our text edit reached them, our pin didn't: their version is all of our text.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" mine", elsewhere: nil, backspace: false)
+        net.send(0); net.serve(); net.deliver(0); net.deliver(1) // A acked, B has it
+        a.mutate { $0.pinned = true }
+        b.typeAtCaret(" and theirs", elsewhere: 1000, backspace: false)
+        net.send(1); net.serve(); net.deliver(1); net.deliver(0)
+        #expect(a.note.body == base + " mine and theirs")
+        #expect(a.note.pinned)
+        #expect(net.settle())
+        #expect(b.note.pinned)
+    }
+
+    @Test func overlappingEditsMakeOneConflictedCopyNotTwo() {
+        // Both rewrite the same line offline; B's is newer and not sent yet when A's
+        // arrives: B keeps its text and A's as a copy, and A then just takes B's.
+        let start = "# Shared\nbase"
+        let a = Mac("A", body: start), b = Mac("B", body: start)
+        let net = Network([a, b], body: start)
+        a.type { _ in "# Shared\nedited on A" }
+        b.type { _ in "# Shared\nedited on B" }
+        net.send(0); net.serve()
+        while !net.queues[1].isEmpty { net.deliver(1) } // A's version reaches B before B sends
+        #expect(net.settle())
+        #expect(a.note.body == "# Shared\nedited on B" && b.note.body == a.note.body)
+        let copies = a.copies + b.copies
+        #expect(copies.map(\.body) == ["# Shared (conflicted copy, A)\nedited on A"])
+    }
+
+    @Test func ourNewerDeleteKeepsTheirTextAsACopy() {
+        // We deleted the note (again unsent) after a synced delete; an older edit of
+        // theirs arrives: the note stays deleted, their text is kept as a copy.
+        let repo = MemoryRepo()
+        let e = SyncEngine(repo: repo)
+        var n = Note(id: "a", body: "", createdAt: 1, updatedAt: 1000)
+        n.deleted = true
+        n.dirty = true
+        n.seq = 7
+        n.baseHash = NoteText.hash("")
+        repo.save(n)
+        var r = remote("a", "# Their text", updated: 500, seq: 9)
+        r.device = "B"
+        e.applyRemote(r)
+        #expect(repo.notes["a"]!.deleted && repo.notes["a"]!.body.isEmpty)
+        #expect(repo.notes.values.contains { $0.body == "# Their text (conflicted copy, B)" })
+    }
+
+    @Test func aCopiedDatabaseOnASecondMacIsDetected() {
+        // B runs from a copy of A's database: same install id, another computer name.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        b.repo.installID = a.repo.installID
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(0); net.send(1)
+        #expect(net.settle())
+        #expect(a.repo.installID != b.repo.installID) // one of them took a new id
+        let everything = [a, b].flatMap { m in m.repo.notes.values.map(\.body) }.joined()
+        #expect(everything.contains(" from A") && everything.contains("B: "))
+        #expect(a.note.body == b.note.body)
+    }
+
+    @Test func anUnsendableNoteLetsTheWaitingVersionIn() {
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret(" from A", elsewhere: nil, backspace: false)
+        net.send(0)
+        b.typeAtCaret("B: ", elsewhere: 0, backspace: false)
+        net.send(1)
+        net.serve(lose: true)
+        net.serve()
+        net.deliver(0)            // waits for A's put
+        net.reconnect(0)          // that put may still land: keeps waiting
+        #expect(a.repo.lastSeq == 1)
+        a.e.markUnsendable(a.note) // never resent: nothing else would resolve it
+        #expect(a.note.body == "B: " + base + " from A")
+        #expect(a.repo.lastSeq == 2)
+    }
+
+    @Test func noOrphanPinOrder() {
+        // we reordered pins while they unpinned
+        let m = SyncEngine.mergeMeta(base: ["pinned": .bool(true), "pinOrder": .number(1)],
+                                     local: ["pinned": .bool(true), "pinOrder": .number(2)],
+                                     remote: [:], remoteNewer: true)
+        #expect(m.isEmpty)
+    }
+
+    @Test func anOlderClientsMetaChangeMergesKeyByKey() {
+        // We edited the text and pinned; an older client (no heads) trashed the note.
+        let a = Mac("A", body: base)
+        a.typeAtCaret(" mine", elsewhere: nil, backspace: false)
+        a.mutate { $0.pinned = true }
+        var n = a.note
+        n.baseHash = NoteText.hash(base)
+        a.repo.save(n)
+        var r = remote("a", base, updated: a.note.updatedAt + 50, seq: 2)
+        r.device = "Old Mac"
+        r.meta = ["trashedAt": .number(5)]
+        #expect(a.e.applyRemote(r) == .merged)
+        #expect(a.note.body == base + " mine")
+        #expect(a.note.pinned && a.note.meta["trashedAt"] == .number(5))
+    }
+
+    @Test func firstEditsAfterUpgradingMakeNoCopies() {
+        // Both databases come from a build without heads: every note's first put has none.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        for m in [a, b] {
+            var n = m.note
+            n.syncHeads = nil
+            m.repo.save(n)
+            m.relaunch()
+        }
+        let net = Network([a, b], body: base)
+        a.type { String($0.dropLast()) } // deletes a character
+        net.send(0)
+        #expect(net.settle())
+        #expect(b.note.body == String(base.dropLast()))
+        #expect(a.copies.isEmpty && b.copies.isEmpty)
+        // later edits merge with history
+        b.typeAtCaret(" B", elsewhere: 1000, backspace: false)
+        a.typeAtCaret("A ", elsewhere: 0, backspace: false)
+        net.send(0); net.send(1)
+        #expect(net.settle())
+        #expect(a.note.body == b.note.body && a.copies.isEmpty && b.copies.isEmpty)
+    }
+
+    @Test func identicalConflictedCopiesFromTwoMacsBecomeOne() {
+        // Each Mac kept the same losing text as a copy: one survives, on both.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        var copy = Note(id: "copy-b", body: "# Plan (conflicted copy, A)\nlost", createdAt: 1, updatedAt: 10)
+        copy.meta["conflictOf"] = .string("a")
+        var mine = copy
+        mine.id = "copy-a"
+        a.repo.save(mine)
+        var r = copy
+        r.seq = 5
+        r.device = "B"
+        a.e.applyRemote(r)
+        #expect(a.repo.notes.values.filter { $0.isLive && $0.meta["conflictOf"] != nil }.map(\.id) == ["copy-a"])
+        #expect(a.repo.notes["copy-b"]?.deleted == true && a.repo.notes["copy-b"]?.dirty == true)
+        // B, the other way round, deletes the same one
+        var theirs = mine
+        theirs.seq = 6
+        theirs.device = "A"
+        b.repo.save(copy)
+        b.e.applyRemote(theirs)
+        #expect(b.repo.notes["copy-b"]?.deleted == true && b.repo.notes["copy-a"]?.isLive == true)
+    }
+
+    @Test func crissCrossMergesDontDuplicate() {
+        // The reviewer's case: A sends "abc" and keeps typing "def"; B's concurrent "xyz"
+        // was made without "abc". Only one side may merge the pair.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        let net = Network([a, b], body: base)
+        a.typeAtCaret("abc", elsewhere: nil, backspace: false)
+        net.send(0)
+        a.typeAtCaret("def", elsewhere: nil, backspace: false)
+        b.typeAtCaret("xyz", elsewhere: 0, backspace: false)
+        net.send(1)
+        net.serve(); net.serve()
+        for _ in 0..<4 { net.deliver(0); net.deliver(1) }
+        #expect(net.settle())
+        #expect(a.note.body == "xyz" + base + "abcdef")
+        #expect(b.note.body == a.note.body)
+        #expect(a.copies.isEmpty && b.copies.isEmpty)
+    }
+
+    @Test func anAckedEditIsntLostToAConcurrentOne() {
+        // A's edit is acked (clean) when B's version, made without it, overwrites it on
+        // the server: A merges instead of dropping its own text.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        a.type { $0 + "from A\n" }
+        let pa = a.put()!
+        a.e.ack(id: "a", seq: 2, accepted: true)
+        #expect(!a.note.dirty)
+        b.type { "intro first\n" + $0 }
+        var pb = b.put()!
+        pb["seq"] = 3
+        #expect(a.e.applyRemote(NoteWire.decode(pb)!) == .merged)
+        #expect(a.note.body == "intro first\n" + base + "from A\n")
+        #expect(a.note.dirty) // goes back to the server, which only has B's text
+        #expect(a.note.updatedAt > (pb["updated_at"] as! NSNumber).int64Value)
+        _ = pa
+    }
+
+    @Test func versionMadeFromOurTextIsAFastForward() {
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        a.type { $0 + "mine\n" }
+        var pa = a.put()!
+        pa["seq"] = 2
+        b.receive(pa)
+        b.type { $0.replacingOccurrences(of: "mine", with: "mine, edited by B") }
+        var pb = b.put()!
+        pb["seq"] = 3
+        // A's ack hasn't arrived yet (still dirty): no conflicted copy, just B's text
+        #expect(a.note.dirty)
+        #expect(a.e.applyRemote(NoteWire.decode(pb)!) == .adopted)
+        #expect(a.note.body == base + "mine, edited by B\n")
+        #expect(a.copies.isEmpty)
+    }
+
+    @Test func ourOwnVersionComingBackIsNotMergedAgain() {
+        let a = Mac("A", body: base)
+        a.type { $0 + "typed" }
+        var echo = a.put()!
+        echo["seq"] = 2
+        a.type { $0 + " more" } // typing continued right after it
+        #expect(a.e.applyRemote(NoteWire.decode(echo)!) == .keptLocal)
+        #expect(a.note.body == base + "typed more")
+        #expect(a.copies.isEmpty)
+    }
+
+    @Test func overlappingEditsStillKeepAConflictedCopy() {
+        let a = Mac("A", body: "the quick brown fox"), b = Mac("B", body: "the quick brown fox")
+        a.type { _ in "the fox" }
+        b.type { _ in "the quick red fox" }
+        // B's edit is the later one (the base marker is tied to updated_at, so re-encode)
+        var bn = b.note
+        bn.updatedAt = a.note.updatedAt + 10
+        var pb = wire(b.e.encode(bn))
+        pb["seq"] = 2
+        #expect(a.e.applyRemote(NoteWire.decode(pb)!) == .adopted)
+        #expect(a.note.body == "the quick red fox")
+        #expect(a.copies.map(\.body) == ["the fox (conflicted copy, A)"])
+    }
+
+    @Test func unknownBaseFallsBackToLastWriterWins() {
+        // e.g. the base was edited before a relaunch: nothing to merge against
+        let a = Mac("A", body: base)
+        var n = a.note
+        n.body = base + "mine"
+        n.dirty = true
+        n.updatedAt = 200
+        a.repo.save(n) // no willEdit: base text unknown
+        var r = remote("a", base + "theirs", updated: 300, seq: 2)
+        r.device = "B"
+        r.remoteHeads = ["B": SyncHead(at: 300, hash: NoteText.hash(base + "theirs"))] // shares nothing known with ours
+        #expect(a.e.applyRemote(r) == .adopted)
+        #expect(a.copies.count == 1)
+    }
+
+    @Test func wireCarriesTheHeadsTiedToTheVersion() {
+        var n = Note(id: "a", body: "text", createdAt: 1, updatedAt: 500)
+        n.pinned = true
+        let heads: SyncHeads = ["A": SyncHead(at: 500, hash: NoteText.hash("text")), "B Mac": SyncHead(at: 420, hash: 7)]
+        let obj = wire(NoteWire.encode(n, device: "A", origin: "install-A", heads: heads))
+        let back = NoteWire.decode(obj)!
+        #expect(back.remoteHeads == heads)
+        #expect(back.remoteOrigin == "install-A")
+        #expect(NoteWire.decode(wire(NoteWire.encode(n, device: "A", origin: "install-A")))!.remoteOrigin == "install-A") // heads unknown
+        #expect(back.meta["base"] == nil) // never stored as meta
+        #expect(back.pinned)
+        // an older client edits the note and keeps the key: the stale heads are ignored
+        var stale = obj
+        stale["updated_at"] = 600
+        #expect(NoteWire.decode(stale)!.remoteHeads == nil)
+        // tombstones and notes whose history is unknown carry none
+        n.deleted = true
+        #expect((NoteWire.encode(n, device: "A", origin: "install-A", heads: heads)["meta"] as! [String: Any])["base"] == nil)
+        #expect(SyncEngine(repo: MemoryRepo()).sentHeads(local("b", "x", updated: 5, dirty: true)) == nil)
+    }
+
+    @Test func localPinOrTrashSurvivesTheirTextEdit() {
+        // Trashed here (meta only, not yet synced) while the other Mac edited the text
+        // from the same version: their text, our trash, and it goes back to the server.
+        let a = Mac("A", body: base), b = Mac("B", body: base)
+        var n = a.note
+        n.meta["trashedAt"] = .number(1234)
+        n.updatedAt = Note.nextUpdate(after: n.updatedAt)
+        n.dirty = true
+        a.repo.save(n)
+        b.typeAtCaret(" edited", elsewhere: nil, backspace: false)
+        var pb = b.put()!
+        pb["seq"] = 2
+        #expect(a.e.applyRemote(NoteWire.decode(pb)!) == .merged)
+        #expect(a.note.body == base + " edited")
+        #expect(a.note.meta["trashedAt"] == .number(1234))
+        #expect(a.note.dirty)
     }
 }

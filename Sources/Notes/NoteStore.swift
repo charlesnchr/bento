@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 import BentoCore
 
 /// Storage the sync engine works against (the SQLite store, or an in-memory one in tests).
@@ -7,6 +8,14 @@ protocol NoteRepository: AnyObject {
     func save(_ note: Note)
     var lastSeq: Int64 { get set }
     func allNotes(includeTombstones: Bool) -> [Note]
+    /// Random id of this install, stable across launches: names this Mac in sync history
+    /// (computer names can repeat).
+    var installID: String { get }
+    /// Another Mac turned out to use the same id (a copied database): pick a new one and
+    /// retire the old, whose history mixes both Macs.
+    func renewInstallID()
+    /// Ids retired that way: history naming them isn't trusted.
+    var retiredInstallIDs: Set<String> { get }
 }
 
 /// Local notes database: `<support>/Notes/notes.sqlite`.
@@ -23,7 +32,11 @@ final class NoteStore: NoteRepository {
 
     static var defaultURL: URL? { AppPaths.support("Notes").appendingPathComponent("notes.sqlite") }
 
-    init(url: URL? = NoteStore.defaultURL) {
+    /// The Mac this database belongs to (its install id is renewed on any other).
+    private let hostID: String?
+
+    init(url: URL? = NoteStore.defaultURL, hostID: String? = NoteStore.platformUUID) {
+        self.hostID = hostID
         var db: SQLiteDB?
         if let url {
             do {
@@ -59,6 +72,9 @@ final class NoteStore: NoteRepository {
             if !columns.contains("base_hash") {
                 try db.exec("ALTER TABLE notes ADD COLUMN base_hash INTEGER")
             }
+            if !columns.contains("heads") {
+                try db.exec("ALTER TABLE notes ADD COLUMN heads TEXT")
+            }
         } catch {
             log.error("Notes DB migration failed: \(String(describing: error), privacy: .public)")
         }
@@ -81,6 +97,9 @@ final class NoteStore: NoteRepository {
                 n.dirty = (row["dirty"] as? Int64 ?? 0) != 0
                 n.openedAt = row["opened_at"] as? Int64 ?? 0
                 n.baseHash = (row["base_hash"] as? Int64).map { UInt64(bitPattern: $0) }
+                // heads describe the text they were stored with; an older build that edits the
+                // note leaves them behind, so they only count while that text is still there
+                n.syncHeads = (row["heads"] as? String).flatMap { SyncHeadsCodec.decode($0, body: n.body) }
                 cache[id] = n
             }
             for row in try db.query("SELECT key, value FROM kv") {
@@ -131,6 +150,37 @@ final class NoteStore: NoteRepository {
         get { Int64(kv("last_seq") ?? "0") ?? 0 }
         set { setKV("last_seq", String(newValue)) }
     }
+
+    /// Tied to this Mac: a database restored onto another Mac (Migration Assistant, Time
+    /// Machine) while the old one still syncs gets a new id there.
+    var installID: String {
+        if let id = kv("sync_install_id"), !id.isEmpty, kv("sync_install_host") == hostID { return id }
+        // a new Mac (or a first launch): the old id stays the old Mac's alone, not retired
+        newInstallID()
+        return kv("sync_install_id") ?? ""
+    }
+
+    func renewInstallID() {
+        if let old = kv("sync_install_id"), !old.isEmpty {
+            setKVJSON("sync_retired_ids", Array(retiredInstallIDs.union([old])).sorted())
+        }
+        newInstallID()
+    }
+
+    var retiredInstallIDs: Set<String> { Set(kvJSON("sync_retired_ids", as: [String].self) ?? []) }
+
+    private func newInstallID() {
+        setKV("sync_install_id", UUID().uuidString)
+        setKV("sync_install_host", hostID)
+    }
+
+    /// The hardware UUID (IOPlatformUUID).
+    static let platformUUID: String? = {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        return IORegistryEntryCreateCFProperty(service, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
+    }()
 
     // MARK: Queries
 
@@ -196,14 +246,14 @@ final class NoteStore: NoteRepository {
     private func write(_ n: Note) -> Bool {
         do {
             try db?.run("""
-            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notes (id, body, created_at, updated_at, deleted, seq, device, meta, dirty, opened_at, base_hash, heads)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at,
               updated_at = excluded.updated_at, deleted = excluded.deleted, seq = excluded.seq,
               device = excluded.device, meta = excluded.meta, dirty = excluded.dirty, opened_at = excluded.opened_at,
-              base_hash = excluded.base_hash
+              base_hash = excluded.base_hash, heads = excluded.heads
             """, [n.id, n.body, n.createdAt, n.updatedAt, n.deleted, n.seq, n.device, NoteStore.encodeMeta(n.meta), n.dirty, n.openedAt,
-                  n.baseHash.map { Int64(bitPattern: $0) }])
+                  n.baseHash.map { Int64(bitPattern: $0) }, n.syncHeads.map { SyncHeadsCodec.encode($0, body: n.body) }])
             return db != nil
         } catch {
             log.error("Saving note failed: \(String(describing: error), privacy: .public)")

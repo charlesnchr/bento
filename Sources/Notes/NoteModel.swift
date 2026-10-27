@@ -38,6 +38,40 @@ enum JSONValue: Equatable {
     var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
 }
 
+/// The newest version of one Mac's text that a version of a note contains: that Mac's
+/// `updated_at` for it (only ever grows for a note) and the hash of its body.
+struct SyncHead: Equatable {
+    var at: Int64
+    var hash: UInt64
+}
+
+/// Per Mac (install id), the newest of its versions a version contains.
+typealias SyncHeads = [String: SyncHead]
+
+/// JSON text for stored heads, tagged with the hash of the body they describe:
+/// `{"body": "<hex>", "heads": {"<install id>": [updated_at, "<hex hash>"]}}`.
+enum SyncHeadsCodec {
+    static func encode(_ h: SyncHeads, body: String) -> String {
+        let heads = h.mapValues { [NSNumber(value: $0.at), String($0.hash, radix: 16)] as [Any] }
+        let obj: [String: Any] = ["body": String(NoteText.hash(body), radix: 16), "heads": heads]
+        guard let d = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return "{}" }
+        return String(decoding: d, as: UTF8.self)
+    }
+
+    /// nil when malformed or stored with another body.
+    static func decode(_ s: String, body: String) -> SyncHeads? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any],
+              obj["body"] as? String == String(NoteText.hash(body), radix: 16),
+              let heads = obj["heads"] as? [String: [Any]] else { return nil }
+        var out: SyncHeads = [:]
+        for (k, v) in heads {
+            guard v.count == 2, let at = (v[0] as? NSNumber)?.int64Value, let h = (v[1] as? String).flatMap({ UInt64($0, radix: 16) }) else { return nil }
+            out[k] = SyncHead(at: at, hash: h)
+        }
+        return out
+    }
+}
+
 /// One note, mirroring the sync protocol's note object plus local bookkeeping.
 struct Note: Equatable {
     var id: String
@@ -57,6 +91,17 @@ struct Note: Equatable {
     /// (nil: unknown). Lets the sync engine tell a real concurrent edit from a
     /// meta-only change on either side.
     var baseHash: UInt64?
+    /// Which versions of each Mac's text this text contains, as far as the sync engine
+    /// knows (nil: unknown). Local only; kept so merges survive a relaunch.
+    var syncHeads: SyncHeads?
+    /// Wire only (never stored): which versions of each Mac's text a remote version
+    /// contains (`meta.base`); nil when it doesn't say. Lets the engine merge concurrent
+    /// edits.
+    var remoteHeads: SyncHeads?
+    /// Wire only: the install id of the Mac that sent this version (`meta.base.from`).
+    var remoteOrigin: String?
+    /// Wire only: install ids its sender found shared with another Mac (`meta.base.retired`).
+    var remoteRetired: [String] = []
 
     init(id: String = UUID().uuidString, body: String = "", createdAt: Int64 = Note.now(), updatedAt: Int64? = nil) {
         self.id = id

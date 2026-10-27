@@ -35,6 +35,8 @@ struct SyncSettings: Codable, Equatable {
     static let maxBodyBytes = 1024 * 1024
     /// Largest WebSocket message / request the server accepts.
     static let maxMessageBytes = 3 * 1024 * 1024
+    /// Largest `meta` (serialized JSON) the server accepts, see server/src/store.rs.
+    static let maxMetaBytes = 4 * 1024
 }
 
 /// Observable sync status for the footer and settings.
@@ -501,7 +503,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
         guard !notes.isEmpty else { updatePending(); return }
         if status.state == .connected, task != nil, helloDone {
             for n in notes {
-                if send(["type": "put", "note": NoteWire.encode(n, device: device)]) {
+                if send(["type": "put", "note": engine.encode(n)]) {
                     engine.markSent(n)
                 } else {
                     engine.markUnsendable(n)
@@ -532,12 +534,22 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
             let mb = String(format: "%.1f", Double(bytes) / 1_048_576)
             status.lastError = "“\(NoteText.displayTitle(of: n.body))” is too large to sync (\(mb) MB, max 1 MB); it stays on this Mac"
             log.error("Note \(n.id, privacy: .public) too large to sync (\(bytes) bytes)")
+            return false
         }
-        return fits
+        // the server refuses the whole put when meta (pins, sync history…) is too big
+        let meta = engine.encode(n)["meta"] ?? [String: Any]()
+        let metaBytes = (try? JSONSerialization.data(withJSONObject: meta))?.count ?? Int.max
+        guard metaBytes <= SyncSettings.maxMetaBytes else {
+            engine.markUnsendable(n)
+            status.lastError = "“\(NoteText.displayTitle(of: n.body))” has too much metadata to sync; it stays on this Mac"
+            log.error("Note \(n.id, privacy: .public) meta too large to sync (\(metaBytes) bytes)")
+            return false
+        }
+        return true
     }
 
     private func encodedSize(_ n: Note) -> Int {
-        (try? JSONSerialization.data(withJSONObject: ["type": "put", "note": NoteWire.encode(n, device: device)]))?.count ?? Int.max
+        (try? JSONSerialization.data(withJSONObject: ["type": "put", "note": engine.encode(n)]))?.count ?? Int.max
     }
 
     private func updatePending() {
@@ -613,7 +625,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func restPut(_ n: Note) {
-        guard let body = try? JSONSerialization.data(withJSONObject: NoteWire.encode(n, device: device)),
+        guard let body = try? JSONSerialization.data(withJSONObject: engine.encode(n)),
               let id = n.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let req = request("/v1/notes/\(id)", method: "PUT", body: body) else { return }
         engine.markSent(n)

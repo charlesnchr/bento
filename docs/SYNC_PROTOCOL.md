@@ -23,9 +23,18 @@ Single user, single shared bearer token. All timestamps are Unix **milliseconds*
 pinned notes), `trashedAt` (ms; set when moved to Recently Deleted, purged after 60 days by
 turning the note into a tombstone), `conflictOf` (id of the note this one is a
 "conflicted copy" of: when a client's unsynced edit loses last-writer-wins to a
-different text from another device, the client keeps its losing text as a new note
-titled "‹title› (conflicted copy, ‹device›)" instead of discarding it). Unknown
-keys must be preserved.
+different text from another device and the two can't be merged, the client keeps its
+losing text as a new note titled "‹title› (conflicted copy, ‹device›)" instead of
+discarding it), `base` (written on Notes puts: `{"at": updated_at, "from": "<install
+id>", "heads": {"<install id>": [updated_at, "<hash>"], ...}}`: `from` is the sending
+install's random id (computer names can repeat; the id is tied to the Mac's hardware UUID, so
+a database restored onto another Mac gets a new one); `retired` (optional) lists ids its
+sender found in use by two Macs at once; `heads`, absent when the sender doesn't
+know them, says for each install the newest version of that install's text this version
+contains, as its `updated_at` and the hex FNV-1a hash of its UTF-8 body, like a version
+vector, at most 16 (the most recently edited); only valid while `at` equals the note's
+`updated_at`, so a client that edits the note without rewriting `base` invalidates it;
+see Client behaviour). Unknown keys must be preserved.
 
 `body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
 
@@ -146,9 +155,46 @@ so it can adopt it. `created_at` is kept from the first version.
 - Debounce local edits (~400 ms) then send `put`; clear `dirty` on `ack accepted` for
   that id if the note was not edited again meanwhile.
 - On (re)connect: `hello{since:last_seq}`, apply snapshot, then re-send all dirty notes.
-- Applying a remote note: if the local copy is not dirty → overwrite. If dirty and
-  remote `updated_at` is newer → adopt remote (LWW), keeping the cursor position if the
-  note is open. Otherwise keep local and (re)send it.
+- Applying a remote note (Notes) that carries `meta.base`, when the local text's heads
+  are known: exactly one of two clients with concurrent versions merges them, the one
+  whose version the server no longer has. A remote version made without our latest put
+  that arrives while that put is in flight waits for its ack: stored after ours, we
+  merge onto it; stored before ours (ours overwrote it) or our put refused (the winner
+  follows), it is dropped, as its sender merges. Otherwise the local text is merged
+  three-way with the remote one from a known text whose heads are exactly what both
+  contain (the element-wise minimum); both sides' changes are applied when they don't
+  touch the same text, the result is stored dirty with a newer `updated_at` and sent,
+  and the other client takes it as a fast-forward. Two clients merging the same pair of
+  versions get the same text.
+- No such text is known (heads disagree, three or more clients edited at the same
+  moment, or the history is gone), or the changes overlap: last-writer-wins as below,
+  and a synced local text the remote one overwrote is kept as a conflicted copy.
+- Meta (pin, trash…) is merged key by key against the base text's meta: a key changed
+  locally keeps the local value.
+- A remote version that waits for an ack holds `last_seq` just below its seq, so after a
+  crash the next hello fetches it again.
+- Two Macs using one install id (a copied database while the old Mac still syncs: a
+  version arrives with our id and another computer name, or with our id in `retired`):
+  pick a new id, retire the old one, forget all heads. Heads naming a retired id aren't
+  trusted (last-writer-wins with conflicted copies until new history arrives).
+- A version from a client that sends `from` but no heads (its history is gone) that would
+  remove text from a synced local note whose heads are known keeps the local text as a
+  conflicted copy first (without heads on either side, e.g. right after upgrading, it's an
+  ordinary edit). Identical conflicted copies of one note (same `conflictOf` and body)
+  are kept once: the one with the smaller id stays, the other becomes a tombstone.
+- Heads are stored with each note, tagged with the hash of the body they describe (an
+  older build that edits the note leaves them behind; they're dropped on load). The
+  texts merges start from are kept in memory only,
+  so right after a relaunch a concurrent edit falls back to last-writer-wins, keeping
+  the local text as a conflicted copy when the heads show the remote one lacks it. A
+  put without heads counts as the start of a note's history.
+- Otherwise (no `meta.base`, e.g. an older client, or local heads unknown): if the local
+  copy is not dirty → overwrite. If dirty and remote
+  `updated_at` is newer → adopt remote (LWW) and keep the local text as a conflicted
+  copy. Otherwise keep local and (re)send it.
+- An open note takes remote text like Google Docs: only the changed stretches are
+  replaced, the selection moves with the text around it (text inserted right at a caret
+  goes after it), and the line at the top of the view stays there.
 - Reconnect with exponential backoff (1 s … 60 s). If WebSocket upgrade keeps failing
   (e.g. a corporate proxy), fall back to REST polling `GET /v1/notes?since=` every 10 s
   and `PUT` for writes.

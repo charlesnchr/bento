@@ -277,50 +277,53 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         if settings.autoResize { autoResize() }
     }
 
-    /// Applies a body that changed elsewhere (sync) without losing the caret.
+    /// Applies a body that changed elsewhere (sync) like Google Docs: only the changed
+    /// stretches are replaced, the selection moves with the text around it and the text at
+    /// the top of the view stays where it is.
     func applyExternalBody(_ body: String) {
-        let old = storage.string as NSString
-        let new = body as NSString
-        guard old as String != body else { return }
-        if textView.hasMarkedText() { textView.unmarkText() }
+        guard !storage.string.utf16.elementsEqual(body.utf16) else { return }
+        if textView.hasMarkedText() { textView.unmarkText() } // can change the text: diff after it
         closeInline()
-        // minimal replaced range: common prefix/suffix, on composed-character boundaries
-        // (never split a surrogate pair or an emoji sequence)
-        let maxPrefix = min(old.length, new.length)
-        var p = 0
-        while p < maxPrefix, old.character(at: p) == new.character(at: p) { p += 1 }
-        if p < old.length { p = min(p, old.rangeOfComposedCharacterSequence(at: p).location) }
-        if p < new.length { p = min(p, new.rangeOfComposedCharacterSequence(at: p).location) }
-        var s = 0
-        while s < min(old.length, new.length) - p, old.character(at: old.length - 1 - s) == new.character(at: new.length - 1 - s) { s += 1 }
-        func endAligned(_ str: NSString, _ s: Int) -> Int {
-            let e = str.length - s
-            guard e > p, e < str.length else { return s }
-            let r = str.rangeOfComposedCharacterSequence(at: e)
-            return r.location < e ? str.length - NSMaxRange(r) : s
-        }
-        s = max(0, min(endAligned(old, s), endAligned(new, s)))
-        let replaced = NSRange(location: p, length: old.length - p - s)
-        let insert = new.substring(with: NSRange(location: p, length: new.length - p - s))
-        var sel = textView.selectedRange()
-        let delta = (insert as NSString).length - replaced.length
-        func mapPos(_ x: Int) -> Int {
-            if x <= replaced.location { return x }
-            if x >= NSMaxRange(replaced) { return x + delta }
-            return replaced.location + (insert as NSString).length
-        }
-        let a = mapPos(sel.location), b = mapPos(NSMaxRange(sel))
-        sel = NSRange(location: a, length: max(0, b - a))
+        let edits = TextMerge.edits(from: storage.string, to: body)
+        guard !edits.isEmpty else { return }
+        let sel = TextMerge.map(textView.selectedRange(), through: edits)
+        let anchor = scrollAnchor()
         loadingNote = true
         storage.beginEditing()
-        storage.replaceCharacters(in: replaced, with: insert)
+        for e in edits.reversed() { storage.replaceCharacters(in: e.range, with: e.replacement) }
         storage.endEditing()
         loadingNote = false
         undoManager(for: noteID)?.removeAllActions()
         textView.setSelectedRange(sel)
+        if let anchor {
+            // text inserted right at the top line goes above it (out of view), like typing above
+            restoreScroll(TextMerge.map(anchor.index, through: edits, pastInsertions: true, insideToEnd: false), offset: anchor.offset)
+        }
         header.title = NoteText.title(of: body)
         scheduleCounts()
         if settings.autoResize { autoResize() }
+    }
+
+    /// The first character at the top of the scrolled view and how far above the view's
+    /// top its line starts; nil when not scrolled.
+    private func scrollAnchor() -> (index: Int, offset: CGFloat)? {
+        let visible = scroll.contentView.bounds
+        guard visible.minY > 0.5, storage.length > 0, let tc = textView.textContainer else { return nil }
+        let origin = textView.textContainerOrigin
+        let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: visible.minY - origin.y), in: tc)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return (layoutManager.characterIndexForGlyph(at: glyph), visible.minY - (line.minY + origin.y))
+    }
+
+    private func restoreScroll(_ index: Int, offset: CGFloat) {
+        guard storage.length > 0 else { return }
+        let i = min(index, storage.length - 1)
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: 0, length: i + 1))
+        let line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: i), effectiveRange: nil)
+        let clip = scroll.contentView
+        let target = NSRect(origin: NSPoint(x: clip.bounds.minX, y: line.minY + textView.textContainerOrigin.y + offset), size: clip.bounds.size)
+        clip.scroll(to: clip.constrainBoundsRect(target).origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     var currentText: String { storage.string }

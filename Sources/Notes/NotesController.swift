@@ -336,6 +336,7 @@ final class NotesController {
 
     func editorChanged(_ body: String) {
         guard let id = currentID, var n = store.note(id) else { return }
+        engine.willEdit(n) // the text this edit starts from: what a concurrent edit merges against
         n.body = body
         n.updatedAt = Note.nextUpdate(after: n.updatedAt)
         n.dirty = true
@@ -384,6 +385,7 @@ final class NotesController {
         toSave.seq = stored.seq
         toSave.openedAt = stored.openedAt
         toSave.baseHash = stored.baseHash
+        toSave.syncHeads = stored.syncHeads
         if stored.updatedAt >= n.updatedAt, stored.body != n.body { toSave.updatedAt = Note.nextUpdate(after: stored.updatedAt) }
         store.save(toSave)
         sync.localChange()
