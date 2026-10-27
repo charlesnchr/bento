@@ -280,8 +280,8 @@ struct AssistantComposer: View {
                 } label: { Label(model.model ?? "Model", systemImage: "cpu").font(.system(size: 11.5)) }
                     // A long model name truncates rather than pushing the send button out of the box.
                     .menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
-                    .frame(minWidth: 60, maxWidth: 200, alignment: .leading).layoutPriority(-1)
                     .help(model.model ?? "Model").disabled(!model.idle || model.liveVoice)
+                    .frame(minWidth: 44, maxWidth: 200, alignment: .leading).layoutPriority(-1)
             }
             Spacer(minLength: 0)
             if let usage = model.currentUsage, usage.size > 0 {
