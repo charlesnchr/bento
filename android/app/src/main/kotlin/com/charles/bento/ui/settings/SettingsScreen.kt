@@ -232,6 +232,10 @@ private fun DictationSection(context: Context, nav: NavController) {
         SettingsRow("Gemini API key", if (hasKey) "Set" else "Not set: dictation and meetings need it", Icons.Rounded.Key,
                     iconTint = if (hasKey) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error, onClick = { editKey = true })
         SwitchRow("Live transcript", live, "Show and use Gemini Live's transcript while you talk") { prefs.liveTranscription.value = it }
+        val tone by prefs.toneMatching.flow.collectAsStateWithLifecycle()
+        SwitchRow("Match the app's tone", tone, "Cleanup writes like the app you're in (chat, email, notes), using the field and the text before the cursor as context") {
+            prefs.toneMatching.value = it
+        }
         VoiceSyncedSettings()
         SettingsRow("Cleanup model", CLEANUP_MODELS.firstOrNull { it.first == model }?.second ?: model, onClick = { pickModel = true })
         SettingsRow("Dictionary", "Names and terms, synced with your Macs", onClick = { nav.navigate(DictionaryRoute) })
@@ -273,11 +277,8 @@ private fun DictationSection(context: Context, nav: NavController) {
     }
 }
 
-/** Mirrors CleanupModels.swift; the core module's list replaces this when wired. */
-var CLEANUP_MODELS: List<Pair<String, String>> = listOf(
-    "gemini-3.5-flash-lite" to "Flash-Lite, fastest",
-    "gemini-3.8-flash" to "3.8 Flash",
-)
+/** The cleanup models (CleanupModels.swift, ported). */
+val CLEANUP_MODELS: List<Pair<String, String>> = com.charles.bento.core.voice.gemini.CleanupModels.builtIn.map { it.id to it.name }
 
 @Composable
 private fun TriggersSection(context: Context, tick: Int) {

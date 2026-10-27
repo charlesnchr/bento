@@ -35,7 +35,8 @@ interface VoicePipeline {
 }
 
 interface VoiceSession {
-    fun feed(frame: ShortArray)
+    /** False once the session wants no more audio (after stop it may take trailing words first). */
+    fun feed(frame: ShortArray): Boolean
     /** Final text ("" when nothing was said); throws with a user-facing message on failure. */
     suspend fun finish(): String
     fun cancel()
@@ -128,7 +129,8 @@ class DictationController(
                 .getOrElse { fail(it.message ?: "Couldn't start transcription"); return@launch }
             session = s
             val c = AudioCapture(
-                onFrame = { s.feed(it) },
+                // false: the session has all it wants (stopped, or the 10-minute cap)
+                onFrame = { if (!s.feed(it)) scope.launch { if (_state.value is DictationState.Listening) stop() else releaseMic() } },
                 onLevel = { level -> _state.update { st -> if (st is DictationState.Listening) st.copy(level = level) else st } },
             )
             if (!c.start()) {
@@ -148,23 +150,28 @@ class DictationController(
 
     fun stop() {
         val st = _state.value as? DictationState.Listening ?: return
-        capture?.stop()
-        capture = null
         if (prefs.sounds.value) sounds.play(Earcons.STOP)
         _state.value = DictationState.Processing(st.partial, editing)
         val s = session
         session = null
         job = scope.launch {
+            // the microphone stays open a moment for a word still being spoken; the session
+            // says when it has enough (feed returns false), and finish waits for that
             val text = runCatching { s?.finish() ?: "" }
+            releaseMic()
             VoiceService.exit(context)
             text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true) }
                 .onSuccess { deliver(it.trim()) }
         }
     }
 
-    fun cancel() {
+    private fun releaseMic() {
         capture?.stop()
         capture = null
+    }
+
+    fun cancel() {
+        releaseMic()
         session?.cancel()
         session = null
         job?.cancel()
@@ -249,8 +256,7 @@ class DictationController(
     }
 
     private fun fail(message: String, canRetry: Boolean = false) {
-        capture?.stop()
-        capture = null
+        releaseMic()
         VoiceService.exit(context)
         if (prefs.sounds.value) sounds.play(Earcons.ERROR)
         _state.value = DictationState.Failed(message, canRetry)

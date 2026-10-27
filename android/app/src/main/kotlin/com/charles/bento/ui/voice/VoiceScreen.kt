@@ -74,7 +74,8 @@ interface VoiceLists {
     val meetings: kotlinx.coroutines.flow.StateFlow<List<MeetingRow>>
     val history: kotlinx.coroutines.flow.StateFlow<List<HistoryRow>>
     val recordingMeeting: kotlinx.coroutines.flow.StateFlow<String?>
-    fun startMeeting(): String?
+    /** False when it can't start (no key, no microphone permission). */
+    fun startMeeting(): Boolean
     fun stopMeeting()
     fun retry(historyId: String)
 }
@@ -90,6 +91,10 @@ fun VoiceScreen(modifier: Modifier, nav: NavController) {
     val meetings by lists.meetings.collectAsStateWithLifecycle()
     val history by lists.history.collectAsStateWithLifecycle()
     val recording by lists.recordingMeeting.collectAsStateWithLifecycle()
+    var openWhenStarted by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(recording) {
+        if (openWhenStarted && recording != null) { openWhenStarted = false; nav.navigate(MeetingRoute(recording!!)) }
+    }
 
     Column(modifier.fillMaxSize()) {
         LargeTopAppBar(
@@ -101,7 +106,7 @@ fun VoiceScreen(modifier: Modifier, nav: NavController) {
             item { TryIt() }
             item {
                 MeetingCard(recording != null, onToggle = {
-                    if (recording != null) lists.stopMeeting() else lists.startMeeting()?.let { nav.navigate(MeetingRoute(it)) }
+                    if (recording != null) lists.stopMeeting() else if (lists.startMeeting()) openWhenStarted = true
                 }, onOpen = { recording?.let { nav.navigate(MeetingRoute(it)) } })
             }
             if (meetings.isNotEmpty()) {

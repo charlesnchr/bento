@@ -10,8 +10,6 @@ import com.charles.bento.update.Updater
 import com.charles.bento.voice.DictationController
 import com.charles.bento.voice.DictationSinks
 import com.charles.bento.voice.VoicePipeline
-import com.charles.bento.voice.VoiceRequest
-import com.charles.bento.voice.VoiceSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.SupervisorJob
@@ -45,7 +43,11 @@ class AppGraph(val app: Application) {
     val todo = com.charles.bento.todo.TodoModule(app, prefs, sync, engineDispatcher)
     val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
 
-    var voicePipeline: VoicePipeline = Unwired
+    /** Files text as a new Bento note; returns its id (set by the notes module). */
+    var createNote: suspend (body: String) -> String? = { null }
+    val voice = com.charles.bento.voice.GeminiVoice(app, prefs, secrets, voiceSync, main)
+    val voicePipeline: VoicePipeline get() = voice
+    val meetings = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main) { _, md -> createNote(md) }
     var captureThought: suspend (noteId: String?, text: String) -> String? = { _, _ -> null }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
@@ -59,34 +61,32 @@ class AppGraph(val app: Application) {
     }
     val widgetData = com.charles.bento.widget.AppWidgetData(this)
 
-    var voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
-        override val meetings = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.charles.bento.ui.voice.MeetingRow>())
-        override val history = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.charles.bento.ui.voice.HistoryRow>())
-        override val recordingMeeting = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-        override fun startMeeting(): String? = null
-        override fun stopMeeting() {}
-        override fun retry(historyId: String) {}
+    val voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
+        override val meetings get() = this@AppGraph.meetings.list
+        override val history get() = voice.history
+        override val recordingMeeting get() = this@AppGraph.meetings.recording
+        override fun startMeeting() = this@AppGraph.meetings.start()
+        override fun stopMeeting() { this@AppGraph.meetings.recording.value?.let(this@AppGraph.meetings::stop) }
+        override fun retry(historyId: String) = voice.retry(historyId)
     }
-
-    var meetingSource: com.charles.bento.ui.voice.MeetingSource = object : com.charles.bento.ui.voice.MeetingSource {
-        override fun meeting(id: String) = kotlinx.coroutines.flow.MutableStateFlow<com.charles.bento.ui.voice.MeetingUi?>(null)
-        override fun stop(id: String) {}
-        override fun retry(id: String) {}
-    }
+    val meetingSource: com.charles.bento.ui.voice.MeetingSource get() = meetings
 
     val dictation = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() })
 
     fun start() {
         sync.start()
         Updater.schedule(app)
+        voice.recover()
+        meetings.recover()
+        // recordings that waited for a connection go out as soon as there is one
+        app.getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(
+            object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) = voice.recover()
+            },
+        )
     }
 
     /** After a background sync: refresh widgets. */
     suspend fun onBackgroundSync() {}
 
-    private object Unwired : VoicePipeline {
-        override fun open(request: VoiceRequest, onPartial: (String) -> Unit): VoiceSession = error("Voice engine not available")
-        override suspend fun edit(instruction: String, text: String, request: VoiceRequest): String = text
-        override fun unavailableReason(): String = "Voice engine not available"
-    }
 }

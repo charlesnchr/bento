@@ -37,6 +37,9 @@ class Prefs(context: Context) {
 
     // Dictation
     val liveTranscription = bool("voice.live", true)
+    /** Cleanup in the target app's tone, with its field and preceding text as context (the Mac's smart cleanup pass). */
+    val toneMatching = bool("voice.toneMatching", false)
+    val meetingSummary = bool("voice.meetingSummary", true)
     val cleanupModel = string("voice.cleanupModel", "gemini-3.5-flash-lite")
     val language = string("voice.language", "")
     val activeMode = string("voice.mode", "")

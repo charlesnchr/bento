@@ -88,7 +88,12 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
             MainActivity.ACTION_QUICK_ADD -> { tab = Tab.Todo; homeAction.value = HomeAction.QuickAdd }
             MainActivity.ACTION_OPEN_TODO -> tab = Tab.Todo
             MainActivity.ACTION_OPEN_TASK -> { tab = Tab.Todo; id?.let { Routes.openTask.value = it } }
-            MainActivity.ACTION_OPEN_MEETING -> { tab = Tab.Voice; id?.let { nav.navigate(MeetingRoute(it)) } }
+            MainActivity.ACTION_OPEN_MEETING -> { tab = Tab.Voice; (id ?: graph.meetings.recording.value)?.let { nav.navigate(MeetingRoute(it)) } }
+            MainActivity.ACTION_TOGGLE_MEETING -> {
+                tab = Tab.Voice
+                val rec = graph.meetings.recording.value
+                if (rec != null) { graph.meetings.stop(rec); nav.navigate(MeetingRoute(rec)) } else graph.meetings.start()
+            }
             MainActivity.ACTION_OPEN_UPDATES -> nav.navigate(SettingsRoute)
         }
     }
