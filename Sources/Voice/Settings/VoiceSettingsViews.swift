@@ -653,6 +653,16 @@ struct AssistantSettingsView: View {
             } footer: {
                 Footnote("The assistant is Hermes over ACP. Its model, effort and model list come from the bento_voice section of ~/.hermes/config.yaml (jot_voice is read too); the chat window's pickers apply to Bento's Hermes process only. In the window, ⌘K opens the palette and ⌘/ lists every shortcut.")
             }
+            Section {
+                Toggle(isOn: binding({ settings.assistantKeepOnTop }, { settings.setAssistantKeepOnTop($0) })) {
+                    Text("Keep on top (picture in picture)")
+                    Text("Off, the window floats over the Space it opened on and stays behind when you switch Spaces.")
+                }
+            } header: {
+                Text("Window")
+            } footer: {
+                Footnote("The chat window stays above every app, on every Space and over full-screen apps, until you hide it (⇧⌥F18 or Esc). Typing in it doesn't switch away from the app in front. VoiceOver works best with this off.")
+            }
             Section("Shortcuts") {
                 ModuleShortcuts(moduleID: "assistant", revision: revision.value)
             }

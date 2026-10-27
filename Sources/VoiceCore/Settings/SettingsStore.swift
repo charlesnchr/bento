@@ -629,6 +629,13 @@ public struct SettingsStore: Sendable {
     public var useDictationComposer: Bool { Self.defaults.bool(forKey: "useDictationComposer") }
     public func setUseDictationComposer(_ enabled: Bool) { Self.set(enabled, forKey: "useDictationComposer") }
 
+    /// The assistant window stays on top of every app, on every Space and over
+    /// full-screen apps, like picture in picture. On by default: the window
+    /// always floated above other apps; this keeps it there across Spaces.
+    public static let assistantKeepOnTopKey = "assistantKeepOnTop"
+    public var assistantKeepOnTop: Bool { Self.defaults.object(forKey: Self.assistantKeepOnTopKey) as? Bool ?? true }
+    public func setAssistantKeepOnTop(_ enabled: Bool) { Self.set(enabled, forKey: Self.assistantKeepOnTopKey) }
+
     public func setEndpointOverride(_ raw: String?) {
         Self.set(raw, forKey: "endpointOverride")
     }
