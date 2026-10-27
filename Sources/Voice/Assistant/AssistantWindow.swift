@@ -66,6 +66,9 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
+        // A panel otherwise fades in and out (about 0.3 s), which makes the
+        // toggle shortcut feel slow.
+        panel.animationBehavior = .none
         panel.isOpaque = false
         panel.backgroundColor = .clear
         applyStacking()
@@ -141,7 +144,10 @@ final class AssistantWindow: NSObject, NSWindowDelegate {
         guard panel.attachedSheet == nil else { return }
         onHide?()
         placement.save()
-        AppActivation.orderOut(panel, activating: panel.isKeyWindow ? (origin ?? AppActivation.previousApp) : nil)
+        // Kept on top, the app in front now is the one the user is in, even
+        // if they switched apps since the window was shown.
+        let target = stacking.nonactivating ? NSWorkspace.shared.frontmostApplication : origin
+        AppActivation.orderOut(panel, activating: panel.isKeyWindow ? (target ?? AppActivation.previousApp) : nil)
     }
     func export(_ markdown: String, title: String) {
         let save = NSSavePanel()
