@@ -116,9 +116,16 @@ item names and images) from Settings → General. Dictation asks for the
 **Microphone** the first time you use it, and meetings ask once for **System
 Audio Recording** when they include what the Mac plays.
 
-Dictation works with a Gemini API key out of the box. The other transcription
-models, meeting notes through Vertex AI and Gemini Live calls go through a small
-local helper you run yourself: see `helper/README.md`.
+Dictation works out of the box with Parakeet v3, which runs on the Mac: with no
+Gemini API key and no helper, it's the default, and Settings → Dictation, the
+Dictation menu and your first dictation offer its one-time download (about
+480 MB, into FluidAudio's cache in `~/Library/Application Support/FluidAudio/Models`).
+Without a key nothing formats the text, so Parakeet's words go in as heard. Add
+a Gemini API key (Settings → Dictation → Advanced) for Gemini Transcribe and the
+cleanup model; Parakeet v3 and Ultra stay selectable beside it. Adding a key
+switches the fallback back to Gemini unless you downloaded or picked Parakeet.
+The other transcription models, meeting notes through Vertex AI and Gemini Live
+calls go through a small local helper you run yourself: see `helper/README.md`.
 
 ## Configuration
 

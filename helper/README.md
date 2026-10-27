@@ -12,7 +12,8 @@ the app never does:
 - OpenRouter: MAI-Transcribe-2.
 - A local Anthropic-messages gateway (for example LiteLLM): relayed cleanup models.
 
-Parakeet runs on the Mac and needs none of this.
+Parakeet runs on the Mac and needs none of this: without a key or the helper,
+Parakeet v3 is dictation's default (Settings → Dictation downloads it).
 
 ## Setup
 

@@ -238,14 +238,70 @@ public struct SettingsStore: Sendable {
     }
 
     public var transcriptionEngine: TranscriptionEngine {
-        guard VertexRuntimeConfig.state().config?.isDirect == true else { return .gemini }
-        if let engineOverride { return engineOverride }
+        let runtime = VertexRuntimeConfig.state()
+        if runtime.config?.isDirect == true, let engineOverride { return engineOverride }
+        return Self.resolveEngine(stored: storedTranscriptionEngine, runtime: runtime, hasAPIKey: Self.geminiAPIUsable)
+    }
+
+    /// The user's saved choice, before asking whether this Mac can run it.
+    /// Never choosing reads as Gemini.
+    private var storedTranscriptionEngine: TranscriptionEngine {
         if let backend = TranscriptionEngine(rawValue: Self.defaults.string(forKey: "transcriptionBackend") ?? ""),
            TranscriptionEngine.backends.contains(backend) {
             return backend
         }
         if Self.defaults.bool(forKey: "dualTranscription") { return .dual }
         return Self.defaults.bool(forKey: "gptTranscription") ? .gpt : .gemini
+    }
+
+    /// The engine dictation runs. Only the direct helper reaches every engine; a
+    /// gateway (or a broken runtime, whose error says what to fix) is Gemini.
+    /// Without a runtime, Parakeet runs in-process, so an on-device choice holds,
+    /// and with no Gemini API key either Parakeet v3 is the one engine that can
+    /// work. That fallback is worked out on every read and never saved, so adding
+    /// a key brings back whatever was chosen before.
+    static func resolveEngine(stored: TranscriptionEngine, runtime: VertexRuntimeConfig.State,
+                              hasAPIKey: () -> Bool) -> TranscriptionEngine {
+        switch runtime {
+        case .configured(let config) where config.isDirect: return stored
+        case .configured, .invalid: return .gemini
+        case .notConfigured:
+            if stored.isLocal { return stored }
+            return hasAPIKey() ? .gemini : .parakeetV3
+        }
+    }
+
+    /// Asks the Keychain (cached there). Tests swap it, so they never depend on this Mac's key.
+    nonisolated(unsafe) static var hasGeminiAPIKey: () -> Bool = { KeychainStore.hasAPIKey }
+
+    /// Whether the Gemini API path can work: a stored key, or an endpoint
+    /// override (a local proxy holding its own credentials) that needs none.
+    static func geminiAPIUsable() -> Bool {
+        usableEndpointURL(defaults.string(forKey: "endpointOverride")) != nil || hasGeminiAPIKey()
+    }
+
+    /// Whether a cloud model has credentials: a runtime config brings its own
+    /// (the helper or gateway holds the keys), otherwise the Gemini API path.
+    public var cloudTranscriptionAvailable: Bool {
+        VertexRuntimeConfig.state().isRequested || Self.geminiAPIUsable()
+    }
+
+    /// True while dictation is on Parakeet v3 only because nothing else can run:
+    /// no runtime, no API key or endpoint override, and no on-device model the
+    /// user picked themselves.
+    public var usesLocalFallback: Bool {
+        guard case .notConfigured = VertexRuntimeConfig.state() else { return false }
+        return !storedTranscriptionEngine.isLocal && !Self.geminiAPIUsable()
+    }
+
+    /// The single engines this Mac can be switched to, in menu order. Dual
+    /// review needs the direct helper and is offered beside these there.
+    public var selectableEngines: [TranscriptionEngine] {
+        switch VertexRuntimeConfig.state() {
+        case .configured(let config) where config.isDirect: return TranscriptionEngine.singles
+        case .configured, .invalid: return [.gemini]
+        case .notConfigured: return TranscriptionEngine.singles.filter { $0 == .gemini || $0.isLocal }
+        }
     }
 
     public func setTranscriptionEngine(_ engine: TranscriptionEngine) {
@@ -385,8 +441,12 @@ public struct SettingsStore: Sendable {
     }
 
     public func effectiveFormattingPolicy(vertexConfigured: Bool = VertexRuntimeConfig.state().isRequested) -> FormattingPolicy {
-        vertexConfigured && VertexRuntimeConfig.state().config?.isDirect != true
-            ? FormattingPolicy(nativeSmart: false, cleanupPass: false) : formattingPolicy
+        if vertexConfigured {
+            return VertexRuntimeConfig.state().config?.isDirect == true
+                ? formattingPolicy : FormattingPolicy(nativeSmart: false, cleanupPass: false)
+        }
+        // No way to the Gemini API means no cleanup model to call: Parakeet's words go in as heard.
+        return Self.geminiAPIUsable() ? formattingPolicy : FormattingPolicy(nativeSmart: false, cleanupPass: false)
     }
 
     /// Native `mode: "smart"` — the default transcription path.
