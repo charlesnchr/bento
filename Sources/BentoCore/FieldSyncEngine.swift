@@ -1,6 +1,15 @@
 import Foundation
 
-/// The client side of the sync protocol for todo documents (transport independent).
+/// Storage the sync engine works against (`FieldDocStore`, or an in-memory one in tests).
+public protocol FieldDocRepository: AnyObject {
+    func doc(_ id: String) -> FieldDoc?
+    func save(_ doc: FieldDoc, remote: Bool)
+    var lastSeq: Int64 { get set }
+    var allDocs: [FieldDoc] { get }
+}
+
+/// The client side of the sync protocol for field documents (transport independent):
+/// Todo's `todos` collection and the voice modules' `voice`.
 ///
 /// - `dirty` documents have local changes the server hasn't acknowledged.
 /// - `inflight` remembers which versions (updated_at) of a document were sent, oldest
@@ -9,20 +18,20 @@ import Foundation
 /// - Remote versions are merged field by field (per-field clocks), so concurrent edits
 ///   of different fields on two devices both survive. When the merge differs from what
 ///   the server has, the result stays dirty with an `updated_at` the server will accept.
-final class TodoSyncEngine {
-    enum RemoteResult: Equatable { case inserted, overwritten, merged, keptLocal, unchanged }
+public final class FieldSyncEngine {
+    public enum RemoteResult: Equatable { case inserted, overwritten, merged, keptLocal, unchanged }
 
-    let repo: TodoRepository
+    public let repo: FieldDocRepository
     /// This client's device name (puts carry it).
-    var device = ""
-    private(set) var inflight: [String: [Int64]] = [:]
+    public var device = ""
+    public private(set) var inflight: [String: [Int64]] = [:]
     /// Documents the server refused in this version; not resent until edited again.
-    private(set) var failed: [String: Int64] = [:]
+    public private(set) var failed: [String: Int64] = [:]
 
     /// Called for every document whose stored content changed because of the server.
-    var onRemoteChange: ((TodoDoc, RemoteResult) -> Void)?
+    public var onRemoteChange: ((FieldDoc, RemoteResult) -> Void)?
 
-    init(repo: TodoRepository) { self.repo = repo }
+    public init(repo: FieldDocRepository) { self.repo = repo }
 
     // MARK: Incoming
 
@@ -30,7 +39,7 @@ final class TodoSyncEngine {
     /// (WebSocket, polls), so last_seq may move to its seq. Not for a REST put's stored
     /// winner, whose seq can be ahead of changes this client hasn't seen.
     @discardableResult
-    func applyRemote(_ r: TodoDoc, advanceCursor: Bool = true) -> RemoteResult {
+    public func applyRemote(_ r: FieldDoc, advanceCursor: Bool = true) -> RemoteResult {
         if advanceCursor, let s = r.seq, s > repo.lastSeq { repo.lastSeq = s }
         guard let local = repo.doc(r.id) else {
             var d = r
@@ -54,11 +63,11 @@ final class TodoSyncEngine {
     /// Our version (dirty or not) against a version from the server. Always a merge, even
     /// when nothing is pending locally: a stale put that landed after a newer version
     /// would otherwise regress fields everywhere; merging heals the server instead.
-    private func resolve(local: TodoDoc, remote r: TodoDoc) -> TodoDoc {
+    private func resolve(local: FieldDoc, remote r: FieldDoc) -> FieldDoc {
         // A version of ours is still unacknowledged: whatever we adopt must outrank it,
         // or the server ends up with the older content we sent.
         let pending = inflight[r.id] != nil
-        func adopt(_ r: TodoDoc) -> TodoDoc {
+        func adopt(_ r: FieldDoc) -> FieldDoc {
             var d = r
             if d.deleted { d.type = local.type } // tombstones carry no body
             d.dirty = false
@@ -67,7 +76,7 @@ final class TodoSyncEngine {
         // Tombstones: a deletion wins over field changes older than it, and loses to newer ones.
         if r.deleted {
             // Both deleted: the later deletion stamp wins, so a newer local one is kept and
-            // resent (an edit between the two stamps must not resurrect the task).
+            // resent (an edit between the two stamps must not resurrect the document).
             if local.deleted { return r.updatedAt >= local.updatedAt ? adopt(r) : outranking(local, r, local: local) }
             return r.updatedAt >= local.maxClock ? adopt(r) : outranking(local, r, local: local)
         }
@@ -83,7 +92,7 @@ final class TodoSyncEngine {
     /// `d` kept dirty with an updated_at the server's LWW rule accepts over `r`. When its
     /// content differs from `local`, it is a new version: its stamp must differ from every
     /// version already sent, or the ack of an older put would mark it clean.
-    private func outranking(_ d: TodoDoc, _ r: TodoDoc, local: TodoDoc) -> TodoDoc {
+    private func outranking(_ d: FieldDoc, _ r: FieldDoc, local: FieldDoc) -> FieldDoc {
         var d = d
         d.dirty = true
         if let s = r.seq, (d.seq ?? -1) < s { d.seq = s }
@@ -98,7 +107,7 @@ final class TodoSyncEngine {
     /// Applies a snapshot (reply to hello / REST poll). Returns true when the server's seq
     /// went backwards (backup restore) and a full resync is needed.
     @discardableResult
-    func applySnapshot(_ docs: [TodoDoc], seq: Int64) -> Bool {
+    public func applySnapshot(_ docs: [FieldDoc], seq: Int64) -> Bool {
         if seq < repo.lastSeq {
             // Everything the server lost must be resent.
             for var d in repo.allDocs where (d.seq ?? 0) > seq || d.seq == nil {
@@ -118,7 +127,7 @@ final class TodoSyncEngine {
     /// knows it (REST); WebSocket acks arrive in send order and pop the oldest version.
     /// `ordered`: the server sent every earlier change of our collections before this ack
     /// (WebSocket), so last_seq may jump to it over other collections' seqs.
-    func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil, ordered: Bool = false) {
+    public func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil, ordered: Bool = false) {
         let sent = popInflight(id, version: version)
         guard accepted else { return } // the stored winner follows as a `note` message
         guard var d = repo.doc(id) else { return }
@@ -131,17 +140,17 @@ final class TodoSyncEngine {
     }
 
     /// The server rejected a put with an error (validation, size, id in another collection).
-    func putFailed(id: String, version: Int64? = nil) {
+    public func putFailed(id: String, version: Int64? = nil) {
         if let sent = popInflight(id, version: version) { failed[id] = sent }
     }
 
-    func markUnsendable(_ d: TodoDoc) { failed[d.id] = d.updatedAt }
+    public func markUnsendable(_ d: FieldDoc) { failed[d.id] = d.updatedAt }
 
     /// New connection: refused documents are tried again (the refusal may have been transient;
     /// oversized ones are caught again before sending).
-    func clearFailed() { failed.removeAll() }
+    public func clearFailed() { failed.removeAll() }
 
-    var blockedCount: Int {
+    public var blockedCount: Int {
         failed.filter { id, v in repo.doc(id).map { $0.dirty && $0.updatedAt == v } ?? false }.count
     }
 
@@ -160,18 +169,18 @@ final class TodoSyncEngine {
     // MARK: Outgoing
 
     /// Dirty documents that aren't already in flight in their current version.
-    func docsToSend() -> [TodoDoc] {
+    public func docsToSend() -> [FieldDoc] {
         repo.allDocs.filter { d in
             d.dirty && inflight[d.id]?.last != d.updatedAt && failed[d.id] != d.updatedAt
         }.sorted { $0.updatedAt < $1.updatedAt }
     }
 
-    func markSent(_ d: TodoDoc) { inflight[d.id, default: []].append(d.updatedAt) }
+    public func markSent(_ d: FieldDoc) { inflight[d.id, default: []].append(d.updatedAt) }
 
-    var hasInflight: Bool { !inflight.isEmpty }
+    public var hasInflight: Bool { !inflight.isEmpty }
 
     /// Connection lost: nothing is in flight any more.
-    func reset() { inflight.removeAll() }
+    public func reset() { inflight.removeAll() }
 
-    var pendingCount: Int { repo.allDocs.filter(\.dirty).count }
+    public var pendingCount: Int { repo.allDocs.filter(\.dirty).count }
 }

@@ -88,6 +88,12 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
   `ThemedBackgroundView(material:content:)`, SwiftUI `ThemeBackdrop`, `themedBackground(_:)`,
   `themedSidebarBackground(_:)` (sidebars and list columns keep a subtle split),
   `themedScrollBackground()`; child panels call `followAppearance(of: parent)` when shown.
+- Field-document sync (FieldDoc.swift, FieldSyncEngine.swift, FieldDocStore.swift,
+  FieldSyncClient.swift) — the per-field-clock documents of `docs/SYNC_PROTOCOL.md` for any
+  collection but `notes`: `FieldDoc` + `FieldDocWire(collection:)`, `FieldSyncEngine` (merges,
+  acks, tombstones), `FieldDocStore` (SQLite, `last_seq`), `FieldSyncClient` (WebSocket/REST
+  transport, configured with a `FieldSyncProfile` and `SyncServerSettings`) and its
+  `FieldSyncStatus`. Todo (`todos`) uses them; Notes has its own.
 
 ## Rules for module work
 
