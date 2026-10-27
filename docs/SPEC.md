@@ -72,8 +72,10 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 - `Permissions`, `Keyboard.paste()/copy()/post(...)`, `HUD.show("Left Half", symbol:)`,
   `KeyablePanel`, `AppActivation.activateSelf()/previousApp`, `AppPaths.support("name")`,
   `SQLiteDB` (tiny sqlite3 wrapper), `BentoLog.make("category")`.
-- `Theme` / `ThemeCenter` (Theme.swift) — Standard, Glass or Aero; `ThemeCenter.shared.style`
-  says what to draw (standard under Reduce Transparency), `didChange` when it changes.
+- `Theme` / `ThemeCenter` (Theme.swift) — Standard, Glass, Tinted, Graphite or Paper;
+  `ThemeCenter.shared.style` says what to draw (a surface over an optional blur, an accent
+  tint, a pinned light/dark appearance; glass is standard under Reduce Transparency),
+  `didChange` when it changes.
   `ThemedBackgroundView(material:content:)`, SwiftUI `ThemeBackdrop`, `themedBackground(_:)`,
   `themedScrollBackground()`.
 
@@ -108,7 +110,7 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
    reference app has it. Keyboard-first: every panel fully usable without the mouse.
    Main windows follow the theme (`general.theme`): put content on a `ThemedBackgroundView`
    (or `ThemeBackdrop` in SwiftUI) instead of a bare NSVisualEffectView, and wrap opaque
-   backgrounds in `themedBackground(_:)` so the glass shows through.
+   backgrounds in `themedBackground(_:)` so the theme's surface shows through.
 7. Settings: each module provides `makeSettingsView()` (SwiftUI `Form { … }.formStyle(.grouped)`)
    with its options and a "Shortcuts" section listing its actions with `ShortcutRecorder(actionID:)`.
 8. Action ids are `<module>.<kebab-name>`. Titles are short ("Left Half", "Capture Area").

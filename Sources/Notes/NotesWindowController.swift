@@ -771,16 +771,15 @@ final class HairlineView: NSView {
 
 /// Darkens/lightens the vibrancy so the window reads like Raycast's (near-black in
 /// dark mode, light grey in light mode) while keeping a hint of translucency.
-/// Under a glass theme it mostly steps aside and lets the glass show.
+/// Under the other themes it steps aside and lets the theme's surface show.
 final class TintView: NSView {
     static let color = NotesTheme.dynamic(dark: NSColor(srgbRed: 0.05, green: 0.05, blue: 0.055, alpha: 0.88),
                                           light: NSColor(srgbRed: 0.965, green: 0.965, blue: 0.97, alpha: 0.82))
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
-        let glass = ThemeCenter.shared.style.isGlass
+        let themed = ThemeCenter.shared.style.replacesBackground
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            let color = TintView.color
-            layer?.backgroundColor = (glass ? color.withAlphaComponent(color.alphaComponent * 0.35) : color).cgColor
+            layer?.backgroundColor = themed ? nil : TintView.color.cgColor
         }
     }
     override func viewDidChangeEffectiveAppearance() {

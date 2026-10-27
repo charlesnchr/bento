@@ -212,10 +212,10 @@ struct AppearanceSection: View {
             Text("Appearance")
         } footer: {
             Group {
-                if themes.reduceTransparency, general.value.theme != .standard {
+                if themes.reduceTransparency, ThemeStyle(theme: general.value.theme).isGlass {
                     Text("Reduce Transparency is on in System Settings → Accessibility → Display, so Bento's windows use the standard look.")
                 } else {
-                    Text("Glass lets the desktop show through Settings, Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search and Capture History. Aero adds your accent colour and a gloss.")
+                    Text("For Settings, Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search and Capture History. Glass lets the desktop show through, Tinted adds your accent colour, Graphite is always dark and Paper always light.")
                 }
             }
             .font(.caption).foregroundStyle(.secondary)

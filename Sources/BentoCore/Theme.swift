@@ -8,9 +8,12 @@ public enum Theme: String, Codable, CaseIterable, Identifiable {
     case standard
     /// Frosted glass: the desktop shows through Bento's windows, blurred.
     case glass
-    /// Glass tinted with the accent colour and a glossy sheen across the top,
-    /// after Windows Vista's Aero.
-    case aero
+    /// Frosted glass washed with the accent colour.
+    case tinted
+    /// Near-black, high-contrast windows, dark even in light mode.
+    case graphite
+    /// Warm off-white windows, light even in dark mode.
+    case paper
 
     public var id: String { rawValue }
 
@@ -18,43 +21,149 @@ public enum Theme: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .standard: return "Standard"
         case .glass: return "Glass"
-        case .aero: return "Aero"
+        case .tinted: return "Tinted"
+        case .graphite: return "Graphite"
+        case .paper: return "Paper"
         }
+    }
+
+    /// Themes that were removed, mapped to the closest current one.
+    static let renamed: [String: Theme] = [
+        // Aero (glass, accent tint and a gloss) became Tinted without the gloss.
+        "aero": .tinted,
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let theme = Theme(rawValue: raw) ?? Self.renamed[raw] else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown theme \(raw)")
+        }
+        self = theme
     }
 }
 
-/// What a window background draws for a theme. Values are opacities (0–1) of
-/// layers over the blur, from the bottom up.
-public struct ThemeStyle: Equatable {
-    /// Replaces the window's own background; nil keeps it (the standard look).
-    public var material: NSVisualEffectView.Material?
-    /// Neutral wash (dark in dark mode, light in light mode) that keeps text readable.
-    public var frost: CGFloat
-    /// The accent colour.
-    public var tint: CGFloat
-    /// White gloss fading out down the top of the window.
-    public var sheen: CGFloat
+/// An sRGB colour with separate light and dark values.
+public struct ThemeColor: Equatable {
+    public var light: Components
+    public var dark: Components
 
-    public var isGlass: Bool { material != nil }
-
-    public static let standard = ThemeStyle(material: nil, frost: 0, tint: 0, sheen: 0)
-
-    /// Reduce Transparency always gets the standard look; Increase Contrast
-    /// gets a heavier frost so text stands out from what's behind the window.
-    public init(theme: Theme, reduceTransparency: Bool = false, increaseContrast: Bool = false) {
-        switch reduceTransparency ? .standard : theme {
-        case .standard: self = .standard
-        case .glass: self.init(material: .hudWindow, frost: 0.22, tint: 0, sheen: 0.08)
-        case .aero: self.init(material: .hudWindow, frost: 0.16, tint: 0.18, sheen: 0.2)
+    public struct Components: Equatable {
+        public var red, green, blue, alpha: CGFloat
+        public init(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat = 1) {
+            (self.red, self.green, self.blue, self.alpha) = (red, green, blue, alpha)
         }
-        if isGlass, increaseContrast { frost = min(1, frost + 0.3) }
+        public var color: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha) }
     }
 
-    public init(material: NSVisualEffectView.Material?, frost: CGFloat, tint: CGFloat, sheen: CGFloat) {
+    public init(light: Components, dark: Components) {
+        self.light = light
+        self.dark = dark
+    }
+
+    public func components(dark isDark: Bool) -> Components { isDark ? dark : light }
+}
+
+/// What a window background draws for a theme: a surface colour over an
+/// optional blur of the desktop, an optional accent wash, and optionally a
+/// fixed light or dark appearance.
+public struct ThemeStyle: Equatable {
+    /// The blur behind the surface. nil with a surface: an opaque window.
+    public var material: NSVisualEffectView.Material?
+    /// Replaces the window's own background; nil keeps it (the standard look).
+    /// Under glass its alpha decides how much of the desktop shows through.
+    public var surface: ThemeColor?
+    /// Opacity of the accent colour over the surface.
+    public var tint: CGFloat
+    /// Pins the windows to light or dark; nil follows the system.
+    public var appearance: NSAppearance.Name?
+
+    /// The theme paints the window's background: views hide their own opaque
+    /// backgrounds (`themedBackground`) so it shows.
+    public var replacesBackground: Bool { surface != nil }
+    /// The desktop shows through.
+    public var isGlass: Bool { surface != nil && material != nil }
+
+    public static let standard = ThemeStyle(material: nil, surface: nil, tint: 0, appearance: nil)
+
+    /// Reduce Transparency turns glass into the standard look (the opaque themes
+    /// stay); Increase Contrast frosts glass more so text stands out from
+    /// what's behind the window.
+    public init(theme: Theme, reduceTransparency: Bool = false, increaseContrast: Bool = false) {
+        switch theme {
+        case .standard:
+            self = .standard
+        case .glass:
+            // Neutral frost over the HUD blur: enough to keep secondary text
+            // readable over a busy wallpaper, little enough to stay glass.
+            self.init(material: .hudWindow,
+                      surface: ThemeColor(light: .init(0.97, 0.97, 0.98, 0.6), dark: .init(0.08, 0.08, 0.09, 0.58)),
+                      tint: 0, appearance: nil)
+        case .tinted:
+            self.init(material: .hudWindow,
+                      surface: ThemeColor(light: .init(0.97, 0.97, 0.98, 0.68), dark: .init(0.08, 0.08, 0.09, 0.6)),
+                      tint: 0.1, appearance: nil)
+        case .graphite:
+            self.init(material: nil,
+                      surface: ThemeColor(light: .init(0.075, 0.078, 0.086), dark: .init(0.075, 0.078, 0.086)),
+                      tint: 0, appearance: .darkAqua)
+        case .paper:
+            self.init(material: nil,
+                      surface: ThemeColor(light: .init(0.965, 0.945, 0.905), dark: .init(0.965, 0.945, 0.905)),
+                      tint: 0, appearance: .aqua)
+        }
+        if isGlass, reduceTransparency { self = .standard }
+        if isGlass, increaseContrast, let s = surface {
+            surface = ThemeColor(light: s.light.frosted(by: 0.3), dark: s.dark.frosted(by: 0.3))
+        }
+    }
+
+    public init(material: NSVisualEffectView.Material?, surface: ThemeColor?, tint: CGFloat, appearance: NSAppearance.Name?) {
         self.material = material
-        self.frost = frost
+        self.surface = surface
         self.tint = tint
-        self.sheen = sheen
+        self.appearance = appearance
+    }
+
+    /// The colour views see behind them in `appearance` (`.aqua`/`.darkAqua`),
+    /// with the desktop through glass taken as `backdrop`. For contrast checks.
+    public func background(dark: Bool, backdrop: NSColor) -> NSColor {
+        guard let surface else { return backdrop }
+        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
+        let base = material == nil ? surface.components(dark: dark).color.withAlphaComponent(1) : surface.components(dark: dark).color
+        return base.over(backdrop).blended(alpha: tint, with: accent)
+    }
+}
+
+private extension ThemeColor.Components {
+    func frosted(by amount: CGFloat) -> Self { Self(red, green, blue, min(1, alpha + amount)) }
+}
+
+extension NSColor {
+    /// Source-over compositing of self onto an opaque `backdrop`, in sRGB.
+    func over(_ backdrop: NSColor) -> NSColor {
+        let f = usingColorSpace(.sRGB) ?? self, b = backdrop.usingColorSpace(.sRGB) ?? backdrop
+        let a = f.alphaComponent
+        return NSColor(srgbRed: f.redComponent * a + b.redComponent * (1 - a),
+                       green: f.greenComponent * a + b.greenComponent * (1 - a),
+                       blue: f.blueComponent * a + b.blueComponent * (1 - a), alpha: 1)
+    }
+
+    func blended(alpha: CGFloat, with color: NSColor) -> NSColor {
+        alpha > 0 ? color.withAlphaComponent(alpha).over(self) : self
+    }
+
+    /// WCAG relative luminance (sRGB).
+    var relativeLuminance: CGFloat {
+        let c = usingColorSpace(.sRGB) ?? self
+        func lin(_ v: CGFloat) -> CGFloat { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(c.redComponent) + 0.7152 * lin(c.greenComponent) + 0.0722 * lin(c.blueComponent)
+    }
+
+    /// WCAG contrast ratio against another opaque colour (1–21).
+    func contrast(with other: NSColor) -> CGFloat {
+        let (a, b) = (relativeLuminance, other.relativeLuminance)
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
     }
 }
 
@@ -106,9 +215,10 @@ public final class ThemeCenter: ObservableObject {
 // MARK: - AppKit
 
 /// A window's background that follows the theme: `material` (or the window's
-/// own background when nil) in the standard theme, glass in the others. Add
-/// the window's views to `effect` (or pass `content`); they sit above the glass
-/// and keep AppKit's vibrant appearance.
+/// own background when nil) in the standard theme, the theme's surface in the
+/// others. Add the window's views to `effect` (or pass `content`); they sit
+/// above the surface and keep AppKit's vibrant appearance. Themes with a fixed
+/// appearance set it on the window while they're selected.
 ///
 ///     let background = ThemedBackgroundView(material: .popover, content: host)
 ///     window.contentView = background
@@ -120,6 +230,10 @@ public final class ThemedBackgroundView: NSView {
     private let standardMaterial: NSVisualEffectView.Material?
     private let glaze = GlazeView()
     private var observer: NSObjectProtocol?
+    /// The window's own appearance while a theme pins another one.
+    private var windowAppearance: NSAppearance??
+    /// The window's own `titlebarAppearsTransparent` while a theme paints under the title bar.
+    private var windowTitlebarTransparent: Bool?
 
     public init(material: NSVisualEffectView.Material?, content: NSView? = nil) {
         standardMaterial = material
@@ -150,31 +264,53 @@ public final class ThemedBackgroundView: NSView {
 
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyWindow(ThemeCenter.shared.style)
+    }
+
     private func apply(_ style: ThemeStyle) {
-        let material = style.material ?? standardMaterial
+        // Opaque themes keep the effect view (the content lives in it) and cover it.
+        let material = style.replacesBackground ? style.material ?? .windowBackground : standardMaterial
         effect.isHidden = material == nil
         if let material { effect.material = material }
         glaze.style = style
-        glaze.isHidden = !style.isGlass
+        glaze.isHidden = !style.replacesBackground
+        applyWindow(style)
+    }
+
+    /// The pinned appearance, and a clear title bar so the surface runs under
+    /// it instead of meeting the toolbar's own background.
+    private func applyWindow(_ style: ThemeStyle) {
+        guard let window else { return }
+        if style.replacesBackground {
+            if windowTitlebarTransparent == nil { windowTitlebarTransparent = window.titlebarAppearsTransparent }
+            window.titlebarAppearsTransparent = true
+        } else if let own = windowTitlebarTransparent {
+            window.titlebarAppearsTransparent = own
+            windowTitlebarTransparent = nil
+        }
+        if let name = style.appearance {
+            if windowAppearance == nil { windowAppearance = .some(window.appearance) }
+            window.appearance = NSAppearance(named: name)
+        } else if let own = windowAppearance {
+            window.appearance = own
+            windowAppearance = nil
+        }
     }
 }
 
-/// The layers over the blur: frost, accent tint and sheen.
+/// The layers over the blur: the surface and the accent tint.
 private final class GlazeView: NSView {
     var style = ThemeStyle.standard { didSet { if style != oldValue { needsDisplay = true } } }
-    private let frost = CALayer()
+    private let surface = CALayer()
     private let tint = CALayer()
-    private let sheen = CAGradientLayer()
     private var colorsObserver: NSObjectProtocol?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        for l in [frost, tint, sheen] { layer?.addSublayer(l) }
-        // Layer y points up: from the top edge down.
-        sheen.startPoint = CGPoint(x: 0.5, y: 1)
-        sheen.endPoint = CGPoint(x: 0.5, y: 0)
-        sheen.locations = [0, 0.38, 0.4, 1]
+        for l in [surface, tint] { layer?.addSublayer(l) }
         colorsObserver = NotificationCenter.default.addObserver(forName: NSColor.systemColorsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.needsDisplay = true
         }
@@ -192,19 +328,16 @@ private final class GlazeView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for l in [frost, tint, sheen] { l.frame = bounds }
+        for l in [surface, tint] { l.frame = bounds }
         CATransaction.commit()
     }
 
     override func updateLayer() {
         let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        surface.backgroundColor = style.surface?.components(dark: dark).color.cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            frost.backgroundColor = (dark ? NSColor.black : NSColor.white).withAlphaComponent(style.frost).cgColor
             tint.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(style.tint).cgColor
         }
-        // Aero's gloss: bright at the top, a soft edge part way down, then clear.
-        let s = style.sheen * (dark ? 1 : 0.7)
-        sheen.colors = [s, s * 0.35, s * 0.12, 0].map { NSColor.white.withAlphaComponent($0).cgColor }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -216,13 +349,13 @@ private final class GlazeView: NSView {
 // MARK: - SwiftUI
 
 public extension View {
-    /// `background` in the standard theme; nothing under glass, so the window's
-    /// glass shows through an otherwise opaque part of the view.
+    /// `background` in the standard theme; nothing in the others, so the
+    /// theme's surface shows through an otherwise opaque part of the view.
     func themedBackground<B: View>(_ background: B) -> some View {
         modifier(ThemedBackground(background: background))
     }
 
-    /// Hides the opaque backgrounds of forms and lists under glass.
+    /// Hides the opaque backgrounds of forms and lists outside the standard theme.
     func themedScrollBackground() -> some View {
         modifier(ThemedScrollBackground())
     }
@@ -250,7 +383,7 @@ private struct ThemedBackground<B: View>: ViewModifier {
     @ObservedObject private var themes = ThemeCenter.shared
 
     func body(content: Content) -> some View {
-        content.background { if !themes.style.isGlass { background } }
+        content.background { if !themes.style.replacesBackground { background } }
     }
 }
 
@@ -258,6 +391,6 @@ private struct ThemedScrollBackground: ViewModifier {
     @ObservedObject private var themes = ThemeCenter.shared
 
     func body(content: Content) -> some View {
-        content.scrollContentBackground(themes.style.isGlass ? .hidden : .automatic)
+        content.scrollContentBackground(themes.style.replacesBackground ? .hidden : .automatic)
     }
 }
