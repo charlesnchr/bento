@@ -6,7 +6,8 @@ app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
 synced in real time through a tiny Rust server, manually arranged menu bar
 sections that Bento shows and hides, and dictation with meeting notes and a
-voice assistant (Jot, Wispr Flow).
+voice assistant (Jot, Wispr Flow). A companion [Android app](#android) carries the
+notes, todos, dictation and meeting notes to your phone.
 
 Swift + AppKit/SwiftUI, macOS 14+. The only third-party code is in the voice
 modules: MarkdownUI, FluidAudio (on-device Parakeet) and a vendored SwiftMath.
@@ -92,6 +93,39 @@ next launch replaces the old instance anyway. Releases are all signed with the
 same (self-signed) certificate, so the permission grants carry over. They aren't
 notarized, but Homebrew doesn't quarantine formula downloads, so Gatekeeper
 doesn't get in the way.
+
+## Android
+
+Bento for Android (`android/`, Android 12+) brings Notes, Todo, dictation and meeting
+notes to the phone, synced live with your Macs through the same `bento-sync` server:
+
+- **Notes**: the list (pinned first, fuzzy search, grid or list), a Markdown editor with
+  the Mac's list continuation and checkbox toggling, and merges like the Mac's: edits made
+  on the phone and a Mac at once both survive, and an open note takes remote text without
+  moving the caret. Recently Deleted keeps notes 60 days.
+- **Todo**: Inbox, Today, Upcoming, projects and labels; quick add with the same syntax
+  (`Buy milk tomorrow 5pm #Errands @shop p1`, tokens highlighted as you type); swipe right
+  to complete, left to reschedule; field-level merging like the Mac.
+- **Widgets**: notes (like Google Keep's), one note with tappable checklists, tasks (like
+  Todoist's, for any list or project) and a capture button.
+- **Dictation** through your Gemini API key, as on the Mac (live transcript, cleanup, your
+  synced dictionary and instructions, voice edits): a bubble beside the keyboard in any app,
+  **hold Volume Down** over a text field (a short press still changes the volume), the
+  voice-first **Bento keyboard**, a **Capture thought** Quick Settings tile (also on the
+  lock screen), and separate launcher icons for hardware shortcut keys such as the Find X9
+  Pro's Snap Key. Modes add their own instructions and switch while you talk.
+- **Meetings** from the microphone (Android doesn't let apps record other apps' calls):
+  live transcript, then a note with summary, decisions, action items and the transcript.
+
+Install the APK from the latest `android-v*` [release](https://github.com/charlesnchr/bento/releases)
+(allow installs from your browser once); the app checks for updates daily and installs them
+from Settings → Updates. Then on the Mac choose **Pair Android Phone…** and scan the code
+in Bento's Voice tab or Settings. The Voice tab's checklist walks through the microphone,
+**Accessibility → Bento dictation** (for the bubble and the volume key; Android greys the
+switch out for apps installed outside the Play Store until App info → ⋮ → **Allow
+restricted settings**) and **Allow background activity**, which ColorOS and other
+battery-strict Android versions need for live sync. Building and releasing:
+`android/README.md`.
 
 ## Build from source
 
@@ -216,3 +250,6 @@ release, and publishes `packaging/bento.rb`, with the version and checksum
 filled in, as `Formula/bento.rb` in
 [charlesnchr/homebrew-tap](https://github.com/charlesnchr/homebrew-tap).
 Installed copies find it with their next daily check.
+
+The Android app has its own releases, tagged `android-vX.Y.Z` and marked not-latest so the
+Mac's stay on top: `scripts/release-android.sh 0.1.0` (see `android/README.md`).
