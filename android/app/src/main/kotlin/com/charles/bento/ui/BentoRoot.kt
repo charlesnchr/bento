@@ -109,7 +109,8 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                     }
                 },
             ) { padding ->
-                val m = Modifier.padding(padding)
+                // each tab draws its own top bar (with the status bar inset); this only reserves the navigation bar
+                val m = Modifier.padding(bottom = padding.calculateBottomPadding())
                 when (tab) {
                     Tab.Notes -> Screens.notes(m, nav)
                     Tab.Todo -> Screens.todo(m, nav, homeAction)

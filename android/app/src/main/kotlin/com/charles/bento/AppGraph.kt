@@ -1,6 +1,8 @@
 package com.charles.bento
 
 import android.app.Application
+import com.charles.bento.core.todo.TodoListView
+import com.charles.bento.core.todo.title
 import com.charles.bento.settings.Prefs
 import com.charles.bento.settings.SecretStore
 import com.charles.bento.sync.SyncHub
@@ -40,20 +42,22 @@ class AppGraph(val app: Application) {
     val sync = SyncHub(app, prefs, secrets, http, engine)
     val updater = Updater(app, http, prefs)
 
+    val todo = com.charles.bento.todo.TodoModule(app, prefs, sync, engineDispatcher)
+    val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
+
     var voicePipeline: VoicePipeline = Unwired
+    var captureThought: suspend (noteId: String?, text: String) -> String? = { _, _ -> null }
     var dictationSinks: DictationSinks = object : DictationSinks {
-        override suspend fun captureThought(noteId: String?, text: String): String? = null
-        override suspend fun addTask(text: String): String? = null
+        override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
+        override suspend fun addTask(text: String): String? = todo.perform {
+            val (defaults, anchor) = addDefaults(TodoListView.Inbox)
+            quickAdd(text, defaults, anchor)?.title
+        }
     }
-    var voiceModes: () -> List<Pair<String, String>> = { emptyList() }
-    var widgetData: com.charles.bento.widget.WidgetData = object : com.charles.bento.widget.WidgetData {
-        override suspend fun notes(limit: Int) = emptyList<com.charles.bento.widget.NoteCard>()
-        override suspend fun note(id: String): com.charles.bento.widget.NoteCard? = null
-        override suspend fun tasks(view: String, limit: Int) = com.charles.bento.widget.TaskList("Today", emptyList(), 0)
-        override suspend fun taskViews() = emptyList<Pair<String, String>>()
-        override suspend fun toggleTask(id: String) {}
-        override suspend fun toggleChecklistItem(noteId: String, line: Int) {}
+    var voiceModes: () -> List<Pair<String, String>> = {
+        com.charles.bento.voice.VoiceSyncModule.modes(voiceSync.docs.value).map { it.id to it.name }
     }
+    val widgetData = com.charles.bento.widget.AppWidgetData(this)
 
     var voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
         override val meetings = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.charles.bento.ui.voice.MeetingRow>())
