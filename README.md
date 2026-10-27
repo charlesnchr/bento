@@ -28,15 +28,20 @@ Idles at ~0 % CPU.
 | Meetings (off by default) | Granola | records the mic plus system audio beside dictation; live transcript, tidied as it goes, gaps backfilled from the recording, summary with decisions and action items; a small capsule while recording; notes in Markdown | ⇧⌥F17 record/stop |
 | Assistant (off by default) | — | chat window for Hermes over ACP: Markdown, equations, images, tool steps, plan, attachments, `/` commands and `@` context, queue and steer, edit/regenerate/branch, history; continuous voice calls through Azure GPT-Live or Gemini 3.8 Live with Hermes doing the work | ⇧⌥F18 window, ⌥F18 talk |
 
-**Keyboard Shortcuts (⌃⌥/)**, also in the menu bar menu, lists every action by
+**Keyboard Shortcuts (⌥/)**, also in the menu bar menu, lists every action by
 module with its current shortcut. Type to filter by name, module or key (“left”
 finds Left Half, “⌘⇧” every ⌘⇧ shortcut). ↩ runs the selected action in the app
-you were in, ⌘E changes its shortcut in Settings, ⌘, opens Settings, and each
-module has a link to its own settings. The search also finds installed apps
-without a hotkey (with their icons): ⌘E adds the app to App Hotkeys and records
-its shortcut straight away, and ⌘⌫ removes an app hotkey again. The header shows
-whether Accessibility and Screen Recording are granted. A hint points to it once
-after launch.
+you were in, ⌘, opens Settings, and each module has a link to its own settings.
+⌘E changes the selected action's shortcut right in the list: type the new
+combination, Esc to cancel, ⌫ to remove it. As in Settings, a combination
+another action already has moves to this one. The search also finds installed
+apps without a hotkey (with their icons): ⌘E adds the app to App Hotkeys and
+records its shortcut the same way, and ⌘⌫ removes an app hotkey again. The
+header shows whether Accessibility and Screen Recording are granted. A hint
+points to it once after launch. ⌥/ types “÷” on a US layout, and on Danish, Nordic
+and German layouts the same key is ⌥- (an en dash); if you need either
+character, give the list another shortcut (earlier versions used ⌃⌥/, and a
+shortcut you chose yourself is kept).
 
 ## Menu bar arrangement
 
@@ -72,7 +77,7 @@ the app itself is inside the hidden `/opt` directory. Open the path above, or
 run `open 'bento://settings'` after the first launch, to reach Settings. Then
 grant **Accessibility** and **Screen Recording** from Settings → General: each
 **Grant…** brings up the macOS prompt, whose **Open System Settings** button
-lists Bento ready to switch on. Press **⌃⌥/** any time for the list of
+lists Bento ready to switch on. Press **⌥/** any time for the list of
 shortcuts.
 
 Opening Bento normally shows Settings. For a quiet scripted launch, use
@@ -133,8 +138,8 @@ Everything lives in `~/.config/bento/config.json`, one section per module plus
 `shortcuts` (action id → shortcut). The settings window edits the same file and
 external edits apply live. Shortcut syntax: `ctrl+opt+cmd+left`, `cmd+shift+2`,
 `hyper+t` (⌃⌥⌘⇧), `meh+n` (⌃⌥⇧); `""` unbinds. Key names follow the US layout
-and mean a key's position: on a German or Nordic keyboard `ctrl+opt+slash` is ⌃⌥
-plus the key left of the right Shift (`-`), and the keyboard overview says so.
+and mean a key's position: on a German or Nordic keyboard `opt+slash` is ⌥ plus
+the key left of the right Shift (`-`), and the keyboard overview says so.
 
 **Themes.** Settings → General → Appearance switches Bento's windows (Settings,
 Keyboard Shortcuts, Clipboard, Todo, Notes, menu bar search, Capture History)

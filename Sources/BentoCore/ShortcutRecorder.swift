@@ -14,6 +14,7 @@ public struct ShortcutRecorder: View {
     @Binding var shortcut: Shortcut?
     var placeholder: String
     private let actionID: String?
+    private var onRecordingChange: ((Bool) -> Void)?
     @State private var registryRevision = 0
     @Environment(\.isEnabled) private var isEnabled
 
@@ -25,20 +26,24 @@ public struct ShortcutRecorder: View {
 
     /// Recorder that reads/writes the registry binding for an action. A
     /// combination already used by another action moves to this one.
-    public init(actionID: String, placeholder: String = "Record Shortcut") {
+    /// `onRecordingChange` runs when recording starts and when it ends (a
+    /// shortcut typed, Esc, a click elsewhere), before the new binding is stored.
+    public init(actionID: String, placeholder: String = "Record Shortcut",
+                onRecordingChange: ((Bool) -> Void)? = nil) {
         _shortcut = Binding(
             get: { ActionRegistry.shared.shortcut(for: actionID) },
             set: { ActionRegistry.shared.assign($0, to: actionID) }
         )
         self.placeholder = placeholder
         self.actionID = actionID
+        self.onRecordingChange = onRecordingChange
     }
 
     public var body: some View {
         let _ = registryRevision // re-read the registry after every reload
         RecorderRepresentable(shortcut: $shortcut, current: shortcut, placeholder: placeholder, isEnabled: isEnabled,
                               problem: actionID.flatMap { ActionRegistry.shared.failureReason(for: $0) },
-                              identifier: actionID.map { "recorder:\($0)" })
+                              identifier: actionID.map { "recorder:\($0)" }, onRecordingChange: onRecordingChange)
             .frame(width: 150, height: 24)
             .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in
                 if actionID != nil { registryRevision &+= 1 }
@@ -53,6 +58,7 @@ private struct RecorderRepresentable: NSViewRepresentable {
     var isEnabled: Bool
     var problem: String?
     var identifier: String?
+    var onRecordingChange: ((Bool) -> Void)?
 
     func makeNSView(context: Context) -> RecorderView {
         let v = RecorderView()
@@ -65,6 +71,7 @@ private struct RecorderRepresentable: NSViewRepresentable {
     private func configure(_ v: RecorderView) {
         let binding = $shortcut
         v.onChange = { binding.wrappedValue = $0 }
+        v.onRecordingChange = onRecordingChange
         v.placeholder = placeholder
         v.isEnabled = isEnabled
         v.problem = problem
@@ -116,6 +123,7 @@ final class RecorderView: NSView {
     var shortcut: Shortcut? { didSet { if shortcut != oldValue { needsDisplay = true } } }
     var placeholder = "Record Shortcut" { didSet { if placeholder != oldValue { needsDisplay = true } } }
     var onChange: ((Shortcut?) -> Void)?
+    var onRecordingChange: ((Bool) -> Void)?
     /// Why the current shortcut isn't active (drawn as a warning, shown as tooltip).
     var problem: String? {
         didSet {
@@ -131,7 +139,12 @@ final class RecorderView: NSView {
             needsDisplay = true
         }
     }
-    private(set) var isRecording = false { didSet { needsDisplay = true } }
+    private(set) var isRecording = false {
+        didSet {
+            needsDisplay = true
+            if isRecording != oldValue { onRecordingChange?(isRecording) }
+        }
+    }
     private var monitor: Any?
     private var observers: [NSObjectProtocol] = []
     /// This view holds one `HotkeyCenter.suspend()` that it must balance.

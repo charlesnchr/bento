@@ -130,7 +130,7 @@ machine's `.build`). Voice settings live in UserDefaults and are mirrored both w
 | Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds); Capture Thought to Note (`dictation.capture-note`) has none |
 | Meetings | `shift+opt+f17` record/stop |
 | Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
-| Bento (app) | `ctrl+opt+slash` (⌃⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
+| Bento (app) | `opt+slash` (⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
 
 ## MenuBar behavior
 
