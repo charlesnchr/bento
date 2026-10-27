@@ -10,12 +10,10 @@ public struct EditingSession: Codable, Equatable, Sendable {
     public var turns: [EditingTurn] = []
     public var updatedAt: Date
     public var currentText: String { turns.last?.revision ?? seed }
-    @MainActor
-    public func matchesSelection(_ selected: String?) -> Bool {
-        guard let selected, !selected.isEmpty else { return false }
-        return OutputSelection.equivalent(selected, currentText)
-    }
     public static let timeout: TimeInterval = 300
+    /// How long Option+F18 treats output at the caret as the edit target. After
+    /// that it needs a selection, so a later assistant question can't rewrite it.
+    public static let caretTimeout: TimeInterval = 30
 
     public init(seed: String, now: Date = Date()) {
         self.seed = seed
@@ -24,6 +22,10 @@ public struct EditingSession: Codable, Equatable, Sendable {
 
     public func isActive(at now: Date) -> Bool {
         !currentText.isEmpty && now.timeIntervalSince(updatedAt) < Self.timeout
+    }
+
+    public func editsAtCaret(at now: Date) -> Bool {
+        isActive(at: now) && now.timeIntervalSince(updatedAt) < Self.caretTimeout
     }
 
     public mutating func append(instruction: String, revision: String, now: Date = Date()) {

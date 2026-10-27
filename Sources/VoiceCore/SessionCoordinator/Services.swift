@@ -66,7 +66,6 @@ public struct DictationContext: Equatable, Sendable {
     public var targetAppName: String?
     public var targetPID: pid_t?
     public var editingSession: EditingSession?
-    public var keepOutputSelected: Bool = false
     public var isAssistant: Bool = false
     public var useComposer: Bool = false
     /// The transcript goes to the capture note (Notes), not the frontmost app.
@@ -86,7 +85,6 @@ public protocol TextInserting {
 
 public enum InsertionOutcome: Equatable, Sendable {
     case inserted
-    case insertedWithoutSelection
     case frontmostChanged
     case fellBackToClipboard
     /// Secure input active — text stays in History only, never on the clipboard.
