@@ -56,7 +56,13 @@ class BentoAccessibilityService : AccessibilityService() {
         }
     }
 
+    /** The last editable node a focus or caret event came from (some apps put input focus on a wrapper). */
+    private var lastEditable: AccessibilityNodeInfo? = null
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED || event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
+            event.source?.takeIf { it.isEditable }?.let { lastEditable = it }
+        }
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED, AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
@@ -74,27 +80,61 @@ class BentoAccessibilityService : AccessibilityService() {
 
     private fun currentField(): FocusedField? {
         val ime = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
-        val node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
-        if (!node.isEditable || node.isPassword || !dictatable(node.inputType)) return null
+        val focus = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        val node = focus?.takeIf { it.isEditable } ?: focus?.let(::focusedEditableIn)
+            ?: lastEditable?.takeIf { it.refresh() && it.isFocused && it.isEditable }
+            ?: searchFocusedEditable()
+        if (node == null) { trace("no focused text field"); return null }
+        if (!node.isEditable || node.isPassword || !dictatable(node.inputType)) { trace("not a dictatable field (${node.className} editable=${node.isEditable} type=${node.inputType} pkg=${node.packageName} focused=${node.isFocused})"); return null }
         val pkg = node.packageName?.toString() ?: return null
         if (pkg == packageName) return null // Bento's own editors have their own mic
         if (hiddenIn != null && hiddenIn != pkg) hiddenIn = null
-        if (ime == null && !usingBentoKeyboard()) return null
+        if (ime == null && !usingBentoKeyboard()) { trace("no keyboard window (${windows.size} windows)"); return null }
         val top = ime?.let { Rect().also(it::getBoundsInScreen).top }
         val screen = Rect().also { r -> windows.firstOrNull { it.isActive }?.getBoundsInScreen(r) }
         return FocusedField(node, pkg, appLabel(pkg), node.hintText?.toString(), node.isMultiLine.not(), top, screen)
     }
 
+    /** The focused editable node anywhere in the apps' windows (bounded walk). */
+    private fun searchFocusedEditable(): AccessibilityNodeInfo? {
+        val roots = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }.mapNotNull { it.root }
+        for (root in roots) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+            var seen = 0
+            while (queue.isNotEmpty() && seen < 1_500) {
+                val n = queue.removeFirst()
+                seen++
+                if (n.isEditable && n.isFocused) return n
+                for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+            }
+        }
+        return null
+    }
+
+    /** A focused editable node inside `root` (a few levels down). */
+    private fun focusedEditableIn(root: AccessibilityNodeInfo, depth: Int = 0): AccessibilityNodeInfo? {
+        if (depth > 4) return null
+        for (i in 0 until root.childCount) {
+            val c = root.getChild(i) ?: continue
+            if (c.isEditable && c.isFocused) return c
+            focusedEditableIn(c, depth + 1)?.let { return it }
+        }
+        return null
+    }
+
     /** Text and multi-line fields; not numbers, phones, dates or passwords. */
     private fun dictatable(inputType: Int): Boolean {
         if (inputType == 0) return true // unknown (web views, custom fields)
+        // some apps report a text variation without the class bits (Contacts: 0x2060)
         val cls = inputType and InputType.TYPE_MASK_CLASS
-        if (cls != InputType.TYPE_CLASS_TEXT) return false
+        if (cls != InputType.TYPE_CLASS_TEXT && cls != InputType.TYPE_NULL) return false
         val variation = inputType and InputType.TYPE_MASK_VARIATION
         return variation != InputType.TYPE_TEXT_VARIATION_PASSWORD &&
             variation != InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD &&
             variation != InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
     }
+
+    private fun trace(message: String) = android.util.Log.d("BentoA11y", message)
 
     fun usingBentoKeyboard(): Boolean =
         Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)?.startsWith("$packageName/") == true

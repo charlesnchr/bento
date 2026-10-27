@@ -31,7 +31,7 @@ class TextInserter(private val context: Context, private val node: Accessibility
     }
 
     /** True when it went in. */
-    fun insert(dictated: String): Boolean {
+    suspend fun insert(dictated: String): Boolean {
         if (dictated.isEmpty()) return true
         node.refresh()
         val text = currentText() ?: ""
@@ -42,16 +42,23 @@ class TextInserter(private val context: Context, private val node: Accessibility
         val insertion = spaced(dictated, text.substring(0, start), text.substring(end))
         before = Snapshot(text, start, end)
 
-        if (node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
+        val canSet = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }
+        if (canSet) {
             val updated = text.substring(0, start) + insertion + text.substring(end)
             val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated) }
-            if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+            val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            if (ok) {
+                // Compose and some views apply it on the next frame: look again before deciding
+                kotlinx.coroutines.delay(150)
                 val caret = start + insertion.length
                 setSelection(caret, caret)
-                if (verify(updated)) return true
+                if (verify(text, updated)) return true
             }
+            log("set text ${if (ok) "didn't stick" else "refused"} (${node.className})")
         }
-        return paste(insertion)
+        val pasted = paste(insertion)
+        log("paste ${if (pasted) "worked" else "failed"}; set text ${if (canSet) "offered" else "not offered"}")
+        return pasted
     }
 
     /** Puts the field back as it was before the last insertion. */
@@ -93,10 +100,11 @@ class TextInserter(private val context: Context, private val node: Accessibility
         node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
     }
 
-    private fun verify(expected: String): Boolean {
+    /** False only when the field still holds exactly what it held before (the action did nothing). */
+    private fun verify(before: String, expected: String): Boolean {
         node.refresh()
         val now = currentText() ?: return true // can't read it back: trust the action
-        return now == expected || now.length >= expected.length - 1
+        return now == expected || now != before
     }
 
     private fun paste(insertion: String): Boolean {
@@ -115,6 +123,8 @@ class TextInserter(private val context: Context, private val node: Accessibility
         }, 400)
         return ok
     }
+
+    private fun log(m: String) = android.util.Log.i("BentoInsert", m)
 
     companion object {
         /**

@@ -282,7 +282,9 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
     val levels = remember { mutableStateListOf<Float>().apply { repeat(36) { add(0f) } } }
     LaunchedEffect(state) {
         (state as? DictationState.Listening)?.let { levels.removeAt(0); levels.add(it.level) }
+        // results clear themselves so the bubble comes back (an error a little later, to be read)
         if (state is DictationState.Done) { delay(4_000); dictation.dismiss() }
+        if (state is DictationState.Failed) { delay(7_000); dictation.dismiss() }
     }
     Surface(
         Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
