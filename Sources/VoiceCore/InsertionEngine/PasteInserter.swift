@@ -46,7 +46,7 @@ public final class PasteInserter {
     /// background task so the session isn't pinned in .inserting for a second
     /// after the text visibly landed (production pass 2, P0: the next dictation's
     /// begin was silently rejected in that window).
-    public func paste(_ text: String, afterPaste: (@MainActor () async -> Void)? = nil) async -> Bool {
+    public func paste(_ text: String) async -> Bool {
         restoreTask?.cancel()
         let pasteboard = NSPasteboard.general
         let snapshot = Self.snapshot(pasteboard)
@@ -74,15 +74,6 @@ public final class PasteInserter {
                pasteboard.pasteboardItems?.first?.string(forType: Self.sessionMarker) != nil {
                 Self.restore(snapshot, to: pasteboard)
             }
-        }
-        if let afterPaste {
-            // Complete this clipboard transaction before selection's Copy/read-back
-            // transaction. Otherwise our delayed restore can masquerade as Copy.
-            try? await Task.sleep(nanoseconds: UInt64(Self.restoreDelay * 1_000_000_000))
-            restore()
-            guard !Task.isCancelled else { return true }
-            await afterPaste()
-            return true
         }
         restoreTask = Task { @MainActor in
             // ~1s (critic reconciliation #4): slow apps read the pasteboard late;

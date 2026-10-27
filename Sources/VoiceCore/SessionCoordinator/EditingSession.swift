@@ -10,11 +10,6 @@ public struct EditingSession: Codable, Equatable, Sendable {
     public var turns: [EditingTurn] = []
     public var updatedAt: Date
     public var currentText: String { turns.last?.revision ?? seed }
-    @MainActor
-    public func matchesSelection(_ selected: String?) -> Bool {
-        guard let selected, !selected.isEmpty else { return false }
-        return OutputSelection.equivalent(selected, currentText)
-    }
     public static let timeout: TimeInterval = 300
 
     public init(seed: String, now: Date = Date()) {

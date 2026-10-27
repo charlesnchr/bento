@@ -193,7 +193,7 @@ private struct DictationSettingsForm: View {
             Footnote((settings.singleTapHandsFreeEnabled
                 ? "Tap once for hands-free; tap again to stop. Hold for push-to-talk. Esc cancels."
                 : "Hold to talk. Tap Space while holding to go hands-free. Esc cancels.")
-                + " With ⌥F17 as the key, ⌥F18 edits the selected recent dictation or talks to the assistant. The composer collects dictations in a floating draft before inserting.")
+                + " With ⌥F17 as the key, ⌥F18 edits your last dictation while the caret is still after it (or once you select it), or talks to the assistant. The composer collects dictations in a floating draft before inserting.")
         }
     }
 
@@ -222,7 +222,7 @@ private struct DictationSettingsForm: View {
             } header: {
                 Text("Transcription")
             } footer: {
-                Footnote("Switch quickly from Bento's menu. Meetings and the assistant follow GPT and MAI; with the others they stay on Gemini. Retry Last Transcription re-runs your last recording and replaces the text it inserted; if that text is no longer selectable, the new version goes to the clipboard.")
+                Footnote("Switch quickly from Bento's menu. Meetings and the assistant follow GPT and MAI; with the others they stay on Gemini. Retry Last Transcription re-runs your last recording and replaces the text it inserted while the caret is still after it (or the text is selected); otherwise the new version goes to the clipboard.")
             }
         } else {
             Section {

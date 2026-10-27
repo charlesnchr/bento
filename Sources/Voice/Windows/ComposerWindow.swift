@@ -141,7 +141,6 @@ final class ComposerWindow: NSObject, TextInserting, NSTextViewDelegate, NSWindo
         captureDestination()
         var updated = destination?.context ?? DictationContext()
         updated.editingSession = context.editingSession
-        updated.keepOutputSelected = context.keepOutputSelected
         updated.useComposer = true
         return updated
     }

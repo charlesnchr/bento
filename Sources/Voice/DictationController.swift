@@ -147,10 +147,8 @@ final class DictationController {
                 // to the selected text's original app for replacement safety.
                 if $0.editingSession != nil { return $0 }
                 let app = Self.dictationTargetApp()
-                var context = DictationContext(targetAppBundleID: app?.bundleIdentifier,
+                return DictationContext(targetAppBundleID: app?.bundleIdentifier,
                     targetAppName: app?.localizedName, targetPID: app?.processIdentifier)
-                context.keepOutputSelected = true
-                return context
             }
         )
         pill = PillPresenter(coordinator: coordinator, vertexState: state)
@@ -565,9 +563,9 @@ final class DictationController {
                 return
             }
             let outcome = await self.replace(last.text, with: text, context: last.context)
-            self.coordinator.noteRetried(text: text, inserted: outcome == .inserted || outcome == .insertedWithoutSelection)
+            self.coordinator.noteRetried(text: text, inserted: outcome == .inserted)
             switch outcome {
-            case .inserted, .insertedWithoutSelection:
+            case .inserted:
                 self.pill.showNotice("Replaced with \(name)", for: 2.5, sound: nil)
             case .fellBackToClipboard, .frontmostChanged:
                 self.pill.showNotice("\(name)'s version copied — press ⌘V", for: 4.0, sound: nil)
@@ -579,15 +577,9 @@ final class DictationController {
 
     private func replace(_ old: String, with new: String, context: DictationContext) async -> InsertionOutcome {
         var target = context
+        // The inserter selects the old words only if they are still selected or
+        // end at the caret; otherwise the new version goes to the clipboard.
         target.editingSession = EditingSession(seed: old)
-        target.keepOutputSelected = true
-        // Dictation leaves its output selected; if the user has since moved the
-        // caret, select back over the old words. Both paths are verified by the
-        // inserter, which never replaces a selection that isn't the old text.
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == context.targetPID,
-           !OutputSelection.equivalent(OutputSelection.selectedText(targetPID: context.targetPID), old) {
-            _ = await KeyboardSelection.select(old, targetPID: context.targetPID)
-        }
         return await InsertionCoordinator().insert(new, context: target)
     }
 
@@ -642,7 +634,7 @@ final class DictationController {
                 if intent == .beginEditing {
                     if context.targetPID != ProcessInfo.processInfo.processIdentifier,
                        let chain = coordinator.recentEditingSession(for: context),
-                       chain.matchesSelection(OutputSelection.selectedText(targetPID: context.targetPID)) {
+                       OutputSelection.isRecentOutput(chain.currentText, targetPID: context.targetPID) {
                         context.editingSession = chain
                         return coordinator.handle(.beginEditing, context: context)
                     }
@@ -731,7 +723,7 @@ final class DictationController {
                 targetPID: app?.processIdentifier
             )
             switch await InsertionCoordinator().insert(text, context: context) {
-            case .inserted, .insertedWithoutSelection:
+            case .inserted:
                 break
             case .fellBackToClipboard, .frontmostChanged:
                 self?.pill.showNotice("Copied — press ⌘V to paste", for: 3.0, sound: nil)
