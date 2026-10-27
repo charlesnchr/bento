@@ -100,10 +100,8 @@ class DictationEngine internal constructor(
      * called with the final text before [DictationSession.stop] returns; report what
      * happened (the default says the app inserted it).
      */
-    fun start(config: DictationConfig, insert: suspend (String) -> InsertionOutcome = { InsertionOutcome.INSERTED }): DictationSession? {
-        editingSessions.reset(config.context.packageName)
-        return begin(config, null, insert)
-    }
+    fun start(config: DictationConfig, insert: suspend (String) -> InsertionOutcome = { InsertionOutcome.INSERTED }): DictationSession? =
+        begin(config, null, insert)
 
     /**
      * Starts a voice edit of the last dictation in the target app ("make that shorter"):
@@ -126,6 +124,8 @@ class DictationEngine internal constructor(
             session = DictationSession(FileLayout.newId(), config, editing, insert, deps())
             active = session
         }
+        // A new dictation (accepted, not refused) ends the app's edit chain, as on the Mac.
+        if (editing == null) editingSessions.reset(config.context.packageName)
         session.begin() // a setup failure finishes the session as Failed(STORAGE)
         return session
     }
@@ -170,9 +170,9 @@ class DictationEngine internal constructor(
 
     // MARK: - Voice editing without audio
 
-    /** Applies an already transcribed instruction to `text`. */
+    /** Applies an already transcribed instruction to `text`, starting a chain for the target app. */
     suspend fun applyVoiceEdit(instruction: String, text: String, config: DictationConfig): VoiceEditResult =
-        VoiceEdit.apply(GeminiClient({ config.apiKey }, http), instruction, text, config)
+        applyVoiceEdit(instruction, EditingSession(seed = text, updatedAt = clock()), config)
 
     /** Applies an instruction to an existing chain (so "undo that" works) and keeps the chain for the app. */
     suspend fun applyVoiceEdit(instruction: String, session: EditingSession, config: DictationConfig): VoiceEditResult {
