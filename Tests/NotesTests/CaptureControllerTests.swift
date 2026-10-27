@@ -25,8 +25,8 @@ import Testing
             let id = c.settings.captureNoteID
             #expect(!id.isEmpty)
             let note = try #require(NoteStore(url: url).note(id))
-            #expect(note.body.hasPrefix("# Thoughts\n\n<details><summary>"))
-            #expect(note.body.hasSuffix("\nFirst thought\n</details>\n"))
+            #expect(note.body.hasPrefix("# Thoughts\n\n### "))
+            #expect(note.body.hasSuffix("\nFirst thought\n"))
             #expect(note.dirty)
             #expect(c.capture("Second thought") == "Thoughts")
             #expect(c.store.liveNotes.count == 1)
@@ -46,19 +46,19 @@ import Testing
             #expect(typed == "# Note\nold unsaved")
             #expect(c.capture("Captured thought") == "Note")
             let captured = w.currentText
-            #expect(captured.hasPrefix(typed + "\n\n<details><summary>"))
-            #expect(captured.hasSuffix("\nCaptured thought\n</details>\n"))
+            #expect(captured.hasPrefix(typed + "\n\n### "))
+            #expect(captured.hasSuffix("\nCaptured thought\n"))
             w.textView.insertText(" later", replacementRange: NSRange(location: NSNotFound, length: 0))
             c.flushPendingSave()
             let saved = try #require(NoteStore(url: url).note(note.id))
             #expect(saved.body.contains("old unsaved later"))
-            #expect(saved.body.hasSuffix("\nCaptured thought\n</details>\n"))
+            #expect(saved.body.hasSuffix("\nCaptured thought\n"))
             w.hide()
             #expect(c.capture("With the window closed") == "Note")
             c.open(note.id)
             #expect(w.currentText == NoteStore(url: url).note(note.id)?.body)
-            #expect(w.currentText.contains("\nCaptured thought\n</details>\n"))
-            #expect(w.currentText.hasSuffix("\nWith the window closed\n</details>\n"))
+            #expect(w.currentText.contains("\nCaptured thought\n"))
+            #expect(w.currentText.hasSuffix("\nWith the window closed\n"))
         }
     }
 
@@ -95,7 +95,7 @@ import Testing
             #expect(c.engine.applyRemote(remote) == .adopted)
             let copy = try #require(c.store.liveNotes.first { $0.id != note.id })
             #expect(copy.body.contains("base pending"))
-            #expect(copy.body.hasSuffix("\nA captured thought\n</details>\n"))
+            #expect(copy.body.hasSuffix("\nA captured thought\n"))
             #expect(w.currentText == remote.body)
             #expect(c.capture("After sync") == "Note")
             #expect(c.store.note(note.id)?.body.hasPrefix(remote.body + "\n\n") == true)
@@ -122,7 +122,7 @@ import Testing
             let saved = try #require(c.store.note(note.id))
             #expect(saved.pinned && saved.seq == 2 && saved.dirty)
             #expect(saved.body.hasPrefix("# Note\nbase pending\n\n"))
-            #expect(saved.body.hasSuffix("\nAfter the merge\n</details>\n"))
+            #expect(saved.body.hasSuffix("\nAfter the merge\n"))
             #expect(w.currentText == saved.body)
         }
     }
@@ -144,34 +144,34 @@ import Testing
         }
     }
 
-    @Test func caretSkipsFoldedTextAndTheNextSummaryPrefix() throws {
+    @Test func caretSkipsFoldedTextAndTheNextHeadingPrefix() throws {
         try withController { c, _ in
             for newline in ["\n", "\r\n"] {
-                let body = ["::: details A", "one", ":::", "::: details B", "two", ":::", "after"].joined(separator: newline)
+                let body = ["### 2026-10-26 14:05 · A", "one", "### 2026-10-26 14:06 · B", "two", "# After"].joined(separator: newline)
                 let note = Note(body: body)
                 c.store.save(note)
                 c.open(note.id)
                 let w = try #require(c.debugWindow)
                 let text = body as NSString
-                let summaryEnd = NSMaxRange(text.range(of: "::: details A"))
+                let headingEnd = NSMaxRange(text.range(of: "### 2026-10-26 14:05 · A"))
                 let hidden = text.range(of: "one").location
-                let second = text.range(of: "::: details B").location
-                let forward = w.textView(w.textView, willChangeSelectionFromCharacterRange: NSRange(location: summaryEnd, length: 0),
+                let second = text.range(of: "### 2026-10-26 14:06").location
+                let forward = w.textView(w.textView, willChangeSelectionFromCharacterRange: NSRange(location: headingEnd, length: 0),
                                          toCharacterRange: NSRange(location: hidden, length: 0))
-                #expect(forward == NSRange(location: second + 12, length: 0))
-                let backward = w.textView(w.textView, willChangeSelectionFromCharacterRange: NSRange(location: second + 12, length: 0),
+                #expect(forward == NSRange(location: second + 4, length: 0))
+                let backward = w.textView(w.textView, willChangeSelectionFromCharacterRange: NSRange(location: second + 4, length: 0),
                                           toCharacterRange: NSRange(location: hidden, length: 0))
-                #expect(backward == NSRange(location: summaryEnd, length: 0))
+                #expect(backward == NSRange(location: headingEnd, length: 0))
                 #expect(w.currentText == body)
-                #expect(!w.toggleExpander(summaryAt: NSNotFound))
-                #expect(!w.toggleExpander(summaryAt: -1))
+                #expect(!w.toggleHeading(at: NSNotFound))
+                #expect(!w.toggleHeading(at: -1))
             }
         }
     }
 
-    @Test func commandReturnStillTogglesTasksInsideAndOutsideExpanders() throws {
+    @Test func commandReturnTogglesHeadingsAndTasks() throws {
         try withController { c, _ in
-            let body = "- [ ] outside\n::: details A\n- [ ] inside\n:::\nafter"
+            let body = "- [ ] outside\n## Section\n- [ ] inside\n# After"
             let note = Note(body: body)
             c.store.save(note)
             c.open(note.id)
@@ -179,12 +179,16 @@ import Testing
             w.textView.setSelectedRange(NSRange(location: 6, length: 0))
             w.runFormatting(.toggleTask)
             #expect(w.currentText.hasPrefix("- [x] outside"))
-            let summary = (w.currentText as NSString).range(of: "::: details A").location
-            w.textView.setSelectedRange(NSRange(location: summary + 12, length: 0))
+            let heading = (w.currentText as NSString).range(of: "## Section").location
+            w.textView.setSelectedRange(NSRange(location: heading + 5, length: 0))
             let before = w.currentText
+            // collapses the section, then opens it again; the text doesn't change
             w.runFormatting(.toggleTask)
             #expect(w.currentText == before)
             let inside = (w.currentText as NSString).range(of: "inside").location
+            #expect((w.textView.textStorage!.attribute(.notesBlock, at: inside, effectiveRange: nil) as? BlockDecoration)?.kind == .folded)
+            w.runFormatting(.toggleTask)
+            #expect((w.textView.textStorage!.attribute(.notesBlock, at: inside, effectiveRange: nil) as? BlockDecoration)?.kind == .task(level: 0, checked: false))
             w.textView.setSelectedRange(NSRange(location: inside, length: 0))
             w.runFormatting(.toggleTask)
             #expect(w.currentText.contains("- [x] inside"))

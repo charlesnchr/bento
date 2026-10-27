@@ -1,25 +1,28 @@
 import Foundation
 
 /// Dictated thoughts appended to the capture note (`notes.captureNoteID`), one
-/// expander each:
+/// heading each:
 ///
-///     <details><summary>2026-10-26 14:05 · Add a capture mode to the…</summary>
+///     ### 2026-10-26 14:05 · Add a capture mode to the…
 ///     Add a capture mode to the transcribe shortcut that appends to a note.
-///     </details>
 ///
-/// The summary is the local date and time (no seconds) and the first few words; the
-/// body is the full text. Entries are separated by a blank line. Plain markdown text, so
-/// sync and other clients see an ordinary note body (GitHub and most renderers show the
-/// same expander).
+/// The heading is the local date and time (no seconds) and the first few words; the
+/// body is the full text. Entries are separated by a blank line. Plain markdown, so sync
+/// and other clients see an ordinary note. The editor shows these sections collapsed.
 enum ThoughtCapture {
-    /// Words of the text shown in the summary.
+    /// Words of the text shown in the heading.
     static let summaryWords = 6
 
     static func entry(_ text: String, at date: Date = Date(), timeZone: TimeZone = .current) -> String? {
         let body = cleaned(text)
         guard !body.isEmpty else { return nil }
-        let summary = summary(of: body).replacingOccurrences(of: "<", with: "‹")
-        return "<details><summary>\(timestamp(date, timeZone: timeZone)) · \(summary)</summary>\n\(body)\n</details>"
+        return "### \(timestamp(date, timeZone: timeZone)) · \(summary(of: text))\n\(body)"
+    }
+
+    /// Whether a heading's text is a captured thought's ("2026-10-26 14:05 · …"): those
+    /// sections start collapsed.
+    static func isEntryHeading(_ text: String) -> Bool {
+        text.range(of: #"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} · "#, options: .regularExpression) != nil
     }
 
     /// `body` with `entry` appended after a blank line.
@@ -48,8 +51,8 @@ enum ThoughtCapture {
         return words.count > summaryWords ? head + "…" : head
     }
 
-    /// Trimmed, "\n" line ends, no blank-line runs, and no line that would end the
-    /// expander early (expander syntax is escaped, an open code fence closed).
+    /// Trimmed, "\n" line ends, no blank-line runs, and nothing that would end the entry's
+    /// section early or swallow the next entry (headings are escaped, an open code fence closed).
     static func cleaned(_ text: String) -> String {
         let normalised = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "\u{0}", with: "")
@@ -59,12 +62,12 @@ enum ThoughtCapture {
             let blank = line.trimmingCharacters(in: .whitespaces).isEmpty
             if blank, lines.last?.isEmpty != false { continue }
             switch MarkdownParser.parseLine(line, inCode: false).kind {
-            case .details, .detailsEnd: lines.append("\\" + line.trimmingCharacters(in: .whitespaces))
+            case .heading: lines.append("\\" + line.trimmingCharacters(in: .whitespaces))
             default: lines.append(blank ? "" : line)
             }
         }
         var body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        // an unclosed code fence would swallow the closing "</details>"
+        // an unclosed code fence would swallow the next entry
         if let fence = unclosedFence(in: body) { body += "\n" + fence }
         return body
     }
