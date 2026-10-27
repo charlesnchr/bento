@@ -192,13 +192,20 @@ final class VoiceApp {
     }
 
     func diagnostics() -> [String: Any] {
-        [
+        let settings = SettingsStore()
+        return [
             "status": statusLine,
             "indicator": String(describing: indicator),
             "enabled": enabled.map(\.rawValue).sorted(),
             "meeting": String(describing: meetingState),
             "microphone": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
             "runtime": VertexRuntimeConfig.state().isRequested,
+            "transcription": [
+                "engine": settings.transcriptionEngine.rawValue,
+                "localFallback": settings.usesLocalFallback,
+                "models": Dictionary(uniqueKeysWithValues: SettingsStore.TranscriptionEngine.singles.filter(\.isLocal)
+                    .map { ($0.rawValue, String(describing: ParakeetModels.shared.status($0))) }),
+            ] as [String: Any],
         ]
     }
 }
