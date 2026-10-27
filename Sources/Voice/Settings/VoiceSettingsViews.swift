@@ -662,7 +662,11 @@ struct AssistantSettingsView: View {
 
     private func callDestination(_ provider: SettingsStore.AssistantLiveProvider, _ route: SettingsStore.GeminiLiveRoute) -> String {
         guard provider == .gemini else { return "Azure" }
-        if case .vertexHelper = route { return "Vertex AI" }
-        return "the Gemini API"
+        switch route {
+        case .vertexHelper: return "Vertex AI"
+        case .geminiAPI: return "the Gemini API"
+        // Where calls would go once they can start: a gateway or broken runtime file is Vertex.
+        case .unavailable: return VertexRuntimeConfig.state().isRequested ? "Vertex AI" : "the Gemini API"
+        }
     }
 }

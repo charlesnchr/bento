@@ -61,7 +61,10 @@ final class GeminiLiveController {
                     self.receive(data, token: token)
                 }
             } catch { }
-            self?.failed("Gemini voice disconnected. No task was retried.", token: token, code: .disconnected)
+            guard let self else { return }
+            let ending = (transport as? LiveSocketReporting)?.ending ?? LiveSocketEnding()
+            let outcome = GeminiLiveEnding.outcome(ending, goingAway: self.goingAway, geminiAPI: transport is GeminiAPILiveTransport)
+            self.failed(outcome.message, token: token, code: outcome.code, httpStatus: ending.httpStatus, closeCode: ending.closeCode)
         }
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
