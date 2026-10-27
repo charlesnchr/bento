@@ -130,5 +130,32 @@
         </service>
 
         <receiver android:name=".update.InstallResultReceiver" android:exported="false" />
+
+        <activity
+            android:name=".widget.WidgetConfigActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="com.charles.bento.widgetconfig">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver android:name=".widget.NotesWidgetReceiver" android:exported="true" android:label="@string/widget_notes">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_notes" />
+        </receiver>
+        <receiver android:name=".widget.NoteWidgetReceiver" android:exported="true" android:label="@string/widget_note">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_note" />
+        </receiver>
+        <receiver android:name=".widget.TasksWidgetReceiver" android:exported="true" android:label="@string/widget_tasks">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_tasks" />
+        </receiver>
+        <receiver android:name=".widget.CaptureWidgetReceiver" android:exported="true" android:label="@string/widget_capture">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_capture" />
+        </receiver>
     </application>
 </manifest>

@@ -46,6 +46,14 @@ class AppGraph(val app: Application) {
         override suspend fun addTask(text: String): String? = null
     }
     var voiceModes: () -> List<Pair<String, String>> = { emptyList() }
+    var widgetData: com.charles.bento.widget.WidgetData = object : com.charles.bento.widget.WidgetData {
+        override suspend fun notes(limit: Int) = emptyList<com.charles.bento.widget.NoteCard>()
+        override suspend fun note(id: String): com.charles.bento.widget.NoteCard? = null
+        override suspend fun tasks(view: String, limit: Int) = com.charles.bento.widget.TaskList("Today", emptyList(), 0)
+        override suspend fun taskViews() = emptyList<Pair<String, String>>()
+        override suspend fun toggleTask(id: String) {}
+        override suspend fun toggleChecklistItem(noteId: String, line: Int) {}
+    }
 
     val dictation = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() })
 
