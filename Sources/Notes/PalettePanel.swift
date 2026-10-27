@@ -168,6 +168,10 @@ final class PalettePanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, 
         stack = [content]
         search.stringValue = ""
         reload()
+        panel.followAppearance(of: parent)
+        parent.effectiveAppearance.performAsCurrentDrawingAppearance {
+            panel.contentView?.layer?.borderColor = NSColor.separatorColor.cgColor
+        }
         layout(attachedTo: parent, topInset: topInset)
         if panel.parent == nil { parent.addChildWindow(panel, ordered: .above) }
         panel.makeKeyAndOrderFront(nil)

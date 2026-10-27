@@ -85,6 +85,10 @@ final class InlineMenu: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             if origin.y < vf.minY { origin.y = caretRect.maxY + 4 } // no room below: open above
             origin.x = min(max(origin.x, vf.minX + 4), vf.maxX - width - 4)
         }
+        panel.followAppearance(of: parent)
+        parent.effectiveAppearance.performAsCurrentDrawingAppearance {
+            panel.contentView?.layer?.borderColor = NSColor.separatorColor.cgColor
+        }
         panel.setFrame(NSRect(x: origin.x, y: origin.y, width: width, height: h), display: true)
         table.tableColumns.first?.width = width
         if self.parent !== parent || panel.parent == nil {

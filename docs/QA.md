@@ -31,6 +31,8 @@ single-instance clash):
 
     BENTO_HOME=/tmp/bento-e2e-<who> BENTO_DEV=1 .build/debug/Bento &
 
+- Appearance: `BENTO_APPEARANCE=dark` (or `light`) pins every window of a dev instance, so
+  screenshots cover both modes without touching the system setting.
 - Actions: real hotkeys via `bentoctl key` (the installed app is quit during a session so hotkeys are
   free), or `scripts/perform <action-id>`.
 - State: `open -g "bento://debug/state"` only reaches the installed app; for your instance read
