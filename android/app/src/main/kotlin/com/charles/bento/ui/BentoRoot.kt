@@ -77,6 +77,11 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         val i = intent ?: return@LaunchedEffect
         pendingIntent.value = null
         val id = i.getStringExtra(MainActivity.EXTRA_ID)
+        // actions that land on a tab start from the home screen, whatever was open
+        if (i.action in setOf(MainActivity.ACTION_QUICK_ADD, MainActivity.ACTION_OPEN_TODO, MainActivity.ACTION_OPEN_TASK,
+                              MainActivity.ACTION_OPEN_MEETING, MainActivity.ACTION_TOGGLE_MEETING)) {
+            nav.popBackStack(HomeRoute, inclusive = false)
+        }
         when (i.action) {
             Intent.ACTION_VIEW -> i.dataString?.let { link ->
                 Pairing.parse(link)?.let { pairing = it }
