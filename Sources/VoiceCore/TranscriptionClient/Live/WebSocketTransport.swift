@@ -81,4 +81,29 @@ public final class WebSocketTransport: LiveTransport, @unchecked Sendable {
         lock.lock(); let task = self.task; self.task = nil; lock.unlock()
         task?.cancel(with: .goingAway, reason: nil)
     }
+
+    /// How the socket ended, read after `receive` throws and before `close`: the
+    /// status of a refused upgrade and the server's close frame. Nil when unknown.
+    public var ending: LiveSocketEnding {
+        lock.lock(); let task = self.task; lock.unlock()
+        guard let task else { return LiveSocketEnding() }
+        let status = (task.response as? HTTPURLResponse)?.statusCode
+        let code = task.closeCode == .invalid ? nil : task.closeCode.rawValue
+        return LiveSocketEnding(httpStatus: status == 101 ? nil : status, closeCode: code,
+                                closeReason: task.closeReason.flatMap { String(data: $0, encoding: .utf8) })
+    }
+}
+
+/// The parts of a socket's end a caller may act on. The reason is the server's own
+/// text: match on it, never log or show it.
+public struct LiveSocketEnding: Equatable, Sendable {
+    public var httpStatus: Int?
+    public var closeCode: Int?
+    public var closeReason: String?
+
+    public init(httpStatus: Int? = nil, closeCode: Int? = nil, closeReason: String? = nil) {
+        self.httpStatus = httpStatus
+        self.closeCode = closeCode
+        self.closeReason = closeReason
+    }
 }

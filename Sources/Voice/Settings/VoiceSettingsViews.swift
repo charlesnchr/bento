@@ -613,7 +613,7 @@ struct AssistantSettingsView: View {
     var body: some View {
         let _ = revision.value
         let provider = settings.assistantLiveProvider
-        let isDirect = VertexRuntimeConfig.state().config?.isDirect == true
+        let geminiRoute = settings.geminiLiveRoute
         Form {
             Section {
                 Picker(selection: binding({ settings.assistantLiveCall ? provider.rawValue : "off" }, { choice in
@@ -626,15 +626,17 @@ struct AssistantSettingsView: View {
                     ForEach(SettingsStore.AssistantLiveProvider.allCases, id: \.self) { Text($0.displayName).tag($0.rawValue) }
                 } label: {
                     Text("Voice calls")
-                    Text(provider == .gemini && !isDirect && settings.assistantLiveCall
-                         ? "Gemini 3.8 Live needs the local Vertex helper."
-                         : "Off restores one-shot dictation to the assistant and voice editing.")
+                    if provider == .gemini, settings.assistantLiveCall, case .unavailable(let reason) = geminiRoute {
+                        Text(reason)
+                    } else {
+                        Text("Off restores one-shot dictation to the assistant and voice editing.")
+                    }
                 }
                 MicrophoneRow()
             } header: {
                 Text("Voice")
             } footer: {
-                Footnote("⌥F18 starts or ends a call (or dictates a request when calls are off). Calls stream your microphone to \(provider == .gemini ? "Vertex AI" : "Azure") until you end them, and the assistant runs tools without asking. Use headphones: there is no echo cancellation.")
+                Footnote("⌥F18 starts or ends a call (or dictates a request when calls are off). Calls stream your microphone to \(callDestination(provider, geminiRoute)) until you end them, and the assistant runs tools without asking. Use headphones: there is no echo cancellation. Gemini Live uses dictation's Google connection, the Gemini API with your key or Vertex AI through the local helper; GPT-Live is Azure either way.")
             }
             Section {
                 LabeledContent("Hermes") {
@@ -656,5 +658,15 @@ struct AssistantSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func callDestination(_ provider: SettingsStore.AssistantLiveProvider, _ route: SettingsStore.GeminiLiveRoute) -> String {
+        guard provider == .gemini else { return "Azure" }
+        switch route {
+        case .vertexHelper: return "Vertex AI"
+        case .geminiAPI: return "the Gemini API"
+        // Where calls would go once they can start: a gateway or broken runtime file is Vertex.
+        case .unavailable: return VertexRuntimeConfig.state().isRequested ? "Vertex AI" : "the Gemini API"
+        }
     }
 }
