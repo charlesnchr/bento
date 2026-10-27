@@ -1,4 +1,5 @@
 import AppKit
+import VoiceCore
 import SwiftUI
 
 private struct ChatEditor: NSViewRepresentable {
@@ -195,6 +196,8 @@ struct AssistantPlanView: View {
 }
 
 struct AssistantComposer: View {
+    @AppStorage("assistantLiveCall") private var assistantLiveCall = true
+    @AppStorage("assistantLiveProvider") private var assistantLiveProvider = SettingsStore.AssistantLiveProvider.gpt.rawValue
     @ObservedObject var model: AssistantChatModel
     let accent: Color
     @State private var height: CGFloat = 32
@@ -294,22 +297,42 @@ struct AssistantComposer: View {
                         }.padding(14)
                     }
             }
-            if model.busy, !model.liveVoice {
-                button("stop.fill", model.stopping ? "Stopping..." : "Stop (⌘.)") { model.perform(.stop) }.disabled(model.stopping)
+            if !model.liveVoice {
+                Button { model.actions?.dictate() } label: {
+                    Image(systemName: model.recording ? "mic.fill" : "mic").font(.system(size: 15, weight: .medium))
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }.buttonStyle(DimmedWhenDisabled()).foregroundStyle(model.recording ? Color.red : Color.secondary)
+                    .help(model.recording ? "Finish voice request" : "Dictate to Hermes")
+                    .accessibilityLabel(model.recording ? "Finish voice request" : "Dictate to Hermes")
+                    .disabled(!model.recording && (model.busy || model.historyBusy))
             }
             let empty = model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachments.isEmpty
-            if !model.busy || !empty {
-                button("arrow.up", model.busy ? "Queue (↵) or steer (⌘↵)" : "Send (↵)") { model.submit() }
-                    .disabled(empty || model.historyBusy || model.liveVoice || model.recording)
+            if model.liveVoice {
+                button("phone.down.fill", "End \(model.liveName) call", tint: .red) { model.actions?.call() }
+            } else {
+                if model.busy, !model.recording { // A recording finishes with the mic.
+                    button("stop.fill", model.stopping ? "Stopping..." : "Stop (⌘.)") { model.perform(.stop) }.disabled(model.stopping)
+                }
+                if !empty {
+                    button("arrow.up", model.busy ? "Queue (↵) or steer (⌘↵)" : "Send (↵)") { model.submit() }
+                        .disabled(model.historyBusy || model.recording)
+                } else if !model.busy {
+                    let provider = SettingsStore.AssistantLiveProvider(rawValue: assistantLiveProvider) ?? .gpt
+                    button("waveform", assistantLiveCall ? "Start \(provider.displayName) call" : "Voice calls are off in Assistant settings") {
+                        model.actions?.call()
+                    }.disabled(!assistantLiveCall || model.historyBusy || model.recording)
+                }
             }
         }
     }
 
-    private func button(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
+    /// The round primary button, ChatGPT style: inverted against the window.
+    private func button(_ symbol: String, _ title: String, tint: Color = .primary, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 13, weight: .semibold))
-                .frame(width: 28, height: 28).foregroundStyle(.white)
-                .background(accent, in: RoundedRectangle(cornerRadius: 7))
+                .frame(width: 30, height: 30)
+                .foregroundStyle(tint == .primary ? Color(nsColor: .windowBackgroundColor) : .white)
+                .background(tint, in: Circle())
         }.buttonStyle(DimmedWhenDisabled()).help(title).accessibilityLabel(title)
     }
 

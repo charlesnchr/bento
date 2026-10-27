@@ -85,7 +85,12 @@ protocol AssistantActions: AnyObject {
     func newChat()
     func refreshHistory()
     func restore(_ id: String)
+    /// A voice call when calls are on, else a dictated request (⌥F18, /voice).
     func liveVoice()
+    /// Starts or ends a live call.
+    func call()
+    /// Records a request with the normal dictation path and sends it to Hermes.
+    func dictate()
     func hide()
     func regenerate()
     func edit(_ id: UUID, text: String)
