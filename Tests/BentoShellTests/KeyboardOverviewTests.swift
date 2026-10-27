@@ -226,6 +226,88 @@ private func appCatalog(launcherOn: Bool = true) -> [OverviewSection] {
     #expect(nav.recordRequest == nil)   // never records on a later visit
 }
 
+@MainActor @Suite(.serialized) struct SettingsRecordingTests {
+    private final class Button: NSView {
+        var presses = 0
+        override func accessibilityPerformPress() -> Bool { presses += 1; return true }
+    }
+
+    private func host() -> (NSWindow, Button, SettingsNavigator) {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let window = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let button = Button()
+        button.setAccessibilityIdentifier("recorder:launcher.test")
+        window.contentView?.addSubview(button)
+        let nav = SettingsNavigator()
+        nav.actionTitle = { _ in "Open Test" }
+        nav.select("record/launcher.test")
+        return (window, button, nav)
+    }
+
+    @Test func waitsForActivationAndStartsOnce() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        #expect(button.presses == 0)
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 1)
+    }
+
+    @Test func timeoutNeverStartsInAnInactiveWindow() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var checks = 0
+        nav.record("launcher.test", in: window, attempts: 2, ready: { _ in checks += 1; return false })
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(checks == 3)
+        #expect(button.presses == 0)
+    }
+
+    @Test func navigatingOrClosingCancelsActivationRetries() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.select("shortcuts")
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+        ready = false
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.cancelRecordingRequest()   // ShortcutsPane disappearing, including window close
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+    }
+
+    @Test func aNewRequestCancelsOldLayoutRetries() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        button.removeFromSuperview()
+        nav.record("launcher.test", in: window, ready: { _ in true })
+        nav.select("record/launcher.other")
+        window.contentView?.addSubview(button)
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 0)
+    }
+
+    @Test func oldPaneTeardownDoesNotCancelANewRequest() async throws {
+        let (window, button, nav) = host()
+        defer { window.close() }
+        var ready = false
+        let old = try #require(nav.record("launcher.test", in: window, ready: { _ in ready }))
+        nav.select("record/launcher.test")
+        nav.record("launcher.test", in: window, ready: { _ in ready })
+        nav.cancelRecordingRequest(old)
+        ready = true
+        try await Task.sleep(nanoseconds: 160_000_000)
+        #expect(button.presses == 1)
+    }
+}
+
 // MARK: - Settings links
 
 @Test func settingsLinks() {

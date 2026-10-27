@@ -83,8 +83,9 @@ private struct RecorderRepresentable: NSViewRepresentable {
 public enum RecorderFocus {
     /// A new row only exists after SwiftUI's next layout pass: retry briefly.
     public static func begin(_ actionID: String, in window: NSWindow?, attempts: Int = 15,
+                             shouldContinue: @escaping () -> Bool = { true },
                              started: @escaping (NSView) -> Void = { _ in }) {
-        guard let window, attempts > 0 else { return }
+        guard let window, attempts > 0, shouldContinue() else { return }
         if let recorder = window.contentView.flatMap({ find("recorder:\(actionID)", in: $0) }) {
             recorder.scrollToVisible(recorder.bounds.insetBy(dx: 0, dy: -20))   // with the row's subtitle
             // Pressing toggles: never stop a recording that's already running.
@@ -92,7 +93,7 @@ public enum RecorderFocus {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
-            begin(actionID, in: window, attempts: attempts - 1, started: started)
+            begin(actionID, in: window, attempts: attempts - 1, shouldContinue: shouldContinue, started: started)
         }
     }
 

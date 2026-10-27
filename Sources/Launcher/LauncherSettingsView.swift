@@ -136,13 +136,13 @@ struct LauncherSettingsView: View {
             if flashed == id { withAnimation(.easeOut(duration: 0.4)) { flashed = nil } }
         }
         let window = searchAnchor.view?.window ?? NSApp.keyWindow
-        RecorderFocus.begin(entry.actionID, in: window) { recorder in
+        RecorderFocus.begin(entry.actionID, in: window, started: { recorder in
             guard returnToSearch else { return }
             watcher.watch(recorder) {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(AppPickerSection.scrollID) }
                 focusSearchRequest += 1
             }
-        }
+        })
     }
 
     private func update(_ id: String, _ change: (inout LauncherEntry) -> Void) {

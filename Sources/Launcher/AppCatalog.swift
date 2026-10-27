@@ -213,22 +213,35 @@ enum GridNavigation {
 /// The keyboard overview's app search: the picker's index and ranking.
 /// Indexes when the overview opens; released with it.
 final class InstalledAppSearch: AppSearch {
-    private let index = InstalledAppIndex()
+    private let index: InstalledAppIndex?
     private var apps: [AppCandidate] = []
     private let entries: () -> [LauncherEntry]
+    private let makeBoundApps: ([LauncherEntry]) -> BoundApps
+    private var bound: (entries: [LauncherEntry], apps: BoundApps)?
 
-    init(entries: @escaping () -> [LauncherEntry], changed: @escaping () -> Void) {
+    init(entries: @escaping () -> [LauncherEntry], changed: @escaping () -> Void,
+         index: InstalledAppIndex? = InstalledAppIndex(),
+         makeBoundApps: @escaping ([LauncherEntry]) -> BoundApps = { BoundApps($0) }) {
+        self.index = index
         self.entries = entries
-        index.build { [weak self] apps in
-            self?.apps = apps
+        self.makeBoundApps = makeBoundApps
+        index?.build { [weak self] apps in
+            guard let self else { return }
+            self.apps = apps
+            self.bound = nil   // newly found apps may resolve an entry that names an app
             changed()
         }
     }
 
-    deinit { index.cancel() }
+    deinit { index?.cancel() }
 
     func results(_ query: String, limit: Int) -> [FoundApp] {
-        AppPicker.unboundResults(apps, query: query, bound: BoundApps(entries()), limit: limit).map {
+        guard !AppPicker.normalize(query).isEmpty, limit > 0 else { return [] }
+        let current = entries()
+        // Resolving targets touches the filesystem: not on every keystroke.
+        if bound?.entries != current { bound = (current, makeBoundApps(current)) }
+        guard let bound else { return [] }
+        return AppPicker.unboundResults(apps, query: query, bound: bound.apps, limit: limit).map {
             FoundApp(id: $0.id, name: $0.name, url: $0.url, bundleID: $0.bundleID)
         }
     }

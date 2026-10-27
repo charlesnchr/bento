@@ -441,6 +441,28 @@ private func wide(_ px: Int) -> CGImage {
     #expect(AppPicker.unboundResults(many, query: "s", bound: BoundApps([]), limit: 2).count == 2)
 }
 
+@Test func overviewSearchResolvesEntriesOnlyWhenTheyChange() {
+    var entries = [LauncherEntry(kind: .app, target: "Safari")]
+    var reads = 0, resolutions = 0
+    let search = InstalledAppSearch(entries: { reads += 1; return entries }, changed: {}, index: nil,
+                                    makeBoundApps: { entries in
+        BoundApps(entries, resolve: { _ in resolutions += 1; return nil }, bundleID: { _ in nil })
+    })
+    #expect(search.results("  ", limit: 6).isEmpty)
+    #expect(search.results("s", limit: 0).isEmpty)
+    #expect(reads == 0 && resolutions == 0)
+    for query in ["s", "sa", "saf", "safari", "notes"] { _ = search.results(query, limit: 6) }
+    #expect(reads == 5 && resolutions == 1)
+    entries.append(LauncherEntry(kind: .app, target: "Notes"))
+    _ = search.results("notes", limit: 6)
+    #expect(resolutions == 3)
+    _ = search.results("note", limit: 6)
+    #expect(resolutions == 3)
+    entries.removeAll()
+    _ = search.results("safari", limit: 6)
+    #expect(resolutions == 3)
+}
+
 /// LauncherModule reads and writes ConfigStore.shared: point it at a temp dir
 /// first, and refuse to run if anything already resolved the real config. The
 /// same dir as BentoCoreTests' registry tests (one process runs every target,

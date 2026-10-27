@@ -18,8 +18,10 @@ final class SettingsNavigator: ObservableObject {
     @Published var recordRequest: String?
     /// The filter for a recording request (the action's title).
     var actionTitle: (String) -> String? = { ActionRegistry.shared.action($0)?.title }
+    private var recordingRevision = 0
 
     func select(_ id: String?) {
+        cancelRecordingRequest()
         shortcutsFilter = nil
         recordRequest = nil
         switch id {
@@ -37,6 +39,33 @@ final class SettingsNavigator: ObservableObject {
             page = .shortcuts
         case let id?: page = .module(id)
         }
+    }
+
+    func cancelRecordingRequest(_ revision: Int? = nil) {
+        if let revision, revision != recordingRevision { return }
+        recordingRevision &+= 1
+        recordRequest = nil
+    }
+
+    /// Keep activation and layout retries tied to this request and window.
+    @discardableResult
+    func record(_ id: String, in window: NSWindow?, attempts: Int = 50,
+                ready: @escaping (NSWindow) -> Bool = { NSApp.isActive && $0.isVisible && $0.isKeyWindow }) -> Int? {
+        guard let window else { return nil }
+        let revision = recordingRevision
+        let current = { [weak self] in
+            self?.recordingRevision == revision && self?.page == .shortcuts
+        }
+        func wait(_ remaining: Int) {
+            guard current() else { return }
+            if ready(window) {
+                RecorderFocus.begin(id, in: window, shouldContinue: { current() && ready(window) })
+            } else if remaining > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { wait(remaining - 1) }
+            }
+        }
+        wait(attempts)
+        return revision
     }
 }
 
@@ -301,6 +330,7 @@ struct ShortcutsPane: View {
     let window: () -> NSWindow?
     @State private var search = ""
     @State private var revision = 0
+    @State private var recordingRevision: Int?
 
     var body: some View {
         Form {
@@ -322,6 +352,9 @@ struct ShortcutsPane: View {
         .onReceive(NotificationCenter.default.publisher(for: ActionRegistry.didReload)) { _ in revision += 1 }
         .onAppear(perform: takeFilter)
         .onChange(of: navigator.shortcutsFilter) { _, _ in takeFilter() }
+        .onDisappear {
+            if let recordingRevision { navigator.cancelRecordingRequest(recordingRevision) }
+        }
     }
 
     private func takeFilter() {
@@ -330,21 +363,8 @@ struct ShortcutsPane: View {
         navigator.shortcutsFilter = nil
         if let id = navigator.recordRequest {
             navigator.recordRequest = nil
-            record(id)
+            recordingRevision = navigator.record(id, in: window())
         }
-    }
-
-    /// Records once the window is key in the active app. Activation is
-    /// asynchronous (the overview leaves another app frontmost): before it
-    /// lands the filtered row may not be laid out yet, and the key-window
-    /// change it brings would end a recording started earlier.
-    private func record(_ id: String, attempts: Int = 50) {
-        guard let w = window() else { return }
-        guard (NSApp.isActive && w.isKeyWindow) || attempts == 0 else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { record(id, attempts: attempts - 1) }
-            return
-        }
-        RecorderFocus.begin(id, in: w)
     }
 
     private func filtered(_ actions: [BentoAction]) -> [BentoAction] {
