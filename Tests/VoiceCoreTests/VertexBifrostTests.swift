@@ -12,6 +12,7 @@ import Testing
         #expect(config.isDirect)
         #expect(config.liveEndpoint.absoluteString == "ws://127.0.0.1:8767/live")
         #expect(config.conversationEndpoint.absoluteString == "ws://127.0.0.1:8767/conversation")
+        #expect(config.conversationResumeEndpoint.absoluteString == "ws://127.0.0.1:8767/conversation/resume")
     }
 
     @Test func unknownTransportFailsClosed() throws {
