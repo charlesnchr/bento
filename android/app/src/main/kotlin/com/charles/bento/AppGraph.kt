@@ -102,7 +102,7 @@ class AppGraph(val app: Application) {
         )
     }
 
-    /** After a background sync: refresh widgets. */
+    /** After a background sync that brought changes: refresh widgets. */
     suspend fun onBackgroundSync() = com.charles.bento.widget.Widgets.updateNow(app)
 
 }

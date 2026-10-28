@@ -110,10 +110,10 @@ object Widgets {
     private fun ids(context: Context, receiver: Class<*>): IntArray =
         AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, receiver))
 
-    /** Background sync every half hour while any notes or tasks widget is placed. */
+    /** Background sync every half hour while paired and any notes or tasks widget is placed (again on (un)pairing). */
     fun scheduleSync(context: Context) {
         val app = context.applicationContext
-        SyncWorker.scheduleForWidgets(app, dataWidgets.any { (receiver, _) -> ids(app, receiver).isNotEmpty() })
+        SyncWorker.scheduleForWidgets(app, app.graph.sync.paired && dataWidgets.any { (receiver, _) -> ids(app, receiver).isNotEmpty() })
     }
 
     /** A redraw just after midnight every day (Today becomes tomorrow's list). */
