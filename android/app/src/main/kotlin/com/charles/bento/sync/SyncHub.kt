@@ -160,6 +160,16 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             )
         }
 
+        /** While a widget shows notes or tasks: every half hour too, so edits made elsewhere reach it. */
+        fun scheduleForWidgets(context: Context, on: Boolean) {
+            val work = WorkManager.getInstance(context)
+            if (!on) { work.cancelUniqueWork("sync-widgets"); return }
+            work.enqueueUniquePeriodicWork(
+                "sync-widgets", ExistingPeriodicWorkPolicy.KEEP,
+                PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES).setConstraints(online).build(),
+            )
+        }
+
         fun runSoon(context: Context) {
             WorkManager.getInstance(context).enqueueUniqueWork(
                 // after one already running (it may have read the documents before this change)

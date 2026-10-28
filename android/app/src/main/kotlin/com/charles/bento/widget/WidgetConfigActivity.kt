@@ -1,6 +1,7 @@
 package com.charles.bento.widget
 
 import android.appwidget.AppWidgetManager
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -19,70 +20,101 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import com.charles.bento.core.todo.TodoStore
 import com.charles.bento.graph
 import com.charles.bento.ui.theme.BentoTheme
+import com.charles.bento.ui.todo.SnapshotRepo
+import com.charles.bento.ui.todo.ViewPickerSheet
+import com.charles.bento.ui.todo.encode
 import kotlinx.coroutines.launch
 
-/** Chooses what a note widget shows (which note) or a task widget (which view). */
+/**
+ * Chooses what a note widget shows (which note) or a task widget (which list: the app's own
+ * list picker, over the home screen). Opened by the launcher (placing, reconfiguring) and
+ * by the widgets themselves.
+ */
 class WidgetConfigActivity : ComponentActivity() {
-    @OptIn(ExperimentalMaterial3Api::class)
+    private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+        appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
         setResult(RESULT_CANCELED, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
         if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) { finish(); return }
         val kind = intent.getStringExtra(EXTRA_KIND) ?: kindFor(appWidgetId)
         setContent {
             val theme by graph.prefs.theme.flow.collectAsStateWithLifecycle()
-            val scope = rememberCoroutineScope()
-            var options by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-            LaunchedEffect(kind) {
-                options = if (kind == KIND_NOTE) graph.widgetData.notes(200).map { it.id to it.title.ifBlank { "Untitled" } }
-                          else graph.widgetData.taskViews()
-            }
             BentoTheme(theme) {
-                Scaffold(topBar = { TopAppBar(title = { Text(if (kind == KIND_NOTE) "Choose a note" else "Show tasks from") }) }) { padding ->
-                    LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                        items(options) { (id, label) ->
-                            Column(Modifier.fillMaxWidth().clickable {
-                                graph.prefs.putString(if (kind == KIND_NOTE) noteWidgetKey(appWidgetId) else tasksWidgetKey(appWidgetId), id)
-                                scope.launch {
-                                    val glanceId = GlanceAppWidgetManager(this@WidgetConfigActivity).getGlanceIdBy(appWidgetId)
-                                    if (kind == KIND_NOTE) NoteWidget().update(this@WidgetConfigActivity, glanceId)
-                                    else TasksWidget().update(this@WidgetConfigActivity, glanceId)
-                                    setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
-                                    finish()
-                                }
-                            }) {
-                                Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp))
-                                HorizontalDivider()
-                            }
-                        }
+                if (kind == KIND_NOTE) NotePicker() else ListPicker()
+            }
+        }
+    }
+
+    @Composable
+    private fun ListPicker() {
+        val docs by graph.todo.docs.collectAsStateWithLifecycle()
+        val store = remember(docs) { TodoStore(SnapshotRepo(docs)) }
+        val counts = remember(docs) { store.counts(graph.todo.dates()) }
+        val view = remember(docs) { WidgetConfigs.resolve(graph.widgetConfigs.taskView(appWidgetId), store.projects.map { it.id }) }
+        ViewPickerSheet(view, counts, store.projects, store.labels, onPick = { v ->
+            graph.widgetConfigs.setTaskView(appWidgetId, v.encode())
+            done(TasksWidget())
+        }, onDismiss = ::finish)
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun NotePicker() {
+        val all by graph.notes.notes.collectAsStateWithLifecycle()
+        val options = remember(all) { graph.widgetData.notes(200) }
+        Scaffold(topBar = { TopAppBar(title = { Text("Choose a note") }) }) { padding ->
+            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+                items(options, key = { it.id }) { note ->
+                    Column(Modifier.fillMaxWidth().clickable {
+                        graph.widgetConfigs.setNote(appWidgetId, note.id)
+                        done(NoteWidget())
+                    }) {
+                        Text(note.title.ifBlank { "Untitled" }, style = MaterialTheme.typography.bodyLarge,
+                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp))
+                        HorizontalDivider()
                     }
                 }
             }
         }
     }
 
+    /** Saved: redraw this widget (a running one redraws itself too) and close. */
+    private fun done(widget: GlanceAppWidget) {
+        lifecycleScope.launch {
+            widget.update(this@WidgetConfigActivity, GlanceAppWidgetManager(this@WidgetConfigActivity).getGlanceIdBy(appWidgetId))
+            setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
+            finish()
+        }
+    }
+
     private fun kindFor(appWidgetId: Int): String {
         val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(appWidgetId)
-        return if (info?.provider?.className?.endsWith("NoteWidgetReceiver") == true) KIND_NOTE else KIND_TASKS
+        return if (info?.provider?.className == NoteWidgetReceiver::class.java.name) KIND_NOTE else KIND_TASKS
     }
 
     companion object {
         const val EXTRA_KIND = "kind"
         const val KIND_NOTE = "note"
         const val KIND_TASKS = "tasks"
+
+        /** From a widget: a fresh picker for that widget (never another widget's, left open behind the home screen). */
+        fun intent(context: Context, appWidgetId: Int, kind: String): Intent =
+            Intent(context, WidgetConfigActivity::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                .putExtra(EXTRA_KIND, kind).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
     }
 }

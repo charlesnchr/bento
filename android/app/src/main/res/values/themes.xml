@@ -22,6 +22,9 @@
         <item name="android:backgroundDimEnabled">false</item>
     </style>
 
+    <!-- A widget's list picker: the app's bottom sheet over the home screen. -->
+    <style name="Theme.Bento.WidgetPicker" parent="Theme.Bento.Capture" />
+
     <style name="Theme.Bento.Trampoline" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>

@@ -11,7 +11,6 @@ import com.charles.bento.core.todo.priority
 import com.charles.bento.core.todo.project
 import com.charles.bento.core.todo.title
 import com.charles.bento.ui.todo.SnapshotRepo
-import com.charles.bento.ui.todo.decodeView
 
 /** The widgets' view of the stores (snapshots: no engine-thread hop needed to read). */
 class AppWidgetData(private val graph: AppGraph) : WidgetData {
@@ -34,7 +33,7 @@ class AppWidgetData(private val graph: AppGraph) : WidgetData {
         val todo = graph.todo
         val store = TodoStore(SnapshotRepo(todo.docs.value))
         val dates = todo.dates()
-        val v = decodeView(view)
+        val v = WidgetConfigs.resolve(view, store.projects.map { it.id })
         val tasks = store.rows(v, false, dates).filterIsInstance<TodoRow.Task>().map { it.doc }.take(limit)
         val overdue = tasks.count { t -> t.due?.let(dates::isOverdue) == true }
         return TaskList(store.title(v), tasks.map { t ->
@@ -45,12 +44,6 @@ class AppWidgetData(private val graph: AppGraph) : WidgetData {
                 completed = t.isCompleted,
             )
         }, overdue)
-    }
-
-    override fun taskViews(): List<Pair<String, String>> {
-        val store = TodoStore(SnapshotRepo(graph.todo.docs.value))
-        return listOf("today" to "Today", "inbox" to "Inbox", "upcoming" to "Upcoming") +
-            store.projects.map { "project:${it.id}" to it.name } + store.labels.map { "label:$it" to "@$it" }
     }
 
     override suspend fun toggleTask(id: String) {

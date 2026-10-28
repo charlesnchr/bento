@@ -134,7 +134,8 @@
             android:name=".widget.WidgetConfigActivity"
             android:exported="true"
             android:excludeFromRecents="true"
-            android:taskAffinity="com.charles.bento.widgetconfig">
+            android:taskAffinity="com.charles.bento.widgetconfig"
+            android:theme="@style/Theme.Bento.WidgetPicker">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
