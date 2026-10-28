@@ -5,10 +5,9 @@ import AppKit
 /// The text stays plain markdown. Block markers (`# `, `- `, `1. `, `- [ ] `, `> `)
 /// are hidden and drawn as decorations by `NotesLayoutManager`; inline markers are
 /// hidden unless the selection touches their span; code fences are hidden unless the
-/// selection is inside the code block. A heading's section (down to the next heading of
-/// the same or a higher level) can be collapsed; captured thoughts start collapsed.
-/// Restyling is incremental: only edited lines, plus following lines whose decoration
-/// changes (fences, list numbering, collapsed sections).
+/// selection is inside the code block. Lines of collapsed heading sections (`HeadingFolds`)
+/// are hidden. Restyling is incremental: only edited lines, plus following lines whose
+/// decoration changes (fences, list numbering, collapsed sections).
 final class MarkdownStyler {
     var theme = NotesTheme() {
         didSet { styleCache.removeAll(); lineHeights.removeAll(); linkColors = MarkdownStyler.linkColors(theme) }
@@ -23,11 +22,15 @@ final class MarkdownStyler {
     private var revealedRegion: NSRange?
     private var revealSignature: [NSRange] = []
 
-    /// Headings whose collapsed state differs from their default (open, except captured
-    /// thoughts). Per window, never written to the note.
-    private(set) var toggled: Set<String> = []
-    /// Restyling after a text edit: a heading being edited keeps its collapsed state.
-    private var editing = false
+    /// Collapsed sections (per window and note, never written to the note).
+    private(set) var folds = HeadingFolds()
+    /// Styling text that arrived from elsewhere (note opened, sync, capture): captured
+    /// thoughts not known to be open start collapsed.
+    private var adopting = false
+    /// Length of the text when last styled (for edits reported without their old length).
+    private var styledLength = 0
+    /// Hidden lines of folds forgotten while styling, still to restyle.
+    private var forgotten: [NSRange] = []
 
     private var styleCache: [String: NSParagraphStyle] = [:]
     private var lineHeights: [CGFloat: CGFloat] = [:]
@@ -35,26 +38,45 @@ final class MarkdownStyler {
 
     // MARK: Entry points
 
-    /// Styles the whole document.
-    func styleAll(_ s: NSTextStorage) {
+    /// Styles the whole document. `adopt`: the text was just loaded (see `adopting`).
+    func styleAll(_ s: NSTextStorage, adopt: Bool = false) {
+        adopting = adopt
         s.beginEditing()
         styleLines(s, from: 0, minEnd: s.length, inCode: false, force: true)
+        forgotten.removeAll() // everything was styled, after the forgetting too
         s.endEditing()
+        adopting = false
+        styledLength = s.length
         revealedRegion = revealRegion(for: selection, in: s)
         revealSignature = signature(for: selection, in: s)
     }
 
-    /// Call from `textStorage(_:didProcessEditing:...)` after character edits.
-    func didEdit(_ s: NSTextStorage, editedRange: NSRange) {
-        selection = NSRange(location: min(NSMaxRange(editedRange), s.length), length: 0)
+    /// Call from `textStorage(_:didProcessEditing:...)` after character edits. `edits`: each
+    /// replacement in order (range in the text before it, new length) when known, else one
+    /// edit is assumed (`editedRange` and the change in length). `external`: the text changed
+    /// elsewhere (sync, capture) rather than by typing here.
+    func didEdit(_ s: NSTextStorage, editedRange: NSRange, edits: [(range: NSRange, length: Int)]? = nil, external: Bool = false) {
+        let delta = s.length - styledLength
+        let steps = edits ?? [(NSRange(location: editedRange.location, length: max(0, editedRange.length - delta)), editedRange.length)]
+        var dirty: [NSRange] = []
+        for e in steps { dirty = dirty.map { mapped($0, e) } + folds.map(e.range, length: e.length) }
         let text = s.mutableString
+        folds.normalize(in: text, around: editedRange)
+        if !external { selection = NSRange(location: min(NSMaxRange(editedRange), s.length), length: 0) }
         let start = text.lineRange(for: NSRange(location: min(editedRange.location, text.length), length: 0)).location
         let end = NSMaxRange(text.lineRange(for: NSRange(location: min(NSMaxRange(editedRange), text.length), length: 0)))
-        editing = true
+        adopting = external
         restyle(s, start: start, end: end)
-        editing = false
+        for r in dirty where NSMaxRange(r) <= s.length { restyle(s, start: r.location, end: NSMaxRange(r)) }
+        adopting = false
+        styledLength = s.length
         revealedRegion = revealRegion(for: selection, in: s)
         revealSignature = signature(for: selection, in: s)
+    }
+
+    private func mapped(_ r: NSRange, _ e: (range: NSRange, length: Int)) -> NSRange {
+        let edits = [TextEdit(range: e.range, replacement: String(repeating: " ", count: e.length))]
+        return MarkdownCommands.map(r, through: edits)
     }
 
     /// Call when the selection changes; re-reveals markers around the new selection.
@@ -80,47 +102,42 @@ final class MarkdownStyler {
         guard let d = decoration(s, at: lineStart), case .heading = d.kind, let collapsed = d.collapsed else { return false }
         let text = s.mutableString
         let full = text.lineRange(for: NSRange(location: lineStart, length: 0))
-        let key = headingKey(text, line: full)
-        if collapsed == defaultCollapsed(text, line: full) { toggled.insert(key) } else { toggled.remove(key) }
-        let level = MarkdownStyler.headingLevel(text, line: full) ?? 1
-        s.beginEditing()
-        restyle(s, start: full.location, end: max(NSMaxRange(full), MarkdownParser.sectionEnd(after: full, level: level, in: text)))
-        s.endEditing()
+        guard full.location == lineStart, let level = MarkdownStyler.headingLevel(text, line: full) else { return false }
+        let region = collapsed ? folds.expand(lineStart, entry: isEntry(text, line: full)) : folds.collapse(lineStart, level: level, in: text)
+        if let region {
+            s.beginEditing()
+            restyle(s, start: region.location, end: NSMaxRange(region))
+            s.endEditing()
+        }
         return true
     }
 
-    /// The collapsed section around `loc`: its heading line and the hidden lines after it
-    /// (up to the last one's newline). nil when `loc` isn't hidden in one.
-    static func collapsedSection(at loc: Int, in s: NSTextStorage) -> (heading: NSRange, hidden: NSRange)? {
-        let text = s.string as NSString
-        guard loc >= 0, loc <= text.length else { return nil }
-        func deco(_ i: Int) -> BlockDecoration? { s.attribute(.notesBlock, at: i, effectiveRange: nil) as? BlockDecoration }
-        // the end of a last line without a newline still belongs to that line
-        let probe = loc == text.length && loc > 0 && text.character(at: loc - 1) != 10 ? loc - 1 : loc
-        guard probe < text.length, deco(probe)?.kind == .folded else { return nil }
-        var start = text.lineRange(for: NSRange(location: probe, length: 0)).location
-        var heading: NSRange?
-        while start > 0 {
-            let prev = text.lineRange(for: NSRange(location: start - 1, length: 0))
-            guard let d = deco(prev.location) else { return nil }
-            if d.collapsed == true { heading = prev; break }
-            guard d.kind == .folded else { return nil }
-            start = prev.location
+    /// Opens the collapsed sections hiding `loc` (e.g. a find match in one).
+    func reveal(_ s: NSTextStorage, at loc: Int) {
+        let text = s.mutableString
+        while let f = folds.hiding(loc) {
+            let full = text.lineRange(for: NSRange(location: min(f.heading, text.length), length: 0))
+            guard let region = folds.expand(f.heading, entry: isEntry(text, line: full)) else { break }
+            s.beginEditing()
+            restyle(s, start: region.location, end: NSMaxRange(region))
+            s.endEditing()
         }
-        guard let heading else { return nil }
-        var end = NSMaxRange(text.lineRange(for: NSRange(location: probe, length: 0)))
-        while end < text.length, deco(end)?.kind == .folded {
-            end = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
-        }
-        // the last hidden line's terminator is not hidden
-        let last = text.lineRange(for: NSRange(location: end - 1, length: 0))
-        end = NSMaxRange(MarkdownParser.contentRange(last, in: text))
-        return (heading, NSRange(location: start, length: end - start))
     }
+
+    /// Replaces the fold state (a note being loaded). Restyle afterwards.
+    func setFolds(_ f: HeadingFolds) { folds = f }
 
     // MARK: Core
 
     private func restyle(_ s: NSTextStorage, start: Int, end: Int) {
+        restyleLines(s, start: start, end: end)
+        while !forgotten.isEmpty {
+            let r = forgotten.removeFirst()
+            if NSMaxRange(r) <= s.length { restyleLines(s, start: r.location, end: NSMaxRange(r)) }
+        }
+    }
+
+    private func restyleLines(_ s: NSTextStorage, start: Int, end: Int) {
         let text = s.mutableString
         let start = min(start, text.length)
         var from = start
@@ -153,56 +170,31 @@ final class MarkdownStyler {
         MarkdownParser.contentRange(full, in: text)
     }
 
-    /// Identifies a heading across restyles. Repeated captures can have identical
-    /// headings, so include the occurrence of the full line.
-    private func headingKey(_ text: NSMutableString, line full: NSRange) -> String {
-        let r = MarkdownStyler.contentRange(full, in: text)
-        let header = text.substring(with: r)
-        var occurrence = 0, loc = 0
-        while loc < full.location {
-            let found = text.range(of: header, range: NSRange(location: loc, length: full.location - loc))
-            guard found.location != NSNotFound else { break }
-            let end = NSMaxRange(found)
-            if (found.location == 0 || [10, 13].contains(text.character(at: found.location - 1))),
-               end < text.length, [10, 13].contains(text.character(at: end)) { occurrence += 1 }
-            loc = end
-        }
-        return header + "\u{0}" + String(occurrence)
-    }
-
     private static func headingLevel(_ text: NSString, line full: NSRange) -> Int? {
         if case .heading(let l) = MarkdownParser.parseLine(MarkdownParser.utf16(text, contentRange(full, in: text)), inCode: false).kind { return l }
         return nil
     }
 
-    /// Captured thoughts start collapsed, other headings open.
-    private func defaultCollapsed(_ text: NSMutableString, line full: NSRange) -> Bool {
+    /// Whether the heading line `full` is a captured thought's.
+    private func isEntry(_ text: NSString, line full: NSRange) -> Bool {
         let r = MarkdownStyler.contentRange(full, in: text)
         let p = MarkdownParser.parseLine(MarkdownParser.utf16(text, r), inCode: false)
+        guard case .heading = p.kind else { return false }
         return ThoughtCapture.isEntryHeading(text.substring(with: NSRange(location: r.location + p.contentRange.location, length: p.contentRange.length)))
     }
 
-    /// Whether the section of the heading line `full` (level `level`) is collapsed. Opens
-    /// it when the selection is inside.
-    private func headingState(_ s: NSTextStorage, line full: NSRange, level: Int) -> Bool {
+    /// Collapsed state of the heading on line `full` (level `level`), and bookkeeping for
+    /// captured thoughts: arriving ones collapse unless known to be open, ones typed here are
+    /// remembered as open.
+    private func headingCollapsed(_ s: NSTextStorage, line full: NSRange, level: Int) -> Bool {
+        if folds.isCollapsed(full.location) { return true }
         let text = s.mutableString
-        let key = headingKey(text, line: full)
-        let byDefault = defaultCollapsed(text, line: full)
-        var collapsed = byDefault != toggled.contains(key)
-        // editing a heading's text (which changes its key) keeps its state
-        if editing, let was = decoration(s, at: full.location)?.collapsed, was != collapsed {
-            collapsed = was
-            if collapsed == byDefault { toggled.remove(key) } else { toggled.insert(key) }
+        guard !folds.isOpened(full.location), isEntry(text, line: full) else { return false }
+        if adopting {
+            folds.collapse(full.location, level: level, in: text)
+            return true
         }
-        guard collapsed else { return false }
-        // (a caret at the end of the section isn't inside: a note opens with the caret at
-        // its end, often in the last captured thought)
-        let end = MarkdownParser.sectionEnd(after: full, level: level, in: text)
-        let body = NSRange(location: NSMaxRange(full), length: max(0, end - NSMaxRange(full)))
-        guard body.length > 0 else { return true }
-        let inside = selection.length > 0 ? NSIntersectionRange(selection, body).length > 0 : NSLocationInRange(selection.location, body)
-        guard inside else { return true }
-        if byDefault { toggled.insert(key) } else { toggled.remove(key) }
+        folds.markOpened(full.location)
         return false
     }
 
@@ -229,19 +221,18 @@ final class MarkdownStyler {
             if case .fence(let opening, _) = p.kind { inCodeAfter = opening }
 
             var kind = decorationKind(p, line: r, counters: &counters, prev: prevDeco, selBlock: selBlock, text: text)
-            // Collapsed sections: the level of the one in effect comes from the line above;
-            // a heading of that level or higher ends it.
-            let fold = prevDeco?.foldAfter
-            var foldAfter = fold
-            var collapsed: Bool?
-            if case .heading(let l) = p.kind, fold.map({ l <= $0 }) ?? true {
-                let c = headingState(s, line: full, level: l)
-                collapsed = c
-                foldAfter = c ? l : nil
-            } else if fold != nil {
-                kind = .folded
+            // Collapsed sections: headings the fold state knows that aren't (whole) heading
+            // lines any more are forgotten (their hidden lines get restyled as the pass goes on).
+            for pos in folds.headings(in: NSRange(location: full.location, length: max(1, full.length))) {
+                if pos != full.location || !p.kind.isHeading, let body = folds.forget(pos), body.length > 0 { forgotten.append(body) }
             }
-            let deco = BlockDecoration(kind, inCodeAfter: inCodeAfter, first: r.location == 0, foldAfter: foldAfter, collapsed: collapsed)
+            var collapsed: Bool?
+            if case .heading(let l) = p.kind { collapsed = headingCollapsed(s, line: full, level: l) }
+            if folds.hiding(full.location) != nil {
+                kind = .folded
+                collapsed = nil
+            }
+            let deco = BlockDecoration(kind, inCodeAfter: inCodeAfter, first: r.location == 0, collapsed: collapsed)
 
             if full.length == 0 { break } // empty last line: nothing to style
             if !force, loc >= minEnd, let old = decoration(s, at: loc), old == deco { break }
@@ -534,8 +525,6 @@ final class MarkdownStyler {
         let b = text.lineRange(for: NSRange(location: min(NSMaxRange(sel), text.length), length: 0))
         var region = NSUnionRange(a, b)
         if let block = codeBlockRange(containing: sel, in: s) { region = NSUnionRange(region, block) }
-        // a selection inside a collapsed section (e.g. a find match) opens it
-        if let e = MarkdownStyler.collapsedSection(at: sel.location, in: s) { region = NSUnionRange(region, NSUnionRange(e.heading, e.hidden)) }
         return region
     }
 

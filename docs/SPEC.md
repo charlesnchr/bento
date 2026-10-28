@@ -174,11 +174,27 @@ click or reposition them manually. See QA.md for safe validation.
 ## Collapsible headings and thought capture
 
 Any heading's section (down to the next heading of the same or a higher level, or the note's
-end) collapses with the chevron left of the heading (shown on hover, always while collapsed) or
-⌘↩ on the heading line. The caret skips a collapsed section; a selection inside one (a find
-match) opens it. Captured thoughts (headings starting `yyyy-MM-dd HH:mm · `) start collapsed,
-other headings open. Collapse state is per window and never written to the note, so the text
-stays plain markdown for sync and other clients.
+end) collapses with the chevron left of the heading (shown on hover, always while collapsed; the
+whole margin beside the heading's line is the click target, the first click works when the window
+isn't key, the selection doesn't move) or ⌘↩ on the heading line. Captured thoughts (headings
+starting `yyyy-MM-dd HH:mm · `) start collapsed, other headings open.
+Editing around a collapsed section never changes its hidden text:
+- Return at the end of a collapsed heading starts a new line after the whole section (it stays
+  collapsed); at the start of the heading's text it adds a line above.
+- Backspace at the start of the line after a collapsed section joins that line onto the heading
+  (removes it when empty); forward delete at the end of the heading joins the line after the
+  section onto it.
+- The caret skips hidden lines; a selection reaching into them covers the whole section (so
+  deleting it deletes the section); a selection inside them that wasn't extended there (a find
+  match) opens the section. Any other edit that would change part of the hidden text is refused
+  (beep). Undo and redo restore what was.
+Collapse state is per window and note, in memory, never written to the note (text and sync stay
+plain markdown). A collapsed section is its heading plus the lines it hid when it collapsed; both
+move with every edit like carets (`HeadingFolds`), so it stays collapsed through edits elsewhere,
+sync merges, captures and switching notes, and lines added right after it stay visible. Thoughts
+that arrive from elsewhere (note opened, sync, capture) start collapsed; ones typed or opened here
+stay open. When the note is opened afresh (relaunch), sections are recomputed from the markdown, so
+a line typed after a collapsed thought is then part of that thought's section.
 Dictation's Capture Thought to Note records hands-free and appends the transcript to the
 note set in Settings → Notes (`notes.captureNoteID`; unset or deleted: a new "Thoughts" note) as
 `### yyyy-MM-dd HH:mm · <first words>` / text, after a blank line (headings in the text are escaped). The modules

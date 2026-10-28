@@ -194,4 +194,137 @@ import Testing
             #expect(w.currentText.contains("- [x] inside"))
         }
     }
+
+    private static let thoughts = "# Thoughts\n\n### 2026-10-26 14:05 · A\none\n\n### 2026-10-26 14:06 · B\ntwo\n"
+
+    private func deco(_ w: NotesWindowController, _ loc: Int) -> BlockDecoration? {
+        w.textView.textStorage?.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration
+    }
+
+    @Test func returnOnACollapsedThoughtAddsALineAfterItAndUndoes() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let a = ns.range(of: "### 2026-10-26 14:05").location, b = ns.range(of: "### 2026-10-26 14:06").location
+            let aEnd = NSMaxRange(ns.range(of: "### 2026-10-26 14:05 · A"))
+            #expect(deco(w, a)?.collapsed == true && deco(w, b)?.collapsed == true)
+            w.textView.setSelectedRange(NSRange(location: aEnd, length: 0))
+            #expect(w.textView(w.textView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            #expect(w.selectedRange == NSRange(location: b, length: 0))
+            w.textView.insertText("hello", replacementRange: NSRange(location: NSNotFound, length: 0))
+            #expect(w.currentText == body.replacingOccurrences(of: "one\n\n", with: "one\n\nhello\n"))
+            #expect(deco(w, a)?.collapsed == true)
+            #expect(deco(w, ns.range(of: "one").location)?.kind == .folded)
+            #expect(deco(w, b)?.kind == .paragraph(empty: false))
+            // backspace at the start of the new line joins it onto the heading
+            w.textView.setSelectedRange(NSRange(location: b, length: 0))
+            #expect(w.textView(w.textView, doCommandBy: #selector(NSResponder.deleteBackward(_:))))
+            #expect(w.currentText == body.replacingOccurrences(of: "· A\n", with: "· Ahello\n"))
+            #expect(deco(w, a)?.collapsed == true)
+            // undo goes back step by step; the section stays collapsed throughout
+            let um = try #require(w.textView.undoManager)
+            um.undo()
+            #expect(deco(w, a)?.collapsed == true && deco(w, ns.range(of: "one").location)?.kind == .folded)
+            while um.canUndo { um.undo() }
+            #expect(w.currentText == body)
+            #expect(deco(w, a)?.collapsed == true && deco(w, b)?.collapsed == true)
+            um.redo()
+            #expect(deco(w, a)?.collapsed == true)
+        }
+    }
+
+    @Test func hiddenTextCantBeEditedPiecemeal() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let one = ns.range(of: "one").location, a = ns.range(of: "### 2026-10-26 14:05").location
+            let b = ns.range(of: "### 2026-10-26 14:06").location
+            #expect(!w.textView(w.textView, shouldChangeTextInRanges: [NSValue(range: NSRange(location: one, length: 0))], replacementStrings: ["x"]))
+            #expect(!w.textView(w.textView, shouldChangeTextInRanges: [NSValue(range: NSRange(location: one - 3, length: 4))], replacementStrings: [""]))
+            #expect(w.textView(w.textView, shouldChangeTextInRanges: [NSValue(range: NSRange(location: a, length: b - a))], replacementStrings: [""]))
+            #expect(w.textView(w.textView, shouldChangeTextInRanges: [NSValue(range: NSRange(location: a + 5, length: 2))], replacementStrings: ["x"]))
+            // ⌥⌫ at the start of the line after a collapsed section would eat hidden text
+            w.textView.setSelectedRange(NSRange(location: ns.length, length: 0))
+            w.textView.deleteWordBackward(nil)
+            #expect(w.currentText == body)
+        }
+    }
+
+    @Test func chevronClickTogglesWithoutMovingTheSelection() throws {
+        try withController { c, _ in
+            let body = "# Title\nintro\n## Section\nbody line\n## Last\nend"
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let tv = w.textView
+            let ns = body as NSString
+            let section = ns.range(of: "## Section").location, last = ns.range(of: "## Last").location
+            tv.setSelectedRange(NSRange(location: 3, length: 2))
+            func click(_ lineStart: Int) throws -> NSEvent {
+                let lm = try #require(tv.notesLayoutManager)
+                lm.ensureLayout(for: try #require(tv.textContainer))
+                let r = try #require(lm.chevronRect(paragraphStart: lineStart))
+                let p = tv.convert(NSPoint(x: r.midX + tv.textContainerOrigin.x, y: r.midY + tv.textContainerOrigin.y), to: nil)
+                return try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: 0,
+                                                       windowNumber: tv.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            }
+            for start in [0, section, last] {
+                let e = try click(start)
+                #expect(tv.acceptsFirstMouse(for: e))  // works on the first click into a window that isn't key
+                tv.mouseDown(with: e)
+                #expect(deco(w, start)?.collapsed == true, "\(start)")
+                #expect(tv.selectedRange() == NSRange(location: 3, length: 2) || start == 0)
+                tv.mouseDown(with: try click(start))
+                #expect(deco(w, start)?.collapsed == false)
+            }
+            // the text itself isn't a chevron
+            let lm = try #require(tv.notesLayoutManager)
+            let r = try #require(lm.chevronRect(paragraphStart: section))
+            #expect(tv.foldChevron(at: NSPoint(x: r.midX + tv.textContainerOrigin.x, y: r.midY + tv.textContainerOrigin.y)) == section)
+            #expect(tv.foldChevron(at: NSPoint(x: tv.textContainerOrigin.x + 30, y: r.midY + tv.textContainerOrigin.y)) == nil)
+            #expect(tv.headingLine(at: NSPoint(x: tv.textContainerOrigin.x + 30, y: r.midY + tv.textContainerOrigin.y)) == section)
+            #expect(w.currentText == body)
+        }
+    }
+
+    @Test func foldsSurviveSyncCapturesAndSwitchingNotes() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            let other = Note(body: "# Other")
+            c.store.save(note)
+            c.store.save(other)
+            c.updateSettings { $0.captureNoteID = note.id }
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let a = ns.range(of: "### 2026-10-26 14:05").location, b = ns.range(of: "### 2026-10-26 14:06").location
+            #expect(w.toggleHeading(at: b))  // open B
+            w.textView.setSelectedRange(NSRange(location: 2, length: 0))
+            // a capture and a remote edit above
+            #expect(c.capture("Captured while open") == "Thoughts")
+            w.applyExternalBody("Remote line\n" + w.currentText)
+            let t = w.currentText as NSString
+            #expect(deco(w, a + 12)?.collapsed == true)
+            #expect(deco(w, b + 12)?.collapsed == false)
+            let captured = t.range(of: "\nCaptured while open").location + 1
+            #expect(deco(w, captured)?.kind == .folded)
+            #expect(w.selectedRange == NSRange(location: 14, length: 0))
+            // another note and back
+            c.open(other.id)
+            c.open(note.id)
+            #expect(deco(w, a + 12)?.collapsed == true)
+            #expect(deco(w, b + 12)?.collapsed == false)
+            #expect(deco(w, captured)?.kind == .folded)
+        }
+    }
 }

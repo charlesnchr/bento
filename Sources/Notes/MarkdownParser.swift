@@ -15,6 +15,11 @@ enum BlockKind: Equatable {
     /// A line inside a fenced code block.
     case code
 
+    var isHeading: Bool {
+        if case .heading = self { return true }
+        return false
+    }
+
     var isList: Bool {
         switch self {
         case .bullet, .ordered, .task: return true

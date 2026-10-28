@@ -8,6 +8,7 @@
 #                                instances. Runs in two short GUI sessions
 #                                (scripts/e2e/session start/end notes); types only into its
 #                                own instances (bentoctl --expect).
+#   scripts/e2e/notes.sh folds   heading folds only (real clicks and keys), one short GUI session
 #   scripts/e2e/notes.sh all     both
 #
 # Data safety: every instance has its own BENTO_HOME under $WORK, syncs with a local
@@ -431,6 +432,51 @@ other_instances() {
   ps -axo pid,command | grep -E "/(Bento|DevNotes)$" | grep -v "$WORK/" | grep -vF "$INSTALLED_APP_REAL/" | grep -v grep
 }
 
+# Heading folds with real clicks and keys: chevrons (key and not key), Return after a
+# collapsed thought, backspace back. Needs instance a running with its window key.
+gui_folds() {
+  local A; A=$(bid a)
+  log "- heading folds"
+  # (check runs its command in this shell: dumpq works there, not in bash -c)
+  collapsed() { dumpq a "[h['collapsed'] for h in d['headings']]"; }
+  body_has() { dumpq a "d['body']" | grep -q "$@"; }
+  local body='# Folds\n\n### 2026-10-26 14:05 · Alpha\none\n\n### 2026-10-26 14:06 · Beta\ntwo\n'
+  dbg a "put folds|$body" 'open-title Folds' 'select 2 0' >/dev/null
+  check "captured thoughts open collapsed" test "$(collapsed)" = '[False, True, True]'
+  local sh; sh=$("$CTL" screens | head -1 | awk '{print $5}')
+  # chevron target centre in top-left screen coordinates: <heading index>
+  target() { python3 -c 'import re,sys; n=[float(v) for v in re.findall(r"[-0-9.]+", sys.argv[1])]; h=float(sys.argv[2]); print(int(n[0]+n[2]/2), int(h-(n[1]+n[3]/2)))' "$(dumpq a "d['headings'][$1]['target']")" "$sh"; }
+  local x y
+  read -r x y <<< "$(target 2)"
+  click "$A" "$x" "$y" || return 75; sleep 0.3; dbg a >/dev/null
+  check "clicking the last thought's chevron opens it" test "$(collapsed)" = '[False, True, False]'
+  check "…without moving the caret" test "$(dumpq a "d['selection']")" = '[2, 0]'
+  read -r x y <<< "$(target 2)"
+  click "$A" "$x" "$y" || return 75; sleep 0.3; dbg a >/dev/null
+  check "clicking it again collapses it" test "$(collapsed)" = '[False, True, True]'
+  # with another app frontmost: the first click works
+  "$CTL" front com.apple.TextEdit notes-qa >/dev/null; sleep 0.4
+  dbg a >/dev/null
+  check "notes window not key" test "$(dumpq a "d['key']")" = False
+  read -r x y <<< "$(target 1)"
+  click "$A" "$x" "$y" || return 75; sleep 0.4; dbg a >/dev/null
+  check "a chevron click into the window that isn't key toggles" test "$(collapsed)" = '[False, False, True]'
+  read -r x y <<< "$(target 1)"
+  click "$A" "$x" "$y" || return 75; sleep 0.3
+  # Return at the end of a collapsed thought: a new line after its section
+  local end; end=$(dumpq a "d['body'].index('· Alpha') + 7")
+  dbg a "select $end 0" >/dev/null
+  type_into "$A" '\nhello' || return 75; sleep 0.3; dbg a >/dev/null
+  check "Return on a collapsed thought types after its section" test "$(dumpq a "d['body']")" = "$(printf '# Folds\n\n### 2026-10-26 14:05 · Alpha\none\n\nhello\n### 2026-10-26 14:06 · Beta\ntwo')"
+  check "…and it stays collapsed" test "$(collapsed)" = '[False, True, True]'
+  press "$A" cmd+left || return 75
+  press "$A" delete || return 75; sleep 0.3; dbg a >/dev/null
+  check "backspace joins the line back onto the heading" body_has '· Alphahello$'
+  press "$A" cmd+z || return 75; sleep 0.3; dbg a >/dev/null
+  check "undo brings the line back" body_has -x hello
+  check "…still collapsed" test "$(collapsed)" = '[False, True, True]'
+}
+
 gui_session_1() {
   log "== GUI 1: hotkey, typing, shortcuts, quit mid-typing =="
   local A; A=$(bid a)
@@ -567,6 +613,9 @@ EOF2
     bad "no checkbox rect in dump"
   fi
 
+  gui_folds || return 75
+  "$CTL" front "$A" >/dev/null; sleep 0.3
+
   log "- paste (private pasteboard, never the user's clipboard)"
   printf '{\\rtf1\\ansi{\\fonttbl\\f0 Helvetica;}\\f0 Rich {\\b bold} text\\par second line}' > "$WORK/p.rtf"
   printf '<p>Html <b>bold</b></p><ul><li>item</li></ul>' > "$WORK/p.html"
@@ -625,6 +674,25 @@ EOF2
   press com.apple.TextEdit ctrl+cmd+f || return 75; sleep 2.5
 }
 
+# just the heading folds, in one short GUI session
+folds_suite() {
+  [ -x "$CTL" ] || swiftc -O "$ROOT/scripts/e2e/bentoctl.swift" -o "$CTL"
+  home a gui
+  local rc=0 A; A=$(bid a)
+  "$ROOT/scripts/e2e/session" start notes
+  launch a
+  printf 'Notes QA scratch document\n' > /tmp/notes-qa.txt
+  open -a TextEdit /tmp/notes-qa.txt; sleep 1.5
+  "$CTL" front com.apple.TextEdit notes-qa >/dev/null
+  press com.apple.TextEdit ctrl+opt+n || rc=75; sleep 0.8
+  [ "$rc" = 0 ] && { gui_folds || rc=$?; }
+  alive a && kill "$(pid a)" 2>/dev/null
+  close_scratch
+  "$ROOT/scripts/e2e/session" end notes
+  [ "$rc" = 75 ] && { log "interrupted by the user"; return 75; }
+  return 0
+}
+
 gui_suite() {
   [ -x "$CTL" ] || swiftc -O "$ROOT/scripts/e2e/bentoctl.swift" -o "$CTL"
   start_server || return 1
@@ -656,8 +724,9 @@ case "$mode" in
   sync) sync_suite ;;
   gui) gui_suite ;;
   gui2) gui_suite 2 ;;
+  folds) folds_suite ;;
   all) sync_suite; prepare; gui_suite ;;
-  *) log "usage: $0 sync|gui|all"; exit 2 ;;
+  *) log "usage: $0 sync|gui|folds|all"; exit 2 ;;
 esac
 log ""
 log "notes e2e: $PASSES passed, $FAILS failed"

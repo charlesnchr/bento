@@ -188,7 +188,9 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     /// text view, since they sit in the margin left of the text container.
     func drawHeadingChevrons(in rect: NSRect, origin: NSPoint) {
         guard let ts = textStorage, ts.length > 0, let tc = textContainers.first else { return }
-        let glyphs = glyphRange(forBoundingRectWithoutAdditionalLayout: rect.offsetBy(dx: -origin.x, dy: -origin.y), in: tc)
+        // the lines at the rect's height (the rect may be just the margin, left of every line)
+        let band = NSRect(x: 0, y: rect.minY - origin.y, width: max(1, tc.size.width), height: rect.height)
+        let glyphs = glyphRange(forBoundingRectWithoutAdditionalLayout: band, in: tc)
         let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         let text = ts.string as NSString
         let paras = text.paragraphRange(for: chars)
@@ -220,6 +222,17 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         let centerY = line.baseline - (font.xHeight / 2) - 0.5
         let padding = textContainers.first?.lineFragmentPadding ?? 0
         return NSRect(x: padding - side - 4, y: (centerY - side / 2).rounded(), width: side, height: side)
+    }
+
+    /// Where a click toggles a heading's fold (container coordinates): the whole margin left
+    /// of the text (`margin` wide), from the top of the heading's text to the bottom of its
+    /// first line, and at least a few points around the chevron.
+    func chevronTarget(paragraphStart: Int, margin: CGFloat) -> NSRect? {
+        guard let box = chevronRect(paragraphStart: paragraphStart), let line = firstLine(ofParagraphAt: paragraphStart) else { return nil }
+        let ps = textStorage.flatMap { paragraphStart < $0.length ? $0.attribute(.paragraphStyle, at: paragraphStart, effectiveRange: nil) as? NSParagraphStyle : nil }
+        let top = min(box.minY - 5, line.rect.minY + (ps?.paragraphSpacingBefore ?? 0))
+        let bottom = max(box.maxY + 5, line.rect.maxY)
+        return NSRect(x: -margin, y: top, width: margin + 2, height: bottom - top)
     }
 
     /// Checkbox rect (container coordinates) of a task paragraph.

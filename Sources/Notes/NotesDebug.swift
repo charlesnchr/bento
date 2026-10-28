@@ -9,6 +9,7 @@ import BentoCore
 ///     open | hide | toggle | new | wait <ms> | cmd <NotesCommand> | key newline|tab|backtab|backspace|delete|escape
 ///     type <text with \n \t>     set <text with \n>     select <loc> <len>     caret end|start
 ///     checkbox <line>            chevron <line>         palette <query>        palette-enter          palette-down
+///     external <text with \n>   capture <text>
 ///     dump                       (writes $BENTO_HOME/dump.json)
 ///     window-png <path>          settings-png <path> [dark]
 enum NotesDebug {
@@ -89,6 +90,10 @@ enum NotesDebug {
                     tv.mouseDown(with: e)
                 }
             }
+        case "external":
+            // external <text>: the open note's text changes elsewhere (like a sync merge)
+            w?.applyExternalBody(unescape(arg))
+        case "capture": c.capture(unescape(arg))
         case "palette": w?.palette.debugSetQuery(arg)
         case "palette-enter": w?.palette.debugActivate()
         case "palette-down": w?.palette.debugMove(1)
@@ -263,6 +268,25 @@ enum NotesDebug {
                     }
                 }
                 d["checkboxes"] = boxes
+                // heading lines: collapsed state and the screen rect of the chevron's click target
+                var headings: [[String: Any]] = []
+                if let lm = tv.notesLayoutManager {
+                    var l3 = 0, n = 0
+                    while l3 < text.length {
+                        let lr = text.lineRange(for: NSRange(location: l3, length: 0))
+                        if let deco = ts.attribute(.notesBlock, at: l3, effectiveRange: nil) as? BlockDecoration, let collapsed = deco.collapsed {
+                            var h: [String: Any] = ["line": n, "collapsed": collapsed]
+                            if let r = lm.chevronTarget(paragraphStart: l3, margin: tv.textContainerOrigin.x) {
+                                let inWin = tv.convert(r.offsetBy(dx: tv.textContainerOrigin.x, dy: tv.textContainerOrigin.y), to: nil)
+                                h["target"] = NSStringFromRect(w.panel.convertToScreen(inWin))
+                            }
+                            headings.append(h)
+                        }
+                        l3 = NSMaxRange(lr)
+                        n += 1
+                    }
+                }
+                d["headings"] = headings
             }
         }
         d["currentID"] = c.currentID ?? ""
