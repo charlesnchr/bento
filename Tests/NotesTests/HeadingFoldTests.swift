@@ -269,24 +269,47 @@ import Testing
     }
 
     @Test func forwardDeleteAtTheEndOfACollapsedHeading() {
-        let body = "## X\nbody\n\nnext line\n## Y"
-        let (s, st) = styled(body, caret: 0)
+        let (s, st) = styled("## X\nbody\n## Y", caret: 0)
         st.toggleHeading(s, at: 0)
-        let hiddenText = "body\n\nnext line\n"
-        #expect(st.folds.fold(at: 0).map { (s.string as NSString).substring(with: $0.body) } == hiddenText)
-        // the next visible line ("## Y") is joined without its marker; the caret stays
+        // the next visible line is a heading: nothing happens (joining would merge the headings)
+        #expect(st.folds.deleteForward(s.string as NSString, selection: NSRange(location: 4, length: 0))?.edits == [])
+        // a plain line after the section is joined; the caret stays
+        type("plain\n", at: 10, s, st)
+        #expect(s.string == "## X\nbody\nplain\n## Y")
         let r = st.folds.deleteForward(s.string as NSString, selection: NSRange(location: 4, length: 0))
         #expect(r?.selection == NSRange(location: 4, length: 0))
         apply(r, s, st)
-        // ("## Y" was the last line: the newline before it went instead of one after it)
-        #expect(s.string == "## XY\nbody\n\nnext line")
-        #expect(st.folds.fold(at: 0).map { (s.string as NSString).substring(with: $0.body) } == "body\n\nnext line")
-        // nothing after the section now: nothing happens
-        #expect(st.folds.deleteForward(s.string as NSString, selection: NSRange(location: 5, length: 0))?.edits == [])
+        #expect(s.string == "## Xplain\nbody\n## Y")
+        #expect(st.folds.fold(at: 0).map { (s.string as NSString).substring(with: $0.body) } == "body\n")
+        checkConsistent(s, st)
+        // a list item's marker isn't joined along
+        type("- item\n", at: 15, s, st)
+        apply(st.folds.deleteForward(s.string as NSString, selection: NSRange(location: 9, length: 0)), s, st)
+        #expect(s.string == "## Xplainitem\nbody\n## Y")
+        // nothing after the section: nothing happens
         let (s2, st2) = styled("## X\nbody", caret: 0)
         st2.toggleHeading(s2, at: 0)
         #expect(st2.folds.deleteForward(s2.string as NSString, selection: NSRange(location: 4, length: 0))?.edits == [])
-        checkConsistent(s, st)
+    }
+
+    @Test func aHeadingAfterACollapsedSectionIsNeverJoinedOntoIt() {
+        // stacked captured thoughts: the blank line between them is hidden, the next visible
+        // line is the next thought's heading
+        let (s, st) = styled(thoughts)
+        let ns = s.string as NSString
+        let b = th("### 2026-10-26 14:06")
+        for caret in [b, b + 4] {
+            #expect(st.folds.backspace(ns, selection: NSRange(location: caret, length: 0))?.edits == [], "\(caret)")
+        }
+        // inside its text: an ordinary backspace
+        #expect(st.folds.backspace(ns, selection: NSRange(location: b + 8, length: 0)) == nil)
+        #expect(st.folds.deleteForward(ns, selection: NSRange(location: aEnd, length: 0))?.edits == [])
+        // a list item after a section: its marker goes first (not handled here)
+        let (s2, st2) = styled("## X\nbody\n## Y", caret: 0)
+        st2.toggleHeading(s2, at: 0)
+        type("- item\n", at: 10, s2, st2)
+        #expect(st2.folds.backspace(s2.string as NSString, selection: NSRange(location: 12, length: 0)) == nil)
+        #expect(st2.folds.backspace(s2.string as NSString, selection: NSRange(location: 10, length: 0))?.edits.isEmpty == false)
     }
 
     @Test func editsOfHiddenTextAreRefusedUnlessTheyTakeItWhole() {

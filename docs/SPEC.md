@@ -183,7 +183,9 @@ Editing around a collapsed section never changes its hidden text:
   collapsed); at the start of the heading's text it adds a line above.
 - Backspace at the start of the line after a collapsed section joins that line onto the heading
   (removes it when empty); forward delete at the end of the heading joins the line after the
-  section onto it.
+  section onto it. Only plain lines (a list or quote marker goes first): when that line is a
+  heading (stacked captured thoughts, whose blank separator is hidden) both beep and change
+  nothing, so two headings are never merged.
 - ⌥⌘↓ on the line above a collapsed heading (or ⌥⌘↑ on the heading) moves that line below the
   heading; the section stays collapsed.
 - The caret skips hidden lines. Selecting the heading's line whole (triple-click, ⇧↓ from its

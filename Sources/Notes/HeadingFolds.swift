@@ -300,14 +300,23 @@ struct HeadingFolds: Equatable {
 
     /// Backspace at the start of the line after a collapsed section joins that line onto the
     /// visible line above (the heading), or removes it when it's empty. Never touches the
-    /// hidden lines.
+    /// hidden lines. When that line is a heading itself (stacked captured thoughts) nothing
+    /// happens (no edits: beep): joining would merge the two headings. A list or quote line's
+    /// marker goes first, as anywhere (nil).
     func backspace(_ text: NSString, selection sel: NSRange) -> EditResult? {
-        guard sel.length == 0, sel.location > 0, let f = folding(upTo: sel.location) else { return nil }
+        guard sel.length == 0, sel.location > 0 else { return nil }
+        let l = MarkdownCommands.line(at: sel.location, in: text)
+        guard let f = folding(upTo: l.range.location) else { return nil }
+        if !l.inCode, l.parsed.kind.isHeading {
+            return sel.location <= l.contentStart ? EditResult(edits: [], selection: sel) : nil
+        }
+        guard sel.location == l.range.location else { return nil }
         return join(f, in: text)
     }
 
     /// Forward delete at the end of a collapsed heading joins the line after its section onto
-    /// it, or removes that line when it's empty. Nothing happens at the end of the text.
+    /// it, or removes that line when it's empty. Nothing happens (no edits) at the end of the
+    /// text or when that line is a heading.
     func deleteForward(_ text: NSString, selection sel: NSRange) -> EditResult? {
         guard sel.length == 0 else { return nil }
         let full = text.lineRange(for: NSRange(location: sel.location, length: 0))
@@ -318,15 +327,16 @@ struct HeadingFolds: Equatable {
     }
 
     /// Moves the line after `f`'s hidden lines (without its block marker) to the end of the
-    /// visible line before them.
+    /// visible line before them; never a heading (no edits).
     private func join(_ f: Fold, in text: NSString) -> EditResult {
         let e = NSMaxRange(f.body)
         let target = HeadingFolds.lineEndBefore(f, in: text)
         let next = MarkdownCommands.line(at: e, in: text)
+        if !next.inCode, next.parsed.kind.isHeading { return EditResult(edits: [], selection: NSRange(location: target, length: 0)) }
         var contentStart = next.range.location
         if !next.inCode, next.parsed.hasPrefix {
             switch next.parsed.kind {
-            case .heading, .bullet, .ordered, .task, .quote: contentStart = next.contentStart
+            case .bullet, .ordered, .task, .quote: contentStart = next.contentStart
             default: break
             }
         }
