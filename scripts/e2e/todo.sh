@@ -401,6 +401,35 @@ gui_session() {
   eventually 8 "restored in B" bash -c "[ \"\$(python3 '$WORK/q.py' ntasks '$WORK' $PORT $TOKEN b)\" = 3 ]"
   guarded || return 75
 
+  log "- ⌘↩ in the inline editor adds and closes it"
+  press "$A" g i; sleep 0.5
+  press "$A" a; sleep 0.4
+  type_into "$A" "Third task"; press "$A" cmd+return; sleep 0.5
+  eventually 5 "⌘↩ added the task" field_is a "Third task" project null
+  press "$A" 1; sleep 0.5   # a list key now, not typed into a new editor
+  eventually 5 "editor closed: 1 set the new task's priority" field_is a "Third task" priority 1
+  guarded || return 75
+
+  log "- Quick Add: ⌘↩ adds another and stays open, ↩ adds and closes, Esc keeps the draft"
+  local panel="$CTL windows BentoE2E-a 2>/dev/null | awk '\$5 == 660 && \$6 == 360' | grep -q ."
+  press "$A" q; sleep 0.6
+  type_into "$A" "Fourth task"; press "$A" cmd+return; sleep 0.6
+  eventually 5 "⌘↩ added the task" field_is a "Fourth task" project null
+  check "panel still open after ⌘↩" bash -c "$panel"
+  shot quickadd-another
+  type_into "$A" "Fifth task"; press "$A" return; sleep 0.6
+  eventually 5 "↩ added the next one" field_is a "Fifth task" project null
+  check "and only once" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN a 'Fourth task')\" = 1 ]"
+  check "panel closed after ↩" bash -c "! { $panel; }"
+  press "$A" q; sleep 0.6
+  type_into "$A" "Draft kept"; press "$A" escape; sleep 0.5
+  check "Esc closed the panel" bash -c "! { $panel; }"
+  check "Esc added nothing" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN a 'Draft kept')\" = 0 ]"
+  press "$A" q; sleep 0.6
+  press "$A" return; sleep 0.6
+  eventually 5 "the draft was still there on reopening" field_is a "Draft kept" project null
+  guarded || return 75
+
   log "- ? shows the shortcuts, Esc closes the window"
   press "$A" shift+slash; sleep 0.5
   shot help
