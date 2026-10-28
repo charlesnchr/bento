@@ -36,28 +36,25 @@ final class BlockDecoration: NSObject {
     /// Fence state after this line.
     let inCodeAfter: Bool
     let first: Bool
-    /// Level of the collapsed heading whose section continues after this line (nil: none).
-    let foldAfter: Int?
     /// On a heading line: whether its section is collapsed. nil on other lines.
     let collapsed: Bool?
 
-    init(_ kind: Kind, inCodeAfter: Bool, first: Bool, foldAfter: Int? = nil, collapsed: Bool? = nil) {
+    init(_ kind: Kind, inCodeAfter: Bool, first: Bool, collapsed: Bool? = nil) {
         self.kind = kind
         self.inCodeAfter = inCodeAfter
         self.first = first
-        self.foldAfter = foldAfter
         self.collapsed = collapsed
     }
 
     override func isEqual(_ object: Any?) -> Bool {
         guard let o = object as? BlockDecoration else { return false }
-        return o.kind == kind && o.inCodeAfter == inCodeAfter && o.first == first && o.foldAfter == foldAfter && o.collapsed == collapsed
+        return o.kind == kind && o.inCodeAfter == inCodeAfter && o.first == first && o.collapsed == collapsed
     }
 
     // NSTextStorage uniques attribute dictionaries by hash: a constant hash made that slow
     override var hash: Int {
         var h = Hasher()
-        h.combine(kind); h.combine(inCodeAfter); h.combine(first); h.combine(foldAfter); h.combine(collapsed)
+        h.combine(kind); h.combine(inCodeAfter); h.combine(first); h.combine(collapsed)
         return h.finalize()
     }
 

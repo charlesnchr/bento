@@ -31,6 +31,24 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private var frameSaveWork: DispatchWorkItem?
     private var countsWork: DispatchWorkItem?
     private var loadingNote = false
+    /// The whole text is being replaced by another note's: no incremental restyle.
+    private var replacingNote = false
+    /// A fold-aware edit of ours is being applied (it may take the line break before hidden lines).
+    private var foldEdit = false
+    /// The replacements of the change about to reach the storage, when it's several at once
+    /// or a replacement around a collapsed section (the storage reports one span; collapsed
+    /// sections move with each real change).
+    private var pendingEdits: [(range: NSRange, length: Int)]?
+    /// Collapsed sections and text before a change of several stretches at once: AppKit
+    /// undoes those as one replacement of everything between them, which would drop the
+    /// sections in between, so undo and redo put the fold state back.
+    private var foldsBeforeChange: FoldSnapshot?
+    /// A fold state to put back once the text matches it again (an undo in progress).
+    private var pendingRestore: FoldSnapshot?
+    private typealias FoldSnapshot = (folds: HeadingFolds, text: String)
+    /// Collapsed sections of notes shown before, with the text they belong to, so they stay
+    /// collapsed when you come back to a note (most recent last).
+    private var savedFolds: [(id: String, body: String, folds: HeadingFolds)] = []
     private var undoManagers: [String: UndoManager] = [:]
     private var undoOrder: [String] = []
     private(set) var noteID: String?
@@ -179,16 +197,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         guard lineStart >= 0, lineStart < text.length,
               let d = storage.attribute(.notesBlock, at: lineStart, effectiveRange: nil) as? BlockDecoration, let collapsed = d.collapsed else { return false }
         let line = text.lineRange(for: NSRange(location: lineStart, length: 0))
-        let content = MarkdownParser.contentRange(line, in: text)
-        if !collapsed, case .heading(let level) = MarkdownParser.parseLine(MarkdownParser.utf16(text, content), inCode: false).kind {
-            let end = MarkdownParser.sectionEnd(after: line, level: level, in: text)
-            let body = NSRange(location: NSMaxRange(line), length: max(0, end - NSMaxRange(line)))
+        guard line.location == lineStart, styler.toggleHeading(storage, at: lineStart) else { return false }
+        if !collapsed, let f = styler.folds.fold(at: lineStart), f.body.length > 0 {
             let sel = textView.selectedRange()
-            if NSLocationInRange(sel.location, body) || (sel.location == end && body.length > 0 && end == text.length) || NSIntersectionRange(sel, body).length > 0 {
-                textView.setSelectedRange(NSRange(location: NSMaxRange(content), length: 0))
-            }
+            let touches = NSIntersectionRange(sel, f.body).length > 0 || NSLocationInRange(sel.location, f.body)
+                || styler.folds.hidesCaret(at: sel.location, in: text) != nil
+            if touches { textView.setSelectedRange(NSRange(location: NSMaxRange(MarkdownParser.contentRange(line, in: text)), length: 0)) }
         }
-        guard styler.toggleHeading(storage, at: lineStart) else { return false }
         textView.needsDisplay = true
         if settings.autoResize { autoResize() }
         return true
@@ -262,17 +277,31 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         closeInline()
         if textView.hasMarkedText() { textView.unmarkText() } // the IME's range would point into the old text
         textView.breakUndoCoalescing() // typing in the previous note must not continue into this one
+        saveFolds()
+        pendingRestore = nil
+        foldsBeforeChange = nil
         loadingNote = true
+        replacingNote = true
         noteID = note.id
         let attrs: [NSAttributedString.Key: Any] = [.font: styler.theme.bodyFont, .foregroundColor: styler.theme.paragraph]
         storage.beginEditing()
         storage.setAttributedString(NSAttributedString(string: note.body, attributes: attrs))
         storage.endEditing()
+        replacingNote = false
         let len = storage.length
-        let sel = selection.map { NSRange(location: min($0.location, len), length: min($0.length, max(0, len - min($0.location, len)))) }
+        var sel = selection.map { NSRange(location: min($0.location, len), length: min($0.length, max(0, len - min($0.location, len)))) }
             ?? NSRange(location: len, length: 0)
+        styler.setFolds(savedFolds(for: note))
         styler.selectionChanged(storage, to: sel)
-        restyleAll()
+        // captured thoughts not known to be open start collapsed
+        styler.styleAll(storage, adopt: true)
+        // a restored selection in a section that is collapsed now opens it (the end of a last
+        // hidden line without a newline isn't inside: the note opens at its end)
+        styler.reveal(storage, at: sel.location)
+        if sel.length == 0, let f = styler.folds.hidesCaret(at: sel.location, in: storage.string as NSString) {
+            sel = NSRange(location: HeadingFolds.lineEndBefore(f, in: storage.string as NSString), length: 0)
+        }
+        textView.needsDisplay = true
         loadingNote = false
         textView.setSelectedRange(sel)
         textView.scrollRangeToVisible(sel)
@@ -293,11 +322,14 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         let sel = TextMerge.map(textView.selectedRange(), through: edits)
         let anchor = scrollAnchor()
         loadingNote = true
+        pendingEdits = edits.reversed().map { ($0.range, ($0.replacement as NSString).length) }
         storage.beginEditing()
         for e in edits.reversed() { storage.replaceCharacters(in: e.range, with: e.replacement) }
         storage.endEditing()
         loadingNote = false
         undoManager(for: noteID)?.removeAllActions()
+        // the caret ended up in a section that collapsed (a captured thought arrived above it): open it
+        styler.reveal(storage, at: sel.location)
         textView.setSelectedRange(sel)
         if let anchor {
             // text inserted right at the top line goes above it (out of view), like typing above
@@ -332,6 +364,23 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     var currentText: String { storage.string }
 
+    /// Remembers the shown note's collapsed sections.
+    private func saveFolds() {
+        guard let id = noteID else { return }
+        savedFolds.removeAll { $0.id == id }
+        savedFolds.append((id, storage.string, styler.folds))
+        if savedFolds.count > 24 { savedFolds.removeFirst() }
+    }
+
+    /// The collapsed sections of a note shown before, moved through whatever changed in it
+    /// since (none for a note not shown yet: its captured thoughts collapse as it's styled).
+    private func savedFolds(for note: Note) -> HeadingFolds {
+        guard let saved = savedFolds.last(where: { $0.id == note.id }) else { return HeadingFolds() }
+        var f = saved.folds
+        f.map(from: saved.body, to: note.body)
+        return f
+    }
+
     // dev harness state dump
     var debugFooter: String { footer.status }
     var debugHeader: String { header.title }
@@ -341,11 +390,25 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     // MARK: Text delegate
 
     func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions, range editedRange: NSRange, changeInLength delta: Int) {
-        guard editedMask.contains(.editedCharacters) else { return }
-        styler.didEdit(textStorage, editedRange: editedRange)
+        guard editedMask.contains(.editedCharacters), !replacingNote else { return }
+        var edits = pendingEdits
+        pendingEdits = nil
+        // (only when they are what happened)
+        if let e = edits, e.reduce(0, { $0 + $1.length - $1.range.length }) != delta { edits = nil }
+        styler.didEdit(textStorage, editedRange: editedRange, edits: edits, external: loadingNote)
+        if let r = pendingRestore, storage.string == r.text {
+            pendingRestore = nil
+            styler.restoreFolds(storage, r.folds)
+        }
     }
 
     func textDidChange(_ notification: Notification) {
+        pendingEdits = nil
+        if let um = undoManager(for: noteID), !um.isUndoing, !um.isRedoing { pendingRestore = nil }
+        if let before = foldsBeforeChange {
+            foldsBeforeChange = nil
+            registerFoldRestore(before, redo: (styler.folds, storage.string))
+        }
         guard !loadingNote else { return }
         header.title = NoteText.title(of: storage.string)
         controller.editorChanged(storage.string)
@@ -442,24 +505,86 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !loadingNote else { return }
-        styler.selectionChanged(storage, to: textView.selectedRange())
-        controller.selectionChanged(textView.selectedRange())
+        // a selection inside a collapsed section that wasn't extended there (a find match) opens it
+        let sel = textView.selectedRange()
+        if sel.length > 0, styler.folds.hiding(sel.location) != nil {
+            styler.reveal(storage, at: sel.location)
+            textView.needsDisplay = true
+        }
+        styler.selectionChanged(storage, to: sel)
+        controller.selectionChanged(sel)
         if inline != nil { updateInlineMenu() }
     }
 
     func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange) -> NSRange {
-        guard new.length == 0, !loadingNote else { return new }
-        let loc = new.location
-        if let e = MarkdownStyler.collapsedSection(at: loc, in: storage) {
-            // the caret skips a collapsed section: past it going forward, else to the heading's end
+        guard !loadingNote else { return new }
+        // never on hidden lines: a caret skips them, a selection reaching into them covers them
+        let adjusted = styler.folds.adjust(new, from: old, in: storage.string as NSString).range
+        guard adjusted.length == 0 else { return adjusted }
+        return NSRange(location: snap(adjusted.location, previous: old.location) ?? adjusted.location, length: 0)
+    }
+
+    /// The user's edits never change hidden text piecemeal: an edit must leave a collapsed
+    /// section's hidden lines alone or replace them whole (undo and redo restore what was).
+    func textView(_ textView: NSTextView, shouldChangeTextInRanges ranges: [NSValue], replacementStrings: [String]?) -> Bool {
+        guard !loadingNote, let um = undoManager(for: noteID), !um.isUndoing, !um.isRedoing else { return true }
+        let rs = ranges.map(\.rangeValue)
+        if !foldEdit {
             let text = storage.string as NSString
-            let headingEnd = NSMaxRange(MarkdownParser.contentRange(e.heading, in: text))
-            let end = NSMaxRange(e.hidden)
-            let after = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
-            let target = loc > old.location && end < storage.length ? after : headingEnd
-            return NSRange(location: snap(target, previous: old.location) ?? target, length: 0)
+            let refused = rs.filter { !styler.folds.allows($0, in: text) }
+            if !refused.isEmpty {
+                // several at once (Replace All with matches in collapsed sections): open those
+                guard rs.count > 1 else { NSSound.beep(); return false }
+                for r in refused { styler.reveal(storage, changedBy: r) }
+                textView.needsDisplay = true
+            }
         }
-        return NSRange(location: snap(loc, previous: old.location) ?? loc, length: 0)
+        guard let reps = replacementStrings, reps.count == rs.count else { return true }
+        if rs.count > 1 {
+            // non-overlapping, so applying them last first gives the same text in any order
+            pendingEdits = zip(rs, reps).sorted { $0.0.location > $1.0.location }.map { ($0.0, ($0.1 as NSString).length) }
+            if !styler.folds.isEmpty { foldsBeforeChange = (styler.folds, storage.string) }
+        } else if rs[0].length > 0, !reps[0].isEmpty, rs[0].length + (reps[0] as NSString).length <= 20_000 {
+            // a replacement: what really changed in it (a moved line keeps the heading it passes)
+            let old = (storage.string as NSString).substring(with: rs[0])
+            pendingEdits = TextMerge.edits(from: old, to: reps[0]).reversed().map {
+                (NSRange(location: rs[0].location + $0.range.location, length: $0.range.length), ($0.replacement as NSString).length)
+            }
+        }
+        return true
+    }
+
+    /// Registers undo (and, from there, redo) of a change's effect on the collapsed sections.
+    private func registerFoldRestore(_ undo: FoldSnapshot, redo: FoldSnapshot) {
+        guard let um = undoManager(for: noteID) else { return }
+        um.registerUndo(withTarget: self) { wc in
+            wc.registerFoldRestore(redo, redo: undo)
+            if wc.storage.string == undo.text {
+                // the text is back already (redo runs after the text's own redo)
+                wc.storage.beginEditing()
+                wc.styler.restoreFolds(wc.storage, undo.folds)
+                wc.storage.endEditing()
+                wc.textView.needsDisplay = true
+            } else {
+                // undo runs before the text's own undo: once the text matches
+                wc.pendingRestore = undo
+            }
+        }
+    }
+
+    /// Applies an edit made by the fold-aware commands (which may take the line break before
+    /// hidden lines, never the hidden text). One edit at a time, so undo restores each on its
+    /// own rather than the whole stretch between them, hidden lines included (still one ⌘Z:
+    /// they're undone as a group).
+    private func applyFoldEdit(_ r: EditResult) {
+        foldEdit = true
+        defer { foldEdit = false }
+        let sorted = r.edits.sorted { $0.range.location > $1.range.location }
+        guard sorted.count > 1 else { textView.apply(r); return }
+        for (i, e) in sorted.enumerated() {
+            let last = i == sorted.count - 1
+            textView.apply(EditResult(edits: [e], selection: last ? r.selection : NSRange(location: e.range.location, length: 0)))
+        }
     }
 
     /// Keeps the caret out of hidden block prefixes using the styler's attributes.
@@ -493,6 +618,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         switch sel {
         case #selector(NSResponder.insertNewline(_:)):
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }
+            if let r = styler.folds.newline(text, selection: range) { applyFoldEdit(r); return true }
             if let r = MarkdownCommands.newline(text, selection: range) { tv.apply(r); return true }
             return false
         case #selector(NSResponder.insertTab(_:)):
@@ -503,8 +629,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             return true
         case #selector(NSResponder.deleteBackward(_:)):
             if let r = MarkdownCommands.backspace(text, selection: range) { tv.apply(r); return true }
+            if let r = styler.folds.backspace(text, selection: range) { applyFoldEdit(r); return true }
             return false
         case #selector(NSResponder.deleteForward(_:)):
+            if let r = styler.folds.deleteForward(text, selection: range) { applyFoldEdit(r); return true }
             if let r = MarkdownCommands.deleteForward(text, selection: range) { tv.apply(r); return true }
             return false
         case #selector(NSResponder.cancelOperation(_:)):
@@ -559,8 +687,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             // on a heading ⌘↩ collapses or opens its section
             if sel.length == 0, toggleHeading(at: text.lineRange(for: NSRange(location: sel.location, length: 0)).location) { return }
             result = MarkdownCommands.toggleTasks(text, selection: sel)
-        case .moveUp: result = MarkdownCommands.moveLines(text, selection: sel, up: true)
-        case .moveDown: result = MarkdownCommands.moveLines(text, selection: sel, up: false)
+        case .moveUp, .moveDown:
+            if let r = styler.folds.moveLines(text, selection: sel, up: cmd == .moveUp) {
+                panel.makeFirstResponder(tv)
+                applyFoldEdit(r)
+                return
+            }
+            result = MarkdownCommands.moveLines(text, selection: sel, up: cmd == .moveUp)
         case .link:
             let pb = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let url = pb.flatMap { s -> String? in

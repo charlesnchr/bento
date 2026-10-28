@@ -63,8 +63,10 @@ final class NoteTextView: NSTextView {
             onToggleTask?(lineStart, event.modifierFlags.contains(.command))
             return
         }
-        if let lineStart = headingChevron(at: p) {
+        // the fold chevron toggles its section without touching the selection
+        if let lineStart = foldChevron(at: p) {
             onToggleHeading?(lineStart)
+            setHoveredHeading(headingLine(at: p))
             return
         }
         if event.modifierFlags.contains(.command), let url = link(at: p) {
@@ -72,6 +74,15 @@ final class NoteTextView: NSTextView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    /// Chevrons and checkboxes work on the first click into the window when it isn't key.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        if let event {
+            let p = convert(event.locationInWindow, from: nil)
+            if foldChevron(at: p) != nil || checkbox(at: p) != nil { return true }
+        }
+        return super.acceptsFirstMouse(for: event)
     }
 
     private func charIndex(at viewPoint: NSPoint) -> Int? {
@@ -92,25 +103,47 @@ final class NoteTextView: NSTextView {
         return box.insetBy(dx: -5, dy: -4).contains(pt) ? para.location : nil
     }
 
-    /// Line start of the heading under the point (nil: not on a heading line).
-    func heading(at viewPoint: NSPoint) -> Int? {
-        guard let i = charIndex(at: viewPoint), let ts = textStorage, let lm = layoutManager, let tc = textContainer else { return nil }
-        let para = (ts.string as NSString).paragraphRange(for: NSRange(location: i, length: 0))
-        guard let d = ts.attribute(.notesBlock, at: para.location, effectiveRange: nil) as? BlockDecoration, d.collapsed != nil else { return nil }
-        // only within the line's height (characterIndex picks the nearest line)
-        let glyphs = lm.glyphRange(forCharacterRange: para, actualCharacterRange: nil)
-        let rect = lm.boundingRect(forGlyphRange: glyphs, in: tc)
-        let y = viewPoint.y - textContainerOrigin.y
-        return y >= rect.minY && y <= rect.maxY ? para.location : nil
+    /// Line start of the (visible) heading whose first line is at the point's height, nil
+    /// when there is none. Works anywhere across the view, margins included.
+    func headingLine(at viewPoint: NSPoint) -> Int? {
+        nearestHeading(at: viewPoint)?.start
     }
 
-    /// Line start of the heading whose fold chevron (or the margin left of its text) is
-    /// under the point.
-    func headingChevron(at viewPoint: NSPoint) -> Int? {
-        guard let start = heading(at: viewPoint), let lm = notesLayoutManager, let box = lm.chevronRect(paragraphStart: start) else { return nil }
-        let pt = NSPoint(x: viewPoint.x - textContainerOrigin.x, y: viewPoint.y - textContainerOrigin.y)
-        let target = NSRect(x: -textContainerOrigin.x, y: box.minY - 4, width: textContainerOrigin.x + box.maxX + 2, height: box.height + 8)
-        return target.contains(pt) ? start : nil
+    /// Line start of the heading whose fold chevron is under the point: the margin left of
+    /// the text, level with the heading's first line.
+    func foldChevron(at viewPoint: NSPoint) -> Int? {
+        guard viewPoint.x < textContainerOrigin.x + 2, let h = nearestHeading(at: viewPoint), h.target.contains(viewPoint) else { return nil }
+        return h.start
+    }
+
+    /// The heading line nearest to the point's height among those whose chevron target
+    /// (view coordinates) spans it.
+    private func nearestHeading(at viewPoint: NSPoint) -> (start: Int, target: NSRect)? {
+        guard let lm = notesLayoutManager, let ts = textStorage, ts.length > 0, let tc = textContainer else { return nil }
+        let origin = textContainerOrigin
+        let y = viewPoint.y - origin.y
+        // the lines near that height (a chevron target reaches a little above and below its line)
+        let probe = NSRect(x: 0, y: y - 12, width: max(1, tc.size.width), height: 24)
+        lm.ensureLayout(forBoundingRect: probe, in: tc)
+        let glyphs = lm.glyphRange(forBoundingRect: probe, in: tc)
+        let text = ts.string as NSString
+        let chars = lm.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        var best: (start: Int, target: NSRect, distance: CGFloat)?
+        var loc = text.paragraphRange(for: NSRange(location: min(chars.location, text.length), length: 0)).location
+        while loc < text.length, loc <= NSMaxRange(chars) {
+            let para = text.paragraphRange(for: NSRange(location: loc, length: 0))
+            if let d = ts.attribute(.notesBlock, at: loc, effectiveRange: nil) as? BlockDecoration, d.collapsed != nil,
+               let r = lm.chevronTarget(paragraphStart: loc, margin: origin.x) {
+                let target = r.offsetBy(dx: origin.x, dy: origin.y)
+                if target.minY <= viewPoint.y, viewPoint.y <= target.maxY {
+                    let distance = abs(target.midY - viewPoint.y)
+                    if best.map({ distance < $0.distance }) ?? true { best = (loc, target, distance) }
+                }
+            }
+            if para.length == 0 { break }
+            loc = NSMaxRange(para)
+        }
+        return best.map { ($0.start, $0.target) }
     }
 
     func link(at viewPoint: NSPoint) -> URL? {
@@ -120,12 +153,21 @@ final class NoteTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        setHoveredHeading(heading(at: p))
-        if checkbox(at: p) != nil || headingChevron(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
+        setHoveredHeading(headingLine(at: p))
+        if checkbox(at: p) != nil || foldChevron(at: p) != nil || (event.modifierFlags.contains(.command) && link(at: p) != nil) {
             NSCursor.pointingHand.set()
             return
         }
         super.mouseMoved(with: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if foldChevron(at: p) != nil || checkbox(at: p) != nil {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.cursorUpdate(with: event)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -133,10 +175,21 @@ final class NoteTextView: NSTextView {
         super.mouseExited(with: event)
     }
 
+    /// Hover (open headings show their chevron) and the hand cursor over chevrons also while
+    /// the window isn't key, which the text view's own tracking doesn't cover.
+    private var hoverArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
     private func setHoveredHeading(_ start: Int?) {
         guard let lm = notesLayoutManager, lm.hoveredHeading != start else { return }
         lm.hoveredHeading = start
-        needsDisplay = true
+        setNeedsDisplay(NSRect(x: visibleRect.minX, y: visibleRect.minY, width: textContainerOrigin.x, height: visibleRect.height))
     }
 
     // MARK: Pasteboard: copy markdown (+ HTML for rich-text targets), paste plain text
