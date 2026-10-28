@@ -161,8 +161,9 @@ class HeadingFolds private constructor(
      * note's end, as a note opens, stays at its end when that's in a fold now).
      */
     fun merged(new: String, sel: TextRange): Pair<HeadingFolds, TextRange> {
-        val mapped = TextMerge.map(sel, TextMerge.edits(text, new))
-        val f = edited(new, local = false)
+        val edits = TextMerge.edits(text, new)
+        val mapped = TextMerge.map(sel, edits)
+        val f = edited(new, local = false, edits)
         val c = f.caret(mapped, mapped)
         val end = TextRange(new.length, 0)
         if (c != mapped && sel == TextRange(text.length, 0) && f.caret(end, end) == end) return f to end
@@ -237,13 +238,43 @@ class HeadingFolds private constructor(
     }
 
     /**
+     * A keyboard change from this text (selection `sel`) to `new` (selection `newSel`) that
+     * needs a fold's own edit: Enter, Backspace or Delete next to a folded section ([newline],
+     * [backspace], [deleteForward]; a CR LF deleted as one counts), or Enter at the end of a
+     * folded heading that comes with an edit to the heading (the keyboard committing an
+     * autocorrected word together with the newline): the heading edit, then the new line after
+     * the section. An empty result: refused (nothing happens). null: not such a change.
+     */
+    fun keyboard(sel: TextRange, new: String, newSel: TextRange): EditResult? {
+        if (newSel.length != 0) return null
+        val c = newSel.location
+        if (c == sel.location + 1 && new == text.replaceRange(sel.location, sel.end, "\n")) newline(sel)?.let { return it }
+        if (sel.length == 0) {
+            val at = sel.location
+            for (n in 1..2) {
+                if (c == at - n && c >= 0 && new == text.removeRange(c, at)) backspace(sel)?.let { return it }
+                if (c == at && at + n <= text.length && new == text.removeRange(at, at + n)) deleteForward(sel)?.let { return it }
+            }
+        }
+        val ch = change(text, new).singleOrNull() ?: return null
+        val r = ch.replacement
+        if (r.length < 2 || !r.endsWith("\n") || c != ch.range.location + r.length) return null
+        val heading = r.dropLast(1)
+        if (heading.any { it == '\n' || it == '\r' }) return null
+        val f = folds.firstOrNull { ch.range.end == it.start && ch.range.location >= it.lineStart } ?: return null
+        val shift = heading.length - ch.range.length
+        return EditResult(listOf(TextEdit(ch.range, heading), TextEdit(TextRange(f.end, 0), "\n")), TextRange(f.end + shift + 1, 0))
+    }
+
+    /**
      * Backspace at the start of the line after a folded section: that line joins the heading
-     * (the visible line above), or goes when it's empty. The hidden part isn't touched.
+     * (the visible line above), or goes when it's empty. The hidden part isn't touched. When
+     * that line is a heading it's refused (an empty result): two headings would merge.
      */
     fun backspace(sel: TextRange): EditResult? {
         if (sel.length != 0) return null
         val f = folds.firstOrNull { it.end < text.length && SwiftText.lineRange(text, it.end).end == sel.location } ?: return null
-        return join(f)
+        return join(f, sel)
     }
 
     /** Delete at the end of a folded heading: the line after its section joins it, as [backspace]. */
@@ -251,14 +282,15 @@ class HeadingFolds private constructor(
         if (sel.length != 0) return null
         val f = folds.firstOrNull { it.start == sel.location } ?: return null
         if (f.end == text.length) return EditResult(emptyList(), sel)
-        return join(f)
+        return join(f, sel)
     }
 
     /** Moves the line after `f`'s hidden part (without its block marker) to the end of its heading. */
-    private fun join(f: Fold): EditResult {
+    private fun join(f: Fold, sel: TextRange): EditResult {
         val nextStart = SwiftText.lineRange(text, f.end).end
         val next = MarkdownCommands.line(nextStart, text)
         val p = next.parsed
+        if (!next.inCode && p.kind is BlockKind.Heading) return EditResult(emptyList(), sel)
         val marker = !next.inCode && p.hasPrefix &&
             (p.kind is BlockKind.Heading || p.kind == BlockKind.Bullet || p.kind is BlockKind.Ordered || p.kind is BlockKind.Task || p.kind is BlockKind.Quote)
         val content = text.substring(if (marker) next.contentStart else next.range.location, next.end)

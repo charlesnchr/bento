@@ -317,19 +317,13 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                             return@BasicTextField
                         }
                         // Enter, Backspace and Delete next to a folded section have their own edits, which
-                        // keep it folded and leave its hidden text alone
-                        val s = value.selection
-                        val o = value.text
-                        val c = new.selection.start
-                        val r = when {
-                            !new.selection.collapsed -> null
-                            c == s.min + 1 && new.text == o.replaceRange(s.min, s.max, "\n") -> folds.newline(value.sel())
-                            s.collapsed && c == s.start - 1 && c >= 0 && new.text == o.removeRange(c, s.start) -> folds.backspace(value.sel())
-                            s.collapsed && c == s.start && s.start < o.length && new.text == o.removeRange(c, c + 1) -> folds.deleteForward(value.sel())
-                            else -> null
+                        // keep it folded and leave its hidden text alone (or are refused)
+                        val r = folds.keyboard(value.sel(), new.text, new.sel())
+                        when {
+                            r == null -> handleChange(value, new, { v, rec -> set(v, rec) }, { applyResult(it) })
+                            r.edits.isEmpty() -> haptics.performHapticFeedback(HapticFeedbackType.Reject)
+                            else -> applyResult(r, user = false)
                         }
-                        if (r != null) applyResult(r, user = false)
-                        else handleChange(value, new, { v, rec -> set(v, rec) }, { applyResult(it) })
                     },
                     modifier = Modifier.fillMaxWidth().padding(start = FoldGutter, end = 20.dp, top = 8.dp, bottom = 8.dp).focusRequester(focus)
                         .onPreviewKeyEvent { e ->

@@ -46,18 +46,23 @@ class HeadingFoldsTest {
         fun type(s: String): Boolean {
             if (s.isEmpty() && sel.length == 0 && sel.location == 0) return true
             val r = if (s.isEmpty() && sel.length == 0) TextRange(sel.location - 1, 1) else sel
-            if (s == "\n") folds.newline(sel)?.let { return apply(it, user = false) }
-            if (s.isEmpty() && sel.length == 0) folds.backspace(sel)?.let { return apply(it, user = false) }
             return key(EditResult(listOf(TextEdit(r, s)), TextRange(r.location + s.length, 0)))
         }
 
-        fun forwardDelete(): Boolean {
-            folds.deleteForward(sel)?.let { return apply(it, user = false) }
-            return key(EditResult(listOf(TextEdit(TextRange(sel.location, 1), "")), sel))
-        }
+        fun forwardDelete(): Boolean = key(EditResult(listOf(TextEdit(TextRange(sel.location, 1), "")), sel))
 
-        /** A keyboard edit: the editor only sees the new text, so its edit is [HeadingFolds.change]'s. */
-        private fun key(r: EditResult) = apply(r, edits = HeadingFolds.change(text, r.apply(text)))
+        /** The keyboard sent the whole new text and caret, as an IME does (a batch of edits, say). */
+        fun ime(new: String, caret: Int) = key(EditResult(listOf(TextEdit(TextRange(0, text.length), new)), TextRange(caret, 0)))
+
+        /**
+         * A keyboard edit: the editor only sees the new text, so a fold's own edit comes from
+         * [HeadingFolds.keyboard] (false when refused), else its edit is [HeadingFolds.change]'s.
+         */
+        private fun key(r: EditResult): Boolean {
+            val new = r.apply(text)
+            folds.keyboard(sel, new, r.selection)?.let { return it.edits.isNotEmpty() && apply(it, user = false) }
+            return apply(r, edits = HeadingFolds.change(text, new))
+        }
 
         /**
          * A local change: `user` for typing and commands (refused when it would change hidden
@@ -247,14 +252,16 @@ class HeadingFoldsTest {
         assertEquals(body, empty.text)
         assertEquals("$l ⋯\n", shown(empty.folds))
         // Delete at the heading's end does the same with the line after the section
-        val del = Editor("$body\n## Next\nx")
+        val del = Editor(body)
+        del.move(l.length); del.type("\n"); del.type("- [ ] x")
         del.move(l.length)
-        assertTrue(del.forwardDelete()) // the blank line is in the section: the next visible line is "## Next"
-        assertEquals("### 2026-10-27 23:12 · IdeaNext\nbody\n\nx", del.text)
+        assertTrue(del.forwardDelete())
+        assertEquals("### 2026-10-27 23:12 · Ideax\nbody\n", del.text)
+        assertEquals("### 2026-10-27 23:12 · Ideax ⋯\n", shown(del.folds))
         // at the end of the note it does nothing
         val last = Editor("### 2026-10-27 23:12 · Idea\nbody")
         last.move(l.length)
-        assertTrue(last.forwardDelete())
+        assertFalse(last.forwardDelete())
         assertEquals("### 2026-10-27 23:12 · Idea\nbody", last.text)
         // anything else that would change hidden text is refused
         val refused = Editor(t)
@@ -275,6 +282,57 @@ class HeadingFoldsTest {
         assertEquals("### 2026-10-27 23:12 · Ideas ⋯\n", shown(typing.folds))
         typing.type("")
         assertEquals("$l ⋯\n", shown(typing.folds))
+    }
+
+    @Test fun backspaceAndDeleteDontMergeTwoHeadings() {
+        val t = "### 2026-10-27 23:12 · A\nbody\n### 2026-10-27 23:13 · B\nmore\n"
+        val ed = Editor(t)
+        ed.move(at(t, "### 2026-10-27 23:13"))
+        assertFalse(ed.type(""))
+        assertEquals(t, ed.text)
+        assertEquals(2, ed.folds.folds.size)
+        ed.move(at(t, "\nbody"))
+        assertFalse(ed.forwardDelete())
+        assertEquals(t, ed.text)
+        // a plain line after it still joins
+        ed.move(at(t, "\nbody"))
+        ed.type("\n"); ed.type("plain")
+        ed.move(at(ed.text, "plain"))
+        assertTrue(ed.type(""))
+        assertEquals("### 2026-10-27 23:12 · Aplain ⋯\n### 2026-10-27 23:13 · B ⋯\n", shown(ed.folds))
+    }
+
+    @Test fun backspaceAfterAFoldWithCRLF() {
+        val base = "### 2026-10-27 23:12 · A\r\nbody\r\n"
+        val t = base + "x\r\n"
+        val ed = Editor(t)
+        ed.folds = HeadingFolds.of(base).edited(t, local = true) // "x" typed after the fold
+        assertEquals("### 2026-10-27 23:12 · A ⋯\r\nx\r\n", shown(ed.folds))
+        // the keyboard deletes the CR LF before "x" as one
+        val x = t.indexOf("x\r\n")
+        ed.move(x)
+        assertTrue(ed.ime(t.removeRange(x - 2, x), x - 2))
+        assertEquals("### 2026-10-27 23:12 · Ax\r\nbody\r\n", ed.text)
+        assertEquals("### 2026-10-27 23:12 · Ax ⋯\r\n", shown(ed.folds))
+    }
+
+    @Test fun enterBatchedWithAnAutocorrectedWord() {
+        // the keyboard commits "teh" → "the" and the newline in one change
+        val t = "### 2026-10-27 23:12 · Idea teh\nbody\n## Next"
+        val ed = Editor(t)
+        ed.move(at(t, "\nbody"))
+        val new = t.replace("teh\n", "the\n\n")
+        assertTrue(ed.ime(new, at(t, "\nbody") + 1))
+        assertEquals("### 2026-10-27 23:12 · Idea the\nbody\n\n## Next", ed.text)
+        assertEquals("### 2026-10-27 23:12 · Idea the ⋯\n\n## Next", shown(ed.folds))
+        assertEquals(at(ed.text, "\n## Next"), ed.sel.location)
+        ed.type("typed")
+        assertEquals("### 2026-10-27 23:12 · Idea the ⋯\ntyped\n## Next", shown(ed.folds))
+        // and a voice-typed phrase committed with the newline
+        val v = Editor(t)
+        v.move(at(t, "\nbody"))
+        assertTrue(v.ime(t.replace("teh\n", "teh and more\n\n"), at(t, "\nbody") + 10))
+        assertEquals("### 2026-10-27 23:12 · Idea teh and more ⋯\n\n## Next", shown(v.folds))
     }
 
     @Test fun removingAHeadingsMarkerKeepsItsLinesWhereTheyAre() {

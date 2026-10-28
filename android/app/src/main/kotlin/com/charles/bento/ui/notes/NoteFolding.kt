@@ -4,7 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -16,7 +15,6 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -44,22 +42,23 @@ fun sections(text: String): List<Section> =
     HeadingSections.of(text).map { Section(it.lineStart, it.headingEnd, it.bodyEnd, it.entry) }
 
 /**
- * The editor's [HeadingFolds]. Kept in memory per note while the app runs (switching notes,
- * rotation), carried through whatever changed in the note meanwhile; after the process was
- * recreated, from the saved state by heading. [state] starts the first time it's asked for.
+ * The editor's [HeadingFolds]. Kept by heading ([HeadingFolds.saved]) per note while the app
+ * runs (switching notes, rotation) and in the saved state when the process is recreated, and
+ * applied to the note as it is when its editor comes back. [state] starts the first time it's
+ * asked for.
  */
 class EditorFolds(private val saved: List<String>?) {
     private var state: MutableState<HeadingFolds>? = null
 
-    fun state(id: String, text: String): MutableState<HeadingFolds> = state ?: mutableStateOf(
-        remembered[id]?.edited(text, local = false) ?: HeadingFolds.restore(text, saved),
-    ).also { state = it }
+    fun state(id: String, text: String): MutableState<HeadingFolds> =
+        state ?: mutableStateOf(HeadingFolds.restore(text, remembered[id] ?: saved)).also { state = it }
 
     companion object {
-        private val remembered = HashMap<String, HeadingFolds>()
+        /** Each note's folds when its editor last went away, by heading ([HeadingFolds.saved]). */
+        private val remembered = HashMap<String, List<String>>()
 
         /** The editor of note `id` is going away with these folds. */
-        fun leaving(id: String, folds: HeadingFolds) { remembered[id] = folds }
+        fun leaving(id: String, folds: HeadingFolds) { remembered[id] = folds.saved() }
 
         val Saver = Saver<EditorFolds, ArrayList<String>>(
             save = { it.state?.value?.saved() ?: it.saved?.let(::ArrayList) },
@@ -125,6 +124,17 @@ class FoldingVisual(private val markdown: MarkdownVisual, private val folds: Hea
     }
 }
 
+/**
+ * The chevrons' tap targets beside heading lines (`lines`: top and bottom, in order): each
+ * line plus `slack` above and below, stopping halfway to the line before or after, so stacked
+ * headings' targets don't overlap.
+ */
+fun chevronTargets(lines: List<Pair<Float, Float>>, slack: Float): List<Pair<Float, Float>> = lines.mapIndexed { i, (y0, y1) ->
+    val prev = lines.getOrNull(i - 1)?.second?.takeIf { it <= y0 }
+    val next = lines.getOrNull(i + 1)?.first?.takeIf { it >= y1 }
+    maxOf(y0 - slack, prev?.let { (it + y0) / 2 } ?: Float.NEGATIVE_INFINITY) to minOf(y1 + slack, next?.let { (y1 + it) / 2 } ?: Float.POSITIVE_INFINITY)
+}
+
 /** Left of the text: room for the fold chevrons. */
 val FoldGutter = 28.dp
 
@@ -147,23 +157,29 @@ fun FoldControls(folds: HeadingFolds, layout: TextLayoutResult?, textStart: Dp, 
         val line = layout.getLineForOffset(transformed.coerceIn(0, length))
         return layout.getLineTop(line) + top to layout.getLineBottom(line) + top
     }
-    for (s in folds.sections) {
-        if (!s.foldable || !folds.isShown(s.lineStart)) continue
-        val folded = folds.isFolded(s.lineStart)
-        val (y0, y1) = lineBounds(mapping.originalToTransformed(s.lineStart))
-        key(s.lineStart) {
+    val headings = folds.sections.filter { it.foldable && folds.isShown(it.lineStart) }.map { it.lineStart }
+    val lines = headings.map { lineBounds(mapping.originalToTransformed(it)) }
+    val targets = chevronTargets(lines, slack)
+    val icon = with(density) { 20.dp.toPx() }
+    for (i in headings.indices) {
+        val lineStart = headings[i]
+        val (y0, y1) = lines[i]
+        val (boxTop, boxBottom) = targets[i]
+        val folded = folds.isFolded(lineStart)
+        key(lineStart) {
             Box(
                 Modifier
-                    .offset { IntOffset(0, (y0 - slack).roundToInt()) }
-                    .size(48.dp, with(density) { (y1 - y0 + 2 * slack).toDp() })
+                    .offset { IntOffset(0, boxTop.roundToInt()) }
+                    .size(48.dp, with(density) { (boxBottom - boxTop).toDp() })
                     .clickable(remember { MutableInteractionSource() }, indication = null, role = Role.Button,
-                               onClickLabel = if (folded) "Unfold section" else "Fold section") { onToggle(s.lineStart) },
+                               onClickLabel = if (folded) "Unfold section" else "Fold section") { onToggle(lineStart) },
             ) {
                 Icon(
                     if (folded) Icons.AutoMirrored.Rounded.KeyboardArrowRight else Icons.Rounded.KeyboardArrowDown,
                     if (folded) "Folded section" else "Open section",
                     tint = if (folded) color else color.copy(alpha = 0.45f),
-                    modifier = Modifier.align(Alignment.CenterStart).padding(start = (textStart - 20.dp) / 2).size(20.dp),
+                    // centred on the heading's line
+                    modifier = Modifier.offset { IntOffset(((textStart - 20.dp) / 2).roundToPx(), ((y0 + y1 - icon) / 2 - boxTop).roundToInt()) }.size(20.dp),
                 )
             }
         }

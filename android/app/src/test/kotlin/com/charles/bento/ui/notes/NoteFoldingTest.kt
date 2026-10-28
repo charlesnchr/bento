@@ -37,6 +37,15 @@ class NoteFoldingTest {
         for (o in 0..t.text.length) assertTrue(m.transformedToOriginal(o) in 0..note.length)
     }
 
+    @Test fun chevronTargetsOfStackedHeadingsDontOverlap() {
+        // two headings on consecutive lines, then one further down
+        val t = chevronTargets(listOf(0f to 60f, 60f to 120f, 300f to 360f), slack = 18f)
+        assertEquals(listOf(-18f to 60f, 60f to 138f, 282f to 378f), t)
+        for (i in 1 until t.size) assertTrue(t[i - 1].second <= t[i].first)
+        // a small gap: they meet halfway
+        assertEquals(listOf(-18f to 65f, 65f to 148f), chevronTargets(listOf(0f to 60f, 70f to 130f), slack = 18f))
+    }
+
     @Test fun aStaleFoldStateStillGivesAValidMapping() {
         val folds = HeadingFolds.of(note)
         val changed = note.replace("Plant tulips.", "x")
