@@ -80,7 +80,8 @@ check (Settings → Updates).
    settings"; signing doesn't matter). Tap the greyed entry once and close the notice ("App
    was denied access" on 15+, "Restricted setting" before), then App info → ⋮ → **Allow
    restricted settings**, then turn the switch on. The checklist detects each step and walks
-   through it. It's once only: updates keep the permission, and the in-app updater's session
-   install doesn't add the restriction (`adb install` doesn't either).
+   through it. Updates through Bento keep it (its session install doesn't add the
+   restriction, nor does `adb install`); on Android 13/14, opening a newer APK from a file
+   manager brings the restriction back.
 4. Optional: add the widgets, the **Capture thought** Quick Settings tile, the Bento
    keyboard, or turn on **Separate icons** and point the Snap Key at **Bento Dictate**.

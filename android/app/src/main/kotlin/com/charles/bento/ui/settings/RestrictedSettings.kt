@@ -10,14 +10,15 @@ import android.os.Build
  * entry is greyed out, until the user allows it in App info → ⋮ → Allow restricted settings.
  * Signing has nothing to do with it; the install source does.
  *
- * Android keeps the state in the app op `android:access_restricted_settings`: ERRORED when the
- * first install marked the app (13/14), IGNORED once the user has tapped the greyed entry and seen
- * the notice ("Restricted setting", or "App was denied access" on 15+; only then does App info
- * offer "Allow restricted settings"), ALLOWED once allowed. Android 15+ (enhanced confirmation)
+ * Android keeps the state in the app op `android:access_restricted_settings`: ERRORED when an
+ * install from a file marked the app (13/14, updates included, so there opening a newer APK from a
+ * file manager brings the restriction back even after it was allowed), IGNORED once the user has
+ * tapped the greyed entry and seen the notice ("Restricted setting", or "App was denied access" on
+ * 15+; only then does App info offer "Allow restricted settings"), ALLOWED once allowed. Android 15+ (enhanced confirmation)
  * leaves it DEFAULT and decides from the latest install's source each time, so there an update
  * opened from a file manager restricts the app too, while a session install like the
  * self-updater's (no file source) doesn't, unless the phone's maker lists trusted installers in
- * /system/etc/sysconfig/enhanced-confirmation.xml. An explicit state survives updates.
+ * /system/etc/sysconfig/enhanced-confirmation.xml. An explicit state survives updates through Bento.
  *
  * Apps can't read that op (a restricted-read op: "verifyIncomingOp: uid … does not have any of
  * {MANAGE_APPOPS, …}"), so Bento only infers it from its install source, which it may read.

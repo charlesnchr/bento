@@ -30,6 +30,12 @@ class RestrictedSettingsTest {
         assertEquals("Open Accessibility", AccessibilityGuide.button(Step.TurnOn))
     }
 
+    @Test fun aFailedDirectTryOffersTheGuideOnceWhereItExists() {
+        assertTrue(AccessibilityGuide.offerAfterDirect(36, offeredBefore = false))
+        assertFalse(AccessibilityGuide.offerAfterDirect(36, offeredBefore = true))
+        assertFalse(AccessibilityGuide.offerAfterDirect(32, offeredBefore = false)) // no restricted settings on 12
+    }
+
     @Test fun theChecklistRowSaysWhatToDo() {
         assertEquals("Bento dictation is on", AccessibilityGuide.summary(on = true, needsGuide = true))
         assertTrue("Greyed out?" in AccessibilityGuide.summary(on = false, needsGuide = true))

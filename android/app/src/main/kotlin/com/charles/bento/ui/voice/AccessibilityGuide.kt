@@ -38,6 +38,13 @@ object AccessibilityGuide {
         Step.AllowInAppInfo, Step.TurnOn -> Step.TurnOn
     }
 
+    /**
+     * Whether to offer the guide on coming back from Accessibility (opened directly) with the
+     * service still off: only where restricted settings exist, and only once, as the user may just
+     * have backed out.
+     */
+    fun offerAfterDirect(sdk: Int, offeredBefore: Boolean) = sdk >= 33 && !offeredBefore
+
     /** The checklist row's line: [needsGuide] when the install source or a failed try says the switch is greyed out. */
     fun summary(on: Boolean, needsGuide: Boolean) = when {
         on -> "Bento dictation is on"
@@ -81,7 +88,7 @@ fun AccessibilityGuideDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     "Android greys out the switch for apps installed from a downloaded APK until you allow \"restricted settings\" " +
-                        "for them. It isn't about signing, and it's once only: updates keep it.",
+                        "for them. It isn't about signing. Updates through Bento keep it; on Android 13 and 14, opening a newer APK from a file manager brings the restriction back.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 AccessibilityGuide.Step.entries.forEach { s ->

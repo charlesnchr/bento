@@ -363,7 +363,8 @@ private fun SetupSection(context: Context, tick: Int) {
     SettingsSection(
         "Permissions",
         footer = "ColorOS stops apps it thinks are idle. Allowing background activity keeps live sync and the bubble reliable. " +
-            "If the accessibility switch is greyed out, open App info → ⋮ → Allow restricted settings first (Android does this for apps installed outside the Play Store).",
+            "If the accessibility switch is greyed out (an APK opened from a browser or file manager): tap it once in the Accessibility list and close the notice, " +
+            "then App info → ⋮ → Allow restricted settings. The Voice tab's checklist walks through it.",
     ) {
         SettingsRow("Microphone", state(hasMic), Icons.Rounded.Mic, onClick = { mic.launch(Manifest.permission.RECORD_AUDIO) })
         SettingsRow("Accessibility service", if (a11y) "On" else "Off: needed for the bubble and the held key", Icons.Rounded.SettingsAccessibility,

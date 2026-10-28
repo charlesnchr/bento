@@ -149,15 +149,21 @@ private fun SetupCard(tick: Int) {
     var guide by rememberSaveable { mutableStateOf<AccessibilityGuide.Step?>(null) }
     var opened by rememberSaveable { mutableStateOf<String?>(null) }
     var retry by rememberSaveable { mutableStateOf(false) }
-    var triedDirect by rememberSaveable { mutableStateOf(false) }
-    val needsGuide = remember(tick) { RestrictedSettings.likely(context) } || triedDirect
+    var offeredAfterDirect by rememberSaveable { mutableStateOf(false) }
+    val needsGuide = remember(tick) { RestrictedSettings.likely(context) }
     androidx.compose.runtime.LaunchedEffect(tick) {
+        if (a11yOn) { guide = null; retry = false }
         // back from Settings
         val o = opened ?: return@LaunchedEffect
         opened = null
         when {
-            a11yOn -> guide = null
-            o == DIRECT -> { triedDirect = true; guide = AccessibilityGuide.Step.SeeNotice } // the switch must have been greyed out
+            a11yOn -> {}
+            o == DIRECT -> if (AccessibilityGuide.offerAfterDirect(android.os.Build.VERSION.SDK_INT, offeredAfterDirect)) {
+                // probably greyed out, and tapping it showed the notice: App info is next (once; the row still goes straight there)
+                offeredAfterDirect = true
+                guide = AccessibilityGuide.Step.AllowInAppInfo
+                retry = false
+            }
             else -> AccessibilityGuide.Step.valueOf(o).let { guide = AccessibilityGuide.afterReturn(it); retry = it == AccessibilityGuide.Step.TurnOn }
         }
     }
