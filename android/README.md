@@ -91,8 +91,11 @@ same one Open WebUI-style clients use: each conversation is a Hermes session, a 
 agent) and calls `POST /v1/runs/{run}/stop`. Serve it only on your tailnet: bind
 `API_SERVER_HOST` to the machine's Tailscale address, or to loopback behind
 `tailscale serve`, never a public interface or tunnel. The phone needs the address and
-`API_SERVER_KEY`, kept in the Keystore-backed store. Enter them under Settings → Hermes,
-or show the phone a code made on Hermes's machine:
+`API_SERVER_KEY`, kept in the Keystore-backed store. The key rides on every request, so
+plain http is accepted only for tailnet, LAN and loopback addresses; anything else must be
+https. Enter them under Settings → Hermes, or scan a code made on Hermes's machine (Settings
+→ Hermes → Scan Hermes code). Prefer scanning to opening the link: an opened link passes
+through Android's activity manager, which can log it, key included.
 
 ```sh
 scripts/hermes-phone-link    # on the Hermes machine: a QR code (with qrencode) or the link
@@ -105,4 +108,7 @@ words for that turn, shows Hermes's reply in the chat and returns it for Gemini 
 A call continues the conversation on screen (Gemini gets a recap, `helper/live_resume.json`),
 runs in a microphone foreground service, uses the voice-call microphone with echo
 cancellation and plays through a headset or the loudspeaker. Open mic or tap to talk is a
-setting; speaking over Gemini interrupts it, End call stops everything.
+setting; speaking over Gemini interrupts it, Stop (in the call bar while Hermes works)
+stops Hermes's request and the call goes on, End call (also in the notification) stops
+everything, and so does a phone call. Hermes's approval prompts offer Allow once, Allow for
+this request (Hermes scopes a streamed turn's approvals to its run) and Deny.

@@ -137,11 +137,10 @@ fun AssistantScreen(modifier: Modifier, nav: NavController) {
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
-        if (configured) {
-            val c = state.call
-            if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onEnd = { assistant.endCall() })
-            else Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
-        }
+        // A running call always keeps its bar (and its End button), whatever happens to the setup.
+        val c = state.call
+        if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onStop = assistant::stop, onEnd = { assistant.endCall() })
+        else if (configured) Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
     }
 
     if (showHistory) HistorySheet(assistant, state.sessionId, onDismiss = { showHistory = false })
@@ -295,8 +294,10 @@ private fun ApprovalRow(m: ChatMessage, onAnswer: (String, String) -> Unit) {
             }
             when (m.status) {
                 "pending" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Hermes keys a streamed turn's approvals by its run, so "session" lasts until this request ends;
+                    // "always" would change Hermes's permanent allowlist from a phone tap, so it isn't offered.
                     for (choice in m.choices.filter { it != "always" }) {
-                        val label = when (choice) { "once" -> "Allow once"; "session" -> "Allow for this chat"; "deny" -> "Deny"; else -> choice }
+                        val label = when (choice) { "once" -> "Allow once"; "session" -> "Allow for this request"; "deny" -> "Deny"; else -> choice }
                         if (choice == "deny") OutlinedButton(onClick = { onAnswer(m.id, choice) }) { Text(label) }
                         else FilledTonalButton(onClick = { onAnswer(m.id, choice) }) { Text(label) }
                     }
@@ -345,7 +346,7 @@ private fun Composer(working: Boolean, onSend: (String) -> Unit, onStop: () -> U
 }
 
 @Composable
-private fun CallBar(c: CallUi, onMute: () -> Unit, onEnd: () -> Unit) {
+private fun CallBar(c: CallUi, onMute: () -> Unit, onStop: () -> Unit, onEnd: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -364,6 +365,12 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onEnd: () -> Unit) {
                 } else {
                     FilledTonalIconButton(onClick = onMute, enabled = !c.connecting, modifier = Modifier.size(56.dp)) {
                         Icon(if (c.muted) Icons.Rounded.MicOff else Icons.Rounded.Mic, if (c.muted) "Unmute" else "Mute")
+                    }
+                }
+                // Stops Hermes's work on the spoken request; the call goes on, and Gemini hears it was cancelled.
+                if (c.hermesWorking) {
+                    FilledTonalIconButton(onClick = onStop, modifier = Modifier.size(56.dp).testTag("assistant-stop-hermes")) {
+                        Icon(Icons.Rounded.Stop, "Stop Hermes")
                     }
                 }
                 FilledIconButton(onClick = onEnd, modifier = Modifier.size(56.dp).testTag("assistant-end-call"),

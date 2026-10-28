@@ -85,8 +85,13 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
                     if (!response.isSuccessful) throw failure(response, e)
                     val source = response.body.source()
                     val parser = SseParser()
-                    while (true) {
-                        val line = source.readUtf8Line() ?: break
+                    while (!source.exhausted()) {
+                        // A line with no end in sight is not Hermes: fail rather than buffer it all.
+                        val line = try {
+                            source.readUtf8LineStrict(MAX_LINE)
+                        } catch (_: java.io.EOFException) {
+                            throw HermesError("Hermes's stream broke off mid-line (or sent a line over 4 MB).")
+                        }
                         val event = parser.line(line)?.let(HermesEvent::decode) ?: continue
                         send(event)
                         if (event == HermesEvent.Done) break
@@ -136,6 +141,7 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
 
     companion object {
         private val JSON = "application/json".toMediaType()
+        private const val MAX_LINE = 4L * 1024 * 1024
 
         private fun seg(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 

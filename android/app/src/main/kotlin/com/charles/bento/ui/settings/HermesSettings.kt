@@ -84,7 +84,8 @@ fun HermesSection(context: Context) {
         }
         if (configured) {
             SettingsRow("Scan a new code", icon = Icons.Rounded.QrCodeScanner, onClick = { scanHermesCode(context) { pending = it } })
-            SettingsRow("Disconnect", "Conversations stay in Hermes", Icons.Rounded.CloudOff, onClick = {
+            SettingsRow("Disconnect", "Ends a call in progress. Conversations stay in Hermes", Icons.Rounded.CloudOff, onClick = {
+                graph.assistant.leaveServer(switching = false)
                 graph.secrets.hermesToken = null
                 prefs.hermesName.value = ""
                 check = null
@@ -97,13 +98,15 @@ fun HermesSection(context: Context) {
         var u by remember { mutableStateOf(url) }
         var t by remember { mutableStateOf("") }
         val valid = HermesEndpoint.parseUrl(u) != null && (t.isNotBlank() || graph.secrets.hermesToken != null)
+        val problem = HermesEndpoint.problem(u)
         AlertDialog(
             onDismissRequest = { edit = false },
             title = { Text("Hermes API server") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(u, { u = it }, label = { Text("Server") }, placeholder = { Text("100.88.250.122:8642") }, singleLine = true,
-                                      supportingText = { Text("Its tailnet address and port") },
+                                      isError = problem != null,
+                                      supportingText = { Text(problem ?: "Its tailnet address and port, or an https:// address") },
                                       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
                     OutlinedTextField(t, { t = it }, label = { Text(if (graph.secrets.hermesToken != null) "Key (unchanged if empty)" else "Key") },
                                       singleLine = true, visualTransformation = PasswordVisualTransformation(),
@@ -130,19 +133,23 @@ fun HermesSection(context: Context) {
 fun HermesLinkDialog(link: HermesLink, onDone: () -> Unit) {
     val context = LocalContext.current
     val graph = context.graph
-    val where = HermesEndpoint.parseUrl(link.url)?.let { "${it.host}:${it.port}" } ?: link.url
+    // The link comes from whoever made it: show exactly where it points, and keep its name short and plain.
+    val where = HermesEndpoint.parseUrl(link.url)?.toString()?.trimEnd('/') ?: link.url
+    val name = displayName(link.name)
+    val current = graph.assistant.endpoint()?.url?.toString()?.trimEnd('/')
     AlertDialog(
         onDismissRequest = onDone,
-        title = { Text("Connect to Hermes${link.name.takeIf { it.isNotBlank() }?.let { " on $it" } ?: ""}?") },
+        title = { Text(if (name.isEmpty()) "Connect to Hermes?" else "Connect to Hermes on “$name”?") },
         text = {
-            Text("The Assistant will chat with Hermes at $where. Hermes acts with your permissions, so only use a code " +
-                 "you made on your own machine.")
+            Text("The Assistant will chat with Hermes at $where." +
+                 (current?.let { "\n\nThis replaces your connection to $it" + (if (graph.assistant.callActive) " and ends the call in progress." else ".") } ?: "") +
+                 "\n\nHermes acts with your permissions, so only use a code you made on your own machine.")
         },
         confirmButton = {
             TextButton(onClick = {
                 switchServer(context, link.url)
                 graph.prefs.hermesUrl.value = link.url
-                graph.prefs.hermesName.value = link.name
+                graph.prefs.hermesName.value = name
                 graph.secrets.hermesToken = link.token
                 onDone()
             }) { Text("Connect") }
@@ -154,12 +161,21 @@ fun HermesLinkDialog(link: HermesLink, onDone: () -> Unit) {
 fun scanHermesCode(context: Context, onResult: (HermesLink) -> Unit) =
     scanCode(context, HermesLink::parse, "That's not a Bento Hermes code", onResult)
 
-/** Another server's conversations aren't this one's: the Assistant starts over. */
+/**
+ * Before the address or key changes: the call and any turn end, and another server's
+ * conversations aren't this one's, so the Assistant starts over.
+ */
 private fun switchServer(context: Context, url: String) {
     val graph = context.graph
-    if (serverOf(graph.prefs.hermesUrl.value) == serverOf(url)) return
-    graph.assistant.newChat()
-    graph.prefs.hermesConversations.value = ""
+    graph.assistant.leaveServer(switching = serverOf(graph.prefs.hermesUrl.value) != serverOf(url))
+}
+
+/** A link's `name`, as shown: printable characters only, one line, at most 40 of them. */
+internal fun displayName(name: String): String {
+    val plain = name.replace(Regex("\\s+"), " ")
+        .filter { !it.isISOControl() && Character.getType(it) != Character.FORMAT.toInt() }
+        .replace(Regex(" +"), " ").trim()
+    return if (plain.length > 40) plain.take(39).trimEnd() + "…" else plain
 }
 
 private fun serverOf(url: String) = HermesEndpoint.parseUrl(url)?.toString()

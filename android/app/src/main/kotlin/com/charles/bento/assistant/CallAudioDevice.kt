@@ -4,12 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import com.charles.bento.core.assistant.live.CallAudio
@@ -21,21 +23,34 @@ import java.util.concurrent.atomic.AtomicLong
  * A voice call's audio, set up as a phone call is: communication mode, the voice-call
  * microphone with the platform's echo canceller (Gemini mustn't hear itself through the
  * speaker and interrupt itself), and playback routed to a headset when one is connected,
- * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16.
+ * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16. It holds
+ * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost].
  */
-class CallAudioDevice(context: Context) : CallAudio {
+class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}) : CallAudio {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val queue = LinkedBlockingQueue<ByteArray>()
     private val queued = AtomicLong()
     @Volatile private var running = false
+    /** Between a successful start and stop, even if the microphone gave out (running is then false). */
+    private var started = false
     @Volatile private var flushRequested = false
     private var record: AudioRecord? = null
     private var track: AudioTrack? = null
     private var previousMode = AudioManager.MODE_NORMAL
+    private val effects = ArrayList<AudioEffect>()
+    private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+        .setOnAudioFocusChangeListener { change ->
+            // A ducking request (a notification sound) is fine; a call or another app taking over isn't.
+            if (running && (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)) onFocusLost()
+        }
+        .build()
 
     @SuppressLint("MissingPermission") // the screen asks for the microphone before a call starts
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
-        if (running) return true
+        if (started) return true
+        if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) return false
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         route()
@@ -49,8 +64,8 @@ class CallAudioDevice(context: Context) : CallAudio {
                 .build()
         }.getOrNull()
         if (r == null || r.state != AudioRecord.STATE_INITIALIZED) { r?.release(); restore(); return false }
-        if (AcousticEchoCanceler.isAvailable()) runCatching { AcousticEchoCanceler.create(r.audioSessionId)?.enabled = true }
-        if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(r.audioSessionId)?.enabled = true }
+        if (AcousticEchoCanceler.isAvailable()) runCatching { AcousticEchoCanceler.create(r.audioSessionId)?.also { it.enabled = true; effects.add(it) } }
+        if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(r.audioSessionId)?.also { it.enabled = true; effects.add(it) } }
         val minOut = AudioTrack.getMinBufferSize(OUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = runCatching {
             AudioTrack.Builder()
@@ -69,6 +84,7 @@ class CallAudioDevice(context: Context) : CallAudio {
         t.play()
         record = r; track = t
         running = true
+        started = true
         Thread({ captureLoop(r, onPcm) }, "bento-call-mic").start()
         Thread({ playbackLoop(t) }, "bento-call-speaker").start()
         return true
@@ -143,7 +159,8 @@ class CallAudioDevice(context: Context) : CallAudio {
     }
 
     override fun stop() {
-        if (!running) { restore(); return }
+        if (!started) return // a start that failed has already put everything back
+        started = false
         running = false
         queue.clear()
         queued.set(0)
@@ -152,6 +169,9 @@ class CallAudioDevice(context: Context) : CallAudio {
     }
 
     private fun restore() {
+        effects.forEach { runCatching { it.release() } }
+        effects.clear()
+        runCatching { audio.abandonAudioFocusRequest(focus) }
         runCatching { audio.clearCommunicationDevice() }
         audio.mode = previousMode
     }

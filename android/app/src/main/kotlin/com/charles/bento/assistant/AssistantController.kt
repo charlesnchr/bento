@@ -100,6 +100,30 @@ class AssistantController(
         set { AssistantUi() }
     }
 
+    /**
+     * The server or key is about to change (Disconnect, a new code, an edited address): the call
+     * and any turn end first, so nothing keeps talking to the old server. Another server's
+     * conversations aren't this one's, so a switch starts over.
+     */
+    fun leaveServer(switching: Boolean) {
+        endCall()
+        turnJob?.cancel() // closing the stream stops the turn on the old server
+        if (!switching) return
+        prefs.hermesSession.value = ""
+        prefs.hermesConversations.value = ""
+        loadedSession = null
+        _history.value = HistoryUi()
+        set { AssistantUi() }
+    }
+
+    /** Hermes no longer has [id]: drop it here too, so the next message starts a new conversation. */
+    private fun dropSession(id: String) {
+        forget(id)
+        if (_state.value.sessionId != id) return
+        loadedSession = null
+        set { it.copy(sessionId = null, title = null) }
+    }
+
     fun open(id: String) {
         if (_state.value.working || call != null) return
         prefs.hermesSession.value = id
@@ -117,9 +141,8 @@ class AssistantController(
                 set { it.copy(messages = AssistantTranscript.fromHistory(rows), loading = false, title = it.title ?: titleOf(id)) }
             } catch (e: HermesError) {
                 if (e.code == "session_not_found") {
-                    forget(id)
-                    if (_state.value.sessionId == id) newChat()
-                    set { it.copy(error = e.message) }
+                    dropSession(id)
+                    set { it.copy(loading = false, messages = emptyList(), error = e.message) }
                 } else set { it.copy(loading = false, error = e.message) }
             }
         }
@@ -239,6 +262,7 @@ class AssistantController(
                 set { it.copy(sessionId = newId) }
             }
         } catch (e: HermesError) {
+            if (e.code == "session_not_found") turn.sessionId?.let(::dropSession)
             val (list, t) = AssistantTranscript.apply(_state.value.messages, turn, HermesEvent.Failed(e.message.orEmpty()))
             turn = AssistantTranscript.finish(list, t).let { (l, tt) -> set { it.copy(messages = l) }; tt }
         } catch (e: CancellationException) {
@@ -285,8 +309,10 @@ class AssistantController(
                 set { it.copy(call = null, error = "Couldn't start the call right now.") }
                 return@launch
             }
-            val transport = OkHttpLiveTransport({ key!! })
-            val c = AssistantCall(transport, CallAudioDevice(context), resume, onTool = { request ->
+            val transport = OkHttpLiveTransport({ key })
+            // A phone call (or another app taking the audio for good) ends this one.
+            val audio = CallAudioDevice(context) { scope.launch { call?.stop("The call ended: another app took the audio (a phone call?).") } }
+            val c = AssistantCall(transport, audio, resume, onTool = { request ->
                 withContext(Dispatchers.Main) { runVoiceTask(request) }
             }, ending = { transport.ending })
             c.muted = tap

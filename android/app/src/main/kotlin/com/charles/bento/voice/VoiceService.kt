@@ -14,6 +14,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.charles.bento.MainActivity
 import com.charles.bento.R
+import com.charles.bento.graph
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -33,6 +34,11 @@ class VoiceService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_END_CALL) {
+            // the call's notification: ending the call takes the service down with it
+            applicationContext.graph.assistant.endCall()
+            return START_NOT_STICKY
+        }
         val ok = runCatching {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this, kind), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         }.isSuccess
@@ -44,6 +50,7 @@ class VoiceService : Service() {
 
     companion object {
         private const val ACTION_STOP = "com.charles.bento.voice.STOP"
+        private const val ACTION_END_CALL = "com.charles.bento.voice.END_CALL"
         private const val EXTRA_KIND = "kind"
         const val KIND_DICTATION = "dictation"
         const val KIND_MEETING = "meeting"
@@ -92,7 +99,7 @@ class VoiceService : Service() {
                 ),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            return NotificationCompat.Builder(context, CHANNEL_LISTENING)
+            val builder = NotificationCompat.Builder(context, CHANNEL_LISTENING)
                 .setSmallIcon(R.drawable.ic_stat_mic)
                 .setContentTitle(when (kind) { KIND_MEETING -> "Recording meeting"; KIND_ASSISTANT -> "Voice call with Hermes"; else -> "Listening" })
                 .setOngoing(true)
@@ -100,7 +107,14 @@ class VoiceService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .setContentIntent(open)
-                .build()
+            if (kind == KIND_ASSISTANT) {
+                val end = PendingIntent.getService(
+                    context, 1, Intent(context, VoiceService::class.java).setAction(ACTION_END_CALL),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.addAction(R.drawable.ic_stat_mic, "End call", end)
+            }
+            return builder.build()
         }
     }
 }

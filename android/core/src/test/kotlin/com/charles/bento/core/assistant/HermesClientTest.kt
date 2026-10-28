@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -39,13 +40,42 @@ class HermesClientTest {
 
     @Test fun endpointsFromWhatPeopleType() {
         assertEquals("http://100.88.250.122:8642/", HermesEndpoint.parseUrl("100.88.250.122:8642")!!.toString())
-        assertEquals("http://homelab:8642/", HermesEndpoint.parseUrl(" http://homelab:8642/ ")!!.toString())
+        assertEquals("http://192.168.1.5:8642/", HermesEndpoint.parseUrl(" http://192.168.1.5:8642/ ")!!.toString())
         assertEquals("https://homelab.tail1.ts.net/", HermesEndpoint.parseUrl("homelab.tail1.ts.net/v1")!!.toString())
+        assertEquals("http://[fd7a:115c:a1e0::1]:8642/", HermesEndpoint.parseUrl("[fd7a:115c:a1e0::1]:8642")!!.toString())
         assertEquals("https://h.example/hermes", HermesEndpoint.parseUrl("https://h.example/hermes/v1/")!!.toString())
         assertNull(HermesEndpoint.parseUrl(""))
         assertNull(HermesEndpoint.parseUrl("ftp://x"))
         assertNull(HermesEndpoint.of("homelab:8642", " "))
         assertTrue("secret" !in HermesEndpoint(server.url("/"), "secret").toString(), "the token never shows in logs")
+    }
+
+    @Test fun theKeyNeverGoesInTheClearOverTheInternet() {
+        // Without a scheme, anything that could be on the internet is https.
+        assertEquals("https://homelab:8642/", HermesEndpoint.parseUrl("homelab:8642")!!.toString())
+        assertEquals("https://hermes.example.com/", HermesEndpoint.parseUrl("hermes.example.com")!!.toString())
+        // Plain http is refused there, with a reason the dialogs show.
+        assertNull(HermesEndpoint.parseUrl("http://hermes.example.com:8642"))
+        assertNull(HermesEndpoint.parseUrl("http://homelab:8642"))
+        assertNull(HermesEndpoint.parseUrl("http://8.8.8.8"))
+        assertNull(HermesEndpoint.parseUrl("http://100.128.0.1")) // just outside Tailscale's range
+        assertTrue(HermesEndpoint.problem("http://hermes.example.com")!!.contains("Use https:// for hermes.example.com"))
+        assertNull(HermesEndpoint.problem("100.88.250.122:8642"))
+        assertNull(HermesLink.parse("bento://hermes?url=http%3A%2F%2Fevil.example&token=t"))
+        for (ok in listOf("100.64.0.1", "100.127.255.254", "10.0.2.2", "172.16.0.1", "172.31.9.9", "192.168.1.1",
+                          "169.254.3.4", "127.0.0.1", "localhost", "::1", "fd7a:115c:a1e0::1", "fe80::1")) {
+            assertTrue(HermesEndpoint.isPrivateAddress(ok), ok)
+        }
+        for (no in listOf("100.63.0.1", "172.32.0.1", "192.169.0.1", "8.8.8.8", "2001:db8::1", "homelab", "a.ts.net", "1.2.3")) {
+            assertFalse(HermesEndpoint.isPrivateAddress(no), no)
+        }
+    }
+
+    @Test fun aRunawayLineFailsTheStream() = blocking {
+        server.enqueue(MockResponse.Builder().code(200).addHeader("Content-Type", "text/event-stream")
+            .body("data: " + "x".repeat(4 * 1024 * 1024 + 10)).build())
+        val e = assertFailsWith<HermesError> { client.chat("s", "hi").toList() }
+        assertTrue(e.message!!.contains("4 MB"))
     }
 
     @Test fun pathsKeepAPrefix() {

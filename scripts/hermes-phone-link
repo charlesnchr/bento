@@ -10,6 +10,7 @@ to the terminal only, never to a file or the shell history.
   scripts/hermes-phone-link --print         # the link itself
 """
 import argparse
+import ipaddress
 import os
 import pathlib
 import re
@@ -27,6 +28,20 @@ def env_values(path):
         if m:
             values[m.group(1)] = m.group(2).strip().strip("'\"")
     return values
+
+
+def private_http_ok(url):
+    """https anywhere; http only to an address that can't be on the internet (as the app checks)."""
+    parts = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+    if parts.scheme == "https":
+        return True
+    if parts.hostname == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(parts.hostname or "")
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
 
 
 def link(url, token, name):
@@ -50,6 +65,9 @@ def main():
     if not args.url and host in ("127.0.0.1", "localhost", "0.0.0.0", "::"):
         sys.exit(f"API_SERVER_HOST is {host}: pass --url with the tailnet address the phone should use.")
     url = args.url or f"http://{host}:{env.get('API_SERVER_PORT', '8642')}"
+    if not private_http_ok(url):
+        sys.exit(f"{url}: the phone sends the key with every request, so it accepts plain http only for a tailnet, "
+                 "LAN or loopback address. Use https:// (tailscale serve) or the Tailscale IP.")
     text = link(url, token, args.name)
     if not args.print and shutil.which("qrencode"):
         subprocess.run(["qrencode", "-t", "ansiutf8"], input=text.encode(), check=True)

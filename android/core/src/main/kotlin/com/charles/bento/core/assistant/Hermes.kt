@@ -25,21 +25,54 @@ data class HermesEndpoint(val url: HttpUrl, val token: String) {
     companion object {
         /**
          * What someone types or a link carries, as the server's base URL: `100.88.250.122:8642`,
-         * `http://homelab:8642/`, `https://homelab.example.ts.net/v1`. Without a scheme it's
-         * https for a tailnet name (`tailscale serve` has a certificate) and http otherwise
-         * (the API server itself speaks plain HTTP; on a tailnet WireGuard encrypts it).
+         * `http://192.168.1.5:8642/`, `https://homelab.example.ts.net/v1`. Every request carries
+         * the key, so plain http is only for addresses that can't be on the internet (the
+         * tailnet's, a LAN's, loopback), where WireGuard or the LAN carries it; anything else
+         * must be https. Without a scheme it's http for such an address and https otherwise.
+         * Null when unusable ([problem] says why).
          */
         fun parseUrl(text: String): HttpUrl? {
             var s = text.trim().trimEnd('/')
             if (s.isEmpty()) return null
             if (s.endsWith("/v1")) s = s.dropLast(3).trimEnd('/')
             if ("://" !in s) {
-                val host = s.substringBefore('/').substringBefore(':')
-                s = (if (host.endsWith(".ts.net")) "https://" else "http://") + s
+                val authority = s.substringBefore('/')
+                val host = if (authority.startsWith("[")) authority.substringAfter('[').substringBefore(']') else authority.substringBefore(':')
+                s = (if (isPrivateAddress(host)) "http://" else "https://") + s
             }
             val url = s.toHttpUrlOrNull() ?: return null
             if (url.scheme != "http" && url.scheme != "https") return null
+            if (url.scheme == "http" && !isPrivateAddress(url.host)) return null
             return url.newBuilder().query(null).fragment(null).build()
+        }
+
+        /** Why [parseUrl] refuses [text], for the dialogs; null when it's fine (or empty). */
+        fun problem(text: String): String? {
+            if (text.isBlank() || parseUrl(text) != null) return null
+            val s = text.trim()
+            val url = (if ("://" in s) s else "http://$s").toHttpUrlOrNull()
+            return if (url != null && url.scheme == "http") {
+                "Plain http only works for a tailnet or LAN address (100.x, 192.168.x, 10.x). Use https:// for ${url.host}."
+            } else "That isn't a server address."
+        }
+
+        /**
+         * An IP literal that can't be routed on the internet: Tailscale's CGNAT range
+         * (100.64.0.0/10) and its IPv6 ULA, RFC 1918, link-local and loopback. Names don't
+         * count, since a name can resolve anywhere.
+         */
+        fun isPrivateAddress(host: String): Boolean {
+            val h = host.trim('[', ']').lowercase()
+            val v4 = h.split('.').takeIf { it.size == 4 }?.map { it.toIntOrNull() ?: return false }
+            if (v4 != null) {
+                if (v4.any { it !in 0..255 }) return false
+                val (a, b) = v4
+                return a == 10 || a == 127 || (a == 172 && b in 16..31) || (a == 192 && b == 168) ||
+                    (a == 169 && b == 254) || (a == 100 && b in 64..127)
+            }
+            if (':' !in h) return h == "localhost"
+            return h == "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") ||
+                h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")
         }
 
         fun of(url: String, token: String?): HermesEndpoint? {
