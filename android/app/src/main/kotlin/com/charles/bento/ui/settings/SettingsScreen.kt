@@ -54,6 +54,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -64,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -95,11 +97,15 @@ fun SettingsScreen(nav: NavController) {
     var tick by remember { mutableIntStateOf(0) } // re-read system state when we come back from Settings
     LifecycleResumeEffect(Unit) { tick++; onPauseOrDispose { } }
 
+    // the bar takes a tint once the sections scroll under it
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") } },
+                scrollBehavior = scrollBehavior,
             )
         },
     ) { padding ->
@@ -130,6 +136,7 @@ private fun SyncSection(context: Context) {
     var manual by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
     var pendingPair by remember { mutableStateOf<Pairing?>(null) }
+    var unpair by remember { mutableStateOf(false) }
     val paired = server.isNotBlank() && remember(secretsVersion) { graph.secrets.syncToken } != null
 
     SettingsSection(
@@ -149,11 +156,7 @@ private fun SyncSection(context: Context) {
             SettingsRow("Sync now", icon = Icons.Rounded.Refresh, onClick = { graph.sync.syncNow() })
             SettingsRow("This phone's name", deviceName, Icons.Rounded.Edit, onClick = { rename = true })
             SettingsRow("Pair again", "Scan a new code from your Mac", Icons.Rounded.QrCodeScanner, onClick = { scanPairingCode(context) { pendingPair = it } })
-            SettingsRow("Unpair", "Notes and tasks stay on this phone", Icons.Rounded.CloudOff, onClick = {
-                prefs.server.value = ""
-                prefs.pairedWith.value = ""
-                graph.secrets.syncToken = null
-            })
+            SettingsRow("Unpair", "Notes and tasks stay on this phone", Icons.Rounded.CloudOff, onClick = { unpair = true })
         } else {
             SettingsRow("Scan pairing code", "From Bento on your Mac", Icons.Rounded.QrCodeScanner, iconTint = MaterialTheme.colorScheme.primary,
                         onClick = { scanPairingCode(context) { pendingPair = it } })
@@ -162,6 +165,22 @@ private fun SyncSection(context: Context) {
     }
 
     pendingPair?.let { p -> PairingDialog(p) { pendingPair = null } }
+    if (unpair) {
+        AlertDialog(
+            onDismissRequest = { unpair = false },
+            title = { Text("Unpair from ${pairedWith.ifBlank { "your Mac" }}?") },
+            text = { Text("Notes and tasks stay on this phone but stop syncing until you pair again.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.server.value = ""
+                    prefs.pairedWith.value = ""
+                    graph.secrets.syncToken = null
+                    unpair = false
+                }) { Text("Unpair", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { unpair = false }) { Text("Cancel") } },
+        )
+    }
     if (manual) {
         var s by remember { mutableStateOf(server) }
         var t by remember { mutableStateOf("") }
@@ -259,7 +278,7 @@ private fun DictationSection(context: Context, nav: NavController) {
             text = {
                 Column {
                     CLEANUP_MODELS.forEach { (id, name) ->
-                        SettingsRow(name, id, onClick = { prefs.cleanupModel.value = id; pickModel = false })
+                        SettingsRow(name, id, onClick = { prefs.cleanupModel.value = id; pickModel = false }, iconColumn = false)
                     }
                 }
             },

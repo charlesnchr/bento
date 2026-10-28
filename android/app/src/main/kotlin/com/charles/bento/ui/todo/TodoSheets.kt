@@ -107,9 +107,11 @@ import com.charles.bento.core.todo.priority
 import com.charles.bento.core.todo.project
 import com.charles.bento.core.todo.title
 import com.charles.bento.graph
+import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.voice.DictationState
 import com.charles.bento.voice.DictationTarget
 import com.charles.bento.voice.FieldContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -136,6 +138,7 @@ fun QuickAddSheet(view: TodoListView, onDismiss: () -> Unit, onAdded: (String) -
     var menu by remember { mutableStateOf<String?>(null) }
     var micTarget by remember { mutableStateOf<DictationTarget.Editor?>(null) }
     DisposableEffect(Unit) { onDispose { micTarget?.closed = true } }
+    LaunchedEffect(dictation) { if (dictation is DictationState.Failed && micTarget != null) { delay(6_000); graph.dictation.dismiss() } }
 
     fun appendToken(token: String) {
         val t = value.text.trimEnd()
@@ -159,10 +162,12 @@ fun QuickAddSheet(view: TodoListView, onDismiss: () -> Unit, onAdded: (String) -
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 4.dp)) {
             TextField(
-                value, { value = it },
+                // wraps rather than scrolling sideways, so a long or dictated task (and the hint) is all visible;
+                // still one line of text: a typed newline becomes a space
+                value, { value = if ('\n' in it.text) it.copy(text = it.text.replace('\n', ' ')) else it },
                 modifier = Modifier.fillMaxWidth().focusRequester(focus),
                 placeholder = { Text("e.g. Call mum tomorrow 5pm p1 #Family @phone") },
-                singleLine = true,
+                maxLines = 5,
                 visualTransformation = highlight,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { submit() }),
@@ -223,9 +228,17 @@ fun QuickAddSheet(view: TodoListView, onDismiss: () -> Unit, onAdded: (String) -
                 }) { Icon(if (listening) Icons.Rounded.Stop else Icons.Rounded.Mic, "Dictate") }
                 FilledIconButton(onClick = ::submit, enabled = value.text.isNotBlank()) { Icon(Icons.AutoMirrored.Rounded.Send, "Add") }
             }
-            if (dictation is DictationState.Listening) {
-                Text((dictation as DictationState.Listening).partial.ifBlank { "Listening…" }, style = MaterialTheme.typography.bodySmall,
-                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+            val heard = when (val d = dictation) {
+                is DictationState.Listening -> d.partial.ifBlank { "Listening…" }
+                is DictationState.Processing -> d.partial.ifBlank { "Transcribing…" }
+                // the mic here failed (no key, no microphone…): say why rather than nothing
+                is DictationState.Failed -> d.message.takeIf { micTarget != null }
+                else -> null
+            }
+            if (heard != null) {
+                LiveTranscript(heard, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp), maxHeight = 120.dp,
+                               style = MaterialTheme.typography.bodyMedium,
+                               color = if (dictation is DictationState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -282,7 +295,8 @@ fun TaskDetailSheet(id: String, docs: List<FieldDoc>, dates: TodoDates, onDismis
     ModalBottomSheet(onDismissRequest = { save(); onDismiss() }) {
         Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
-                PriorityCircle(task.priority, task.isCompleted, onToggle = { perform { toggleComplete(listOf(id)) } })
+                // level with the title's first line (the field pads its text by 16dp)
+                PriorityCircle(task.priority, task.isCompleted, onToggle = { perform { toggleComplete(listOf(id)) } }, Modifier.padding(top = 8.dp))
                 Column(Modifier.weight(1f)) {
                     TextField(title, { title = it }, textStyle = MaterialTheme.typography.titleMedium, modifier = Modifier.fillMaxWidth(),
                               colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,

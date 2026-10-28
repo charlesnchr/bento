@@ -51,9 +51,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.charles.bento.ui.LiveTranscript
+import com.charles.bento.ui.linesHeight
 import com.charles.bento.voice.DictationState
 import com.charles.bento.voice.Waveform
 import kotlinx.coroutines.Job
@@ -104,11 +105,12 @@ private fun VoicePanel(state: DictationState, actions: KeyboardActions) {
     LaunchedEffect(state) { (state as? DictationState.Listening)?.let { levels.removeAt(0); levels.add(it.level) } }
     val listening = state as? DictationState.Listening
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+        // two whole lines of the transcript at any font scale
+        val twoLines = linesHeight(MaterialTheme.typography.bodyLarge, 2)
+        Box(Modifier.fillMaxWidth().height(maxOf(52.dp, twoLines)).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
             when {
-                listening != null && listening.partial.isNotBlank() -> Text(
-                    listening.partial.takeLast(140), maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyLarge,
+                listening != null && listening.partial.isNotBlank() -> LiveTranscript(
+                    listening.partial, maxHeight = twoLines, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge,
                 )
                 listening != null -> Waveform(levels, MaterialTheme.colorScheme.primary)
                 state is DictationState.Processing -> Row(verticalAlignment = Alignment.CenterVertically) {

@@ -85,6 +85,7 @@ import com.charles.bento.core.notes.TextMerge
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.graph
 import com.charles.bento.notes.EditMerge
+import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.NoteRoute
 import com.charles.bento.ui.Routes
 import com.charles.bento.ui.theme.LocalBentoColors
@@ -92,6 +93,7 @@ import com.charles.bento.voice.DictationState
 import com.charles.bento.voice.DictationTarget
 import com.charles.bento.voice.FieldContext
 import com.charles.bento.voice.TextInserter
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private fun TextFieldValue.sel() = TextRange(selection.min, selection.max - selection.min)
@@ -160,6 +162,8 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         if (value.text.isEmpty()) focus.requestFocus()
     }
     var micTarget by remember(id) { mutableStateOf<DictationTarget.Editor?>(null) }
+    // a dictation this screen started that failed (no key, no microphone…) says why, for a while
+    LaunchedEffect(dictation) { if (dictation is DictationState.Failed && micTarget != null) { delay(6_000); graph.dictation.dismiss() } }
     DisposableEffect(id) {
         onDispose {
             micTarget?.closed = true
@@ -264,6 +268,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 status = when (val d = dictation) {
                     is DictationState.Listening -> d.partial.ifBlank { "Listening…" }
                     is DictationState.Processing -> "Transcribing…"
+                    is DictationState.Failed -> d.message.takeIf { micTarget != null }
                     else -> null
                 },
             )
@@ -404,8 +409,8 @@ private fun Toolbar(
     Surface(tonalElevation = 2.dp, modifier = Modifier.imePadding()) {
         Column(Modifier.navigationBarsPadding()) {
             if (status != null) {
-                Text(status, maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                LiveTranscript(status, Modifier.padding(horizontal = 16.dp, vertical = 6.dp), maxHeight = 72.dp,
+                               style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(Modifier.fillMaxWidth()) {
                 Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {

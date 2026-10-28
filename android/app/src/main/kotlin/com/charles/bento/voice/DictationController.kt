@@ -193,7 +193,7 @@ class DictationController(
                 fail("No sound reached the microphone. Is microphone access turned off in Quick Settings?")
                 return@launch
             }
-            text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true) }
+            text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true, heard = st.partial.trim().ifEmpty { null }) }
                 .onSuccess { deliver(it.trim()) }
         }
     }
@@ -293,11 +293,12 @@ class DictationController(
             }
             is DictationTarget.Thought -> {
                 val title = sinks().captureThought(t.noteId, text)
-                _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false)
+                _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false,
+                                                   detail = text.takeIf { title != null })
             }
             DictationTarget.Task -> {
                 val title = sinks().addTask(text)
-                _state.value = DictationState.Done(if (title != null) "Task added: $title" else text, undo = null, canEdit = false)
+                _state.value = DictationState.Done(if (title != null) "Task added" else text, undo = null, canEdit = false, detail = title)
             }
         }
         if (prefs.sounds.value) sounds.play(Earcons.SUCCESS)
@@ -308,11 +309,11 @@ class DictationController(
         const val SILENT = 0.02f
     }
 
-    private fun fail(message: String, canRetry: Boolean = false) {
+    private fun fail(message: String, canRetry: Boolean = false, heard: String? = null) {
         releaseMic()
         VoiceService.exit(context)
         if (prefs.sounds.value) sounds.play(Earcons.ERROR)
-        _state.value = DictationState.Failed(message, canRetry)
+        _state.value = DictationState.Failed(message, canRetry, heard)
     }
 
     private fun copyToClipboard(text: String) {
