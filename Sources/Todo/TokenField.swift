@@ -88,6 +88,21 @@ struct TokenField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    /// Whether a text view command is a press of Return (or keypad Enter). AppKit has
+    /// no binding for ⌘↩, so it arrives as `noop:` and only the key event tells.
+    static func isReturn(_ sel: Selector, event: NSEvent?) -> Bool {
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertLineBreak(_:)),
+             #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            return true
+        case Selector(("noop:")):
+            guard let e = event, e.type == .keyDown else { return false }
+            return e.keyCode == TodoKey.Code.returnKey || e.keyCode == TodoKey.Code.keypadEnter
+        default:
+            return false
+        }
+    }
+
     func makeNSView(context: Context) -> TokenTextView {
         let v = TokenTextView()
         v.delegate = context.coordinator
@@ -159,11 +174,14 @@ struct TokenField: NSViewRepresentable {
         }
 
         func textView(_ v: NSTextView, doCommandBy sel: Selector) -> Bool {
+            handle(sel, event: NSApp.currentEvent, in: v)
+        }
+
+        /// A key command from `v`, with the key event that caused it.
+        func handle(_ sel: Selector, event: NSEvent?, in v: NSTextView) -> Bool {
             let m = parent.model
-            let flags = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
-            switch sel {
-            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertLineBreak(_:)),
-                 #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            let flags = event?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+            if TokenField.isReturn(sel, event: event) {
                 if m.completion != nil, let caret = m.acceptCompletion() {
                     v.string = m.text
                     v.setSelectedRange(NSRange(location: caret, length: 0))
@@ -176,6 +194,8 @@ struct TokenField: NSViewRepresentable {
                 }
                 parent.onSubmit(flags)
                 return true
+            }
+            switch sel {
             case #selector(NSResponder.cancelOperation(_:)):
                 if m.completion != nil { m.completion = nil; return true }
                 parent.onCancel()
