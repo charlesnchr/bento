@@ -14,7 +14,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * The sync token and the Gemini API key, encrypted with an AES key that never leaves the
+ * The sync token, the Gemini API key and the Hermes token, encrypted with an AES key that never leaves the
  * Android Keystore (the phone's counterpart of the Mac's token file and Keychain). Not
  * backed up: a restored phone pairs again.
  */
@@ -32,6 +32,11 @@ class SecretStore(context: Context) {
     var geminiKey: String?
         get() = get(GEMINI_KEY)
         set(v) = set(GEMINI_KEY, v)
+
+    /** Hermes's API server key (`API_SERVER_KEY`), for the Assistant. */
+    var hermesToken: String?
+        get() = get(HERMES_TOKEN)
+        set(v) = set(HERMES_TOKEN, v)
 
     @Synchronized
     fun get(name: String): String? = cache.getOrPut(name) {
@@ -81,6 +86,7 @@ class SecretStore(context: Context) {
     companion object {
         const val SYNC_TOKEN = "sync_token"
         const val GEMINI_KEY = "gemini_api_key"
+        const val HERMES_TOKEN = "hermes_token"
         private const val ALIAS = "bento-secrets"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
     }

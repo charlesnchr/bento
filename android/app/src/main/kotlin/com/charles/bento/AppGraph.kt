@@ -60,7 +60,8 @@ class AppGraph(val app: Application) {
     val createNote: suspend (body: String) -> String? = { body -> notes.create(body) }
     val voice = com.charles.bento.voice.GeminiVoice(app, prefs, secrets, voiceSync, main)
     val voicePipeline: VoicePipeline get() = voice
-    val meetings: com.charles.bento.voice.MeetingController = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main, { dictation.isBusy }) { _, md -> createNote(md) }
+    val meetings: com.charles.bento.voice.MeetingController = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main, { dictation.isBusy || assistant.callActive }) { _, md -> createNote(md) }
+    val assistant = com.charles.bento.assistant.AssistantController(app, prefs, secrets, http, main) { dictation.isBusy || meetings.isBusy }
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
@@ -85,7 +86,7 @@ class AppGraph(val app: Application) {
     }
     val meetingSource: com.charles.bento.ui.voice.MeetingSource get() = meetings
 
-    val dictation: DictationController = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() }, { meetings.isBusy })
+    val dictation: DictationController = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() }, { meetings.isBusy || assistant.callActive })
 
     fun start() {
         sync.start()
