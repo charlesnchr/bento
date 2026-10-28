@@ -237,6 +237,29 @@ import Testing
         }
     }
 
+    @Test func backspaceAndDeleteNeverMergeStackedThoughtHeadings() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let a = ns.range(of: "### 2026-10-26 14:05").location, b = ns.range(of: "### 2026-10-26 14:06").location
+            let aEnd = NSMaxRange(ns.range(of: "### 2026-10-26 14:05 · A"))
+            // backspace at the start of B's text (the caret sits after the hidden "### ")
+            w.textView.setSelectedRange(NSRange(location: b + 4, length: 0))
+            #expect(w.textView(w.textView, doCommandBy: #selector(NSResponder.deleteBackward(_:))))
+            #expect(w.currentText == body)
+            #expect(w.selectedRange == NSRange(location: b + 4, length: 0))
+            // forward delete at the end of A
+            w.textView.setSelectedRange(NSRange(location: aEnd, length: 0))
+            #expect(w.textView(w.textView, doCommandBy: #selector(NSResponder.deleteForward(_:))))
+            #expect(w.currentText == body)
+            #expect(deco(w, a)?.collapsed == true && deco(w, b)?.collapsed == true)
+        }
+    }
+
     @Test func hiddenTextCantBeEditedPiecemeal() throws {
         try withController { c, _ in
             let body = Self.thoughts

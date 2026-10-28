@@ -577,6 +577,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     /// own rather than the whole stretch between them, hidden lines included (still one ⌘Z:
     /// they're undone as a group).
     private func applyFoldEdit(_ r: EditResult) {
+        guard !r.edits.isEmpty else { NSSound.beep(); return }
         foldEdit = true
         defer { foldEdit = false }
         let sorted = r.edits.sorted { $0.range.location > $1.range.location }
@@ -628,8 +629,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             if let r = MarkdownCommands.indent(text, selection: range, outdent: true) { tv.apply(r) }
             return true
         case #selector(NSResponder.deleteBackward(_:)):
-            if let r = MarkdownCommands.backspace(text, selection: range) { tv.apply(r); return true }
+            // (first: a heading right after a collapsed section keeps its marker)
             if let r = styler.folds.backspace(text, selection: range) { applyFoldEdit(r); return true }
+            if let r = MarkdownCommands.backspace(text, selection: range) { tv.apply(r); return true }
             return false
         case #selector(NSResponder.deleteForward(_:)):
             if let r = styler.folds.deleteForward(text, selection: range) { applyFoldEdit(r); return true }
