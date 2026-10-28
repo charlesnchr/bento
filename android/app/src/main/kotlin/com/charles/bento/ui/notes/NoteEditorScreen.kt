@@ -58,15 +58,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange as UiRange
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
@@ -76,12 +85,13 @@ import androidx.navigation.NavController
 import com.charles.bento.core.notes.BlockFormat
 import com.charles.bento.core.notes.BlockKind
 import com.charles.bento.core.notes.EditResult
+import com.charles.bento.core.notes.HeadingFolds
 import com.charles.bento.core.notes.InlineFormat
 import com.charles.bento.core.notes.MarkdownCommands
 import com.charles.bento.core.notes.MarkdownParser
 import com.charles.bento.core.notes.NoteText
 import com.charles.bento.core.notes.RelativeDate
-import com.charles.bento.core.notes.TextMerge
+import com.charles.bento.core.notes.TextEdit
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.graph
 import com.charles.bento.notes.EditMerge
@@ -116,11 +126,18 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     val id = routeId
     val all by notesModule.notes.collectAsStateWithLifecycle()
     val note = all.firstOrNull { it.id == id }
-    var value by remember(id) { mutableStateOf(TextFieldValue(note?.body.orEmpty(), UiRange(note?.body?.length ?: 0))) }
+    // which heading sections are folded (captured thoughts start folded), kept through rotation
+    val foldsHolder = rememberSaveable(id, saver = EditorFolds.Saver) { EditorFolds(null) }
+    var folds by foldsHolder.state(id, note?.body.orEmpty())
+    var value by remember(id) {
+        val end = TextRange(folds.text.length, 0)
+        mutableStateOf(TextFieldValue(folds.text, folds.caret(end, end).ui()))
+    }
     var synced by remember(id) { mutableStateOf(note?.body.orEmpty()) } // the text the module has (or will have, once it has caught up)
     val history = remember(id) { EditHistory() }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val haptics = LocalHapticFeedback.current
     val focusManager = LocalFocusManager.current
     var menu by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf(false) }
@@ -133,26 +150,48 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         accent = MaterialTheme.colorScheme.primary,
         codeBackground = bento.codeBackground,
     )
-    val folds = remember(id) { FoldState() }
-    // a new transformation when a fold toggles, so the field re-lays out the text
-    val visual = remember(colors, folds.version) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
+    val visual = remember(colors, folds) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     fun post(text: String) {
         notesModule.edited(id, synced, text)
         synced = text
     }
 
-    fun set(v: TextFieldValue, record: Boolean = true) {
-        if (record && v.text != value.text) history.record(value)
-        val changed = v.text != value.text
-        value = v
-        if (changed) post(v.text)
+    /**
+     * A change made here; folds follow the text. `user`: typing, a command or dictation, which
+     * is refused when it would change part of a folded section's hidden text (a selection
+     * covering all of it is fine); not for undo/redo or the fold-aware edits of Enter,
+     * Backspace and Delete next to a fold. `edits`: what it replaced, when known. The caret
+     * never stays in hidden text.
+     */
+    fun set(v: TextFieldValue, record: Boolean = true, edits: List<TextEdit>? = null, user: Boolean = true) {
+        if (v.text == value.text) { value = v; return }
+        val known = edits ?: if (user) HeadingFolds.change(value.text, v.text) else null
+        if (user && !folds.allows(known!!)) {
+            haptics.performHapticFeedback(HapticFeedbackType.Reject)
+            return
+        }
+        if (record) history.record(value)
+        var f = folds.edited(v.text, local = true, known)
+        if (user) f = f.revealing(v.sel())
+        val sel = f.caret(v.sel(), v.sel())
+        folds = f
+        value = if (sel == v.sel()) v else v.copy(selection = sel.ui())
+        post(v.text)
     }
 
-    fun applyResult(r: EditResult?) {
+    fun applyResult(r: EditResult?, user: Boolean = true) {
         r ?: return
         val text = r.apply(value.text)
-        set(TextFieldValue(text, r.selection.ui()))
+        set(TextFieldValue(text, r.selection.ui()), edits = r.edits, user = user)
+    }
+
+    /** Folds or opens a heading's section; a selection in a section that folds goes to its heading's end. */
+    fun toggleFold(lineStart: Int) {
+        folds = folds.toggled(lineStart)
+        val f = folds.folds.firstOrNull { it.lineStart == lineStart } ?: return
+        if (value.selection.max > f.start && value.selection.min <= f.end) value = value.copy(selection = UiRange(f.start))
     }
 
     LaunchedEffect(id) {
@@ -163,6 +202,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     DisposableEffect(id) {
         onDispose {
             micTarget?.closed = true
+            EditorFolds.leaving(id, folds)
             notesModule.closed(id)
         }
     }
@@ -176,7 +216,10 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         synced = merged
         if (merged == local) return
         history.clear()
-        value = TextFieldValue(merged, TextMerge.map(value.sel(), TextMerge.edits(local, merged)).ui())
+        // folds stay as they are (a captured thought arriving starts folded)
+        val (f, sel) = folds.merged(merged, value.sel())
+        folds = f
+        value = TextFieldValue(merged, sel.ui())
     }
     LaunchedEffect(id) {
         // a change that landed before this started listening
@@ -229,8 +272,8 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
             Toolbar(
                 listening = dictation is DictationState.Listening,
                 canUndo = history.canUndo, canRedo = history.canRedo,
-                onUndo = { history.undo(value)?.let { set(it, record = false) } },
-                onRedo = { history.redo(value)?.let { set(it, record = false) } },
+                onUndo = { history.undo(value)?.let { set(it, record = false, user = false) } },
+                onRedo = { history.redo(value)?.let { set(it, record = false, user = false) } },
                 onTask = { applyResult(MarkdownCommands.toggleTasks(value.text, value.sel()) ?: MarkdownCommands.setBlock(value.text, value.sel(), BlockFormat.Task)) },
                 onBullet = { applyResult(MarkdownCommands.setBlock(value.text, value.sel(), BlockFormat.Bullet)) },
                 onHeading = {
@@ -242,14 +285,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 onInline = { f -> applyResult(MarkdownCommands.toggleInline(value.text, value.sel(), f)) },
                 onLink = { applyResult(MarkdownCommands.insertLink(value.text, value.sel(), null)) },
                 onIndent = { out -> applyResult(MarkdownCommands.indent(value.text, value.sel(), out)) },
-                onFold = {
-                    sectionAt(value.text, value.selection.start)?.let { s ->
-                        val folding = !folds.isFolded(s.key, s.entry)
-                        folds.toggle(s)
-                        // never leave the caret in hidden text: it goes to the heading's end
-                        if (folding && value.selection.start > s.start) set(value.copy(selection = UiRange(s.start)), false)
-                    }
-                },
+                onFold = { folds.sectionAt(value.selection.start)?.let { toggleFold(it.lineStart) } },
                 onMic = {
                     if (dictation is DictationState.Listening) graph.dictation.stop()
                     else DictationTarget.Editor({ spoken ->
@@ -270,33 +306,58 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())) {
-            BasicTextField(
-                value = value,
-                onValueChange = { new ->
-                    // a tap on a folded heading's " ⋯" (either side of it) opens it, and so does typing next
-                    // to it (text there would land in the hidden part); a tap below the text lands at the end
-                    // of the note, which doesn't count
-                    fun tapped(f: Section) = new.selection.collapsed && new.selection != value.selection && new.text == value.text &&
-                        (new.selection.start == f.start || new.selection.start == f.end && f.end < value.text.length)
-                    fun typedAt(f: Section) = new.text != value.text && value.selection.max >= f.start && value.selection.min <= f.end
-                    val atFold = foldedSections(value.text, folds).firstOrNull { tapped(it) || typedAt(it) }
-                    if (atFold != null) folds.toggle(atFold)
-                    handleChange(value, new, ::set, ::applyResult)
-                },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
-                readOnly = note == null, // not on this phone (yet): typing would have nowhere to go
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                visualTransformation = visual,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                decorationBox = { inner ->
-                    Box {
-                        if (value.text.isEmpty()) Text("Start typing…", style = MaterialTheme.typography.bodyLarge,
-                                                       color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                        inner()
-                    }
-                },
-            )
+            Box {
+                BasicTextField(
+                    value = value,
+                    onValueChange = { new ->
+                        if (new.text == value.text) {
+                            // a tap or caret move: never into a folded section's hidden text
+                            val sel = folds.caret(new.sel(), value.sel())
+                            handleChange(value, if (sel == new.sel()) new else new.copy(selection = sel.ui()), { v, r -> set(v, r) }, { applyResult(it) })
+                            return@BasicTextField
+                        }
+                        // Enter, Backspace and Delete next to a folded section have their own edits, which
+                        // keep it folded and leave its hidden text alone
+                        val s = value.selection
+                        val o = value.text
+                        val c = new.selection.start
+                        val r = when {
+                            !new.selection.collapsed -> null
+                            c == s.min + 1 && new.text == o.replaceRange(s.min, s.max, "\n") -> folds.newline(value.sel())
+                            s.collapsed && c == s.start - 1 && c >= 0 && new.text == o.removeRange(c, s.start) -> folds.backspace(value.sel())
+                            s.collapsed && c == s.start && s.start < o.length && new.text == o.removeRange(c, c + 1) -> folds.deleteForward(value.sel())
+                            else -> null
+                        }
+                        if (r != null) applyResult(r, user = false)
+                        else handleChange(value, new, { v, rec -> set(v, rec) }, { applyResult(it) })
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(start = FoldGutter, end = 20.dp, top = 8.dp, bottom = 8.dp).focusRequester(focus)
+                        .onPreviewKeyEvent { e ->
+                            // → at a folded heading's end steps over the fold
+                            if (e.type != KeyEventType.KeyDown || e.key != Key.DirectionRight || !value.selection.collapsed) return@onPreviewKeyEvent false
+                            val at = value.selection.start
+                            val sel = folds.caret(TextRange(at + 1, 0), TextRange(at, 0))
+                            if (sel.location == at + 1) return@onPreviewKeyEvent false
+                            value = value.copy(selection = sel.ui())
+                            true
+                        },
+                    readOnly = note == null, // not on this phone (yet): typing would have nowhere to go
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    visualTransformation = visual,
+                    onTextLayout = { layout = it },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    decorationBox = { inner ->
+                        Box {
+                            if (value.text.isEmpty()) Text("Start typing…", style = MaterialTheme.typography.bodyLarge,
+                                                           color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                            inner()
+                        }
+                    },
+                )
+                // fold chevrons beside the headings, and the " ⋯" of folded ones, over the text
+                FoldControls(folds, layout, textStart = FoldGutter, textTop = 8.dp, color = MaterialTheme.colorScheme.onSurfaceVariant, onToggle = ::toggleFold)
+            }
         }
     }
 
