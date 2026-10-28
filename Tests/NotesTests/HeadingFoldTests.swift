@@ -306,6 +306,51 @@ import Testing
         #expect(f.allows(NSRange(location: 2, length: ns.length - 2), in: ns))
     }
 
+    @Test func shiftRightAtTheEndOfACollapsedHeadingDoesntTakeTheSection() {
+        let (s, st) = styled(thoughts)
+        let ns = s.string as NSString
+        let a = th("### 2026-10-26 14:05"), one = th("one")
+        // ⇧→ at the heading's end (the text view jumps over the hidden lines): stays put
+        let b = th("### 2026-10-26 14:06")
+        #expect(st.folds.adjust(NSRange(location: aEnd, length: b - aEnd), from: NSRange(location: aEnd, length: 0), in: ns).range == NSRange(location: aEnd, length: 0))
+        #expect(st.folds.adjust(NSRange(location: aEnd, length: 1), from: NSRange(location: aEnd, length: 0), in: ns).range == NSRange(location: aEnd, length: 0))
+        // from inside the heading's text into the hidden lines: up to the heading's end
+        #expect(st.folds.adjust(NSRange(location: a + 6, length: one + 2 - a - 6), from: NSRange(location: a + 6, length: 0), in: ns).range == NSRange(location: a + 6, length: aEnd - a - 6))
+        // past them, into the next line: the section comes along (the selection shows beyond it)
+        #expect(st.folds.adjust(NSRange(location: a + 6, length: b + 6 - a - 6), from: NSRange(location: a + 6, length: 0), in: ns).range.length == b - a)
+        // the whole line (from its start): the section comes along
+        #expect(st.folds.adjust(NSRange(location: a, length: one - a), from: NSRange(location: a, length: 0), in: ns).range == NSRange(location: a, length: th("### 2026-10-26 14:06") - a))
+    }
+
+    @Test func aCollapsedSectionLeftHidingNothingOpens() {
+        let (s, st) = styled("## X\n## Y\nbody", caret: 0)
+        #expect(st.toggleHeading(s, at: 0))
+        #expect(st.folds.fold(at: 0)?.body.length == 0)
+        type("typed under it\n", at: 5, s, st)
+        #expect(!st.folds.isCollapsed(0) && st.folds.isOpened(0))
+        #expect(deco(s, 0)?.collapsed == false)
+        #expect(deco(s, 5)?.kind == .paragraph(empty: false))
+        checkConsistent(s, st)
+    }
+
+    @Test func movingALinePastACollapsedHeadingKeepsTheSection() {
+        let body = "above\n## S\nhidden\n# E"
+        for (caret, up) in [(1, false), (8, true)] {
+            let (s, st) = styled(body, caret: 0)
+            st.toggleHeading(s, at: 6)
+            let r = st.folds.moveLines(s.string as NSString, selection: NSRange(location: caret, length: 0), up: up)
+            #expect(r?.edits == [TextEdit(range: NSRange(location: 0, length: 6), replacement: ""), TextEdit(range: NSRange(location: 11, length: 0), replacement: "above\n")])
+            apply(r, s, st)
+            #expect(s.string == "## S\nabove\nhidden\n# E")
+            #expect(st.folds.fold(at: 0).map { (s.string as NSString).substring(with: $0.body) } == "hidden\n")
+            #expect(deco(s, 5)?.kind == .paragraph(empty: false))
+            checkConsistent(s, st)
+        }
+        // nowhere near a collapsed section: an ordinary move
+        let (s, st) = styled(body, caret: 0)
+        #expect(st.folds.moveLines(s.string as NSString, selection: NSRange(location: 1, length: 0), up: false) == nil)
+    }
+
     @Test func caretsSkipHiddenLinesAndSelectionsCoverThem() {
         let (s, st) = styled(thoughts)
         let ns = s.string as NSString

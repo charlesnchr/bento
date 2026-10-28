@@ -7,9 +7,6 @@ final class NoteTextView: NSTextView {
     var onToggleTask: ((Int, Bool) -> Void)?
     /// Collapse or open the section of the heading whose line starts at the given index.
     var onToggleHeading: ((Int) -> Void)?
-    /// Called with an edit's replacements, in the order they're made (range in the text
-    /// before each, new length), right before they reach the text storage as one change.
-    var willReplace: (([(range: NSRange, length: Int)]) -> Void)?
     var placeholder = "Start writing…"
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
@@ -35,7 +32,6 @@ final class NoteTextView: NSTextView {
         if hasMarkedText() { unmarkText() }
         breakUndoCoalescing()
         guard shouldChangeText(inRanges: sorted.map { NSValue(range: $0.range) }, replacementStrings: sorted.map(\.replacement)) else { return }
-        willReplace?(sorted.reversed().map { ($0.range, ($0.replacement as NSString).length) })
         ts.beginEditing()
         for e in sorted.reversed() { ts.replaceCharacters(in: e.range, with: e.replacement) }
         ts.endEditing()

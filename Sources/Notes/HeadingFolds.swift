@@ -176,12 +176,15 @@ struct HeadingFolds: Equatable {
     }
 
     /// After edits: hidden lines are whole lines after their heading's line again. A line
-    /// that got merged into the hidden ones from outside (a deleted newline) is shown.
-    /// Only folds touching `around` are looked at.
-    mutating func normalize(in text: NSString, around: NSRange) {
+    /// that got merged into the hidden ones from outside (a deleted newline) is shown. A fold
+    /// left hiding nothing opens (lines typed under it show, so it isn't collapsed any more).
+    /// Only folds touching `around` are looked at. Returns the headings that opened.
+    @discardableResult
+    mutating func normalize(in text: NSString, around: NSRange) -> [Int] {
         let len = text.length
         let lo = max(0, around.location - 1), hi = min(len, NSMaxRange(around) + 1)
         var all = folds
+        var emptied: [Int] = []
         for i in all.indices {
             var f = all[i]
             let s0 = f.body.location, e0 = NSMaxRange(f.body)
@@ -200,8 +203,14 @@ struct HeadingFolds: Equatable {
             }
             f.body = NSRange(location: s, length: e - s)
             all[i] = f
+            if f.body.length == 0 { emptied.append(f.heading) }
+        }
+        if !emptied.isEmpty {
+            all.removeAll { emptied.contains($0.heading) }
+            for h in emptied { markOpened(h) }
         }
         if all != folds { folds = all }
+        return emptied
     }
 
     /// Moves everything from `old` to `new` (a note changed while it wasn't shown).
@@ -227,17 +236,45 @@ struct HeadingFolds: Equatable {
 
     /// Whether an edit by the user keeps hidden text intact: it must leave a fold's hidden
     /// lines (and the line break before them) alone or replace them entirely.
-    func allows(_ range: NSRange, in text: NSString) -> Bool {
+    func allows(_ range: NSRange, in text: NSString) -> Bool { blocks(changedBy: range, in: text).isEmpty }
+
+    /// The hidden blocks an edit of `range` would change only partly.
+    func blocks(changedBy range: NSRange, in text: NSString) -> [Fold] {
+        var out: [Fold] = []
         for f in blocks {
             let lo = HeadingFolds.guardStart(f, in: text), hi = NSMaxRange(f.body)
             if range.location >= hi { continue }
             if range.length == 0 {
-                if range.location > lo, range.location < hi { return false }
+                if range.location > lo, range.location < hi { out.append(f) }
             } else if NSMaxRange(range) > lo, !(range.location <= lo && NSMaxRange(range) >= hi) {
-                return false
+                out.append(f)
             }
         }
-        return true
+        return out
+    }
+
+    /// ⌥⌘↑/↓ next to a collapsed heading: moving the line(s) above it down past the heading
+    /// keeps the section (and its hidden lines) where they are and puts the moved lines
+    /// after the heading's line, as two edits. nil: an ordinary move (or one the guard refuses).
+    func moveLines(_ text: NSString, selection sel: NSRange, up: Bool) -> EditResult? {
+        guard let r = MarkdownCommands.moveLines(text, selection: sel, up: up), r.edits.count == 1 else { return nil }
+        let e = r.edits[0], c0 = e.range.location, c1 = NSMaxRange(e.range)
+        // the swapped stretch ends right where hidden lines start: old = moved + kept, new = kept + moved
+        guard let f = folding(from: c1), c0 <= HeadingFolds.guardStart(f, in: text) else { return nil }
+        let old = text.substring(with: e.range) as NSString, new = e.replacement as NSString
+        guard old.length == new.length else { return nil }
+        // the split point: the line break ending the moved part
+        var k = 0
+        while k < old.length {
+            k = NSMaxRange(old.lineRange(for: NSRange(location: k, length: 0)))
+            guard k < old.length else { break }
+            if new.isEqual(to: old.substring(from: k) + old.substring(to: k)) {
+                return EditResult(edits: [TextEdit(range: NSRange(location: c0, length: k), replacement: ""),
+                                          TextEdit(range: NSRange(location: c1, length: 0), replacement: old.substring(to: k))],
+                                  selection: r.selection)
+            }
+        }
+        return nil
     }
 
     /// Return on a collapsed heading: at the end of the line it starts a new line after the
@@ -323,7 +360,20 @@ struct HeadingFolds: Equatable {
             start = HeadingFolds.lineEndBefore(f, in: text)
         }
         // ending inside hidden lines, or right before them (the heading's line selected whole)
-        if let f = hiding(end - 1) ?? folding(from: end) { end = max(end, NSMaxRange(f.body)) }
+        if let f = hiding(end - 1) ?? folding(from: end) {
+            let lineBefore = text.lineRange(for: NSRange(location: f.body.location - 1, length: 0)).location
+            let lo = HeadingFolds.guardStart(f, in: text)
+            if start <= lineBefore {
+                // the line before them is selected whole (from its start): the section comes along
+                end = max(end, NSMaxRange(f.body))
+            } else if start <= lo, new.location == old.location {
+                // extended from inside the heading's text (⇧→ at its end): not into the hidden
+                // lines, whose selection wouldn't show
+                end = lo
+            } else if hiding(end - 1) != nil {
+                end = max(end, NSMaxRange(f.body))
+            }
+        }
         return (NSRange(location: start, length: end - start), nil)
     }
 

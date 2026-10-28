@@ -184,10 +184,16 @@ Editing around a collapsed section never changes its hidden text:
 - Backspace at the start of the line after a collapsed section joins that line onto the heading
   (removes it when empty); forward delete at the end of the heading joins the line after the
   section onto it.
-- The caret skips hidden lines; a selection reaching into them covers the whole section (so
-  deleting it deletes the section); a selection inside them that wasn't extended there (a find
-  match) opens the section. Any other edit that would change part of the hidden text is refused
-  (beep). Undo and redo restore what was.
+- ⌥⌘↓ on the line above a collapsed heading (or ⌥⌘↑ on the heading) moves that line below the
+  heading; the section stays collapsed.
+- The caret skips hidden lines. Selecting the heading's line whole (triple-click, ⇧↓ from its
+  start) takes the section with it, so deleting it deletes the section; extending a selection
+  from inside the heading's text (⇧→ at its end) stops at the heading's end. A selection inside
+  hidden lines that wasn't extended there (a find match) opens the section, and so does Replace
+  All for the sections it has matches in. Any other edit that would change part of the hidden
+  text is refused (beep). A collapsed heading left hiding nothing (lines typed under an empty
+  one) opens. Undo and redo restore the text and, for changes of several stretches at once,
+  the collapsed sections.
 Collapse state is per window and note, in memory, never written to the note (text and sync stay
 plain markdown). A collapsed section is its heading plus the lines it hid when it collapsed; both
 move with every edit like carets (`HeadingFolds`), so it stays collapsed through edits elsewhere,

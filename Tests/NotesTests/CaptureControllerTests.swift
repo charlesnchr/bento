@@ -296,6 +296,99 @@ import Testing
         }
     }
 
+    @Test func shiftRightAtTheEndOfACollapsedHeadingThenTypingKeepsTheSection() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let a = ns.range(of: "### 2026-10-26 14:05").location
+            let aEnd = NSMaxRange(ns.range(of: "### 2026-10-26 14:05 · A"))
+            w.textView.setSelectedRange(NSRange(location: aEnd, length: 0))
+            w.textView.moveRightAndModifySelection(nil)
+            #expect(w.selectedRange == NSRange(location: aEnd, length: 0))
+            w.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+            #expect(w.currentText == body.replacingOccurrences(of: "· A\n", with: "· Ax\n"))
+            #expect(deco(w, a)?.collapsed == true)
+        }
+    }
+
+    @Test func replaceAllOpensSectionsWithMatchesAndUndoKeepsTheOthers() throws {
+        try withController { c, _ in
+            let body = Self.thoughts
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let tv = w.textView
+            let ns = body as NSString
+            let one = ns.range(of: "one"), title = ns.range(of: "Thoughts")
+            // what the find bar's Replace All does: one change of several ranges
+            #expect(tv.shouldChangeText(inRanges: [NSValue(range: title), NSValue(range: one)], replacementStrings: ["Notes", "1"]))
+            let ts = try #require(tv.textStorage)
+            ts.beginEditing()
+            ts.replaceCharacters(in: one, with: "1")
+            ts.replaceCharacters(in: title, with: "Notes")
+            ts.endEditing()
+            tv.didChangeText()
+            let changed = body.replacingOccurrences(of: "one", with: "1").replacingOccurrences(of: "Thoughts", with: "Notes")
+            #expect(w.currentText == changed)
+            let t = changed as NSString
+            #expect(deco(w, t.range(of: "### 2026-10-26 14:05").location)?.collapsed == false)  // opened for its match
+            #expect(deco(w, t.range(of: "### 2026-10-26 14:06").location)?.collapsed == true)
+            #expect(deco(w, t.range(of: "two").location)?.kind == .folded)
+            let um = try #require(tv.undoManager)
+            um.undo()
+            #expect(w.currentText == body)
+            let b = ns.range(of: "### 2026-10-26 14:06").location
+            #expect(deco(w, b)?.collapsed == true && deco(w, ns.range(of: "two").location)?.kind == .folded)
+            #expect(!w.styler.folds.isOpened(b))
+        }
+    }
+
+    @Test func undoingACommandAroundACollapsedSectionKeepsItCollapsed() throws {
+        try withController { c, _ in
+            let body = "- [ ] t1\n## S\nhidden\n# End\n- [ ] t2"
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            let ns = body as NSString
+            let s = ns.range(of: "## S").location, hidden = ns.range(of: "hidden").location
+            #expect(w.toggleHeading(at: s))
+            w.textView.setSelectedRange(NSRange(location: 0, length: ns.length))
+            w.runFormatting(.toggleTask)
+            #expect(w.currentText == body.replacingOccurrences(of: "[ ]", with: "[x]"))
+            #expect(deco(w, s)?.collapsed == true && deco(w, hidden)?.kind == .folded)
+            let um = try #require(w.textView.undoManager)
+            um.undo()
+            #expect(w.currentText == body)
+            #expect(deco(w, s)?.collapsed == true && deco(w, hidden)?.kind == .folded)
+            #expect(!w.styler.folds.isOpened(s))
+            um.redo()
+            #expect(w.currentText == body.replacingOccurrences(of: "[ ]", with: "[x]"))
+            #expect(deco(w, s)?.collapsed == true && deco(w, hidden)?.kind == .folded)
+        }
+    }
+
+    @Test func moveLineDownPastACollapsedHeading() throws {
+        try withController { c, _ in
+            let body = "above\n## S\nhidden\n# E"
+            let note = Note(body: body)
+            c.store.save(note)
+            c.open(note.id)
+            let w = try #require(c.debugWindow)
+            #expect(w.toggleHeading(at: 6))
+            w.textView.setSelectedRange(NSRange(location: 2, length: 0))
+            w.runFormatting(.moveDown)
+            #expect(w.currentText == "## S\nabove\nhidden\n# E")
+            #expect(deco(w, 0)?.collapsed == true && deco(w, 11)?.kind == .folded)
+            #expect(w.selectedRange == NSRange(location: 7, length: 0))
+        }
+    }
+
     @Test func foldsSurviveSyncCapturesAndSwitchingNotes() throws {
         try withController { c, _ in
             let body = Self.thoughts

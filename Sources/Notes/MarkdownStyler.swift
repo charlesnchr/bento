@@ -61,13 +61,14 @@ final class MarkdownStyler {
         var dirty: [NSRange] = []
         for e in steps { dirty = dirty.map { mapped($0, e) } + folds.map(e.range, length: e.length) }
         let text = s.mutableString
-        folds.normalize(in: text, around: editedRange)
+        let opened = folds.normalize(in: text, around: editedRange)
         if !external { selection = NSRange(location: min(NSMaxRange(editedRange), s.length), length: 0) }
         let start = text.lineRange(for: NSRange(location: min(editedRange.location, text.length), length: 0)).location
         let end = NSMaxRange(text.lineRange(for: NSRange(location: min(NSMaxRange(editedRange), text.length), length: 0)))
         adopting = external
         restyle(s, start: start, end: end)
         for r in dirty where NSMaxRange(r) <= s.length { restyle(s, start: r.location, end: NSMaxRange(r)) }
+        for h in opened where h < s.length { restyle(s, start: h, end: h) }
         adopting = false
         styledLength = s.length
         revealedRegion = revealRegion(for: selection, in: s)
@@ -126,6 +127,21 @@ final class MarkdownStyler {
 
     /// Replaces the fold state (a note being loaded). Restyle afterwards.
     func setFolds(_ f: HeadingFolds) { folds = f }
+
+    /// Opens the collapsed sections an edit of `range` would change only partly.
+    func reveal(_ s: NSTextStorage, changedBy range: NSRange) {
+        for b in folds.blocks(changedBy: range, in: s.mutableString) { reveal(s, at: b.body.location) }
+    }
+
+    /// Puts back an earlier fold state for the same text (undo, redo) and restyles what it
+    /// changes. Call inside the storage's editing (or `processEditing`).
+    func restoreFolds(_ s: NSTextStorage, _ f: HeadingFolds) {
+        let old = folds
+        folds = f
+        for x in old.folds + f.folds where NSMaxRange(x.body) <= s.length && x.heading <= s.length {
+            restyle(s, start: x.heading, end: max(x.heading, NSMaxRange(x.body)))
+        }
+    }
 
     // MARK: Core
 
