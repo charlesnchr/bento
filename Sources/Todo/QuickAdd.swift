@@ -1,10 +1,27 @@
 import AppKit
+import Combine
 import SwiftUI
 import BentoCore
 
 final class QuickAddModel: ObservableObject {
     let field = TokenFieldModel(parses: true)
     @Published var defaultProject: String?
+    /// The "Return in Quick Add" setting: plain ↩ keeps the panel open for the next task.
+    @Published var returnKeepsOpen = false
+    /// "Added to Inbox" after a task was added with the panel staying open, until typing starts.
+    @Published var added: String?
+    private var typing: AnyCancellable?
+
+    init() {
+        typing = field.$text.sink { [weak self] t in
+            if !t.isEmpty, self?.added != nil { self?.added = nil }
+        }
+    }
+
+    /// ⌘↩ does the opposite of ↩: add another when ↩ closes, add and close when ↩ keeps adding.
+    func keepsOpen(command: Bool) -> Bool { command != returnKeepsOpen }
+
+    var hint: String { returnKeepsOpen ? "↩ Add another · ⌘↩ Add and close · Esc" : "↩ Add · ⌘↩ Add another · Esc" }
 }
 
 /// Global Quick Add: a Spotlight-style panel that takes typing without activating
@@ -26,6 +43,8 @@ final class QuickAddController: NSObject, NSWindowDelegate {
         let p = panel ?? makePanel()
         panel = p
         model.defaultProject = defaultProject
+        model.returnKeepsOpen = controller.settings.quickAddReturn == "keep"
+        model.added = nil
         model.field.reparse()
         openedFromWindow = controller.windowController?.isKey == true
         let screen = NSScreen.main ?? NSScreen.screens[0]
@@ -56,14 +75,14 @@ final class QuickAddController: NSObject, NSWindowDelegate {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         p.delegate = self
         p.contentView = NSHostingView(rootView: QuickAddView(model: model, field: model.field, c: controller,
-                                                             submit: { [weak self] keep in self?.submit(keepOpen: keep) },
+                                                             submit: { [weak self] command in self?.submit(command: command) },
                                                              cancel: { [weak self] in self?.close() }))
         return p
     }
 
     func windowDidResignKey(_ n: Notification) { close() }
 
-    private func submit(keepOpen: Bool) {
+    private func submit(command: Bool) {
         let text = model.field.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { close(); return }
         let parsed = QuickAddParser.parse(text, projects: controller.projectNames, labels: controller.labels)
@@ -72,7 +91,8 @@ final class QuickAddController: NSObject, NSWindowDelegate {
         model.field.text = ""
         model.field.caret = 0
         if controller.windowController?.isVisible == true { controller.flash("Added to \(where_)") }
-        if keepOpen || controller.settings.quickAddReturn == "keep" {
+        if model.keepsOpen(command: command) {
+            model.added = "Added to \(where_)"
             model.field.focus()
         } else {
             close()
@@ -85,6 +105,7 @@ struct QuickAddView: View {
     @ObservedObject var model: QuickAddModel
     @ObservedObject var field: TokenFieldModel
     let c: TodoController
+    /// Called on Return; true when ⌘ was held.
     let submit: (Bool) -> Void
     let cancel: () -> Void
 
@@ -102,7 +123,10 @@ struct QuickAddView: View {
             HStack {
                 ParsedChips(c: c, parsed: field.parsed, defaults: .init(project: model.defaultProject), task: nil)
                 Spacer()
-                Text("↩ Add · ⌘↩ Add another · Esc").font(.caption).foregroundStyle(.tertiary)
+                if let added = model.added, field.text.isEmpty {
+                    Label(added, systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(model.hint).font(.caption).foregroundStyle(.tertiary)
             }
         }
         .padding(16)

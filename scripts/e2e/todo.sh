@@ -7,6 +7,8 @@
 #   scripts/e2e/todo.sh gui     one GUI session (scripts/e2e/session start/end todo): real
 #                               Todoist keys into instance A (bentoctl --expect), every change
 #                               checked in A's database and in instance B through sync.
+#   scripts/e2e/todo.sh add-keys  the GUI suite's ⌘↩ / Esc checks of the inline editor and
+#                               Quick Add on their own (a shorter GUI session)
 #   scripts/e2e/todo.sh all     both
 #
 # Data safety: every instance has its own BENTO_HOME under $WORK and syncs with a local
@@ -282,6 +284,40 @@ shot() { # shot <name>: screenshot of instance A's todo window
   [ -n "$id" ] && screencapture -x -o -l "$id" "$WORK/shot-$1.png" && log "    screenshot: $WORK/shot-$1.png"
 }
 
+# ⌘↩ and Esc in the add flows (from Inbox, the window open and frontmost). Lowercase titles:
+# shifted letters typed through bentoctl can arrive unshifted.
+gui_add_keys() {
+  local A; A=$(bid a)
+  log "- ⌘↩ in the inline editor adds and closes it"
+  press "$A" g i; sleep 0.5
+  press "$A" a; sleep 0.4
+  type_into "$A" "third task"; press "$A" cmd+return; sleep 0.5
+  eventually 5 "⌘↩ added the task" field_is a "third task" project null
+  press "$A" 1; sleep 0.5   # a list key now, not typed into a new editor
+  eventually 5 "editor closed: 1 set the new task's priority" field_is a "third task" priority 1
+  guarded || return 75
+
+  log "- Quick Add: ⌘↩ adds another and stays open, ↩ adds and closes, Esc keeps the draft"
+  local panel="$CTL windows BentoE2E-a 2>/dev/null | awk '\$5 == 660 && \$6 == 360' | grep -q ."
+  press "$A" q; sleep 0.6
+  type_into "$A" "fourth task"; press "$A" cmd+return; sleep 0.6
+  eventually 5 "⌘↩ added the task" field_is a "fourth task" project null
+  check "panel still open after ⌘↩" bash -c "$panel"
+  shot quickadd-another
+  type_into "$A" "fifth task"; press "$A" return; sleep 0.6
+  eventually 5 "↩ added the next one" field_is a "fifth task" project null
+  check "and only once" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN a 'fourth task')\" = 1 ]"
+  check "panel closed after ↩" bash -c "! { $panel; }"
+  press "$A" q; sleep 0.6
+  type_into "$A" "draft kept"; press "$A" escape; sleep 0.5
+  check "Esc closed the panel" bash -c "! { $panel; }"
+  check "Esc added nothing" bash -c "[ \"\$(python3 '$WORK/q.py' count '$WORK' $PORT $TOKEN a 'draft kept')\" = 0 ]"
+  press "$A" q; sleep 0.6
+  press "$A" return; sleep 0.6
+  eventually 5 "the draft was still there on reopening" field_is a "draft kept" project null
+  guarded || return 75
+}
+
 gui_session() {
   local A; A=$(bid a)
   log "- window opens on the toggle action and takes keys"
@@ -401,6 +437,8 @@ gui_session() {
   eventually 8 "restored in B" bash -c "[ \"\$(python3 '$WORK/q.py' ntasks '$WORK' $PORT $TOKEN b)\" = 3 ]"
   guarded || return 75
 
+  gui_add_keys || return $?
+
   log "- ? shows the shortcuts, Esc closes the window"
   press "$A" shift+slash; sleep 0.5
   shot help
@@ -408,6 +446,21 @@ gui_session() {
   press "$A" escape; sleep 0.6
   check "window hidden" bash -c "! $CTL windows BentoE2E-a 2>/dev/null | awk '\$5 >= 500' | grep -q ."
   eventually 10 "everything converged" converged a b
+}
+
+suite_add_keys() {
+  log "== add keys suite"
+  prepare; start_server
+  home a gui; home b
+  "$ROOT/scripts/e2e/session" start todo || return 1
+  launch a; launch b
+  local A rc; A=$(bid a)
+  action a todo.toggle; sleep 0.8
+  eventually 5 "A is frontmost" bash -c "[ \"\$($CTL frontmost)\" = '$A' ]" && gui_add_keys; rc=$?
+  for n in a b; do alive "$n" && kill "$(pid "$n")" 2>/dev/null; done
+  stop_server
+  "$ROOT/scripts/e2e/session" end todo
+  [ $rc = 75 ] && bad "session interrupted by the user (rerun later)"
 }
 
 suite_gui() {
@@ -432,8 +485,9 @@ build
 case "${1:-all}" in
   sync) suite_sync ;;
   gui) suite_gui ;;
+  add-keys) suite_add_keys ;;
   all) suite_sync; suite_gui ;;
-  *) echo "usage: $0 sync|gui|all" >&2; exit 2 ;;
+  *) echo "usage: $0 sync|gui|add-keys|all" >&2; exit 2 ;;
 esac
 log ""
 log "$PASSES passed, $FAILS failed"

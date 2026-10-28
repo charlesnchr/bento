@@ -88,6 +88,30 @@ struct TokenField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    enum ReturnKey: Equatable {
+        /// Return, keypad Enter or ⌘↩.
+        case press
+        /// Return with another ⌘ combination: swallowed so it does nothing.
+        case ignored
+    }
+
+    /// Whether a text view command is a press of Return (or keypad Enter). AppKit has
+    /// no binding for ⌘↩, so it arrives as `noop:` and only the key event tells; nil
+    /// while an input method is composing (`composing`), which owns the keys then.
+    static func returnKey(_ sel: Selector, event: NSEvent?, composing: Bool = false) -> ReturnKey? {
+        switch sel {
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertLineBreak(_:)),
+             #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            return .press
+        case Selector(("noop:")):
+            guard !composing, let e = event, e.type == .keyDown,
+                  e.keyCode == TodoKey.Code.returnKey || e.keyCode == TodoKey.Code.keypadEnter else { return nil }
+            return e.modifierFlags.intersection([.command, .shift, .option, .control]) == .command ? .press : .ignored
+        default:
+            return nil
+        }
+    }
+
     func makeNSView(context: Context) -> TokenTextView {
         let v = TokenTextView()
         v.delegate = context.coordinator
@@ -159,12 +183,21 @@ struct TokenField: NSViewRepresentable {
         }
 
         func textView(_ v: NSTextView, doCommandBy sel: Selector) -> Bool {
+            handle(sel, event: NSApp.currentEvent, in: v)
+        }
+
+        /// A key command from `v`, with the key event that caused it.
+        func handle(_ sel: Selector, event: NSEvent?, in v: NSTextView) -> Bool {
             let m = parent.model
-            let flags = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
-            switch sel {
-            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertLineBreak(_:)),
-                 #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
-                if m.completion != nil, let caret = m.acceptCompletion() {
+            let flags = event?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+            switch TokenField.returnKey(sel, event: event, composing: v.hasMarkedText()) {
+            case .ignored?:
+                return true
+            case .press?:
+                // A held Return submits (or completes) once: a repeat would otherwise
+                // submit the cleared field, which closes Quick Add or the editor.
+                let isRepeat = event?.type == .keyDown && event?.isARepeat == true
+                if !isRepeat, m.completion != nil, let caret = m.acceptCompletion() {
                     v.string = m.text
                     v.setSelectedRange(NSRange(location: caret, length: 0))
                     restyle(v as! TokenTextView)
@@ -174,8 +207,12 @@ struct TokenField: NSViewRepresentable {
                     v.insertText("\n", replacementRange: v.selectedRange())
                     return true
                 }
-                parent.onSubmit(flags)
+                if !isRepeat { parent.onSubmit(flags) }
                 return true
+            case nil:
+                break
+            }
+            switch sel {
             case #selector(NSResponder.cancelOperation(_:)):
                 if m.completion != nil { m.completion = nil; return true }
                 parent.onCancel()
