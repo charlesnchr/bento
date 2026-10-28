@@ -73,6 +73,7 @@ class AppGraph(val app: Application) {
         com.charles.bento.voice.VoiceSyncModule.modes(voiceSync.docs.value).map { it.id to it.name }
     }
     val widgetData = com.charles.bento.widget.AppWidgetData(this).also { it.attachNotes(com.charles.bento.widget.NotesWidgetSource(notes)) }
+    val widgetConfigs = com.charles.bento.widget.WidgetConfigs(prefs::getString, prefs::putString)
 
     val voiceLists: com.charles.bento.ui.voice.VoiceLists = object : com.charles.bento.ui.voice.VoiceLists {
         override val meetings get() = this@AppGraph.meetings.list
@@ -90,6 +91,7 @@ class AppGraph(val app: Application) {
         sync.start()
         Updater.schedule(app)
         com.charles.bento.widget.Widgets.scheduleDaily(app)
+        com.charles.bento.widget.Widgets.scheduleSync(app)
         voice.recover()
         meetings.recover()
         // recordings that waited for a connection go out as soon as there is one
@@ -100,7 +102,7 @@ class AppGraph(val app: Application) {
         )
     }
 
-    /** After a background sync: refresh widgets. */
+    /** After a background sync that brought changes: refresh widgets. */
     suspend fun onBackgroundSync() = com.charles.bento.widget.Widgets.updateNow(app)
 
 }

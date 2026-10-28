@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -86,6 +88,7 @@ class SyncHub(
                 .distinctUntilChanged().drop(1).collect {
                     entries.forEach { (sync, c) -> sync.device = prefs.deviceName.value; c.restart() }
                     if (!live) entries.forEach { it.second.stop() }
+                    com.charles.bento.widget.Widgets.scheduleSync(context)
                 }
         }
         context.getSystemService(ConnectivityManager::class.java).registerNetworkCallback(
@@ -134,10 +137,23 @@ class SyncHub(
 
     fun syncNow() { engine.launch { connections.forEach { it.syncNow() } } }
 
+    /** Paired with a server and syncing. */
+    val paired: Boolean get() = endpoint() != null
+
+    // the periodic, widget and catch-up workers are separate unique works: one round trip at a time
+    private val once = Mutex()
+
+    /** Whether every server answered, and whether anything arrived from one. */
+    data class Once(val ok: Boolean, val changed: Boolean)
+
     /** One REST round trip per collection (background). */
-    suspend fun syncOnce(): Boolean = withContext(engine.coroutineContext[kotlin.coroutines.ContinuationInterceptor]!!) {
-        if (live || endpoint() == null) return@withContext true // live, or not paired: nothing to do
-        entries.map { it.second.syncOnce() }.all { it }
+    suspend fun syncOnce(): Once = once.withLock {
+        withContext(engine.coroutineContext[kotlin.coroutines.ContinuationInterceptor]!!) {
+            if (live || endpoint() == null) return@withContext Once(ok = true, changed = false) // live, or not paired: nothing to do
+            val before = entries.map { it.first.lastSeq }
+            val ok = entries.map { it.second.syncOnce() }.all { it }
+            Once(ok, changed = entries.map { it.first.lastSeq } != before)
+        }
     }
 }
 
@@ -145,9 +161,9 @@ class SyncHub(
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val g = applicationContext.graph
-        val ok = g.sync.syncOnce()
-        g.onBackgroundSync()
-        return if (ok) Result.success() else Result.retry()
+        val result = g.sync.syncOnce()
+        if (result.changed) g.onBackgroundSync()
+        return if (result.ok) Result.success() else Result.retry()
     }
 
     companion object {
@@ -157,6 +173,16 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 "sync", ExistingPeriodicWorkPolicy.KEEP,
                 PeriodicWorkRequestBuilder<SyncWorker>(3, TimeUnit.HOURS).setConstraints(online).build(),
+            )
+        }
+
+        /** While a widget shows notes or tasks (and Bento is paired): every half hour too, so edits made elsewhere reach it. */
+        fun scheduleForWidgets(context: Context, on: Boolean) {
+            val work = WorkManager.getInstance(context)
+            if (!on) { work.cancelUniqueWork("sync-widgets"); return }
+            work.enqueueUniquePeriodicWork(
+                "sync-widgets", ExistingPeriodicWorkPolicy.KEEP,
+                PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES).setConstraints(online).build(),
             )
         }
 

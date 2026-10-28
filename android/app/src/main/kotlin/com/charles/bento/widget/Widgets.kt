@@ -1,6 +1,5 @@
 package com.charles.bento.widget
 
-import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
@@ -83,6 +82,8 @@ class NotesWidget : GlanceAppWidget() {
 
 class NotesWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = NotesWidget()
+    override fun onEnabled(context: Context) { super.onEnabled(context); Widgets.scheduleSync(context) }
+    override fun onDisabled(context: Context) { super.onDisabled(context); Widgets.scheduleSync(context) }
 }
 
 @Composable
@@ -137,8 +138,8 @@ class NoteWidget : GlanceAppWidget() {
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
         provideContent {
             val all by graph.notes.notes.collectAsState()
-            val noteId = graph.prefs.getString(noteWidgetKey(appWidgetId))
-            val note = remember(all, noteId) { noteId?.let { graph.widgetData.note(it) } }
+            val configs by graph.widgetConfigs.changes.collectAsState()
+            val note = remember(all, configs) { graph.widgetConfigs.note(appWidgetId)?.let { graph.widgetData.note(it) } }
             GlanceTheme { NoteContent(context, appWidgetId, note) }
         }
     }
@@ -146,16 +147,19 @@ class NoteWidget : GlanceAppWidget() {
 
 class NoteWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = NoteWidget()
+    override fun onEnabled(context: Context) { super.onEnabled(context); Widgets.scheduleSync(context) }
+    override fun onDisabled(context: Context) { super.onDisabled(context); Widgets.scheduleSync(context) }
+    override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+        super.onDeleted(context, appWidgetIds)
+        context.graph.widgetConfigs.forget(appWidgetIds)
+    }
 }
-
-fun noteWidgetKey(appWidgetId: Int) = "widget.note.$appWidgetId"
 
 @Composable
 private fun NoteContent(context: Context, appWidgetId: Int, note: NoteCard?) {
     WidgetSurface {
         if (note == null) {
-            val pick = Intent(context, WidgetConfigActivity::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-                .putExtra(WidgetConfigActivity.EXTRA_KIND, WidgetConfigActivity.KIND_NOTE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val pick = WidgetConfigActivity.intent(context, appWidgetId, WidgetConfigActivity.KIND_NOTE)
             Box(GlanceModifier.fillMaxSize().clickable(actionStartActivity(pick)), contentAlignment = Alignment.Center) {
                 Text("Tap to choose a note", style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
             }
@@ -212,8 +216,8 @@ class TasksWidget : GlanceAppWidget() {
         provideContent {
             val docs by graph.todo.docs.collectAsState()
             val today by Widgets.today.collectAsState()
-            val view = graph.prefs.getString(tasksWidgetKey(appWidgetId)) ?: "today"
-            val list = remember(docs, view, today) { graph.widgetData.tasks(view, 40) }
+            val configs by graph.widgetConfigs.changes.collectAsState()
+            val list = remember(docs, configs, today) { graph.widgetData.tasks(graph.widgetConfigs.taskView(appWidgetId), 40) }
             GlanceTheme { TasksContent(context, appWidgetId, list) }
         }
     }
@@ -221,19 +225,24 @@ class TasksWidget : GlanceAppWidget() {
 
 class TasksWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = TasksWidget()
+    override fun onEnabled(context: Context) { super.onEnabled(context); Widgets.scheduleSync(context) }
+    override fun onDisabled(context: Context) { super.onDisabled(context); Widgets.scheduleSync(context) }
+    override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+        super.onDeleted(context, appWidgetIds)
+        context.graph.widgetConfigs.forget(appWidgetIds)
+    }
 }
-
-fun tasksWidgetKey(appWidgetId: Int) = "widget.tasks.$appWidgetId"
 
 @Composable
 private fun TasksContent(context: Context, appWidgetId: Int, list: TaskList) {
-    val configure = Intent(context, WidgetConfigActivity::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        .putExtra(WidgetConfigActivity.EXTRA_KIND, WidgetConfigActivity.KIND_TASKS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    // the title switches the list (Today, Inbox, Upcoming, a project or label), for this widget only
+    val switchList = WidgetConfigActivity.intent(context, appWidgetId, WidgetConfigActivity.KIND_TASKS)
     WidgetSurface {
         Header(
             title = list.title,
+            menu = true,
             subtitle = if (list.overdueCount > 0) "${list.overdueCount} overdue" else list.tasks.count { !it.completed }.takeIf { it > 0 }?.toString(),
-            onTitle = actionStartActivity(configure),
+            onTitle = actionStartActivity(switchList),
             buttons = listOf(
                 R.drawable.ic_w_mic to actionStartActivity(capture(context, CaptureActivity.KIND_TASK)),
                 R.drawable.ic_w_add to actionStartActivity(open(context, MainActivity.ACTION_QUICK_ADD)),
@@ -335,10 +344,17 @@ private fun WidgetSurface(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Header(title: String, subtitle: String? = null, onTitle: androidx.glance.action.Action, buttons: List<Pair<Int, androidx.glance.action.Action>>) {
+private fun Header(
+    title: String, subtitle: String? = null, menu: Boolean = false, onTitle: androidx.glance.action.Action,
+    buttons: List<Pair<Int, androidx.glance.action.Action>>,
+) {
     Row(GlanceModifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(GlanceModifier.defaultWeight().clickable(onTitle), verticalAlignment = Alignment.CenterVertically) {
             Text(title, maxLines = 1, style = TextStyle(color = GlanceTheme.colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp))
+            if (menu) {
+                Image(ImageProvider(R.drawable.ic_w_expand), "Switch list", GlanceModifier.size(20.dp),
+                      colorFilter = ColorFilter.tint(GlanceTheme.colors.onSurfaceVariant))
+            }
             if (subtitle != null) {
                 Spacer(GlanceModifier.width(8.dp))
                 Text(subtitle, maxLines = 1, style = TextStyle(color = GlanceTheme.colors.primary, fontSize = 13.sp))
