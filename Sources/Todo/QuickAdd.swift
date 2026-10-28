@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import BentoCore
 
@@ -7,8 +8,15 @@ final class QuickAddModel: ObservableObject {
     @Published var defaultProject: String?
     /// The "Return in Quick Add" setting: plain ↩ keeps the panel open for the next task.
     @Published var returnKeepsOpen = false
-    /// "Added to Inbox" after a task was added with the panel staying open.
+    /// "Added to Inbox" after a task was added with the panel staying open, until typing starts.
     @Published var added: String?
+    private var typing: AnyCancellable?
+
+    init() {
+        typing = field.$text.sink { [weak self] t in
+            if !t.isEmpty, self?.added != nil { self?.added = nil }
+        }
+    }
 
     /// ⌘↩ does the opposite of ↩: add another when ↩ closes, add and close when ↩ keeps adding.
     func keepsOpen(command: Bool) -> Bool { command != returnKeepsOpen }

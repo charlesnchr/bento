@@ -3,9 +3,9 @@ import Testing
 @testable import Todo
 
 /// A key-down event as AppKit delivers it.
-private func key(_ code: UInt16, _ chars: String, _ mods: NSEvent.ModifierFlags = []) -> NSEvent {
+private func key(_ code: UInt16, _ chars: String, _ mods: NSEvent.ModifierFlags = [], held: Bool = false) -> NSEvent {
     NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil,
-                     characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+                     characters: chars, charactersIgnoringModifiers: chars, isARepeat: held, keyCode: code)!
 }
 
 private let returnKey = key(TodoKey.Code.returnKey, "\r")
@@ -28,14 +28,73 @@ private let noop = Selector(("noop:"))
     }
 
     @Test func returnPressesAreRecognisedWithAndWithoutCommand() {
-        #expect(TokenField.isReturn(#selector(NSResponder.insertNewline(_:)), event: returnKey))
+        #expect(TokenField.returnKey(#selector(NSResponder.insertNewline(_:)), event: returnKey) == .press)
         // AppKit has no binding for ⌘↩: it comes as noop:, recognised by the key itself.
-        #expect(TokenField.isReturn(noop, event: cmdReturn))
-        #expect(TokenField.isReturn(noop, event: key(TodoKey.Code.keypadEnter, "\u{3}", .command)))
-        // Other unbound ⌘ keys stay noop.
-        #expect(!TokenField.isReturn(noop, event: key(0, "a", .command)))
-        #expect(!TokenField.isReturn(noop, event: nil))
-        #expect(!TokenField.isReturn(#selector(NSResponder.cancelOperation(_:)), event: key(TodoKey.Code.escape, "\u{1b}")))
+        #expect(TokenField.returnKey(noop, event: cmdReturn) == .press)
+        // keypad Enter (fn+Return on a laptop) carries the numeric pad / fn flags too
+        #expect(TokenField.returnKey(noop, event: key(TodoKey.Code.keypadEnter, "\u{3}", [.command, .numericPad, .function])) == .press)
+        // Return with other ⌘ combinations is swallowed; other unbound ⌘ keys stay noop.
+        #expect(TokenField.returnKey(noop, event: key(TodoKey.Code.returnKey, "\r", [.command, .shift])) == .ignored)
+        #expect(TokenField.returnKey(noop, event: key(TodoKey.Code.returnKey, "\r", [.command, .option])) == .ignored)
+        #expect(TokenField.returnKey(noop, event: key(0, "a", .command)) == nil)
+        #expect(TokenField.returnKey(noop, event: nil) == nil)
+        #expect(TokenField.returnKey(#selector(NSResponder.cancelOperation(_:)), event: key(TodoKey.Code.escape, "\u{1b}")) == nil)
+        // While an input method composes, ⌘↩ is left to it.
+        #expect(TokenField.returnKey(noop, event: cmdReturn, composing: true) == nil)
+    }
+
+    @Test func commandReturnDuringCompositionDoesNotSubmit() {
+        let r = Recorder()
+        let (c, v) = field(TokenFieldModel(text: "", parses: true), r)
+        v.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 0))
+        #expect(v.hasMarkedText())
+        #expect(!c.handle(noop, event: cmdReturn, in: v))
+        #expect(r.submits.isEmpty)
+    }
+
+    @Test func otherCommandReturnsDoNothingInEitherField() {
+        let r = Recorder()
+        let (c, v) = field(TokenFieldModel(text: "Buy milk", parses: true), r)
+        let (dc, dv) = field(TokenFieldModel(text: "notes"), multiline: true, r)
+        for mods: NSEvent.ModifierFlags in [[.command, .shift], [.command, .option]] {
+            #expect(c.handle(noop, event: key(TodoKey.Code.returnKey, "\r", mods), in: v))
+            #expect(dc.handle(noop, event: key(TodoKey.Code.returnKey, "\r", mods), in: dv))
+        }
+        #expect(r.submits.isEmpty)
+        #expect(dv.string == "notes")
+    }
+
+    @Test func aHeldReturnSubmitsOnce() {
+        let r = Recorder()
+        let m = TokenFieldModel(text: "Buy milk", parses: true)
+        let (c, v) = field(m, r)
+        #expect(c.handle(noop, event: cmdReturn, in: v))
+        #expect(c.handle(noop, event: key(TodoKey.Code.returnKey, "\r", .command, held: true), in: v))
+        #expect(c.handle(#selector(NSResponder.insertNewline(_:)), event: key(TodoKey.Code.returnKey, "\r", held: true), in: v))
+        #expect(r.submits == [[.command]])
+        // A repeat doesn't accept a completion either.
+        m.projects = { ["Errands"] }
+        m.text = "Call #Err"
+        m.caretMoved(to: 9)
+        #expect(m.completion != nil)
+        #expect(c.handle(#selector(NSResponder.insertNewline(_:)), event: key(TodoKey.Code.returnKey, "\r", held: true), in: v))
+        #expect(m.text == "Call #Err")
+        // ⇧↩ still repeats newlines in the description.
+        let (dc, dv) = field(TokenFieldModel(text: "a"), multiline: true, r)
+        #expect(dc.handle(#selector(NSResponder.insertNewline(_:)), event: key(TodoKey.Code.returnKey, "\r", .shift, held: true), in: dv))
+        #expect(dv.string == "a\n")
+        #expect(r.submits.count == 1)
+    }
+
+    @Test func quickAddConfirmationGoesWhenTypingStarts() {
+        let m = QuickAddModel()
+        m.added = "Added to Inbox"
+        m.field.text = ""
+        #expect(m.added == "Added to Inbox")
+        m.field.text = "n"
+        #expect(m.added == nil)
+        m.field.text = ""
+        #expect(m.added == nil)
     }
 
     @Test func commandReturnSubmitsWithCommand() {
