@@ -74,8 +74,13 @@ check (Settings → Updates).
    **Scan pairing code** (Voice tab or Settings). The code carries the server, the sync
    token and, if you tick it, the Gemini API key.
 3. Voice tab → follow the checklist: microphone, **Accessibility → Bento dictation** (for
-   the bubble and the held Volume Down; Android hides the switch for sideloaded apps until
-   App info → ⋮ → **Allow restricted settings**), and **Allow background activity** (ColorOS
-   otherwise stops live sync and the accessibility service).
+   the bubble and the held Volume Down), and **Allow background activity** (ColorOS
+   otherwise stops live sync and the accessibility service). Android 13+ greys out the
+   accessibility switch for an APK opened from a browser or file manager ("restricted
+   settings"; signing doesn't matter). Tap the greyed entry once and close the notice ("App
+   was denied access" on 15+, "Restricted setting" before), then App info → ⋮ → **Allow
+   restricted settings**, then turn the switch on. The checklist detects each step and walks
+   through it. It's once only: updates keep the permission, and the in-app updater's session
+   install doesn't add the restriction (`adb install` doesn't either).
 4. Optional: add the widgets, the **Capture thought** Quick Settings tile, the Bento
    keyboard, or turn on **Separate icons** and point the Snap Key at **Bento Dictate**.

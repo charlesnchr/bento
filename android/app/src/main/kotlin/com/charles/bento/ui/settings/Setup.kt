@@ -42,9 +42,23 @@ object Setup {
         }
     }
 
-    /** App info, where "Allow restricted settings" (sideloaded apps) and battery options live. */
+    /**
+     * The accessibility list, freshly opened. While the switch is restricted this is the way in:
+     * tapping the greyed entry here records that the notice was seen, which is what makes App info
+     * offer "Allow restricted settings". The notice the details link above shows instead (over
+     * Bento, on Android 16) doesn't.
+     */
+    fun openAccessibilityList(c: Context) = c.startActivity(
+        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+    )
+
+    /**
+     * App info, where "Allow restricted settings" (sideloaded apps) and battery options live. A
+     * fresh task, as a Settings screen left open from before doesn't show that menu item.
+     */
     fun openAppInfo(c: Context) = c.startActivity(
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:${c.packageName}".toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:${c.packageName}".toUri())
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
     )
 
     private fun keyboardId(c: Context) = ComponentName(c, BentoKeyboardService::class.java).flattenToShortString()

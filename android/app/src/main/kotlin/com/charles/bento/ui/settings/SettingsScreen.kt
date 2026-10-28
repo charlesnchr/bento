@@ -208,6 +208,31 @@ fun scanPairingCode(context: Context, onResult: (Pairing) -> Unit) {
         .addOnFailureListener { Toast.makeText(context, "Scanner unavailable: ${it.message}", Toast.LENGTH_LONG).show() }
 }
 
+/** Enter, replace or remove the Gemini API key (Settings, and the Voice tab's checklist). */
+@Composable
+fun GeminiKeyDialog(onDismiss: () -> Unit) {
+    val graph = LocalContext.current.graph
+    val secretsVersion by graph.secrets.version.collectAsStateWithLifecycle()
+    val hasKey = remember(secretsVersion) { graph.secrets.geminiKey != null }
+    var k by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Gemini API key") },
+        text = {
+            OutlinedTextField(k, { k = it }, singleLine = true, label = { Text(if (hasKey) "Replace key" else "Key") },
+                              visualTransformation = PasswordVisualTransformation(),
+                              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+        },
+        confirmButton = { TextButton(enabled = k.isNotBlank(), onClick = { graph.secrets.geminiKey = k; onDismiss() }) { Text("Save") } },
+        dismissButton = {
+            Row {
+                if (hasKey) TextButton(onClick = { graph.secrets.geminiKey = null; onDismiss() }) { Text("Remove") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
 @Composable
 private fun DictationSection(context: Context, nav: NavController) {
     val graph = context.graph
@@ -233,25 +258,7 @@ private fun DictationSection(context: Context, nav: NavController) {
         SettingsRow("Modes", "Profiles with their own instructions (switch while talking)", onClick = { nav.navigate(ModesRoute) })
     }
 
-    if (editKey) {
-        var k by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { editKey = false },
-            title = { Text("Gemini API key") },
-            text = {
-                OutlinedTextField(k, { k = it }, singleLine = true, label = { Text(if (hasKey) "Replace key" else "Key") },
-                                  visualTransformation = PasswordVisualTransformation(),
-                                  keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            },
-            confirmButton = { TextButton(enabled = k.isNotBlank(), onClick = { graph.secrets.geminiKey = k; editKey = false }) { Text("Save") } },
-            dismissButton = {
-                Row {
-                    if (hasKey) TextButton(onClick = { graph.secrets.geminiKey = null; editKey = false }) { Text("Remove") }
-                    TextButton(onClick = { editKey = false }) { Text("Cancel") }
-                }
-            },
-        )
-    }
+    if (editKey) GeminiKeyDialog { editKey = false }
     if (pickModel) {
         AlertDialog(
             onDismissRequest = { pickModel = false },

@@ -117,6 +117,9 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
             download(release, apk)
             _state.value = State.Installing(release)
             val installer = context.packageManager.packageInstaller
+            // A session install that doesn't claim a file source (PACKAGE_SOURCE_LOCAL_FILE or
+            // _DOWNLOADED_FILE), unlike opening the APK from a browser or file manager, so updates
+            // don't make Android restrict the accessibility switch (see RestrictedSettings).
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                 setAppPackageName(context.packageName)
                 setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
