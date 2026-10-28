@@ -483,6 +483,16 @@ public struct SettingsStore: Sendable {
         Self.set(enabled, forKey: "cleanupEnabled")
     }
 
+    /// The dictionary, custom instructions and the cleanup switch sync with the other
+    /// Macs and the Android app through the Notes sync server (`VoiceSync`).
+    public var syncDictionary: Bool {
+        Self.defaults.object(forKey: VoiceSync.settingKey) as? Bool ?? true
+    }
+
+    public func setSyncDictionary(_ enabled: Bool) {
+        Self.set(enabled, forKey: VoiceSync.settingKey)
+    }
+
     public func effectiveFormattingPolicy(vertexConfigured: Bool = VertexRuntimeConfig.state().isRequested) -> FormattingPolicy {
         if vertexConfigured {
             return VertexRuntimeConfig.state().config?.isDirect == true

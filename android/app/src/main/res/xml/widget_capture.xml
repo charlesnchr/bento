@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_capture"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:minWidth="57dp" android:minHeight="57dp"
+    android:targetCellWidth="1" android:targetCellHeight="1"
+    android:maxResizeWidth="320dp" android:maxResizeHeight="120dp"
+    android:resizeMode="horizontal"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen|keyguard" />

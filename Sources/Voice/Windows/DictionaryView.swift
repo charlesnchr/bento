@@ -44,6 +44,10 @@ struct DictionaryView: View {
             footer
         }
         .onAppear(perform: reload)
+        // Synced from another device or config.json while open.
+        .onReceive(NotificationCenter.default.publisher(for: .gtSettingDidChange).receive(on: RunLoop.main)) { note in
+            if note.object as? String == "dictionaryEntries" { reload() }
+        }
     }
 
     private var addRow: some View {

@@ -168,7 +168,7 @@ final class TodoController: ObservableObject {
     init() {
         store = TodoStore()
         engine = TodoSyncEngine(repo: store)
-        client = TodoSyncClient(engine: engine)
+        client = TodoSyncClient(engine: engine, profile: .todos)
         settings = ConfigStore.shared.section("todo", default: TodoSettings())
         view = settings.home
         if let raw = store.kv("sidebar") { sidebarVisible = raw != "0" }

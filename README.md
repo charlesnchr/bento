@@ -6,7 +6,8 @@ app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
 synced in real time through a tiny Rust server, manually arranged menu bar
 sections that Bento shows and hides, and dictation with meeting notes and a
-voice assistant (Jot, Wispr Flow).
+voice assistant (Jot, Wispr Flow). A companion [Android app](#android) carries the
+notes, todos, dictation and meeting notes to your phone.
 
 Swift + AppKit/SwiftUI, macOS 14+. The only third-party code is in the voice
 modules: MarkdownUI, FluidAudio (on-device Parakeet) and a vendored SwiftMath.
@@ -24,7 +25,7 @@ Idles at ~0 % CPU.
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, collapsible headings, live sync via `bento-sync` that merges edits made on two Macs at once (the caret and scroll position stay put) | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 | Menu Bar (off by default) | — | Visible, Hidden and Always Hidden sections; native manual Command-drag arrangement; chevron, shortcuts and optional hover/click/scroll reveal; automatic hiding; search and Bento Bar with Accessibility opening in place; per-item shortcuts and icon-change alerts; spacing and appearance | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
-| Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions, dictionary; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated; Capture Thought to Note appends what you say to a chosen note as a timestamped, collapsible entry | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
+| Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions and a dictionary that sync with your other Macs and the Android app; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated; Capture Thought to Note appends what you say to a chosen note as a timestamped, collapsible entry | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
 | Meetings (off by default) | Granola | records the mic plus system audio beside dictation; live transcript, tidied as it goes, gaps backfilled from the recording, summary with decisions and action items; a small capsule while recording; notes in Markdown | ⇧⌥F17 record/stop |
 | Assistant (off by default) | — | chat window for Hermes over ACP: Markdown, equations, images, tool steps, plan, attachments, `/` commands and `@` context, queue and steer, edit/regenerate/branch, history; keep on top like picture in picture, over full-screen apps and on every Space; continuous voice calls through Azure GPT-Live or Gemini 3.8 Live with Hermes doing the work, resumed where they left off until New Chat | ⇧⌥F18 window, ⌥F18 talk |
 
@@ -92,6 +93,39 @@ next launch replaces the old instance anyway. Releases are all signed with the
 same (self-signed) certificate, so the permission grants carry over. They aren't
 notarized, but Homebrew doesn't quarantine formula downloads, so Gatekeeper
 doesn't get in the way.
+
+## Android
+
+Bento for Android (`android/`, Android 12+) brings Notes, Todo, dictation and meeting
+notes to the phone, synced live with your Macs through the same `bento-sync` server:
+
+- **Notes**: the list (pinned first, fuzzy search, grid or list), a Markdown editor with
+  the Mac's list continuation and checkbox toggling, and merges like the Mac's: edits made
+  on the phone and a Mac at once both survive, and an open note takes remote text without
+  moving the caret. Recently Deleted keeps notes 60 days.
+- **Todo**: Inbox, Today, Upcoming, projects and labels; quick add with the same syntax
+  (`Buy milk tomorrow 5pm #Errands @shop p1`, tokens highlighted as you type); swipe right
+  to complete, left to reschedule; field-level merging like the Mac.
+- **Widgets**: notes (like Google Keep's), one note with tappable checklists, tasks (like
+  Todoist's, for any list or project) and a capture button.
+- **Dictation** through your Gemini API key, as on the Mac (live transcript, cleanup, your
+  synced dictionary and instructions, voice edits): a bubble beside the keyboard in any app,
+  **hold Volume Down** over a text field (a short press still changes the volume), the
+  voice-first **Bento keyboard**, a **Capture thought** Quick Settings tile (also on the
+  lock screen), and separate launcher icons for hardware shortcut keys such as the Find X9
+  Pro's Snap Key. Modes add their own instructions and switch while you talk.
+- **Meetings** from the microphone (Android doesn't let apps record other apps' calls):
+  live transcript, then a note with summary, decisions, action items and the transcript.
+
+Install the APK from the latest `android-v*` [release](https://github.com/charlesnchr/bento/releases)
+(allow installs from your browser once); the app checks for updates daily and installs them
+from Settings → Updates. Then on the Mac choose **Pair Android Phone…** and scan the code
+in Bento's Voice tab or Settings. The Voice tab's checklist walks through the microphone,
+**Accessibility → Bento dictation** (for the bubble and the volume key; Android greys the
+switch out for apps installed outside the Play Store until App info → ⋮ → **Allow
+restricted settings**) and **Allow background activity**, which ColorOS and other
+battery-strict Android versions need for live sync. Building and releasing:
+`android/README.md`.
 
 ## Build from source
 
@@ -174,6 +208,19 @@ history and meetings under `Voice/`) is in `~/Library/Application Support/Bento/
 `bento-sync` server (`server/README.md`), set under Settings → Notes and Todo, and its token in
 `~/.config/bento/sync-token` (shared by Notes and Todo).
 
+With Notes sync on, dictation's dictionary, custom instructions and the cleanup pass
+switch sync too, with your other Macs and the Android app, while Dictation, Meetings or the
+Assistant is on. Settings → Dictation → Sync dictionary and instructions turns it off, and
+shows how it's going. The first sync merges what each Mac already had (entries by id,
+settings one by one); if two devices added the same word, it shows up once.
+
+**Pair Android Phone…** under Settings → Notes or Todo → Sync shows a QR code for the Bento
+Android app: it carries the server, the token and the Mac's name, and the Gemini API key if
+you tick Include Gemini API key. The code stays hidden until you click Show Code, since
+anyone who scans it can read and edit your notes and tasks. Copy Link copies the same
+`bento://pair` link instead (clipboard managers that honour concealed items, Bento's
+included, don't record it).
+
 ## Development
 
 ```sh
@@ -186,7 +233,7 @@ scripts/voice-dev assistant.send "Hello"      # drive DevVoice's assistant, prin
 
 Each module has a `Dev<Module>` harness that runs only that module, with config
 and data isolated under `/tmp/bento-dev/<module>`. Layout and conventions:
-`docs/SPEC.md`. Sync protocol (notes and todos): `docs/SYNC_PROTOCOL.md`. Server:
+`docs/SPEC.md`. Sync protocol (notes, todos, the dictation dictionary): `docs/SYNC_PROTOCOL.md`. Server:
 `server/README.md`.
 
 ## Releasing
@@ -203,3 +250,6 @@ release, and publishes `packaging/bento.rb`, with the version and checksum
 filled in, as `Formula/bento.rb` in
 [charlesnchr/homebrew-tap](https://github.com/charlesnchr/homebrew-tap).
 Installed copies find it with their next daily check.
+
+The Android app has its own releases, tagged `android-vX.Y.Z` and marked not-latest so the
+Mac's stay on top: `scripts/release-android.sh 0.1.0` (see `android/README.md`).

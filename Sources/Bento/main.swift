@@ -15,6 +15,8 @@ StatusItemSizing.shared.configure()
 let notes = NotesModule()
 // Dictation's Capture Thought to Note appends to a note; the modules don't know each other.
 DictationModule.noteCapture = { notes.capture($0) }
+// Pairing the Android app can hand over dictation's Gemini key, which Notes and Todo don't know.
+PhonePairing.geminiAPIKey = VoiceModules.geminiAPIKey
 
 BentoApp.run(modules: [
     ShotModule(),

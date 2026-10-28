@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bento</string>
+    <string name="keyboard_name">Bento voice keyboard</string>
+    <string name="accessibility_label">Bento dictation</string>
+    <string name="accessibility_summary">Shows a mic bubble beside the keyboard and lets you hold Volume Down to dictate into any text field.</string>
+    <string name="accessibility_description">Bento uses this service to show its dictation bubble while the keyboard is up over a text field, to start dictation when you hold the volume key, and to insert the transcribed text where the cursor is. It reads the focused text field (its text, hint and type) and which app it belongs to, only to insert text and to tell the cleanup model where the text goes. Password, number and phone fields are skipped. Nothing it reads is stored.</string>
+    <string name="tile_label">Capture thought</string>
+    <string name="alias_dictate">Bento Dictate</string>
+    <string name="alias_meeting">Bento Meeting</string>
+    <string name="alias_quick_add">Bento Quick Add</string>
+    <string name="shortcut_new_note">New note</string>
+    <string name="shortcut_quick_add">Quick add task</string>
+    <string name="shortcut_thought">Capture thought</string>
+    <string name="shortcut_meeting">Record meeting</string>
+    <string name="widget_notes">Notes</string>
+    <string name="widget_note">Note</string>
+    <string name="widget_tasks">Tasks</string>
+    <string name="widget_capture">Capture</string>
+</resources>

@@ -9,3 +9,13 @@ Resources/Bento-1024.png
 .claude/
 scripts/config.local.sh
 __pycache__/
+
+# Android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.kotlin/
+android/captures/
+*.jks
+*.keystore
