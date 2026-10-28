@@ -32,7 +32,12 @@ object Setup {
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == me }
     }
 
-    /** Straight to Bento's switch where the system allows it, else the accessibility list. */
+    /**
+     * Straight to Bento's switch where the system allows it, else the accessibility list (the
+     * details action is permission-guarded on some versions). On the Android 16 emulator it opened
+     * Bento's page while the switch was usable and the list while it was restricted. Not for a
+     * restricted switch: see [openAccessibilityList].
+     */
     fun openAccessibility(c: Context) {
         val details = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
             .putExtra(Intent.EXTRA_COMPONENT_NAME, accessibilityComponent(c).flattenToString())
@@ -42,10 +47,29 @@ object Setup {
         }
     }
 
-    /** App info, where "Allow restricted settings" (sideloaded apps) and battery options live. */
-    fun openAppInfo(c: Context) = c.startActivity(
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:${c.packageName}".toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    /**
+     * The accessibility list, freshly opened: the way in while the switch is restricted. Tapping
+     * the greyed entry here and closing the notice set the restriction to "seen" (IGNORED) on the
+     * Android 16 emulator, after which App info offered "Allow restricted settings". The one time
+     * the details link above showed the notice instead, over Bento, it stayed DEFAULT.
+     */
+    fun openAccessibilityList(c: Context) =
+        start(c, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+
+    /**
+     * App info, where "Allow restricted settings" (sideloaded apps) and battery options live. A
+     * fresh task: a Settings screen left open from before didn't show that menu item.
+     */
+    fun openAppInfo(c: Context) = start(
+        c, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:${c.packageName}".toUri())
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
     )
+
+    private fun start(c: Context, i: Intent) {
+        runCatching { c.startActivity(i) }.onFailure {
+            android.widget.Toast.makeText(c, "Couldn't open Settings: open it yourself and find Bento", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
 
     private fun keyboardId(c: Context) = ComponentName(c, BentoKeyboardService::class.java).flattenToShortString()
 

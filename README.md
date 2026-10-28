@@ -122,8 +122,8 @@ Install the APK from the latest `android-v*` [release](https://github.com/charle
 from Settings → Updates. Then on the Mac choose **Pair Android Phone…** and scan the code
 in Bento's Voice tab or Settings. The Voice tab's checklist walks through the microphone,
 **Accessibility → Bento dictation** (for the bubble and the volume key; Android greys the
-switch out for apps installed outside the Play Store until App info → ⋮ → **Allow
-restricted settings**) and **Allow background activity**, which ColorOS and other
+switch out for APKs opened from a browser or file manager until App info → ⋮ → **Allow
+restricted settings**, and the checklist walks through it) and **Allow background activity**, which ColorOS and other
 battery-strict Android versions need for live sync. Building and releasing:
 `android/README.md`.
 

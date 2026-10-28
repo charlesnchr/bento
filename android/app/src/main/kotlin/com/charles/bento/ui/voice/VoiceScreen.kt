@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +58,7 @@ import com.charles.bento.graph
 import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.MeetingRoute
 import com.charles.bento.ui.SettingsRoute
+import com.charles.bento.ui.settings.RestrictedSettings
 import com.charles.bento.ui.settings.Setup
 import com.charles.bento.ui.settings.scanPairingCode
 import com.charles.bento.voice.DictationState
@@ -142,14 +144,52 @@ private fun SetupCard(tick: Int) {
     val server by graph.prefs.server.flow.collectAsStateWithLifecycle()
     var pairing by remember { mutableStateOf<com.charles.bento.settings.Pairing?>(null) }
     pairing?.let { p -> com.charles.bento.ui.settings.PairingDialog(p) { pairing = null } }
-    val steps = remember(tick, secrets, server) {
+    var editKey by remember { mutableStateOf(false) }
+    if (editKey) com.charles.bento.ui.settings.GeminiKeyDialog { editKey = false }
+    val a11yOn = remember(tick) { Setup.accessibilityEnabled(context) }
+    // the accessibility guide: the step shown (null: closed), and which screen Bento sent the user to
+    var guide by rememberSaveable { mutableStateOf<AccessibilityGuide.Step?>(null) }
+    var opened by rememberSaveable { mutableStateOf<String?>(null) }
+    var retry by rememberSaveable { mutableStateOf(false) }
+    var offeredAfterDirect by rememberSaveable { mutableStateOf(false) }
+    val needsGuide = remember(tick) { RestrictedSettings.likely(context) }
+    androidx.compose.runtime.LaunchedEffect(tick) {
+        if (a11yOn) { guide = null; retry = false }
+        // back from Settings
+        val o = opened ?: return@LaunchedEffect
+        opened = null
+        when {
+            a11yOn -> {}
+            o == DIRECT -> if (AccessibilityGuide.offerAfterDirect(android.os.Build.VERSION.SDK_INT, offeredAfterDirect)) {
+                // probably greyed out, and tapping it showed the notice: App info is next (once; the row still goes straight there)
+                offeredAfterDirect = true
+                guide = AccessibilityGuide.Step.AllowInAppInfo
+                retry = false
+            }
+            else -> AccessibilityGuide.Step.valueOf(o).let { guide = AccessibilityGuide.afterReturn(it); retry = it == AccessibilityGuide.Step.TurnOn }
+        }
+    }
+    guide?.takeIf { !a11yOn }?.let { step ->
+        AccessibilityGuideDialog(
+            step, retry,
+            onSelect = { guide = it; retry = false },
+            onOpen = {
+                opened = it.name
+                if (it == AccessibilityGuide.Step.AllowInAppInfo) Setup.openAppInfo(context) else Setup.openAccessibilityList(context)
+            },
+            onDismiss = { guide = null },
+        )
+    }
+    val steps = remember(tick, secrets, server, needsGuide) {
         listOf(
             Step("Pair with your Mac", "Sync notes, tasks and your dictionary", server.isNotBlank() && graph.secrets.syncToken != null) {
                 scanPairingCode(context) { p -> pairing = p }
             },
-            Step("Gemini API key", "Comes with the pairing code, or add it in Settings", graph.secrets.geminiKey != null, null),
+            Step("Gemini API key", "Comes with the pairing code, or tap to paste one", graph.secrets.geminiKey != null) { editKey = true },
             Step("Microphone", "Allow Bento to listen when you ask it to", Setup.hasMic(context)) { mic.launch(Manifest.permission.RECORD_AUDIO) },
-            Step("Dictate in any app", "Turn on Bento dictation in Accessibility", Setup.accessibilityEnabled(context)) { Setup.openAccessibility(context) },
+            Step("Dictate in any app", AccessibilityGuide.summary(a11yOn, needsGuide), a11yOn) {
+                if (needsGuide) { guide = AccessibilityGuide.Step.SeeNotice; retry = false } else { opened = DIRECT; Setup.openAccessibility(context) }
+            },
             Step("Keep it running", "Allow background activity (ColorOS)", Setup.ignoringBatteryOptimizations(context)) { Setup.requestBatteryExemption(context) },
         )
     }
@@ -176,6 +216,9 @@ private fun SetupCard(tick: Int) {
         }
     }
 }
+
+/** [SetupCard]'s marker for "sent straight to Accessibility, without the guide". */
+private const val DIRECT = "direct"
 
 private class Step(val title: String, val detail: String, val done: Boolean, val action: (() -> Unit)?)
 
