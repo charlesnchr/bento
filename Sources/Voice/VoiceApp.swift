@@ -371,6 +371,10 @@ extension VoiceApp {
         let menu = NSMenu()
         menu.autoenablesItems = false // the call item is off while calls are off
         menu.addItem(action("assistant.toggle"))
+        let dictate = action(AssistantModule.dictateID)
+        if dictation.isRecordingAssistantRequest { dictate.title = "Send Dictated Request" }
+        dictate.isEnabled = !dictation.assistantIsLive
+        menu.addItem(dictate)
         let call = action("assistant.voice-call")
         let settings = SettingsStore()
         if dictation.assistantIsLive {

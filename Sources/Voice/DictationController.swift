@@ -173,16 +173,7 @@ final class DictationController {
         }
         assistant.beforeLiveStart = { [weak self] in await self?.warmEngines.suspend() }
         assistant.afterLiveEnd = { [weak self] in self?.warmEngines.resume() }
-        assistant.onLegacyDictation = { [weak self] in
-            guard let self else { return }
-            if self.assistant.isRecording { _ = self.handleIntent(.finalize) }
-            else {
-                guard self.coordinator.state == .idle || self.coordinator.state.isTerminal,
-                      let context = self.assistant.prepare() else { return }
-                if self.coordinator.handle(.begin, context: context) { self.coordinator.handle(.lockIn) }
-                else { self.assistant.finishRecording() }
-            }
-        }
+        assistant.onLegacyDictation = { [weak self] in self?.toggleAssistantRequest() }
     }
 
     func start() {
@@ -470,6 +461,79 @@ final class DictationController {
     }
 
     var assistantIsLive: Bool { assistant.isLive }
+
+    // MARK: - Dictate to Assistant
+
+    /// Dictate to Assistant (⌃⌥F18 by default): what you say goes to the
+    /// assistant as a request, never into the front app, whatever the Voice
+    /// calls setting makes of ⌥F18. Hold to talk, or tap and press again.
+    private var assistantShortcut = HoldOrTapShortcut()
+
+    /// A request for the assistant is being recorded (not yet transcribing).
+    var isRecordingAssistantRequest: Bool {
+        guard assistant.isRecording else { return false }
+        switch coordinator.state {
+        case .warming, .recording: return true
+        default: return false
+        }
+    }
+
+    func assistantDictationKeyDown() {
+        let recording = isRecordingAssistantRequest
+        guard recording || assistantShortcutReady() else { return }
+        switch assistantShortcut.keyDown(at: ProcessInfo.processInfo.systemUptime, recording: recording) {
+        case .begin: if !beginAssistantRequest() { assistantShortcut.beginRefused() }
+        case .finalize: coordinator.handle(.finalize)
+        case .lockIn, nil: break
+        }
+    }
+
+    func assistantDictationKeyUp() {
+        switch assistantShortcut.keyUp(at: ProcessInfo.processInfo.systemUptime, recording: isRecordingAssistantRequest) {
+        case .lockIn: coordinator.handle(.lockIn)
+        case .finalize: coordinator.handle(.finalize)
+        case .begin, nil: break
+        }
+    }
+
+    /// The menu, keyboard overview and URLs: start hands-free, or send.
+    func toggleAssistantDictation() {
+        guard isRecordingAssistantRequest || assistantShortcutReady() else { return }
+        toggleAssistantRequest()
+    }
+
+    /// No session without the pill (it needs the tap, so Accessibility): a
+    /// hot microphone with nothing on screen, as for hands-free dictation.
+    private func assistantShortcutReady() -> Bool {
+        guard assistantEnabled else { return false }
+        guard engineActive else {
+            if !AXIsProcessTrusted() { SettingsRouter.open() } else { NSSound.beep() }
+            return false
+        }
+        return true
+    }
+
+    /// Also the chat window's microphone button.
+    private func toggleAssistantRequest() {
+        for step in HoldOrTapShortcut.toggle(recording: isRecordingAssistantRequest) {
+            switch step {
+            case .begin: guard beginAssistantRequest() else { return }
+            case .lockIn: coordinator.handle(.lockIn)
+            case .finalize: coordinator.handle(.finalize)
+            }
+        }
+    }
+
+    /// Starts recording a request; the transcript goes to the assistant
+    /// (`VoiceOutputRouter`). Refused during a call, a turn or another session.
+    private func beginAssistantRequest() -> Bool {
+        guard !assistant.isLive, !assistant.isBusy,
+              coordinator.state == .idle || coordinator.state.isTerminal,
+              microphoneReady(), let context = assistant.prepare() else { return false }
+        let accepted = coordinator.handle(.begin, context: context)
+        if !accepted { assistant.finishRecording() }
+        return accepted
+    }
 
     /// Dev harness hook: a transcript down the Capture Thought to Note output path.
     func devCapture(_ text: String) {

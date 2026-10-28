@@ -695,14 +695,14 @@ struct AssistantSettingsView: View {
                     if provider == .gemini, settings.assistantLiveCall, case .unavailable(let reason) = geminiRoute {
                         Text(reason)
                     } else {
-                        Text("Off restores one-shot dictation to the assistant and voice editing.")
+                        Text("Off gives ⌥F18 back to voice editing and one-shot requests.")
                     }
                 }
                 MicrophoneRow()
             } header: {
                 Text("Voice")
             } footer: {
-                Footnote("⌥F18 starts or ends a call (or dictates a request when calls are off). Calls stream your microphone to \(callDestination(provider, geminiRoute)) until you end them, and the assistant runs tools without asking. Use headphones: there is no echo cancellation. Gemini Live uses dictation's Google connection, the Gemini API with your key or Vertex AI through the local helper; GPT-Live is Azure either way.")
+                Footnote("⌥F18 starts or ends a call (or dictates a request when calls are off). \(dictateHint) Calls stream your microphone to \(callDestination(provider, geminiRoute)) until you end them, and the assistant runs tools without asking. Use headphones: there is no echo cancellation. Gemini Live uses dictation's Google connection, the Gemini API with your key or Vertex AI through the local helper; GPT-Live is Azure either way.")
             }
             Section {
                 LabeledContent("Hermes") {
@@ -734,6 +734,12 @@ struct AssistantSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// The Dictate to Assistant shortcut as bound now (it's rebindable below).
+    private var dictateHint: String {
+        let key = ActionRegistry.shared.shortcut(for: AssistantModule.dictateID).map { " (\($0.displayString))" } ?? ""
+        return "Dictate to Assistant\(key) always sends what you say as a request, calls or not: hold to talk, or tap, speak and press again."
     }
 
     private func callDestination(_ provider: SettingsStore.AssistantLiveProvider, _ route: SettingsStore.GeminiLiveRoute) -> String {

@@ -424,6 +424,79 @@ private let isolatedHome: Bool = {
         reg.setModules([])
     }
 
+    @Test func aNewDefaultYieldsToAKeyTheUserAlreadyAssigned() throws {
+        try #require(isolatedHome)
+        let key = testKeys[3]
+        // The new action comes first in module order, so it would win the key.
+        let added = FakeModule("fakeh", [("fakeh.new", key.configString)])
+        let mine = FakeModule("fakei", [("fakei.mine", nil), ("fakei.other", nil)])
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.isModuleEnabled = { _ in true }
+        reg.setModules([added, mine])
+
+        #expect(reg.yieldNewDefault(of: "fakeh.new") == nil, "nobody else has it: the default applies")
+        #expect(reg.shortcut(for: "fakeh.new") == key && ConfigStore.shared.shortcutOverrides.isEmpty)
+
+        ConfigStore.shared.shortcutOverrides = ["fakei.mine": key.configString]   // assigned before the update
+        #expect(reg.failed == ["fakei.mine"], "module order alone would take it")
+        #expect(reg.yieldNewDefault(of: "fakeh.new")?.id == "fakei.mine")
+        #expect(reg.shortcut(for: "fakeh.new") == nil && ConfigStore.shared.shortcutOverrides["fakeh.new"] == "")
+        #expect(reg.shortcut(for: "fakei.mine") == key && reg.failed.isEmpty)
+
+        // Unbound is a binding of its own: left alone.
+        #expect(reg.yieldNewDefault(of: "fakeh.new") == nil)
+        #expect(ConfigStore.shared.shortcutOverrides["fakeh.new"] == "")
+
+        // Given the key back, it keeps it: the old owner was unbound.
+        _ = NSApplication.shared   // the reassignment HUD is a panel
+        reg.assign(key, to: "fakeh.new")
+        #expect(reg.shortcut(for: "fakei.mine") == nil && reg.shortcut(for: "fakeh.new") == key)
+        #expect(reg.yieldNewDefault(of: "fakeh.new") == nil)
+        #expect(reg.shortcut(for: "fakeh.new") == key && reg.failed.isEmpty)
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.setModules([])
+    }
+
+    @Test func aNewDefaultOnlyYieldsToUserBindingsNotOtherDefaults() throws {
+        try #require(isolatedHome)
+        let key = testKeys[3]
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.isModuleEnabled = { _ in true }
+        reg.setModules([FakeModule("fakej", [("fakej.new", key.configString)]),
+                        FakeModule("fakek", [("fakek.same", key.configString)])])
+        #expect(reg.yieldNewDefault(of: "fakej.new") == nil)   // a defaults clash is a bug for the tests
+        #expect(ConfigStore.shared.shortcutOverrides.isEmpty)
+        reg.setModules([])
+    }
+
+    @Test func holdActionsKeepTheirToggleForTheMenuAndURLs() throws {
+        try #require(isolatedHome)
+        final class Holder: BentoModule {
+            let id = "fakel"
+            let title = "Fake Hold"
+            let symbol = "star"
+            var log: [String] = []
+            var actions: [BentoAction] {
+                [BentoAction("fakel.talk", "Talk", shortcut: testKeys[3].configString,
+                             hold: BentoAction.Hold(down: { [weak self] in self?.log.append("down") },
+                                                    up: { [weak self] in self?.log.append("up") })) { [weak self] in
+                    self?.log.append("toggle")
+                }]
+            }
+            func start() {}
+            func stop() {}
+        }
+        let m = Holder()
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.isModuleEnabled = { _ in true }
+        let before = HotkeyCenter.shared.registrationCount
+        reg.setModules([m])
+        #expect(reg.failed.isEmpty && HotkeyCenter.shared.registrationCount == before + 1)
+        #expect(reg.perform("fakel.talk"))
+        #expect(m.log == ["toggle"])
+        reg.setModules([])
+    }
+
     @Test func disabledModuleShortcutsCanBeClearedAndReset() throws {
         try #require(isolatedHome)
         let m = FakeModule("fakec", [("fakec.one", testKeys[3].configString)])

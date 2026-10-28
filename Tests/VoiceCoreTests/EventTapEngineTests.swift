@@ -267,6 +267,27 @@ import Testing
         #expect(engine.handleForTesting(type: .keyUp, event: keyEvent(79, down: false, flags: .maskAlternate), at: 3) == nil)
         #expect(intents == [.toggleAssistant, .beginEditing, .finalize])
     }
+
+    /// Dictate to Assistant is a rebindable shortcut (⌃⌥F18 by default): the
+    /// tap must hand both edges on to it, calls or not, and while the request
+    /// it started is recording (when Esc still cancels).
+    @Test func controlOptionF18PassesThroughToTheDictateToAssistantShortcut() {
+        let engine = EventTapEngine(key: .optionF17)
+        var intents: [HotkeyIntent] = []
+        engine.onIntent = { intents.append($0) }
+        let chord: CGEventFlags = [.maskAlternate, .maskControl]
+        for calls in [false, true] {
+            engine.setAssistantLiveCall(calls)
+            #expect(engine.handleForTesting(type: .keyDown, event: keyEvent(79, down: true, flags: chord), at: 0) != nil)
+            #expect(engine.handleForTesting(type: .keyUp, event: keyEvent(79, down: false, flags: chord), at: 0.5) != nil)
+        }
+        engine.setExternalSessionActive(true)
+        #expect(engine.handleForTesting(type: .keyDown, event: keyEvent(79, down: true, flags: chord), at: 1) != nil)
+        #expect(engine.handleForTesting(type: .keyUp, event: keyEvent(79, down: false, flags: chord), at: 1.1) != nil)
+        #expect(intents.isEmpty)
+        #expect(engine.handleForTesting(type: .keyDown, event: keyEvent(53, down: true), at: 2) == nil)
+        #expect(intents == [.cancel])
+    }
 }
 
 private extension EventTapEngine {
