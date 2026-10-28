@@ -1,5 +1,6 @@
 package com.charles.bento.ui.voice
 
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -87,8 +88,10 @@ fun MeetingScreen(id: String, nav: NavController) {
     }
     val list = rememberLazyListState()
     LaunchedEffect(m?.blocks?.size, m?.pending) {
-        val count = (m?.blocks?.size ?: 0) + 1
-        if (m?.phase == MeetingUi.Phase.Recording) list.animateScrollToItem(maxOf(0, count - 1))
+        if (m?.phase != MeetingUi.Phase.Recording || list.isScrollInProgress) return@LaunchedEffect
+        // to the end of the last item, not its top: a long paragraph still being spoken keeps its latest words in view
+        val last = list.layoutInfo.totalItemsCount - 1
+        if (last >= 0) { list.scrollToItem(last); list.scrollBy(100_000f) }
     }
 
     Scaffold(

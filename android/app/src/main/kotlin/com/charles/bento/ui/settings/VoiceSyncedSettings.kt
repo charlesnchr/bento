@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -78,7 +77,7 @@ fun VoiceSyncedSettings() {
                         Text("Use them", modifier = Modifier.weight(1f))
                         Switch(on, { on = it })
                     }
-                    OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
+                    OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 5, maxLines = 10,
                                       placeholder = { Text("e.g. British spelling. Never use em dashes.") })
                     Text("Shared with your Macs.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -119,7 +118,7 @@ fun DictionaryScreen(nav: NavController) {
             item {
                 Text("Names and terms the transcription should spell your way. A misspelling becomes a rule that always replaces it. Synced with your Macs.",
                      style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             }
             items(entries, key = { it.id }) { e ->
                 Row(Modifier.fillMaxWidth().clickable { editing = e }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -147,8 +146,9 @@ fun DictionaryScreen(nav: NavController) {
             title = { Text(if (e == null) "Add a word" else "Edit") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(term, { term = it.take(60) }, singleLine = true, label = { Text("Correct spelling") })
-                    OutlinedTextField(miss, { miss = it }, singleLine = true, label = { Text("Heard as (optional)") })
+                    OutlinedTextField(term, { term = it.take(60) }, singleLine = true, label = { Text("Correct spelling") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(miss, { miss = it }, singleLine = true, label = { Text("Heard as") }, modifier = Modifier.fillMaxWidth(),
+                                      supportingText = { Text("Optional: a misspelling to always replace") })
                 }
             },
             confirmButton = {
@@ -190,14 +190,14 @@ fun ModesScreen(nav: NavController) {
                 Text("A mode adds its own instructions to the cleanup (“Email: friendly but brief”, “Notes: bullet points”). " +
                      "Switch with the chip on the bubble or the keyboard, even while talking.",
                      style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             }
             item {
-                SettingsRow("Default", "Your custom instructions only", onClick = { graph.prefs.activeMode.value = "" },
+                SettingsRow("Default", "Your custom instructions only", onClick = { graph.prefs.activeMode.value = "" }, iconColumn = false,
                             trailing = { if (active.isEmpty()) Text("Active", color = MaterialTheme.colorScheme.primary) })
             }
             items(modes, key = { it.id }) { m ->
-                SettingsRow(m.name, m.prompt.lines().firstOrNull()?.take(80), onClick = { editing = m }, trailing = {
+                SettingsRow(m.name, m.prompt.lines().firstOrNull()?.take(80), onClick = { editing = m }, iconColumn = false, trailing = {
                     if (active == m.id) Text("Active", color = MaterialTheme.colorScheme.primary)
                     else TextButton(onClick = { graph.prefs.activeMode.value = m.id }) { Text("Use") }
                 })
@@ -215,9 +215,13 @@ fun ModesScreen(nav: NavController) {
             title = { Text(if (m == null) "New mode" else "Edit mode") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") })
-                    OutlinedTextField(prompt, { prompt = it }, label = { Text("Instructions") }, modifier = Modifier.heightIn(min = 120.dp))
-                    OutlinedTextField(language, { language = it }, singleLine = true, label = { Text("Language (e.g. da, en-GB; empty = automatic)") })
+                    OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(prompt, { prompt = it }, label = { Text("Instructions") }, placeholder = { Text("e.g. Friendly but brief. Bullet points.") },
+                                      minLines = 4, maxLines = 8, modifier = Modifier.fillMaxWidth())
+                    // the hint below the field: as a label it was cut off
+                    OutlinedTextField(language, { language = it }, singleLine = true, label = { Text("Language") },
+                                      placeholder = { Text("Automatic") }, supportingText = { Text("A code like da or en-GB; empty for automatic") },
+                                      modifier = Modifier.fillMaxWidth())
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Clean up", modifier = Modifier.weight(1f))
                         Switch(cleanup, { cleanup = it })

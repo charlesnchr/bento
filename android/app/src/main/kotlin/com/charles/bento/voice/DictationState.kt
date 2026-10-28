@@ -65,6 +65,8 @@ sealed interface DictationState {
         val undo: (() -> Unit)?,
         /** Lets the user say how to change what was just inserted. */
         val canEdit: Boolean,
+        /** What was filed, when [text] is only the confirmation ("Added to “Thoughts”"). */
+        val detail: String? = null,
     ) : DictationState
 
     data class Failed(val message: String, val canRetry: Boolean) : DictationState

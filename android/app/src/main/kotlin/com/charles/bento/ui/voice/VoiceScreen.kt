@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,11 +31,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -47,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.charles.bento.graph
+import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.MeetingRoute
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.settings.Setup
@@ -96,8 +97,9 @@ fun VoiceScreen(modifier: Modifier, nav: NavController) {
     }
 
     Column(modifier.fillMaxSize()) {
-        LargeTopAppBar(
-            title = { Text("Voice") },
+        // the same bar as Notes and Todo
+        TopAppBar(
+            title = { Text("Voice", fontWeight = FontWeight.SemiBold) },
             actions = { IconButton(onClick = { nav.navigate(SettingsRoute) }) { Icon(Icons.Rounded.Settings, "Settings") } },
         )
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
@@ -187,21 +189,11 @@ private fun TryIt() {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         OutlinedTextField(
             value = value, onValueChange = { value = it },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
             placeholder = { Text("Try it: tap the mic and talk") },
-            supportingText = {
-                Text(
-                    when (val s = state) {
-                        is DictationState.Listening -> s.partial.ifBlank { "Listening…" }
-                        is DictationState.Processing -> "Cleaning up…"
-                        is DictationState.Failed -> s.message
-                        else -> "Outside Bento: the bubble, a held Volume Down, or the Bento keyboard"
-                    },
-                    maxLines = 2, overflow = TextOverflow.Ellipsis,
-                )
-            },
             trailingIcon = {
-                FilledIconButton(onClick = {
+                FilledIconButton(modifier = Modifier.padding(end = 6.dp), onClick = {
                     if (listening) graph.dictation.stop()
                     else graph.dictation.start(
                         DictationTarget.Editor(
@@ -218,6 +210,18 @@ private fun TryIt() {
                     )
                 }) { Icon(if (listening) Icons.Rounded.Stop else Icons.Rounded.Mic, "Dictate") }
             },
+        )
+        // the whole live transcript (scrolling on the latest words), not its first two lines
+        LiveTranscript(
+            when (val s = state) {
+                is DictationState.Listening -> s.partial.ifBlank { "Listening…" }
+                is DictationState.Processing -> "Cleaning up…"
+                is DictationState.Failed -> s.message
+                else -> "Outside Bento: the bubble, a held Volume Down, or the Bento keyboard"
+            },
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp), maxHeight = 96.dp,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state is DictationState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

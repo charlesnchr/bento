@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,10 +48,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.charles.bento.graph
+import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.settings.Setup
 import com.charles.bento.ui.theme.BentoTheme
 import kotlinx.coroutines.delay
@@ -101,8 +103,9 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
         else if (graph.dictation.state.value !is DictationState.Listening) start(context, kind)
     }
     LaunchedEffect(state) {
-        when (state) {
-            is DictationState.Done -> { delay(1_400); graph.dictation.dismiss(); onClose() }
+        when (val s = state) {
+            // long enough to read what was filed, then out of the way
+            is DictationState.Done -> { delay((1_400L + 25L * (s.detail?.length ?: 0)).coerceAtMost(4_000L)); graph.dictation.dismiss(); onClose() }
             DictationState.Idle -> { delay(300); if (graph.dictation.state.value == DictationState.Idle) onClose() }
             else -> {}
         }
@@ -123,42 +126,56 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 6.dp,
         ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (kind == CaptureActivity.KIND_TASK) "New task" else "Capture thought",
                          style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                     IconButton(onClick = { graph.dictation.cancel(); onClose() }) { Icon(Icons.Rounded.Close, "Cancel") }
                 }
-                when (val s = state) {
-                    is DictationState.Listening -> {
-                        Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.CenterStart) {
-                            if (s.partial.isBlank()) Waveform(levels, MaterialTheme.colorScheme.primary)
-                            else Text(s.partial, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                val transcript = MaterialTheme.typography.bodyLarge
+                Column(Modifier.padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    when (val s = state) {
+                        is DictationState.Listening -> {
+                            // everything heard so far, following the latest words
+                            if (s.partial.isBlank()) Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.CenterStart) {
+                                Waveform(levels, MaterialTheme.colorScheme.primary)
+                            } else LiveTranscript(s.partial, Modifier.heightIn(min = 64.dp), style = transcript)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Tap anywhere when you're done", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                     style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                                Box(
+                                    Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { graph.dictation.stop() },
+                                    contentAlignment = Alignment.Center,
+                                ) { Icon(Icons.Rounded.Check, "Done", tint = MaterialTheme.colorScheme.onPrimary) }
+                            }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Tap anywhere when you're done", color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                 style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                            Box(
-                                Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { graph.dictation.stop() },
-                                contentAlignment = Alignment.Center,
-                            ) { Icon(Icons.Rounded.Check, "Done", tint = MaterialTheme.colorScheme.onPrimary) }
+                        is DictationState.Processing -> {
+                            Status(MaterialTheme.colorScheme.onSurfaceVariant, "Transcribing…") { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+                            if (s.partial.isNotBlank()) LiveTranscript(s.partial, style = transcript, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        is DictationState.Done -> {
+                            Status(MaterialTheme.colorScheme.primary, s.text) { Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary) }
+                            // what was filed, in full
+                            s.detail?.let { LiveTranscript(it, style = transcript) }
+                        }
+                        is DictationState.Failed -> {
+                            Text(s.message, color = MaterialTheme.colorScheme.error)
+                            if (s.canRetry) TextButton(onClick = { graph.dictation.retry() }) { Text("Try again") }
+                        }
+                        DictationState.Idle -> Spacer(Modifier.height(64.dp))
                     }
-                    is DictationState.Processing -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text(s.partial.ifBlank { "Transcribing…" }, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    }
-                    is DictationState.Done -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(12.dp))
-                        Text(s.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    }
-                    is DictationState.Failed -> Text(s.message, color = MaterialTheme.colorScheme.error)
-                    DictationState.Idle -> Spacer(Modifier.height(64.dp))
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun Status(color: Color, text: String, icon: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { icon() }
+        Spacer(Modifier.width(12.dp))
+        Text(text, color = color, style = MaterialTheme.typography.titleSmall)
     }
 }
 

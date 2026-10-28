@@ -39,6 +39,9 @@ fun SettingsSection(title: String, footer: String? = null, content: @Composable 
     }
 }
 
+/** Where a row's text starts after the icon column, so rows with and without an icon line up. */
+private val ICON_COLUMN = 22.dp + 16.dp
+
 @Composable
 fun SettingsRow(
     title: String,
@@ -46,6 +49,8 @@ fun SettingsRow(
     icon: ImageVector? = null,
     iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     onClick: (() -> Unit)? = null,
+    /** False in lists without icons (a dialog's choices): no empty icon column. */
+    iconColumn: Boolean = true,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     Row(
@@ -55,6 +60,8 @@ fun SettingsRow(
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(16.dp))
+        } else if (iconColumn) {
+            Spacer(Modifier.width(ICON_COLUMN))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
@@ -73,7 +80,7 @@ fun SwitchRow(title: String, checked: Boolean, subtitle: String? = null, icon: I
 
 @Composable
 fun SliderRow(title: String, value: Float, range: ClosedFloatingPointRange<Float>, label: String, steps: Int = 0, onChange: (Float) -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    Column(Modifier.padding(start = 16.dp + ICON_COLUMN, end = 16.dp, top = 8.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
             Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

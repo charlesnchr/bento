@@ -60,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.charles.bento.settings.Prefs
 import com.charles.bento.ui.ComposeWindowOwner
+import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.theme.BentoTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -302,8 +303,8 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
                         if (s.partial.isBlank()) {
                             Waveform(levels, MaterialTheme.colorScheme.primary)
                         } else {
-                            Text(s.partial.takeLast(160), maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                 style = MaterialTheme.typography.bodyMedium)
+                            // fixed height (the overlay window must not resize per word): two lines, on the latest words
+                            LiveTranscript(s.partial, maxHeight = 44.dp, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     if (s.modeName != null && !s.editing) {
@@ -315,8 +316,8 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
                 is DictationState.Processing -> Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
-                    Text(if (s.editing) "Rewriting…" else s.partial.takeLast(120).ifBlank { "Transcribing…" },
-                         maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    LiveTranscript(if (s.editing) "Rewriting…" else s.partial.ifBlank { "Transcribing…" },
+                                   Modifier.weight(1f), maxHeight = 44.dp, style = MaterialTheme.typography.bodyMedium)
                 }
                 is DictationState.Done -> Row(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary)

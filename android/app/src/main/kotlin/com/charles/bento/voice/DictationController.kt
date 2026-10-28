@@ -293,11 +293,12 @@ class DictationController(
             }
             is DictationTarget.Thought -> {
                 val title = sinks().captureThought(t.noteId, text)
-                _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false)
+                _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false,
+                                                   detail = text.takeIf { title != null })
             }
             DictationTarget.Task -> {
                 val title = sinks().addTask(text)
-                _state.value = DictationState.Done(if (title != null) "Task added: $title" else text, undo = null, canEdit = false)
+                _state.value = DictationState.Done(if (title != null) "Task added" else text, undo = null, canEdit = false, detail = title)
             }
         }
         if (prefs.sounds.value) sounds.play(Earcons.SUCCESS)
