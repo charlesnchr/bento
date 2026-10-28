@@ -69,5 +69,10 @@ sealed interface DictationState {
         val detail: String? = null,
     ) : DictationState
 
-    data class Failed(val message: String, val canRetry: Boolean) : DictationState
+    data class Failed(
+        val message: String,
+        val canRetry: Boolean,
+        /** The live transcript shown before transcription failed, so the words aren't simply gone. */
+        val heard: String? = null,
+    ) : DictationState
 }

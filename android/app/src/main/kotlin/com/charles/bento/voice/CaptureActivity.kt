@@ -2,11 +2,14 @@ package com.charles.bento.voice
 
 import android.Manifest
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.service.quicksettings.TileService
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -48,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.charles.bento.graph
@@ -116,7 +120,11 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f))
             .clickable(remember { MutableInteractionSource() }, indication = null) {
-                if (state is DictationState.Listening) graph.dictation.stop() else onClose()
+                when (state) {
+                    is DictationState.Listening -> graph.dictation.stop()
+                    is DictationState.Done -> { graph.dictation.dismiss(); onClose() }
+                    else -> onClose()
+                }
             },
         contentAlignment = Alignment.BottomCenter,
     ) {
@@ -133,13 +141,15 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
                     IconButton(onClick = { graph.dictation.cancel(); onClose() }) { Icon(Icons.Rounded.Close, "Cancel") }
                 }
                 val transcript = MaterialTheme.typography.bodyLarge
+                // the sheet must leave room for its buttons in landscape and split screen
+                val cap = minOf(220.dp, (LocalConfiguration.current.screenHeightDp * 0.4f).dp)
                 Column(Modifier.padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     when (val s = state) {
                         is DictationState.Listening -> {
                             // everything heard so far, following the latest words
                             if (s.partial.isBlank()) Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.CenterStart) {
                                 Waveform(levels, MaterialTheme.colorScheme.primary)
-                            } else LiveTranscript(s.partial, Modifier.heightIn(min = 64.dp), style = transcript)
+                            } else LiveTranscript(s.partial, Modifier.heightIn(min = 64.dp), maxHeight = cap, style = transcript)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Tap anywhere when you're done", color = MaterialTheme.colorScheme.onSurfaceVariant,
                                      style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -151,16 +161,24 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
                         }
                         is DictationState.Processing -> {
                             Status(MaterialTheme.colorScheme.onSurfaceVariant, "Transcribing…") { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
-                            if (s.partial.isNotBlank()) LiveTranscript(s.partial, style = transcript, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (s.partial.isNotBlank()) LiveTranscript(s.partial, maxHeight = cap, style = transcript, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         is DictationState.Done -> {
                             Status(MaterialTheme.colorScheme.primary, s.text) { Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary) }
                             // what was filed, in full
-                            s.detail?.let { LiveTranscript(it, style = transcript) }
+                            s.detail?.let { LiveTranscript(it, maxHeight = cap, style = transcript) }
                         }
                         is DictationState.Failed -> {
                             Text(s.message, color = MaterialTheme.colorScheme.error)
-                            if (s.canRetry) TextButton(onClick = { graph.dictation.retry() }) { Text("Try again") }
+                            // what was heard before it failed stays readable, and can be kept
+                            s.heard?.let { LiveTranscript(it, maxHeight = cap, style = transcript, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Row {
+                                if (s.heard != null) TextButton(onClick = {
+                                    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Bento dictation", s.heard))
+                                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                                }) { Text("Copy") }
+                                if (s.canRetry) TextButton(onClick = { graph.dictation.retry() }) { Text("Try again") }
+                            }
                         }
                         DictationState.Idle -> Spacer(Modifier.height(64.dp))
                     }

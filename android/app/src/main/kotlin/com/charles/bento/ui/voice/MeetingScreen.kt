@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.charles.bento.graph
+import com.charles.bento.ui.FollowEnd
 import com.charles.bento.ui.NoteRoute
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -87,12 +88,17 @@ fun MeetingScreen(id: String, nav: NavController) {
         while (m?.phase == MeetingUi.Phase.Recording) { now = System.currentTimeMillis(); delay(1_000) }
     }
     val list = rememberLazyListState()
-    LaunchedEffect(m?.blocks?.size, m?.pending) {
-        if (m?.phase != MeetingUi.Phase.Recording || list.isScrollInProgress) return@LaunchedEffect
-        // to the end of the last item, not its top: a long paragraph still being spoken keeps its latest words in view
-        val last = list.layoutInfo.totalItemsCount - 1
-        if (last >= 0) { list.scrollToItem(last); list.scrollBy(100_000f) }
-    }
+    // while recording, to the end of the last item (not its top: a long paragraph still being spoken
+    // keeps its latest words in view), unless the user has scrolled back to read
+    FollowEnd(
+        list, list.interactionSource,
+        atEnd = { !list.canScrollForward },
+        toEnd = {
+            val last = list.layoutInfo.totalItemsCount - 1
+            if (m?.phase == MeetingUi.Phase.Recording && last >= 0) { list.scrollToItem(last); list.scrollBy(100_000f) }
+        },
+        grows = { m?.blocks?.size to m?.pending },
+    )
 
     Scaffold(
         topBar = {

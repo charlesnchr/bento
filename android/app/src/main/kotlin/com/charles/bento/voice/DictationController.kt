@@ -193,7 +193,7 @@ class DictationController(
                 fail("No sound reached the microphone. Is microphone access turned off in Quick Settings?")
                 return@launch
             }
-            text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true) }
+            text.onFailure { fail(it.message ?: "Transcription failed", canRetry = true, heard = st.partial.trim().ifEmpty { null }) }
                 .onSuccess { deliver(it.trim()) }
         }
     }
@@ -309,11 +309,11 @@ class DictationController(
         const val SILENT = 0.02f
     }
 
-    private fun fail(message: String, canRetry: Boolean = false) {
+    private fun fail(message: String, canRetry: Boolean = false, heard: String? = null) {
         releaseMic()
         VoiceService.exit(context)
         if (prefs.sounds.value) sounds.play(Earcons.ERROR)
-        _state.value = DictationState.Failed(message, canRetry)
+        _state.value = DictationState.Failed(message, canRetry, heard)
     }
 
     private fun copyToClipboard(text: String) {

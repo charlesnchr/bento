@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import com.charles.bento.settings.Prefs
 import com.charles.bento.ui.ComposeWindowOwner
 import com.charles.bento.ui.LiveTranscript
+import com.charles.bento.ui.linesHeight
 import com.charles.bento.ui.theme.BentoTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -299,12 +300,13 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
             when (val s = state) {
                 is DictationState.Listening -> Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { dictation.cancel() }) { Icon(Icons.Rounded.Close, "Cancel") }
-                    Box(Modifier.weight(1f).height(44.dp), contentAlignment = Alignment.CenterStart) {
+                    // fixed height (the overlay window must not resize per word): two whole lines at any font scale
+                    val twoLines = linesHeight(MaterialTheme.typography.bodyMedium, 2)
+                    Box(Modifier.weight(1f).height(maxOf(44.dp, twoLines)), contentAlignment = Alignment.CenterStart) {
                         if (s.partial.isBlank()) {
                             Waveform(levels, MaterialTheme.colorScheme.primary)
                         } else {
-                            // fixed height (the overlay window must not resize per word): two lines, on the latest words
-                            LiveTranscript(s.partial, maxHeight = 44.dp, style = MaterialTheme.typography.bodyMedium)
+                            LiveTranscript(s.partial, maxHeight = twoLines, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     if (s.modeName != null && !s.editing) {
@@ -317,7 +319,8 @@ private fun Pill(stateFlow: StateFlow<DictationState>, dictation: DictationContr
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
                     LiveTranscript(if (s.editing) "Rewriting…" else s.partial.ifBlank { "Transcribing…" },
-                                   Modifier.weight(1f), maxHeight = 44.dp, style = MaterialTheme.typography.bodyMedium)
+                                   Modifier.weight(1f), maxHeight = linesHeight(MaterialTheme.typography.bodyMedium, 2),
+                                   style = MaterialTheme.typography.bodyMedium)
                 }
                 is DictationState.Done -> Row(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary)
