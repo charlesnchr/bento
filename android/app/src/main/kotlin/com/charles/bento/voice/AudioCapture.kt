@@ -57,28 +57,33 @@ class AudioCapture(
         return true
     }
 
+    /** Returns at once; the audio thread lets go of the microphone as its read returns (stop ends it early). */
     fun stop() {
         running = false
-        thread?.join(500)
-        thread = null
-        record?.let { runCatching { it.stop() }; it.release() }
+        record?.let { runCatching { it.stop() } }
         record = null
+        thread = null
     }
 
     private fun loop(r: AudioRecord) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val frame = ShortArray(FRAME_SAMPLES)
-        while (running) {
-            var filled = 0
-            while (filled < frame.size && running) {
-                val n = r.read(frame, filled, frame.size - filled)
-                if (n < 0) { running = false; break }
-                filled += n
+        try {
+            while (running) {
+                var filled = 0
+                while (filled < frame.size && running) {
+                    val n = r.read(frame, filled, frame.size - filled)
+                    if (n <= 0) { if (n < 0) running = false; break }
+                    filled += n
+                }
+                if (filled == frame.size && running) {
+                    onFrame(frame.copyOf())
+                    onLevel(level(frame))
+                }
             }
-            if (filled == frame.size) {
-                onFrame(frame.copyOf())
-                onLevel(level(frame))
-            }
+        } finally {
+            // released here, never while a read is in progress
+            r.release()
         }
     }
 

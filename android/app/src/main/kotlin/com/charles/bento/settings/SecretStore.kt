@@ -47,6 +47,9 @@ class SecretStore(context: Context) {
         _version.value++
     }
 
+    /** Writes everything set so far to disk now (before the process exits). */
+    fun flush() = sp.edit().commit()
+
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }

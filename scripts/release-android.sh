@@ -50,7 +50,7 @@ fi
 
 say "test and build $VERSION"
 (cd android && BENTO_ANDROID_SIGNING="$SIGNING" ${RUN[@]+"${RUN[@]}"} "${GRADLE[@]}" --console=plain -q \
-  :core:test :app:testReleaseUnitTest :app:assembleRelease -PbentoVersion="$VERSION")
+  :core:test :app:testDebugUnitTest :app:assembleRelease -PbentoVersion="$VERSION")
 OUT="android/app/build/outputs/apk/release/app-release.apk"
 [ -f "$OUT" ] || die "no release APK (is the keystore configured?)"
 mkdir -p dist

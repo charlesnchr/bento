@@ -1,5 +1,7 @@
 package com.charles.bento
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -44,5 +46,12 @@ class MainActivity : ComponentActivity() {
         const val ACTION_QUICK_ADD = "com.charles.bento.QUICK_ADD"
         const val ACTION_OPEN_TODO = "com.charles.bento.OPEN_TODO"
         const val EXTRA_ID = "id"
+        private const val INTERNAL_ENTRY = "com.charles.bento.InternalEntry"
+
+        /** An intent only Bento can send (the alias isn't exported): needed for [ACTION_TOGGLE_MEETING]. */
+        fun internal(context: Context, action: String): Intent =
+            Intent(action).setComponent(ComponentName(context.packageName, INTERNAL_ENTRY))
+
+        fun isInternal(intent: Intent) = intent.component?.className == INTERNAL_ENTRY
     }
 }

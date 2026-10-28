@@ -84,6 +84,7 @@ import com.charles.bento.core.notes.RelativeDate
 import com.charles.bento.core.notes.TextMerge
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.graph
+import com.charles.bento.notes.EditMerge
 import com.charles.bento.ui.NoteRoute
 import com.charles.bento.ui.Routes
 import com.charles.bento.ui.theme.LocalBentoColors
@@ -116,7 +117,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     val all by notesModule.notes.collectAsStateWithLifecycle()
     val note = all.firstOrNull { it.id == id }
     var value by remember(id) { mutableStateOf(TextFieldValue(note?.body.orEmpty(), UiRange(note?.body?.length ?: 0))) }
-    var posted by remember(id) { mutableStateOf(note?.body.orEmpty()) } // what the module has (merge base for remote text)
+    var synced by remember(id) { mutableStateOf(note?.body.orEmpty()) } // the text the module has (or will have, once it has caught up)
     val history = remember(id) { EditHistory() }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -137,8 +138,8 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     val visual = remember(colors, folds.version) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
 
     fun post(text: String) {
-        posted = text
-        notesModule.edited(id, text)
+        notesModule.edited(id, synced, text)
+        synced = text
     }
 
     fun set(v: TextFieldValue, record: Boolean = true) {
@@ -158,22 +159,32 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         notesModule.opened(id)
         if (value.text.isEmpty()) focus.requestFocus()
     }
-    DisposableEffect(id) { onDispose { notesModule.closed(id) } }
+    var micTarget by remember(id) { mutableStateOf<DictationTarget.Editor?>(null) }
+    DisposableEffect(id) {
+        onDispose {
+            micTarget?.closed = true
+            notesModule.closed(id)
+        }
+    }
 
-    // text from elsewhere (another device, a widget, a captured thought): merged in like Google Docs
+    // text from elsewhere (another device, a widget, a captured thought): merged in like Google Docs.
+    // What's been typed since the store had `before` goes on top; the module merges those
+    // keystrokes the same way (when both touch the same text, the typing wins there too).
+    fun mergeIn(body: String, before: String) {
+        val local = value.text
+        val merged = EditMerge.remote(local, before, body)
+        synced = merged
+        if (merged == local) return
+        history.clear()
+        value = TextFieldValue(merged, TextMerge.map(value.sel(), TextMerge.edits(local, merged)).ui())
+    }
     LaunchedEffect(id) {
-        notesModule.remote.collect { n ->
+        // a change that landed before this started listening
+        notesModule.notes.value.firstOrNull { it.id == id }?.let { if (it.body != synced) mergeIn(it.body, synced) }
+        notesModule.remote.collect { (n, before) ->
             if (n.id != id) return@collect
-            val local = value.text
             if (n.deleted || n.isTrashed) { nav.popBackStack(); return@collect }
-            if (n.body == local) { posted = n.body; return@collect }
-            val merged = if (local == posted) n.body else TextMerge.merge(posted, local, n.body) ?: n.body
-            val edits = TextMerge.edits(local, merged)
-            val sel = TextMerge.map(value.sel(), edits)
-            history.clear()
-            value = TextFieldValue(merged, sel.ui())
-            posted = n.body
-            if (merged != n.body) post(merged) // keystrokes typed meanwhile go on top
+            mergeIn(n.body, before)
         }
     }
 
@@ -241,12 +252,13 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 },
                 onMic = {
                     if (dictation is DictationState.Listening) graph.dictation.stop()
-                    else graph.dictation.start(DictationTarget.Editor({ spoken ->
+                    else DictationTarget.Editor({ spoken ->
                         val v = value
                         val before = v.text.substring(0, v.selection.min)
                         val ins = TextInserter.spaced(spoken, before, v.text.substring(v.selection.max))
                         set(TextFieldValue(before + ins + v.text.substring(v.selection.max), UiRange(before.length + ins.length)))
-                    }, FieldContext(appLabel = "Bento Notes", hint = "A note in Markdown", textBefore = value.text.substring(0, value.selection.min))), handsFree = true)
+                    }, FieldContext(appLabel = "Bento Notes", hint = "A note in Markdown", textBefore = value.text.substring(0, value.selection.min)))
+                        .also { micTarget = it }.let { graph.dictation.start(it, handsFree = true) }
                 },
                 onHideKeyboard = { keyboard?.hide(); focusManager.clearFocus() },
                 status = when (val d = dictation) {
@@ -261,15 +273,18 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
             BasicTextField(
                 value = value,
                 onValueChange = { new ->
-                    // a tap on a folded heading's " ⋯" (either side of it), or typing at its end, opens it;
-                    // the end of the note doesn't count (a tap below the text lands there)
+                    // a tap on a folded heading's " ⋯" (either side of it) opens it, and so does typing next
+                    // to it (text there would land in the hidden part); a tap below the text lands at the end
+                    // of the note, which doesn't count
                     fun tapped(f: Section) = new.selection.collapsed && new.selection != value.selection && new.text == value.text &&
                         (new.selection.start == f.start || new.selection.start == f.end && f.end < value.text.length)
-                    val atFold = foldedSections(value.text, folds).firstOrNull { tapped(it) || new.text != value.text && it.start == value.selection.start }
+                    fun typedAt(f: Section) = new.text != value.text && value.selection.max >= f.start && value.selection.min <= f.end
+                    val atFold = foldedSections(value.text, folds).firstOrNull { tapped(it) || typedAt(it) }
                     if (atFold != null) folds.toggle(atFold)
                     handleChange(value, new, ::set, ::applyResult)
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
+                readOnly = note == null, // not on this phone (yet): typing would have nowhere to go
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 visualTransformation = visual,

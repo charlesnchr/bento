@@ -28,6 +28,10 @@ class Prefs(context: Context) {
     val server = string("sync.server", "")
     val pairedWith = string("sync.pairedWith", "")
     val syncEnabled = bool("sync.enabled", true)
+    /** The server this phone's documents and sync state belong to (kept when unpairing). */
+    val syncedServer = string("sync.syncedServer", "")
+    /** Pairing with another server: the documents are dropped at the next launch, before anything opens them. */
+    val resetPending = bool("sync.resetPending", false)
     val deviceName = string("sync.deviceName", defaultDeviceName(context))
 
     // Appearance
@@ -73,6 +77,9 @@ class Prefs(context: Context) {
     /** Free-form keys (widget configuration, per-note state). */
     fun getString(key: String): String? = sp.getString(key, null)
     fun putString(key: String, value: String?) = sp.edit().apply { if (value == null) remove(key) else putString(key, value) }.apply()
+
+    /** Writes everything set so far to disk now (before the process exits). */
+    fun flush() = sp.edit().commit()
 
     inner class Pref<T>(val key: String, val default: T, private val read: () -> T, private val write: (SharedPreferences.Editor, T) -> Unit) {
         private val state = MutableStateFlow(read())

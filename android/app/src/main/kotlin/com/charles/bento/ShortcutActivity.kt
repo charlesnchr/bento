@@ -21,8 +21,7 @@ class ShortcutActivity : Activity() {
         when (which) {
             "thought" -> startActivity(CaptureActivity.intent(this, CaptureActivity.KIND_THOUGHT))
             "task" -> startActivity(CaptureActivity.intent(this, CaptureActivity.KIND_TASK))
-            "meeting" -> startActivity(Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_TOGGLE_MEETING)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            "meeting" -> startActivity(MainActivity.internal(this, MainActivity.ACTION_TOGGLE_MEETING).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
         finish()
     }

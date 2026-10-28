@@ -1,11 +1,24 @@
 package com.charles.bento.widget
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import androidx.glance.appwidget.updateAll
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import com.charles.bento.graph
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.time.Duration
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.util.concurrent.TimeUnit
 
 /** What the widgets show, from the stores' snapshots (cheap, any thread). */
 interface WidgetData {
@@ -54,15 +67,45 @@ data class TaskCard(
 /** Redraws every Bento widget, at most a few times a second. */
 object Widgets {
     private var pending: Job? = null
+    private val _today = MutableStateFlow(LocalDate.now())
+    /** Today, as of the last redraw: what's due today or overdue depends on it. */
+    val today: StateFlow<LocalDate> = _today
 
     fun refresh(context: Context, delayMs: Long = 300) {
         val app = context.applicationContext
         pending?.cancel()
         pending = app.graph.main.launch {
             delay(delayMs)
-            NotesWidget().updateAll(app)
-            NoteWidget().updateAll(app)
-            TasksWidget().updateAll(app)
+            updateNow(app)
         }
     }
+
+    suspend fun updateNow(context: Context) {
+        val app = context.applicationContext
+        _today.value = LocalDate.now()
+        NotesWidget().updateAll(app)
+        NoteWidget().updateAll(app)
+        TasksWidget().updateAll(app)
+    }
+
+    /** A redraw just after midnight every day (Today becomes tomorrow's list). */
+    fun scheduleDaily(context: Context) {
+        val untilMidnight = Duration.between(LocalDateTime.now(), LocalDate.now().plusDays(1).atStartOfDay()).plusMinutes(1)
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            "widgets-daily", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<WidgetDayWorker>(1, TimeUnit.DAYS).setInitialDelay(untilMidnight.toMillis(), TimeUnit.MILLISECONDS).build(),
+        )
+    }
+}
+
+class WidgetDayWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        Widgets.updateNow(applicationContext)
+        return Result.success()
+    }
+}
+
+/** The clock or the time zone changed: the day may have too. */
+class WidgetClockReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) = Widgets.refresh(context, delayMs = 0)
 }

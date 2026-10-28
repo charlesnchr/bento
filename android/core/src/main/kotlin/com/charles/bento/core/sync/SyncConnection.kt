@@ -3,6 +3,7 @@ package com.charles.bento.core.sync
 import com.charles.bento.core.json.wireBool
 import com.charles.bento.core.json.wireLong
 import com.charles.bento.core.json.wireString
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,6 +31,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.random.Random
@@ -617,6 +619,9 @@ class SyncConnection(
             sync.reset()
             _status.update { it.copy(lastError = e.message) }
             return false
+        } catch (e: CancellationException) {
+            sync.reset() // stopped mid-put (background work cancelled): it goes out again next time
+            throw e
         }
     }
 
@@ -664,8 +669,9 @@ class SyncConnection(
     }
 }
 
-/** Suspends until the call completes; cancelling the coroutine cancels the call. */
+/** Suspends until the call completes (30 s at most); cancelling the coroutine cancels the call. */
 internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+    timeout().timeout(30, TimeUnit.SECONDS) // the client has no read timeout, for the WebSocket
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             if (!cont.isCancelled) cont.resumeWithException(e)

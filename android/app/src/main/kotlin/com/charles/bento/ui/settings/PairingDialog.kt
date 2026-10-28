@@ -18,33 +18,36 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.charles.bento.core.sync.SyncConnection
 import com.charles.bento.graph
 import com.charles.bento.settings.Pairing
 import com.charles.bento.settings.save
+import com.charles.bento.settings.serverKey
 
 /**
  * Confirms a pairing. Re-pairing with the same server (a new token) keeps everything; a
  * different server starts fresh, because this phone's sync state describes the old one.
  */
 @Composable
-fun PairingDialog(p: Pairing, onDone: () -> Unit) {
+fun PairingDialog(p: Pairing, fromLink: Boolean = false, onDone: () -> Unit) {
     val context = LocalContext.current
     val graph = context.graph
-    val current = graph.prefs.server.value
-    val switching = current.isNotBlank() && SyncConnection.baseUrl(current) != SyncConnection.baseUrl(p.server)
+    // the server the documents on this phone came from, even after unpairing
+    val current = graph.prefs.syncedServer.value.trimEnd('/')
+    val switching = current.isNotBlank() && current != serverKey(p.server)
     AlertDialog(
         onDismissRequest = onDone,
         title = { Text("Pair with ${p.macName.ifBlank { "this Mac" }}?") },
         text = {
             Text(
-                if (switching) {
+                (if (switching) {
                     "This phone syncs with $current. Switching to ${p.server} starts fresh: Bento restarts, and notes and tasks " +
                         "that only exist on this phone are removed. Everything on the new server comes down."
                 } else {
-                    "Notes, tasks and your dictionary sync with ${p.server}." +
-                        if (p.geminiKey != null) " Dictation uses the Mac's Gemini API key." else ""
-                },
+                    "Notes, tasks and your dictionary sync with ${p.server}."
+                }) +
+                    (if (p.geminiKey != null) " Dictation will use the Gemini API key in this code." else "") +
+                    // a link can come from anywhere (a web page, a message): the code on your own Mac is the one to trust
+                    (if (fromLink) "\n\nOnly pair with a code from your own Mac." else ""),
             )
         },
         confirmButton = {
@@ -57,12 +60,13 @@ fun PairingDialog(p: Pairing, onDone: () -> Unit) {
     )
 }
 
-/** Saves the new pairing, drops the old server's documents and sync state, and restarts the app. */
+/** Saves the new pairing and restarts the app, which drops the old server's documents and sync state as it starts. */
 private fun startFresh(context: Context, p: Pairing) {
     val graph = context.graph
+    graph.prefs.resetPending.value = true // first: sync stops before the new server is set
     p.save(graph.prefs, graph.secrets)
-    graph.prefs.thoughtNote.value = ""
-    listOf("notes.db", "todos.db", "voice.db").forEach(context::deleteDatabase)
+    graph.prefs.flush()
+    graph.secrets.flush()
     val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
     context.startActivity(launch)

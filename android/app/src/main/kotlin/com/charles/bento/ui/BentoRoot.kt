@@ -69,6 +69,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
     val nav = rememberNavController()
     var tab by rememberSaveable { mutableStateOf(Tab.Notes) }
     var pairing by remember { mutableStateOf<Pairing?>(null) }
+    var pairingFromLink by remember { mutableStateOf(false) }
     val homeAction = remember { MutableStateFlow<HomeAction?>(null) }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     val intent by pendingIntent.collectAsStateWithLifecycle()
@@ -84,7 +85,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         }
         when (i.action) {
             Intent.ACTION_VIEW -> i.dataString?.let { link ->
-                Pairing.parse(link)?.let { pairing = it }
+                Pairing.parse(link)?.let { pairing = it; pairingFromLink = true }
                     ?: Routes.fromLink(link)?.let { nav.navigate(it) }
             }
             MainActivity.ACTION_GRANT_MIC -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -97,7 +98,11 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
             MainActivity.ACTION_TOGGLE_MEETING -> {
                 tab = Tab.Voice
                 val rec = graph.meetings.recording.value
-                if (rec != null) { graph.meetings.stop(rec); nav.navigate(MeetingRoute(rec)) } else graph.meetings.start()
+                when {
+                    !MainActivity.isInternal(i) -> rec?.let { nav.navigate(MeetingRoute(it)) } // another app can't start or stop a recording
+                    rec != null -> { graph.meetings.stop(rec); nav.navigate(MeetingRoute(rec)) }
+                    else -> graph.meetings.start()
+                }
             }
             MainActivity.ACTION_OPEN_UPDATES -> nav.navigate(SettingsRoute)
         }
@@ -136,7 +141,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         composable<ModesRoute> { Screens.modes(nav) }
     }
 
-    pairing?.let { p -> PairingDialog(p) { pairing = null } }
+    pairing?.let { p -> PairingDialog(p, fromLink = pairingFromLink) { pairing = null; pairingFromLink = false } }
 
     val onboarded by graph.prefs.onboarded.flow.collectAsStateWithLifecycle()
     val server by graph.prefs.server.flow.collectAsStateWithLifecycle()

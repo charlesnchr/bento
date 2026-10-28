@@ -153,10 +153,16 @@ class BentoKeyboardService : InputMethodService() {
             textBefore = ic?.getTextBeforeCursor(400, 0)?.toString(),
             singleLine = info?.inputType?.and(InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0,
         )
+        val field = info?.let { it.packageName to it.fieldId }
         return DictationTarget.Keyboard(
             commit = { text ->
                 val c = currentInputConnection
-                if (c != null) {
+                if (c == null || editor?.let { it.packageName to it.fieldId } != field) {
+                    // another field has the keyboard now (or none): don't type there, keep the text
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        ?.setPrimaryClip(android.content.ClipData.newPlainText("Bento dictation", text))
+                    android.widget.Toast.makeText(this, "Dictation copied to the clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
                     val before = c.getTextBeforeCursor(64, 0)?.toString().orEmpty()
                     val after = c.getTextAfterCursor(1, 0)?.toString().orEmpty()
                     c.commitText(TextInserter.spaced(text, before, after), 1)

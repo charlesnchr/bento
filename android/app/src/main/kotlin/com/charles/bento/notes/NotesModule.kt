@@ -43,9 +43,12 @@ class NotesModule(
     /** Every note incl. tombstones, as of the last change. */
     val notes: StateFlow<List<Note>> = store.notes
 
-    private val _remote = MutableSharedFlow<Note>(extraBufferCapacity = 64)
-    /** A note's stored text changed because of the server (the open editor merges it in). */
-    val remote: SharedFlow<Note> = _remote
+    /** A note's stored text changed other than by the editor; `before` is what the store had just before. */
+    data class Change(val note: Note, val before: String)
+
+    private val _remote = MutableSharedFlow<Change>(extraBufferCapacity = 1024)
+    /** Changes from the server, a widget or a captured thought (the open editor merges them in). */
+    val remote: SharedFlow<Change> = _remote
 
     private val _conflicts = MutableSharedFlow<Pair<Note, String>>(extraBufferCapacity = 8)
     /** A conflicted copy was created or updated (the copy, the original's id). */
@@ -55,14 +58,21 @@ class NotesModule(
     private var pending: Note? = null
     private var pendingSince = 0L
     private var pendingJob: Job? = null
+    // the note a remote version is being applied to, and its text just before
+    private var applying: Pair<String, String>? = null
 
     init {
         engine.onRemoteChange = { n, _ ->
-            _remote.tryEmit(n)
+            val before = applying?.takeIf { it.first == n.id }?.second
+            if (before != null) applying = null
+            _remote.tryEmit(Change(n, before ?: n.body))
             Widgets.refresh(context)
         }
         // typed text reaches the store before a remote version is applied over it
-        engine.beforeApply = { id -> if (pending?.id == id) flushPending() }
+        engine.beforeApply = { id ->
+            if (pending?.id == id) flushPending()
+            applying = id to store.note(id)?.body.orEmpty()
+        }
         engine.onConflictCopy = { copy, original -> _conflicts.tryEmit(copy to original) }
         engineScope.launch { purgeOldTrash() }
     }
@@ -80,15 +90,23 @@ class NotesModule(
         n.id
     }
 
-    /** The editor's text changed. Kept in memory at once, written within 300 ms (1.5 s at most while typing). */
-    fun edited(id: String, body: String) {
+    /**
+     * The editor's text changed from `base` (its previous text) to `body`. Kept in memory at
+     * once, written within 300 ms (1.5 s at most while typing). When a change from elsewhere
+     * landed after `base`, the edit is merged into it, as the editor does with that change;
+     * when both touch the same text the typing wins and the other text is kept as a copy.
+     */
+    fun edited(id: String, base: String, body: String) {
         engineScope.launch {
             val stored = if (pending?.id == id) pending else { flushPending(); store.note(id) }
             stored ?: return@launch
-            if (stored.body == body) return@launch
+            val text = EditMerge.edit(stored.body, base, body) ?: body.also {
+                store.note(id)?.let { n -> engine.preserve(stored.body, n) }
+            }
+            if (stored.body == text) return@launch
             store.note(id)?.let(engine::willEdit) // the text this edit starts from: what a concurrent edit merges against
             if (pending?.id != id) pendingSince = System.currentTimeMillis()
-            pending = stored.copy(body = body, updatedAt = Note.nextUpdate(stored.updatedAt), dirty = true)
+            pending = stored.copy(body = text, updatedAt = Note.nextUpdate(stored.updatedAt), dirty = true)
             pendingJob?.cancel()
             val wait = minOf(300L, maxOf(0L, 1_500L - (System.currentTimeMillis() - pendingSince)))
             pendingJob = engineScope.launch {
@@ -165,15 +183,16 @@ class NotesModule(
         }
     }
 
-    /** Replaces a line of a note's body (widget checklist taps). */
-    suspend fun setBody(id: String, body: String) = onEngine {
+    /** Changes a note's stored text (widget checklist taps); `change` returns the new text, or null to leave it. */
+    suspend fun changeBody(id: String, change: (String) -> String?) = onEngine {
         flushPending()
-        val n = store.note(id) ?: return@onEngine
+        val n = store.note(id)?.takeIf { it.isLive } ?: return@onEngine
+        val body = change(n.body) ?: return@onEngine
         if (n.body == body) return@onEngine
         engine.willEdit(n)
         store.save(n.copy(body = body, updatedAt = Note.nextUpdate(n.updatedAt), dirty = true))
         changed()
-        _remote.tryEmit(store.note(id)!!) // an open editor shows it like a change from elsewhere
+        _remote.tryEmit(Change(store.note(id)!!, n.body)) // an open editor merges it like a change from elsewhere
     }
 
     // MARK: Thought capture
@@ -194,7 +213,7 @@ class NotesModule(
         store.save(n)
         if (target == null) prefs.thoughtNote.value = n.id
         changed()
-        _remote.tryEmit(n)
+        _remote.tryEmit(Change(n, target?.body.orEmpty()))
         NoteText.displayTitle(n.body)
     }
 }

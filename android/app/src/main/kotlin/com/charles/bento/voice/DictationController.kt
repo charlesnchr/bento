@@ -65,6 +65,7 @@ class DictationController(
     private val pipeline: () -> VoicePipeline,
     private val sinks: () -> DictationSinks,
     private val modes: () -> List<Pair<String, String>>, // id to name
+    private val meetingRecording: () -> Boolean,
 ) {
     private val _state = MutableStateFlow<DictationState>(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
@@ -100,6 +101,11 @@ class DictationController(
         }
         pipeline().unavailableReason()?.let {
             _state.value = DictationState.Failed(it, canRetry = false)
+            return false
+        }
+        if (meetingRecording()) {
+            // one recording at a time: the meeting has the microphone
+            _state.value = DictationState.Failed("A meeting is recording. Stop it to dictate", canRetry = false)
             return false
         }
         editing = false
@@ -165,6 +171,13 @@ class DictationController(
 
     fun stop() {
         val st = _state.value as? DictationState.Listening ?: return
+        if (capture == null) {
+            // let go before the microphone opened (a quick tap of the key): nothing was recorded
+            log("stopped before the microphone opened")
+            abandon()
+            _state.value = DictationState.Idle
+            return
+        }
         if (prefs.sounds.value) sounds.play(Earcons.STOP)
         _state.value = DictationState.Processing(st.partial, editing)
         val s = session
@@ -191,13 +204,19 @@ class DictationController(
     }
 
     fun cancel() {
+        abandon()
+        if (prefs.sounds.value) sounds.play(Earcons.CANCEL)
+        _state.value = DictationState.Idle
+    }
+
+    /** Stops whatever runs (starting, listening or transcribing) and lets go of the microphone. */
+    private fun abandon() {
+        job?.cancel()
+        job = null
         releaseMic()
         session?.cancel()
         session = null
-        job?.cancel()
         VoiceService.exit(context)
-        if (prefs.sounds.value) sounds.play(Earcons.CANCEL)
-        _state.value = DictationState.Idle
     }
 
     fun dismiss() {
@@ -262,7 +281,16 @@ class DictationController(
                 _state.value = DictationState.Done(text, undo = { t.inserter.undo() }, canEdit = true)
             }
             is DictationTarget.Keyboard -> { t.commit(text); lastInserted = text; lastTarget = t; _state.value = DictationState.Idle }
-            is DictationTarget.Editor -> { t.commit(text); _state.value = DictationState.Idle }
+            is DictationTarget.Editor -> {
+                if (t.closed) {
+                    // the screen it was for is gone: keep the text
+                    copyToClipboard(text)
+                    android.widget.Toast.makeText(context, "Dictation copied to the clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    t.commit(text)
+                }
+                _state.value = DictationState.Idle
+            }
             is DictationTarget.Thought -> {
                 val title = sinks().captureThought(t.noteId, text)
                 _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false)

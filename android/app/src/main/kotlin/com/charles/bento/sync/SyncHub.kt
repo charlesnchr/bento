@@ -58,7 +58,8 @@ class SyncHub(
     private var stopJob: Job? = null
 
     private val endpoint: () -> SyncEndpoint? = {
-        if (!prefs.syncEnabled.value || prefs.server.value.isBlank()) null else SyncEndpoint(prefs.server.value, secrets.syncToken)
+        if (!prefs.syncEnabled.value || prefs.server.value.isBlank() || prefs.resetPending.value) null
+        else SyncEndpoint(prefs.server.value, secrets.syncToken)
     }
 
     /** Adds a collection (call before [start]). */
@@ -135,7 +136,7 @@ class SyncHub(
 
     /** One REST round trip per collection (background). */
     suspend fun syncOnce(): Boolean = withContext(engine.coroutineContext[kotlin.coroutines.ContinuationInterceptor]!!) {
-        if (live) return@withContext true
+        if (live || endpoint() == null) return@withContext true // live, or not paired: nothing to do
         entries.map { it.second.syncOnce() }.all { it }
     }
 }
@@ -161,7 +162,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
         fun runSoon(context: Context) {
             WorkManager.getInstance(context).enqueueUniqueWork(
-                "sync-now", ExistingWorkPolicy.REPLACE,
+                // after one already running (it may have read the documents before this change)
+                "sync-now", ExistingWorkPolicy.APPEND_OR_REPLACE,
                 OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(online)
                     .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build(),
             )

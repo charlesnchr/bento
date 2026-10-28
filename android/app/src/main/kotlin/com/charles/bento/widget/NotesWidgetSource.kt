@@ -18,10 +18,13 @@ class NotesWidgetSource(private val notes: NotesModule) : AppWidgetData.WidgetNo
     override fun note(id: String): NoteCard? = notes.notes.value.firstOrNull { it.id == id && it.isLive }?.let { card(it, lines = true) }
 
     override suspend fun toggleChecklistItem(noteId: String, line: Int) {
-        val n = notes.notes.value.firstOrNull { it.id == noteId } ?: return
-        val start = lineStart(n.body, line) ?: return
-        val r = MarkdownCommands.toggleTasks(n.body, TextRange(start, 0)) ?: return
-        notes.setBody(noteId, r.apply(n.body))
+        // from the stored text at the time of the tap, provided that line is still a checklist item
+        notes.changeBody(noteId) { body ->
+            val start = lineStart(body, line) ?: return@changeBody null
+            val end = body.indexOf('\n', start).let { if (it < 0) body.length else it }
+            if (MarkdownParser.parseLine(body.substring(start, end), false).kind !is BlockKind.Task) return@changeBody null
+            MarkdownCommands.toggleTasks(body, TextRange(start, 0))?.apply(body)
+        }
     }
 
     private fun card(n: Note, lines: Boolean = false) = NoteCard(

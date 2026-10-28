@@ -118,9 +118,8 @@ class TextInserter(private val context: Context, private val node: Accessibility
         cm.setPrimaryClip(clip)
         val ok = node.performAction(AccessibilityAction.ACTION_PASTE.id)
         node.refresh()
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            runCatching { if (previous != null) cm.setPrimaryClip(previous) else cm.clearPrimaryClip() }
-        }, 400)
+        // put back what was there; when Android didn't let Bento read it, the dictation stays (clearing wouldn't bring it back)
+        if (previous != null) android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ runCatching { cm.setPrimaryClip(previous) } }, 400)
         return ok
     }
 

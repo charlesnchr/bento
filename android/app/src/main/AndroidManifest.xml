@@ -55,19 +55,17 @@
             android:taskAffinity="com.charles.bento.capture"
             android:theme="@style/Theme.Bento.Capture" />
 
+        <!-- not exported: launchers start shortcuts as Bento, and the icons below are its own aliases -->
         <activity
             android:name=".ShortcutActivity"
-            android:exported="true"
+            android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity="com.charles.bento.shortcut"
-            android:theme="@style/Theme.Bento.Trampoline">
-            <intent-filter>
-                <action android:name="com.charles.bento.SHORTCUT" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="bento" android:host="shortcut" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.Bento.Trampoline" />
+
+        <!-- Bento's own way into the main screen, for what other apps mustn't ask for (starting a recording) -->
+        <activity-alias android:name=".InternalEntry" android:targetActivity=".MainActivity" android:exported="false" />
 
         <!-- Optional launcher icons for hardware shortcut keys (Settings → Separate icons). -->
         <activity-alias android:name=".DictateLauncher" android:targetActivity=".ShortcutActivity" android:enabled="false"
@@ -157,6 +155,13 @@
         <receiver android:name=".widget.CaptureWidgetReceiver" android:exported="true" android:label="@string/widget_capture">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_capture" />
+        </receiver>
+        <!-- protected broadcasts (only the system sends them): the day may have changed -->
+        <receiver android:name=".widget.WidgetClockReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
         </receiver>
     </application>
 </manifest>

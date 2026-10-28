@@ -15,8 +15,11 @@ sealed interface DictationTarget {
         override val context: FieldContext,
     ) : DictationTarget
 
-    /** Bento's own note editor. */
-    class Editor(val commit: (String) -> Unit, override val context: FieldContext) : DictationTarget
+    /** A field on one of Bento's own screens (the note editor, quick add). */
+    class Editor(val commit: (String) -> Unit, override val context: FieldContext) : DictationTarget {
+        /** Set when the screen goes away: text that arrives later goes to the clipboard. */
+        var closed = false
+    }
 
     /** "Capture thought": appended to a note as a timestamped heading section (Mac: Capture Thought to Note). */
     class Thought(val noteId: String?) : DictationTarget {

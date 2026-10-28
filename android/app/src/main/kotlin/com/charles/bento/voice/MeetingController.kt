@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -55,6 +56,8 @@ class MeetingController(
     private val secrets: SecretStore,
     private val voiceSync: VoiceSyncModule,
     private val scope: CoroutineScope,
+    /** A dictation has the microphone. */
+    private val dictating: () -> Boolean,
     /** Saves the notes as a Bento note (body markdown); returns its id. */
     private val fileNote: suspend (meetingId: String, markdown: String) -> String?,
 ) : MeetingSource {
@@ -69,6 +72,10 @@ class MeetingController(
     val list: StateFlow<List<MeetingRow>> = _list.asStateFlow()
     private val active = MutableStateFlow<MeetingSession?>(null)
     private var timer: Job? = null
+    private var starting = false
+
+    /** Recording, or about to. */
+    val isBusy: Boolean get() = session != null || starting
 
     init { refresh() }
 
@@ -81,7 +88,11 @@ class MeetingController(
 
     /** Starts recording; false when it can't (no key, no microphone permission, already recording). */
     fun start(): Boolean {
-        if (session != null) return false
+        if (isBusy) return false
+        if (dictating()) {
+            Toast.makeText(context, "Finish the dictation first", Toast.LENGTH_SHORT).show()
+            return false
+        }
         val key = secrets.geminiKey ?: run {
             Toast.makeText(context, "Meetings need a Gemini API key: pair with your Mac or add one in Settings", Toast.LENGTH_LONG).show()
             return false
@@ -90,31 +101,36 @@ class MeetingController(
             context.startActivity(Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_GRANT_MIC).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return false
         }
+        starting = true
         scope.launch {
-            if (!VoiceService.enter(context, VoiceService.KIND_MEETING)) {
-                Toast.makeText(context, "Couldn't start recording right now", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-            val s = runCatching { engine.start(config(key)) }.getOrElse {
-                VoiceService.exit(context)
-                Toast.makeText(context, it.message ?: "Couldn't start the meeting", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-            val c = AudioCapture(onFrame = { s.feed(it) }, noiseSuppression = true)
-            if (!c.start()) {
-                runCatching { s.stop() }
-                VoiceService.exit(context)
-                Toast.makeText(context, "The microphone is in use by another app", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-            session = s
-            capture = c
-            active.value = s
-            _recording.value = s.id
-            showRecordingNotification(s)
-            refresh()
+            try { begin(key) } finally { starting = false }
         }
         return true
+    }
+
+    private suspend fun begin(key: String) {
+        if (!VoiceService.enter(context, VoiceService.KIND_MEETING)) {
+            Toast.makeText(context, "Couldn't start recording right now", Toast.LENGTH_LONG).show()
+            return
+        }
+        val s = runCatching { engine.start(config(key)) }.getOrElse {
+            VoiceService.exit(context)
+            Toast.makeText(context, it.message ?: "Couldn't start the meeting", Toast.LENGTH_LONG).show()
+            return
+        }
+        val c = AudioCapture(onFrame = { s.feed(it) }, noiseSuppression = true)
+        if (!c.start()) {
+            runCatching { s.stop() }
+            VoiceService.exit(context)
+            Toast.makeText(context, "The microphone is in use by another app", Toast.LENGTH_LONG).show()
+            return
+        }
+        session = s
+        capture = c
+        active.value = s
+        _recording.value = s.id
+        showRecordingNotification(s)
+        refresh()
     }
 
     override fun stop(id: String) {
@@ -202,7 +218,8 @@ class MeetingController(
                     else -> MeetingUi.Phase.Done
                 }, fail[id])
             }
-        }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), null)
+        }.flowOn(Dispatchers.IO) // reading a finished meeting's file
+            .stateIn(scope, SharingStarted.WhileSubscribed(5_000), null)
     }
 
     private fun ui(doc: MeetingDocument, interim: String, phase: MeetingUi.Phase, error: String?): MeetingUi {
@@ -235,7 +252,7 @@ class MeetingController(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stopIntent = PendingIntent.getActivity(
-            context, 4, Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_TOGGLE_MEETING),
+            context, 4, MainActivity.internal(context, MainActivity.ACTION_TOGGLE_MEETING),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val started = System.currentTimeMillis()

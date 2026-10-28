@@ -23,6 +23,18 @@ class AppGraph(val app: Application) {
     val prefs = Prefs(app)
     val secrets = SecretStore(app)
 
+    init {
+        if (prefs.resetPending.value) {
+            // paired with another server: this phone's documents and sync state described the old one
+            listOf("notes.db", "todos.db", "voice.db").forEach(app::deleteDatabase)
+            prefs.thoughtNote.value = ""
+            prefs.resetPending.value = false
+            prefs.flush()
+        } else if (prefs.syncedServer.value.isEmpty() && prefs.server.value.isNotBlank()) {
+            prefs.syncedServer.value = com.charles.bento.settings.serverKey(prefs.server.value)
+        }
+    }
+
     /** UI-side coordination (dictation, overlays). */
     val main: CoroutineScope = MainScope()
 
@@ -48,7 +60,7 @@ class AppGraph(val app: Application) {
     val createNote: suspend (body: String) -> String? = { body -> notes.create(body) }
     val voice = com.charles.bento.voice.GeminiVoice(app, prefs, secrets, voiceSync, main)
     val voicePipeline: VoicePipeline get() = voice
-    val meetings = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main) { _, md -> createNote(md) }
+    val meetings: com.charles.bento.voice.MeetingController = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main, { dictation.isBusy }) { _, md -> createNote(md) }
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
@@ -72,11 +84,12 @@ class AppGraph(val app: Application) {
     }
     val meetingSource: com.charles.bento.ui.voice.MeetingSource get() = meetings
 
-    val dictation = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() })
+    val dictation: DictationController = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() }, { meetings.isBusy })
 
     fun start() {
         sync.start()
         Updater.schedule(app)
+        com.charles.bento.widget.Widgets.scheduleDaily(app)
         voice.recover()
         meetings.recover()
         // recordings that waited for a connection go out as soon as there is one
@@ -88,7 +101,7 @@ class AppGraph(val app: Application) {
     }
 
     /** After a background sync: refresh widgets. */
-    suspend fun onBackgroundSync() {}
+    suspend fun onBackgroundSync() = com.charles.bento.widget.Widgets.updateNow(app)
 
 }
 

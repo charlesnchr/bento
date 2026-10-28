@@ -70,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -133,6 +134,8 @@ fun QuickAddSheet(view: TodoListView, onDismiss: () -> Unit, onAdded: (String) -
     val parsed = remember(value.text, store) { parse(value.text) }
     val highlight = remember(store) { TokenHighlight(::parse) }
     var menu by remember { mutableStateOf<String?>(null) }
+    var micTarget by remember { mutableStateOf<DictationTarget.Editor?>(null) }
+    DisposableEffect(Unit) { onDispose { micTarget?.closed = true } }
 
     fun appendToken(token: String) {
         val t = value.text.trimEnd()
@@ -214,8 +217,9 @@ fun QuickAddSheet(view: TodoListView, onDismiss: () -> Unit, onAdded: (String) -
                 val listening = dictation is DictationState.Listening
                 IconButton(onClick = {
                     if (listening) graph.dictation.stop()
-                    else graph.dictation.start(DictationTarget.Editor({ text -> appendToken(text.trim().trimEnd('.')) },
-                        FieldContext(appLabel = "Bento Todo", hint = "A task with an optional date, #project, @label or p1–p4", singleLine = true)), handsFree = true)
+                    else DictationTarget.Editor({ text -> appendToken(text.trim().trimEnd('.')) },
+                        FieldContext(appLabel = "Bento Todo", hint = "A task with an optional date, #project, @label or p1–p4", singleLine = true))
+                        .also { micTarget = it }.let { graph.dictation.start(it, handsFree = true) }
                 }) { Icon(if (listening) Icons.Rounded.Stop else Icons.Rounded.Mic, "Dictate") }
                 FilledIconButton(onClick = ::submit, enabled = value.text.isNotBlank()) { Icon(Icons.AutoMirrored.Rounded.Send, "Add") }
             }
@@ -249,25 +253,31 @@ fun Dot(color: Color, size: Int = 10) = Box(Modifier.size(size.dp).background(co
 fun TaskDetailSheet(id: String, docs: List<FieldDoc>, dates: TodoDates, onDismiss: () -> Unit, perform: (TodoActions.() -> TodoActions.Change?) -> Unit) {
     val graph = LocalContext.current.graph
     val todo = graph.todo
-    val scope = rememberCoroutineScope()
-    val task = docs.firstOrNull { it.id == id && !it.deleted }
-    if (task == null) { LaunchedEffect(Unit) { onDismiss() }; return }
+    val found = docs.firstOrNull { it.id == id && !it.deleted }
+    // what's typed is saved when the sheet closes, however it closes (and survives rotation)
+    val draft = remember(id) { TaskDraft(found) }
+    if (found != null) draft.snapshot = found
+    val originalTitle = rememberSaveable(id) { found?.title.orEmpty() }
+    val originalNotes = rememberSaveable(id) { found?.notes.orEmpty() }
+    var title by rememberSaveable(id) { mutableStateOf(originalTitle) }
+    var notes by rememberSaveable(id) { mutableStateOf(originalNotes) }
+
+    fun save() {
+        if (draft.saved || title == originalTitle && notes == originalNotes) return
+        draft.saved = true
+        val t = title
+        val n = notes
+        val snapshot = draft.snapshot // deleted elsewhere meanwhile: a changed draft comes back as a new task
+        // not the sheet's scope, which is cancelled as it closes
+        graph.main.launch { todo.perform { saveEdit(id, t, n, originalTitle, originalNotes, snapshot) } }
+    }
+    DisposableEffect(id) { onDispose { save() } }
+
+    val task = found ?: run { LaunchedEffect(Unit) { onDismiss() }; return }
     val store = remember(docs) { TodoStore(SnapshotRepo(docs)) }
-    val originalTitle = remember(id) { task.title }
-    val originalNotes = remember(id) { task.notes }
-    var title by remember(id) { mutableStateOf(task.title) }
-    var notes by remember(id) { mutableStateOf(task.notes) }
     var schedule by remember { mutableStateOf(false) }
     var projectMenu by remember { mutableStateOf(false) }
     var newLabel by remember { mutableStateOf("") }
-
-    fun save() {
-        if (title == originalTitle && notes == originalNotes) return
-        val t = title
-        val n = notes
-        scope.launch { todo.perform { saveEdit(id, t, n, originalTitle, originalNotes) } }
-    }
-    DisposableEffect(id) { onDispose { save() } }
 
     ModalBottomSheet(onDismissRequest = { save(); onDismiss() }) {
         Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
@@ -541,4 +551,9 @@ private fun PickRow(icon: ImageVector, title: String, count: String?, selected: 
         Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         if (count != null) Text(count, color = if (alert) TodoStyle.priority(1)!!.compose() else MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+/** The task details sheet's draft: the task as last seen, and whether the edit was saved. */
+private class TaskDraft(var snapshot: FieldDoc?) {
+    var saved = false
 }

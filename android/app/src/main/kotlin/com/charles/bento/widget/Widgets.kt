@@ -211,8 +211,9 @@ class TasksWidget : GlanceAppWidget() {
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
         provideContent {
             val docs by graph.todo.docs.collectAsState()
+            val today by Widgets.today.collectAsState()
             val view = graph.prefs.getString(tasksWidgetKey(appWidgetId)) ?: "today"
-            val list = remember(docs, view) { graph.widgetData.tasks(view, 40) }
+            val list = remember(docs, view, today) { graph.widgetData.tasks(view, 40) }
             GlanceTheme { TasksContent(context, appWidgetId, list) }
         }
     }
