@@ -153,7 +153,7 @@ documents are in `Voice/voice-sync.sqlite`.
 | MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item Accessibility open shortcuts are user-defined |
 | Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds); Capture Thought to Note (`dictation.capture-note`) has none |
 | Meetings | `shift+opt+f17` record/stop |
-| Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
+| Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture; with calls off it edits or talks to the assistant); `ctrl+opt+f18` Dictate to Assistant (`assistant.dictate`, hold or tap: the shortcut's key-up drives push-to-talk through `BentoAction.hold`; `VoiceModulesTests` fails if another literal takes it, and `yieldNewDefault` leaves it unbound for users who had already put it on something else); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
 | Bento (app) | `opt+slash` (⌥/) Keyboard Shortcuts overview, also in the menu bar menu. Registered after the modules, so a module's or the user's binding of the same keys wins. `KeyboardOverviewTests` fails if any shortcut literal in `Sources` takes it |
 
 ## MenuBar behavior

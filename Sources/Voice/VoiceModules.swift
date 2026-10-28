@@ -157,11 +157,22 @@ public final class AssistantModule: BentoModule {
 
     public init() {}
 
+    static let dictateID = "assistant.dictate"
+    /// ⌃⌥F18, beside ⇧⌥F18 (the window) and ⌥F18 (calls, or with calls off
+    /// voice editing and requests), which used to dictate requests before
+    /// calls took it over.
+    static let dictateShortcut = "ctrl+opt+f18"
+
     public var actions: [BentoAction] {
         let group = "Assistant"
         return [
             BentoAction("assistant.toggle", "Show or Hide Assistant", group: group, shortcut: "shift+opt+f18") {
                 onMain { VoiceApp.shared.dictation.toggleAssistant() }
+            },
+            BentoAction(Self.dictateID, "Dictate to Assistant", group: group, shortcut: Self.dictateShortcut,
+                        hold: BentoAction.Hold(down: { onMain { VoiceApp.shared.dictation.assistantDictationKeyDown() } },
+                                               up: { onMain { VoiceApp.current?.dictation.assistantDictationKeyUp() } })) {
+                onMain { VoiceApp.shared.dictation.toggleAssistantDictation() }
             },
             BentoAction("assistant.open", "Open Assistant", group: group, hiddenFromMenu: true) {
                 onMain { VoiceApp.shared.dictation.openAssistant() }
@@ -175,7 +186,11 @@ public final class AssistantModule: BentoModule {
         ]
     }
 
-    public func start() { onMain { VoiceApp.shared.setEnabled(.assistant, true) } }
+    public func start() {
+        // Added after release: users who already put ⌃⌥F18 on something else keep it there.
+        ActionRegistry.shared.yieldNewDefault(of: Self.dictateID)
+        onMain { VoiceApp.shared.setEnabled(.assistant, true) }
+    }
     public func stop() { onMain { VoiceApp.current?.setEnabled(.assistant, false) } }
 
     public func makeSettingsView() -> AnyView? {

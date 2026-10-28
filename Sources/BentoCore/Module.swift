@@ -17,16 +17,31 @@ public struct BentoAction: Identifiable {
     /// shortcuts in their config section): `defaultShortcut` is the current
     /// binding and edits are passed here instead of the global overrides map.
     public let bindingWriter: ((Shortcut?) -> Void)?
+    /// For hold-to-talk actions: the global shortcut calls these on key-down
+    /// and key-up instead of `handler`, which still runs from the menu, the
+    /// keyboard overview and URLs (where there is nothing to hold).
+    public let hold: Hold?
+
+    public struct Hold {
+        public let down: () -> Void
+        public let up: () -> Void
+
+        public init(down: @escaping () -> Void, up: @escaping () -> Void) {
+            self.down = down
+            self.up = up
+        }
+    }
 
     public init(_ id: String, _ title: String, group: String? = nil, shortcut: String? = nil,
                 hiddenFromMenu: Bool = false, bindingWriter: ((Shortcut?) -> Void)? = nil,
-                handler: @escaping () -> Void) {
+                hold: Hold? = nil, handler: @escaping () -> Void) {
         self.id = id
         self.title = title
         self.group = group
         self.defaultShortcut = shortcut.flatMap(Shortcut.init)
         self.hiddenFromMenu = hiddenFromMenu
         self.bindingWriter = bindingWriter
+        self.hold = hold
         self.handler = handler
     }
 }
@@ -201,9 +216,10 @@ public final class ActionRegistry {
         }
         for id in order {
             guard let sc = wanted[id], let action = byID[id] else { continue }
+            let onPress = action.hold?.down ?? action.handler
             if let reg = registered[id] {
-                HotkeyCenter.shared.setHandlers(reg.token, onPress: action.handler)
-            } else if let t = HotkeyCenter.shared.register(sc, onPress: action.handler) {
+                HotkeyCenter.shared.setHandlers(reg.token, onPress: onPress, onRelease: action.hold?.up)
+            } else if let t = HotkeyCenter.shared.register(sc, onRelease: action.hold?.up, onPress: onPress) {
                 registered[id] = (sc, t)
             } else {
                 newFailed.insert(id)
@@ -302,6 +318,42 @@ public final class ActionRegistry {
             }
             setShortcut(shortcut, for: id)
         }
+    }
+
+    /// For a default shortcut added in an update: when the user had already
+    /// bound that combination to another action (an override, or a binding
+    /// the action stores itself), unbinds `id` instead of letting module order
+    /// decide who gets it, so a new default never takes a key the user gave to
+    /// something else. Call it when the module starts. A no-op once `id` has a
+    /// binding of its own, and for defaults that only collide with defaults.
+    /// Returns the action that kept the key.
+    ///
+    /// Reads the modules directly, not the registry's tables: the shell starts
+    /// a module before it reloads, so at that point they still describe the
+    /// module as off.
+    @discardableResult
+    public func yieldNewDefault(of id: String) -> BentoAction? {
+        var overrides = ConfigStore.shared.shortcutOverrides
+        let all = modules.flatMap(\.actions)
+        guard overrides[id] == nil, let action = all.first(where: { $0.id == id }),
+              action.bindingWriter == nil, let key = action.defaultShortcut else { return nil }
+        var seen = Set<String>()
+        for other in all where other.id != id && seen.insert(other.id).inserted {
+            let bound: Shortcut?
+            if other.bindingWriter != nil {
+                bound = other.defaultShortcut
+            } else if let override = overrides[other.id], !override.isEmpty, override != "none" {
+                bound = Shortcut(override)
+            } else {
+                continue   // on its default (or unbound): not a key the user chose
+            }
+            guard bound == key else { continue }
+            BentoLog.core.info("New default \(key.configString, privacy: .public) of \(id, privacy: .public) left unbound: the user gave it to \(other.id, privacy: .public)")
+            overrides[id] = ""
+            ConfigStore.shared.shortcutOverrides = overrides   // reloads via the observer
+            return other
+        }
+        return nil
     }
 
     /// Which action (if any) already uses a shortcut.
