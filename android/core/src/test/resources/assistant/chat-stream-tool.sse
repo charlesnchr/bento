@@ -1,0 +1,84 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "Please use the todo tool to add buy milk."}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 1, "ts": 1793225674.0308073}
+
+event: message.started
+data: {"message": {"id": "msg_25902263d58c4eac9a8cf451c3953d36", "role": "assistant"}, "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 2, "ts": 1793225674.0308318}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "Let me use a tool. ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 3, "ts": 1793225676.1909864}
+
+event: tool.progress
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "tool_name": "_thinking", "delta": "Let me use a tool.", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 4, "ts": 1793225676.455646}
+
+event: assistant.commentary
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "text": "Let me use a tool.", "already_streamed": true, "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 5, "ts": 1793225676.4602962}
+
+event: tool.started
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "tool_name": "tool_search", "preview": "Searching tools", "args": {"query": "todo"}, "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 6, "ts": 1793225676.4825246}
+
+event: tool.failed
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "tool_name": "tool_search", "preview": null, "args": null, "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 7, "ts": 1793225676.487003}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "\n\nDone: ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 8, "ts": 1793225676.575601}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "I ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 9, "ts": 1793225676.7355976}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "used ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 10, "ts": 1793225676.7358294}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "**the ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 11, "ts": 1793225676.8158438}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "tool** ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 12, "ts": 1793225676.8959477}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "for ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 13, "ts": 1793225676.9810545}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "you.\n\n- ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 14, "ts": 1793225677.062706}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "first ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 15, "ts": 1793225677.1432548}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "point\n- ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 16, "ts": 1793225677.223363}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "second ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 17, "ts": 1793225677.3050575}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "point ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 18, "ts": 1793225677.385515}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "with ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 19, "ts": 1793225677.465577}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "`code`\n\n```kotlin\nval ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 20, "ts": 1793225677.5458672}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "x ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 21, "ts": 1793225677.6355407}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "= ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 22, "ts": 1793225677.7136033}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "1\n```\n\nSee ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 23, "ts": 1793225677.7924829}
+
+event: assistant.delta
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "delta": "[Bento](https://github.com/charlesnchr/bento). ", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 24, "ts": 1793225677.872708}
+
+event: tool.progress
+data: {"message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "tool_name": "_thinking", "delta": "Done: I used **the tool** for you.\n\n- first point\n- second point with `code`\n\n```kotlin\nval x = 1\n```\n\nSee [Bento](https://github.com/charlesnchr/bento).", "session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 25, "ts": 1793225678.036152}
+
+event: assistant.completed
+data: {"session_id": "api_1793224917_7121c802", "message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "content": "Done: I used **the tool** for you.\n\n- first point\n- second point with `code`\n\n```kotlin\nval x = 1\n```\n\nSee [Bento](https://github.com/charlesnchr/bento).", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "custom", "model": "fake", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 26, "ts": 1793225678.064949}
+
+event: run.completed
+data: {"session_id": "api_1793224917_7121c802", "message_id": "msg_25902263d58c4eac9a8cf451c3953d36", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "Let me use a tool.", "tool_calls": [{"id": "call_1", "call_id": "call_1", "response_item_id": "fc_1", "type": "function", "function": {"name": "tool_search", "arguments": "{\"query\": \"todo\"}"}}], "timestamp": 1793225676.4577801, "finish_reason": "tool_calls", "reasoning": null}, {"role": "tool", "content": "{\"error\": \"queries is required and must be an array of strings\"}", "tool_call_id": "call_1", "tool_name": "tool_search", "timestamp": 1793225676.4857984}, {"role": "assistant", "content": "Done: I used **the tool** for you.\n\n- first point\n- second point with `code`\n\n```kotlin\nval x = 1\n```\n\nSee [Bento](https://github.com/charlesnchr/bento).", "timestamp": 1793225678.0369773, "finish_reason": "stop", "reasoning": "The tool answered; summarising. ", "reasoning_content": "The tool answered; summarising. "}], "usage": {"input_tokens": 20, "output_tokens": 20, "total_tokens": 40, "runtime": {"provider": "custom", "model": "fake", "route_source": "global", "requested": {"provider": "", "model": ""}}}, "runtime": {"provider": "custom", "model": "fake", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 27, "ts": 1793225678.0649807}
+
+event: done
+data: {"session_id": "api_1793224917_7121c802", "run_id": "run_40358cf849ec4cb6a613f33c1525e962", "seq": 28, "ts": 1793225678.0650294}
+
