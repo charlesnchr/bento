@@ -327,19 +327,31 @@ public final class ActionRegistry {
     /// something else. Call it when the module starts. A no-op once `id` has a
     /// binding of its own, and for defaults that only collide with defaults.
     /// Returns the action that kept the key.
+    ///
+    /// Reads the modules directly, not the registry's tables: the shell starts
+    /// a module before it reloads, so at that point they still describe the
+    /// module as off.
     @discardableResult
     public func yieldNewDefault(of id: String) -> BentoAction? {
-        guard ConfigStore.shared.shortcutOverrides[id] == nil, let action = anyAction(id),
+        var overrides = ConfigStore.shared.shortcutOverrides
+        let all = modules.flatMap(\.actions)
+        guard overrides[id] == nil, let action = all.first(where: { $0.id == id }),
               action.bindingWriter == nil, let key = action.defaultShortcut else { return nil }
-        let overrides = ConfigStore.shared.shortcutOverrides
         var seen = Set<String>()
-        for module in modules {
-            for other in module.actions where other.id != id && seen.insert(other.id).inserted {
-                guard other.bindingWriter != nil || overrides[other.id] != nil, shortcut(for: other.id) == key else { continue }
-                BentoLog.core.info("New default \(key.configString, privacy: .public) of \(id, privacy: .public) left unbound: the user gave it to \(other.id, privacy: .public)")
-                setShortcut(nil, for: id)
-                return other
+        for other in all where other.id != id && seen.insert(other.id).inserted {
+            let bound: Shortcut?
+            if other.bindingWriter != nil {
+                bound = other.defaultShortcut
+            } else if let override = overrides[other.id], !override.isEmpty, override != "none" {
+                bound = Shortcut(override)
+            } else {
+                continue   // on its default (or unbound): not a key the user chose
             }
+            guard bound == key else { continue }
+            BentoLog.core.info("New default \(key.configString, privacy: .public) of \(id, privacy: .public) left unbound: the user gave it to \(other.id, privacy: .public)")
+            overrides[id] = ""
+            ConfigStore.shared.shortcutOverrides = overrides   // reloads via the observer
+            return other
         }
         return nil
     }

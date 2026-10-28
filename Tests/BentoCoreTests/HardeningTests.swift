@@ -457,6 +457,37 @@ private let isolatedHome: Bool = {
         reg.setModules([])
     }
 
+    /// What the shell does: the module is marked running and started (where
+    /// it calls `yieldNewDefault`) before the registry reloads, so its actions
+    /// aren't in the registry's tables yet. The key's owner may come before or
+    /// after it, or be an app-level action (listed last, always on).
+    @Test func aNewDefaultYieldsWhenCalledFromStartBeforeTheReload() throws {
+        try #require(isolatedHome)
+        let key = testKeys[3]
+        for (ownerModule, ownerID) in [("fakem", "fakem.mine"), ("fakeo", "fakeo.mine"), ("fakeapp", "fakeapp.mine")] {
+            let before = FakeModule("fakem", [("fakem.mine", nil)])
+            let added = FakeModule("faken", [("faken.new", key.configString)])
+            let after = FakeModule("fakeo", [("fakeo.mine", nil)])
+            let app = FakeModule("fakeapp", [("fakeapp.mine", nil)])
+            var running: Set<String> = ["fakem", "fakeo"]
+            reg.isModuleEnabled = { running.contains($0) || $0 == "fakeapp" }
+            ConfigStore.shared.shortcutOverrides = [ownerID: key.configString]   // assigned before the update
+            reg.setModules([before, added, after, app])
+            #expect(reg.failed.isEmpty, "\(ownerModule): the Assistant-like module is still off")
+
+            running.insert("faken")                                              // syncModules: insert, start()...
+            #expect(reg.yieldNewDefault(of: "faken.new")?.id == ownerID, "\(ownerModule)")
+            reg.reload()                                                         // ...then reload
+            #expect(ConfigStore.shared.shortcutOverrides["faken.new"] == "", "\(ownerModule)")
+            #expect(reg.shortcut(for: "faken.new") == nil && reg.shortcut(for: ownerID) == key, "\(ownerModule)")
+            #expect(reg.failed.isEmpty, "\(ownerModule): no lasting conflict")
+            #expect(reg.actionUsing(key)?.id == ownerID, "\(ownerModule)")
+        }
+        ConfigStore.shared.shortcutOverrides = [:]
+        reg.isModuleEnabled = { _ in true }
+        reg.setModules([])
+    }
+
     @Test func aNewDefaultOnlyYieldsToUserBindingsNotOtherDefaults() throws {
         try #require(isolatedHome)
         let key = testKeys[3]
