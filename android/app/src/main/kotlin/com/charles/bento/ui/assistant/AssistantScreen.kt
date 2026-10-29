@@ -196,12 +196,13 @@ private fun Messages(
 ) {
     // Back where the user left this conversation (on another tab or screen, or before a new process), unless they were at
     // the bottom and more has come since: then at its end, like a conversation not seen here before.
-    // A new list once the messages are in: another conversation, or the first load after a restart.
-    val loaded = messages.isNotEmpty()
-    val restored = remember(loaded) {
+    // A new list for each conversation shown (keyed by its first row, which a new session id from Hermes keeps):
+    // another conversation, or the first load after a restart.
+    val conversation = messages.firstOrNull()?.id
+    val restored = remember(conversation) {
         messages.lastOrNull()?.let { last -> ChatScroll.restore(saved.value, sessionId)?.takeUnless { it.follows(messages.size, last.text.length) } }
     }
-    val list = remember(loaded) { LazyListState(restored?.index ?: messages.lastIndex.coerceAtLeast(0), restored?.offset ?: 0) }
+    val list = remember(conversation) { LazyListState(restored?.index ?: messages.lastIndex.coerceAtLeast(0), restored?.offset ?: 0) }
     val current by rememberUpdatedState(list)
     val session by rememberUpdatedState(sessionId)
     val shown by rememberUpdatedState(messages)
@@ -209,7 +210,8 @@ private fun Messages(
         val l = current
         if (l.layoutInfo.totalItemsCount > 0 && shown.isNotEmpty()) {
             saved.value = session?.let {
-                ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length, atEnd(l)).encode()
+                ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length,
+                           pinned = l.layoutInfo.visibleItemsInfo.lastOrNull()?.index == l.layoutInfo.totalItemsCount - 1).encode()
             }.orEmpty()
         }
     }
@@ -219,9 +221,9 @@ private fun Messages(
     // Follow the conversation while it grows, unless the user scrolled up to read (or had, when they left it).
     var returned by remember(list) { mutableStateOf(restored != null) }
     LaunchedEffect(list, messages.size, last?.text?.length, working) {
-        val follow = !returned && atEnd(list)
+        val atEnd = !returned && list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
         returned = false
-        if (follow && list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
+        if (atEnd && list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
     }
     LazyColumn(Modifier.fillMaxSize().testTag("assistant-messages"), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -246,10 +248,6 @@ private fun Messages(
         }
     }
 }
-
-/** At the end of the conversation, or close enough to follow it as it grows. */
-private fun atEnd(list: LazyListState) =
-    list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
 
 @Composable
 private fun UserRow(m: ChatMessage) {
