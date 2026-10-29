@@ -6,11 +6,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.automirrored.outlined.StickyNote2
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.automirrored.rounded.StickyNote2
@@ -35,7 +39,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.charles.bento.MainActivity
 import com.charles.bento.graph
+import com.charles.bento.core.assistant.HermesLink
 import com.charles.bento.settings.Pairing
+import com.charles.bento.ui.settings.HermesLinkDialog
 import com.charles.bento.ui.settings.PairingDialog
 import com.charles.bento.ui.settings.SettingsScreen
 import com.charles.bento.ui.settings.WelcomeSheet
@@ -55,6 +61,7 @@ enum class Tab(val label: String, val icon: ImageVector, val selectedIcon: Image
     Notes("Notes", Icons.AutoMirrored.Outlined.StickyNote2, Icons.AutoMirrored.Rounded.StickyNote2),
     Todo("Todo", Icons.Outlined.CheckCircle, Icons.Rounded.CheckCircle),
     Voice("Voice", Icons.Outlined.Mic, Icons.Rounded.Mic),
+    Assistant("Hermes", Icons.Outlined.AutoAwesome, Icons.Rounded.AutoAwesome),
 }
 
 /** Asks the home screen to do something (from a deep link, widget or shortcut). */
@@ -70,6 +77,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
     var tab by rememberSaveable { mutableStateOf(Tab.Notes) }
     var pairing by remember { mutableStateOf<Pairing?>(null) }
     var pairingFromLink by remember { mutableStateOf(false) }
+    var hermesLink by remember { mutableStateOf<HermesLink?>(null) }
     val homeAction = remember { MutableStateFlow<HomeAction?>(null) }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     val intent by pendingIntent.collectAsStateWithLifecycle()
@@ -86,6 +94,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         when (i.action) {
             Intent.ACTION_VIEW -> i.dataString?.let { link ->
                 Pairing.parse(link)?.let { pairing = it; pairingFromLink = true }
+                    ?: HermesLink.parse(link)?.let { hermesLink = it }
                     ?: Routes.fromLink(link)?.let { nav.navigate(it) }
             }
             MainActivity.ACTION_GRANT_MIC -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -93,6 +102,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
             MainActivity.ACTION_NEW_NOTE -> nav.navigate(NoteRoute(Routes.NEW))
             MainActivity.ACTION_QUICK_ADD -> { tab = Tab.Todo; homeAction.value = HomeAction.QuickAdd }
             MainActivity.ACTION_OPEN_TODO -> tab = Tab.Todo
+            MainActivity.ACTION_OPEN_ASSISTANT -> { nav.popBackStack(HomeRoute, inclusive = false); tab = Tab.Assistant }
             MainActivity.ACTION_OPEN_TASK -> { tab = Tab.Todo; id?.let { Routes.openTask.value = it } }
             MainActivity.ACTION_OPEN_MEETING -> { tab = Tab.Voice; (id ?: graph.meetings.recording.value)?.let { nav.navigate(MeetingRoute(it)) } }
             MainActivity.ACTION_TOGGLE_MEETING -> {
@@ -130,6 +140,8 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                     Tab.Notes -> Screens.notes(m, nav)
                     Tab.Todo -> Screens.todo(m, nav, homeAction)
                     Tab.Voice -> Screens.voice(m, nav)
+                    // the chat's composer rises with the keyboard, which covers the navigation bar
+                    Tab.Assistant -> Screens.assistant(m.consumeWindowInsets(PaddingValues(bottom = padding.calculateBottomPadding())), nav)
                 }
             }
         }
@@ -142,6 +154,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
     }
 
     pairing?.let { p -> PairingDialog(p, fromLink = pairingFromLink) { pairing = null; pairingFromLink = false } }
+    hermesLink?.let { l -> HermesLinkDialog(l) { hermesLink = null } }
 
     val onboarded by graph.prefs.onboarded.flow.collectAsStateWithLifecycle()
     val server by graph.prefs.server.flow.collectAsStateWithLifecycle()

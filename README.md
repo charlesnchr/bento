@@ -116,6 +116,11 @@ notes to the phone, synced live with your Macs through the same `bento-sync` ser
   Pro's Snap Key. Modes add their own instructions and switch while you talk.
 - **Meetings** from the microphone (Android doesn't let apps record other apps' calls):
   live transcript, then a note with summary, decisions, action items and the transcript.
+- **Hermes** (the Assistant tab): chat with your Hermes agent through its API server on your
+  tailnet (Markdown, streaming, tool steps, approvals, a conversation history kept by
+  Hermes), or call it: Gemini Live listens and talks through your Gemini API key and hands
+  each request to Hermes in the same conversation. Set up under Settings → Hermes or with a
+  `bento://hermes` code (`android/README.md`).
 
 Install the APK from the latest `android-v*` [release](https://github.com/charlesnchr/bento/releases)
 (allow installs from your browser once); the app checks for updates daily and installs them

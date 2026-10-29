@@ -112,6 +112,7 @@ fun SettingsScreen(nav: NavController) {
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).navigationBarsPadding()) {
             SyncSection(context)
             DictationSection(context, nav)
+            HermesSection(context)
             TriggersSection(context, tick)
             SetupSection(context, tick)
             AppearanceSection(context)
@@ -215,14 +216,18 @@ private fun SyncSection(context: Context) {
 }
 
 /** Google's code scanner: no camera permission, downloaded once by Play services. */
-fun scanPairingCode(context: Context, onResult: (Pairing) -> Unit) {
+fun scanPairingCode(context: Context, onResult: (Pairing) -> Unit) =
+    scanCode(context, Pairing::parse, "That's not a Bento pairing code", onResult)
+
+/** Scans a QR code and hands over what [parse] makes of it; anything else is [notOurs]. */
+fun <T : Any> scanCode(context: Context, parse: (String) -> T?, notOurs: String, onResult: (T) -> Unit) {
     val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
     val scanner = GmsBarcodeScanning.getClient(context, options)
     ModuleInstall.getClient(context).installModules(ModuleInstallRequest.newBuilder().addApi(scanner).build())
     scanner.startScan()
         .addOnSuccessListener { code ->
-            val p = code.rawValue?.let(Pairing::parse)
-            if (p != null) onResult(p) else Toast.makeText(context, "That's not a Bento pairing code", Toast.LENGTH_LONG).show()
+            val p = code.rawValue?.let(parse)
+            if (p != null) onResult(p) else Toast.makeText(context, notOurs, Toast.LENGTH_LONG).show()
         }
         .addOnFailureListener { Toast.makeText(context, "Scanner unavailable: ${it.message}", Toast.LENGTH_LONG).show() }
 }

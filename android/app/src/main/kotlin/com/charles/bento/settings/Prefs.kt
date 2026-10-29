@@ -62,6 +62,16 @@ class Prefs(context: Context) {
     val thoughtNote = string("voice.thoughtNote", "")
     val separateIcons = bool("ui.separateIcons", false)
 
+    // Assistant (Hermes's API server; its token is in SecretStore)
+    val hermesUrl = string("hermes.url", "")
+    val hermesName = string("hermes.name", "")
+    /** The conversation the Assistant tab shows (a Hermes session id; empty = a new chat). */
+    val hermesSession = string("hermes.session", "")
+    /** Conversations started on this phone, newest first, comma-separated: the history lists these. */
+    val hermesConversations = string("hermes.conversations", "")
+    /** Voice calls: "continuous" (open mic) or "tap" (tap to talk). */
+    val hermesTalkMode = string("hermes.talkMode", "continuous")
+
     // Updates
     val autoUpdateCheck = bool("update.auto", true)
     val skippedVersion = string("update.skipped", "")

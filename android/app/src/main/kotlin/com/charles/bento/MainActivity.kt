@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
         const val ACTION_OPEN_TASK = "com.charles.bento.OPEN_TASK"
         const val ACTION_QUICK_ADD = "com.charles.bento.QUICK_ADD"
         const val ACTION_OPEN_TODO = "com.charles.bento.OPEN_TODO"
+        const val ACTION_OPEN_ASSISTANT = "com.charles.bento.OPEN_ASSISTANT"
         const val EXTRA_ID = "id"
         private const val INTERNAL_ENTRY = "com.charles.bento.InternalEntry"
 

@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Shows the bento://hermes code that connects Bento for Android to this machine's Hermes.
+
+Reads API_SERVER_HOST, API_SERVER_PORT and API_SERVER_KEY from $HERMES_HOME/.env
+(~/.hermes/.env). Prints a QR code when qrencode is installed, else the link; the key goes
+to the terminal only, never to a file or the shell history.
+
+  scripts/hermes-phone-link                 # QR code for http://<API_SERVER_HOST>:<port>
+  scripts/hermes-phone-link --url https://homelab.example.ts.net:8643 --name homelab
+  scripts/hermes-phone-link --print         # the link itself
+"""
+import argparse
+import ipaddress
+import os
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import urllib.parse
+
+
+def env_values(path):
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$", line)
+        if m:
+            values[m.group(1)] = m.group(2).strip().strip("'\"")
+    return values
+
+
+def private_http_ok(url):
+    """https anywhere; http only to an address that can't be on the internet (as the app checks)."""
+    parts = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+    if parts.scheme == "https":
+        return True
+    if parts.hostname == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(parts.hostname or "")
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
+
+
+def link(url, token, name):
+    q = urllib.parse.urlencode({"v": "1", "url": url, "token": token, "name": name}, quote_via=urllib.parse.quote)
+    return "bento://hermes?" + q
+
+
+def main():
+    home = pathlib.Path(os.environ.get("HERMES_HOME") or pathlib.Path.home() / ".hermes")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--env", type=pathlib.Path, default=home / ".env")
+    parser.add_argument("--url", help="the address the phone uses (default: http://API_SERVER_HOST:API_SERVER_PORT)")
+    parser.add_argument("--name", default=socket.gethostname().split(".")[0])
+    parser.add_argument("--print", action="store_true", help="print the link instead of a QR code")
+    args = parser.parse_args()
+    env = env_values(args.env)
+    token = env.get("API_SERVER_KEY", "")
+    if not token:
+        sys.exit(f"No API_SERVER_KEY in {args.env}: the API server isn't set up.")
+    host = env.get("API_SERVER_HOST", "127.0.0.1")
+    if not args.url and host in ("127.0.0.1", "localhost", "0.0.0.0", "::"):
+        sys.exit(f"API_SERVER_HOST is {host}: pass --url with the tailnet address the phone should use.")
+    url = args.url or f"http://{host}:{env.get('API_SERVER_PORT', '8642')}"
+    if not private_http_ok(url):
+        sys.exit(f"{url}: the phone sends the key with every request, so it accepts plain http only for a tailnet, "
+                 "LAN or loopback address. Use https:// (tailscale serve) or the Tailscale IP.")
+    text = link(url, token, args.name)
+    if not args.print and shutil.which("qrencode"):
+        subprocess.run(["qrencode", "-t", "ansiutf8"], input=text.encode(), check=True)
+    else:
+        print(text)
+
+
+if __name__ == "__main__":
+    main()

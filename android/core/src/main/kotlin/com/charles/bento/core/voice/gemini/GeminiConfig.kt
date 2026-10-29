@@ -9,6 +9,8 @@ object GeminiModels {
     const val TRANSCRIBE = "gemini-3.5-transcribe"
     /** The Live model on the Gemini API (the Vertex helper's is "-preview"). */
     const val TRANSCRIBE_LIVE = "gemini-3.5-transcribe-live"
+    /** The assistant's voice calls on the Gemini API (the Mac's `GeminiLiveRoute.geminiAPIModel`). */
+    const val ASSISTANT_LIVE = "gemini-3.8-live"
     const val ENDPOINT = "https://generativelanguage.googleapis.com"
     const val LIVE_ENDPOINT =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
