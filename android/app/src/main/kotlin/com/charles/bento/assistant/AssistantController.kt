@@ -17,6 +17,7 @@ import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import com.charles.bento.settings.Prefs
 import com.charles.bento.settings.SecretStore
+import com.charles.bento.ui.assistant.ChatScroll
 import com.charles.bento.voice.VoiceService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -260,6 +261,7 @@ class AssistantController(
             if (newId != null && newId != sid) {
                 // Hermes compressed the conversation into a new session: follow it.
                 remember(newId); forget(sid); prefs.hermesSession.value = newId; loadedSession = newId
+                prefs.hermesScroll.value = ChatScroll.moved(prefs.hermesScroll.value, sid, newId)
                 set { it.copy(sessionId = newId) }
             }
         } catch (e: HermesError) {

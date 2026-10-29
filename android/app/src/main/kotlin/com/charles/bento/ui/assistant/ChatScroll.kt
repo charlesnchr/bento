@@ -21,5 +21,8 @@ internal data class ChatScroll(
             val n = p.take(4).map { it.toIntOrNull() ?: return null }
             return ChatScroll(session, n[0], n[1], n[2], n[3], p[4] == "1")
         }
+
+        /** [saved] after Hermes moved the conversation from session [from] to [to]. */
+        fun moved(saved: String, from: String, to: String): String = restore(saved, from)?.copy(session = to)?.encode() ?: saved
     }
 }

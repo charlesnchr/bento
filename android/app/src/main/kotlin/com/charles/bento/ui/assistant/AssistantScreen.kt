@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,6 +72,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -203,15 +205,19 @@ private fun Messages(
         messages.lastOrNull()?.let { last -> ChatScroll.restore(saved.value, sessionId)?.takeUnless { it.follows(messages.size, last.text.length) } }
     }
     val list = remember(conversation) { LazyListState(restored?.index ?: messages.lastIndex.coerceAtLeast(0), restored?.offset ?: 0) }
+    // At the bottom, following the conversation, until the user scrolls away; back once they scroll to the very end.
+    var pinned by remember(list) { mutableStateOf(restored?.pinned ?: true) }
+    LaunchedEffect(list) { list.interactionSource.interactions.collect { if (it is DragInteraction.Start) pinned = false } }
+    LaunchedEffect(list) { snapshotFlow { list.layoutInfo.totalItemsCount > 0 && !list.canScrollForward }.collect { if (it) pinned = true } }
     val current by rememberUpdatedState(list)
+    val following by rememberUpdatedState(pinned)
     val session by rememberUpdatedState(sessionId)
     val shown by rememberUpdatedState(messages)
     val save = {
         val l = current
         if (l.layoutInfo.totalItemsCount > 0 && shown.isNotEmpty()) {
             saved.value = session?.let {
-                ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length,
-                           pinned = l.layoutInfo.visibleItemsInfo.lastOrNull()?.index == l.layoutInfo.totalItemsCount - 1).encode()
+                ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length, following).encode()
             }.orEmpty()
         }
     }

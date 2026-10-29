@@ -29,4 +29,10 @@ class ChatScrollTest {
         // the reply that was streaming when the user left has grown
         assertTrue(atBottom.follows(10, 400))
     }
+
+    @Test fun followsTheConversationToANewSession() {
+        val saved = ChatScroll("a", 3, 120, messages = 10, lastLength = 80, pinned = false).encode()
+        assertEquals(ChatScroll("b", 3, 120, 10, 80, pinned = false), ChatScroll.restore(ChatScroll.moved(saved, "a", "b"), "b"))
+        assertEquals(saved, ChatScroll.moved(saved, "c", "b"))
+    }
 }
