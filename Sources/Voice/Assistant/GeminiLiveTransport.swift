@@ -9,7 +9,8 @@ extension GeminiLiveController {
         switch SettingsStore().geminiLiveRoute {
         case .vertexHelper(let vertex):
             let key = vertex.bifrostKey
-            // The call runs up to ten minutes; a quiet stretch must not time the socket out.
+            // A quiet stretch of a call must not time the socket out. The helper carries a call
+            // over Vertex's connection limit itself.
             guard let recap else {
                 return WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationEndpoint, requestTimeout: 660)
             }
@@ -21,9 +22,10 @@ extension GeminiLiveController {
             guard let setup = GeminiAPILiveTransport.setupFrame(instruction: resume?.instruction ?? "") else {
                 throw ACPClient.Failure(message: "Gemini Live's call setup (gemini_live_setup.json) is missing from Bento.")
             }
+            let socket: @Sendable () -> LiveTransport = { WebSocketTransport(apiKey: { KeychainStore.loadAPIKey() ?? "" }, requestTimeout: 660) }
             return GeminiAPILiveTransport(
-                socket: WebSocketTransport(apiKey: { KeychainStore.loadAPIKey() ?? "" }, requestTimeout: 660), setup: setup,
-                recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) })
+                socket: socket(), setup: setup,
+                recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) }, reconnect: socket)
         case .unavailable(let reason):
             throw ACPClient.Failure(message: reason)
         }
@@ -34,31 +36,128 @@ extension GeminiLiveController {
 /// the setup the helper sends to Vertex (`helper/gemini_live_setup.json`) as soon as
 /// it connects, and a resumed call's recap as the helper does; after that the
 /// controller sees the same events either way.
+///
+/// Like the helper, it carries a call over Gemini's connection limit: on `goAway` a
+/// `reconnect` socket resumes the session from its latest handle, the old one carrying
+/// audio until the new one is set up. The controller hears `goAway` only if that fails.
 final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @unchecked Sendable {
-    private let socket: LiveTransport
+    private var socket: LiveTransport
     private let setup: Data
     private var recap: Data?
+    private let reconnect: (@Sendable () -> LiveTransport)?
+    private var handle: String?
+    private var rotation: Task<Bool, Never>?
+    private var heldGoAway: Data?
+    private var closed = false
     private let lock = NSLock()
 
-    init(socket: LiveTransport, setup: Data, recap: Data? = nil) {
+    init(socket: LiveTransport, setup: Data, recap: Data? = nil, reconnect: (@Sendable () -> LiveTransport)? = nil) {
         self.socket = socket
         self.setup = setup
         self.recap = recap
+        self.reconnect = reconnect
     }
+
+    private var current: LiveTransport { lock.withLock { socket } }
 
     func connect() async throws {
         try await socket.connect()
         try await socket.send(setup)
     }
 
-    func send(_ data: Data) async throws { try await socket.send(data) }
+    func send(_ data: Data) async throws {
+        let to = current
+        do { try await to.send(data) } catch {
+            // The old socket can close before its replacement is set up; send there instead.
+            guard await replaced(to) else { throw error }
+            try await current.send(data)
+        }
+    }
 
     /// Gemini takes nothing before setupComplete. The recap goes straight after it, before
     /// the controller sees it and starts the microphone.
     func receive() async throws -> Data {
-        let data = try await socket.receive()
-        if let recap = takeRecap(after: data) { try await socket.send(recap) }
-        return data
+        while true {
+            if let goAway = lock.withLock({ rotation == nil ? heldGoAway.take() : nil }) { return goAway }
+            let from = current
+            let data: Data
+            do { data = try await from.receive() } catch {
+                if await replaced(from) { continue }
+                if let goAway = lock.withLock({ heldGoAway.take() }) { return goAway }
+                throw error
+            }
+            guard from === current else { continue }
+            if let recap = takeRecap(after: data) { try await from.send(recap) }
+            let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            if let update = event?["sessionResumptionUpdate"] as? [String: Any], update["resumable"] as? Bool == true,
+               let handle = update["newHandle"] as? String, !handle.isEmpty {
+                lock.withLock { self.handle = handle }
+            }
+            if event?["goAway"] != nil, rotate(goAway: data) { continue }
+            return data
+        }
+    }
+
+    /// Whether `socket` has been replaced, once any rotation under way has finished.
+    private func replaced(_ socket: LiveTransport) async -> Bool {
+        if let rotation = lock.withLock({ self.rotation }) { _ = await rotation.value }
+        return current !== socket
+    }
+
+    /// Starts moving the call to a socket that resumes the session. False when it can't.
+    private func rotate(goAway: Data) -> Bool {
+        lock.withLock {
+            guard rotation == nil, !closed, let reconnect, let handle,
+                  let setup = Self.resuming(setup, handle: handle) else { return false }
+            heldGoAway = goAway
+            rotation = Task { [weak self] in
+                let next = reconnect()
+                let ready = await Self.open(next, setup: setup)
+                guard let self else { next.close(); return false }
+                let old: LiveTransport? = self.lock.withLock {
+                    self.rotation = nil
+                    guard ready, !self.closed else { return nil }
+                    defer { self.socket = next; self.heldGoAway = nil }
+                    return self.socket
+                }
+                guard let old else { next.close(); return false }
+                old.close()
+                return true
+            }
+            return true
+        }
+    }
+
+    /// Connects and sends the setup, then waits for setupComplete: at most 25 seconds.
+    private static func open(_ socket: LiveTransport, setup: Data) async -> Bool {
+        let ready = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                do {
+                    try await socket.connect()
+                    try await socket.send(setup)
+                    var event: [String: Any]?
+                    repeat {
+                        event = try JSONSerialization.jsonObject(with: try await socket.receive()) as? [String: Any]
+                    } while event?["setupComplete"] == nil
+                    return true
+                } catch { return false }
+            }
+            group.addTask { try? await Task.sleep(for: .seconds(25)); return false }
+            let first = await group.next() ?? false
+            if !first { socket.close() } // unblocks a hung connect or receive
+            group.cancelAll()
+            return first
+        }
+        return ready
+    }
+
+    /// `setup` resuming the session from `handle`.
+    static func resuming(_ setup: Data, handle: String) -> Data? {
+        guard var frame = (try? JSONSerialization.jsonObject(with: setup)) as? [String: Any],
+              var inner = frame["setup"] as? [String: Any] else { return nil }
+        inner["sessionResumption"] = ["handle": handle]
+        frame["setup"] = inner
+        return try? JSONSerialization.data(withJSONObject: frame)
     }
 
     /// The recap, once, when `data` is setupComplete.
@@ -69,8 +168,11 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
             return recap
         }
     }
-    func close() { socket.close() }
-    var ending: LiveSocketEnding { (socket as? LiveSocketReporting)?.ending ?? LiveSocketEnding() }
+    func close() {
+        let socket = lock.withLock { closed = true; return self.socket }
+        socket.close()
+    }
+    var ending: LiveSocketEnding { (current as? LiveSocketReporting)?.ending ?? LiveSocketEnding() }
 
     /// `{"setup": …}`: the shared setup with the Gemini API's model name. A resumed call's
     /// instructions end with `LiveResume`'s fixed line, as the helper's do.

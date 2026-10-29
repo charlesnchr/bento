@@ -78,9 +78,6 @@ final class AzureLiveController {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.active, self.generation == token, !Task.isCancelled else { return }
                 if SecureInput.isActive { self.failed("Secure input is active. Voice stopped.", token: token, code: .secureInput); return }
-                if ProcessInfo.processInfo.systemUptime - started >= 600 {
-                    self.failed("Ten-minute voice session ended. Start again to continue.", token: token, code: .sessionLimit); return
-                }
                 if self.sender == nil, ProcessInfo.processInfo.systemUptime - started >= 25 {
                     self.failed("Azure voice connection timed out.", token: token, code: .connectionTimeout); return
                 }

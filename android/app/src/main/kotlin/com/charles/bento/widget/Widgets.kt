@@ -334,6 +334,29 @@ private fun CaptureButton(icon: Int, description: String, primary: Boolean, onCl
     }
 }
 
+// MARK: Hermes call
+
+/** One tap starts a voice call with Hermes in a new chat. */
+class HermesCallWidget : GlanceAppWidget() {
+    override suspend fun provideGlance(context: Context, id: GlanceId) {
+        provideContent { GlanceTheme { HermesCallContent(context) } }
+    }
+}
+
+class HermesCallWidgetReceiver : GlanceAppWidgetReceiver() {
+    override val glanceAppWidget: GlanceAppWidget = HermesCallWidget()
+}
+
+@Composable
+private fun HermesCallContent(context: Context) {
+    Box(
+        GlanceModifier.fillMaxSize().cornerRadius(28.dp).background(GlanceTheme.colors.widgetBackground).padding(6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        CaptureButton(R.drawable.ic_w_call, "Call Hermes", primary = true, actionStartActivity(open(context, MainActivity.ACTION_NEW_CALL)))
+    }
+}
+
 // MARK: Shared pieces
 
 @Composable

@@ -74,9 +74,6 @@ final class GeminiLiveController {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.active, self.generation == token, !Task.isCancelled else { return }
                 if SecureInput.isActive { self.failed("Secure input is active. Voice stopped.", token: token, code: .secureInput); return }
-                if self.now - self.started >= 600 {
-                    self.failed("Ten-minute voice session ended. Start again to continue.", token: token, code: .sessionLimit); return
-                }
                 if self.sender == nil, self.now - self.started >= 25 {
                     self.failed("Gemini voice connection timed out.", token: token, code: .connectionTimeout); return
                 }

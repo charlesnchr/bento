@@ -273,7 +273,7 @@ async def bridge():
                         return
             tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
             try:
-                done, _ = await asyncio.wait(tasks, timeout=600, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     task.result()
                 if tasks[0] in done and not tasks[1].done():

@@ -46,6 +46,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_QUICK_ADD = "com.charles.bento.QUICK_ADD"
         const val ACTION_OPEN_TODO = "com.charles.bento.OPEN_TODO"
         const val ACTION_OPEN_ASSISTANT = "com.charles.bento.OPEN_ASSISTANT"
+        /** A new Hermes chat with a voice call on it (the Hermes call widget). */
+        const val ACTION_NEW_CALL = "com.charles.bento.NEW_HERMES_CALL"
         const val EXTRA_ID = "id"
         private const val INTERNAL_ENTRY = "com.charles.bento.InternalEntry"
 

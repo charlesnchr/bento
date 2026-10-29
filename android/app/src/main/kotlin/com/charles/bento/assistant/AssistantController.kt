@@ -13,6 +13,7 @@ import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
 import com.charles.bento.core.assistant.live.HermesCall
+import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import com.charles.bento.settings.Prefs
 import com.charles.bento.settings.SecretStore
@@ -314,7 +315,7 @@ class AssistantController(
             val audio = CallAudioDevice(context) { scope.launch { call?.stop("The call ended: another app took the audio (a phone call?).") } }
             val c = AssistantCall(transport, audio, resume, onTool = { request ->
                 withContext(Dispatchers.Main) { runVoiceTask(request) }
-            }, ending = { transport.ending })
+            }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) })
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
             call = c

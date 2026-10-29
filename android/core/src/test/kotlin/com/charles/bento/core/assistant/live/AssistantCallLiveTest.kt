@@ -4,6 +4,7 @@ import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The call's setup against the real Gemini API, skipped unless GEMINI_API_KEY is set: the
@@ -41,6 +43,48 @@ class AssistantCallLiveTest {
             assertEquals(CallProtocol.TOOL, call["name"]!!.jsonPrimitive.content)
         } finally {
             transport.close()
+        }
+    }
+
+    /** What a call does when Gemini rotates its connection: a new socket picks the session up from its handle. */
+    @Test fun aNewSocketResumesTheSessionFromItsHandle() = blocking {
+        suspend fun OkHttpLiveTransport.next(): JsonObject = Json.parseToJsonElement(receive()).jsonObject
+        val first = OkHttpLiveTransport({ key!! })
+        val handle = try {
+            first.connect()
+            first.send(CallSetup.setupFrame())
+            withTimeout(20_000) { while (first.next()["setupComplete"] == null) Unit }
+            first.send("""{"realtimeInput":{"text":"Remember the code word pineapple. Just acknowledge it briefly."}}""")
+            withTimeout(30_000) {
+                var handle: String? = null
+                var answered = false
+                while (handle == null || !answered) {
+                    val o = first.next()
+                    o["sessionResumptionUpdate"]?.jsonObject?.get("newHandle")?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }?.let { handle = it }
+                    if (o["serverContent"]?.jsonObject?.get("turnComplete") != null) answered = true
+                }
+                handle!!
+            }
+        } finally {
+            first.close()
+        }
+        val second = OkHttpLiveTransport({ key!! })
+        try {
+            second.connect()
+            second.send(CallSetup.setupFrame(handle = handle))
+            withTimeout(20_000) { while (second.next()["setupComplete"] == null) Unit }
+            second.send("""{"realtimeInput":{"text":"What was the code word? Answer in one word."}}""")
+            val said = StringBuilder()
+            withTimeout(30_000) {
+                while (true) {
+                    val content = second.next()["serverContent"]?.jsonObject ?: continue
+                    content["outputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.content?.let(said::append)
+                    if (content["turnComplete"] != null) break
+                }
+            }
+            assertTrue("pineapple" in said.toString().lowercase(), "heard: $said")
+        } finally {
+            second.close()
         }
     }
 }

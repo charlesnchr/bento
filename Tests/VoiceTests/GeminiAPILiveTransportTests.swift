@@ -33,6 +33,9 @@ import VoiceCore
         let instruction = ((setup["systemInstruction"] as? [String: Any])?["parts"] as? [[String: Any]])?.first?["text"] as? String
         #expect(instruction?.contains(GeminiLiveProtocol.tool) == true)
         #expect(setup["outputAudioTranscription"] != nil && setup["inputAudioTranscription"] != nil)
+        // No session time limit, and handles to resume from when a connection ends.
+        #expect(NSDictionary(dictionary: setup["contextWindowCompression"] as? [String: Any] ?? [:]) == ["slidingWindow": [String: Any]()])
+        #expect((setup["sessionResumption"] as? [String: Any])?.isEmpty == true)
     }
 
     private func instruction(_ setup: [String: Any]) -> String? {
@@ -119,6 +122,88 @@ import VoiceCore
         }
         #expect(GeminiAPILiveTransport(socket: Reporting(), setup: Data()).ending.closeCode == 1007)
         #expect(GeminiAPILiveTransport(socket: FakeSocket(), setup: Data()).ending == LiveSocketEnding())
+    }
+
+    /// Frames queued by the test; receive waits for one and throws once closed.
+    final class QueueSocket: LiveTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private var inbox: [String]
+        private var frames: [Data] = []
+        private var isClosed = false
+        var connectFails = false
+        init(_ inbox: [String] = []) { self.inbox = inbox }
+        var sent: [Data] { lock.withLock { frames } }
+        var closed: Bool { lock.withLock { isClosed } }
+        func connect() async throws { if connectFails { throw URLError(.notConnectedToInternet) } }
+        func send(_ data: Data) async throws {
+            try lock.withLock {
+                if isClosed { throw URLError(.networkConnectionLost) }
+                frames.append(data)
+            }
+        }
+        func receive() async throws -> Data {
+            for _ in 0..<500 {
+                let next: String? = try lock.withLock {
+                    if !inbox.isEmpty { return inbox.removeFirst() }
+                    if isClosed { throw URLError(.networkConnectionLost) }
+                    return nil
+                }
+                if let next { return Data(next.utf8) }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            throw URLError(.timedOut)
+        }
+        func close() { lock.withLock { isClosed = true } }
+    }
+
+    static let setupComplete = #"{"setupComplete":{}}"#
+    static let resumable = #"{"sessionResumptionUpdate":{"newHandle":"h1","resumable":true}}"#
+    static let goAway = #"{"goAway":{"timeLeft":"10s"}}"#
+    private func text(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }
+
+    @Test func goAwayMovesTheCallToASocketThatResumesTheSession() async throws {
+        let first = QueueSocket([Self.setupComplete, Self.resumable, Self.goAway])
+        let second = QueueSocket([Self.setupComplete, #"{"serverContent":{"turnComplete":true}}"#])
+        let transport = GeminiAPILiveTransport(socket: first, setup: try #require(GeminiAPILiveTransport.setupFrame()),
+                                               reconnect: { second })
+        try await transport.connect()
+        #expect(text(try await transport.receive()) == Self.setupComplete)
+        #expect(text(try await transport.receive()) == Self.resumable)
+        // The controller hears neither the goAway nor the new socket's setupComplete.
+        #expect(text(try await transport.receive()) == #"{"serverContent":{"turnComplete":true}}"#)
+        #expect(first.closed)
+        let resumed = try #require(try JSONSerialization.jsonObject(with: second.sent[0]) as? [String: Any])
+        #expect(((resumed["setup"] as? [String: Any])?["sessionResumption"] as? [String: Any])?["handle"] as? String == "h1")
+        try await transport.send(Data("audio".utf8))
+        #expect(second.sent.last == Data("audio".utf8))
+        #expect(first.sent.count == 1, "Only the first setup went to the old socket")
+        transport.close()
+        #expect(second.closed)
+    }
+
+    @Test func withoutAHandleTheControllerHearsGoAway() async throws {
+        let first = QueueSocket([Self.setupComplete, Self.goAway])
+        let transport = GeminiAPILiveTransport(socket: first, setup: try #require(GeminiAPILiveTransport.setupFrame()),
+                                               reconnect: { Issue.record("Nothing to resume"); return QueueSocket() })
+        try await transport.connect()
+        _ = try await transport.receive()
+        #expect(text(try await transport.receive()) == Self.goAway)
+        transport.close()
+    }
+
+    @Test func aFailedReconnectLetsTheControllerHearGoAway() async throws {
+        let first = QueueSocket([Self.setupComplete, Self.resumable, Self.goAway])
+        let second = QueueSocket()
+        second.connectFails = true
+        let transport = GeminiAPILiveTransport(socket: first, setup: try #require(GeminiAPILiveTransport.setupFrame()),
+                                               reconnect: { second })
+        try await transport.connect()
+        _ = try await transport.receive()
+        _ = try await transport.receive()
+        Task { try await Task.sleep(for: .milliseconds(200)); first.close() } // Gemini closes at its limit
+        #expect(text(try await transport.receive()) == Self.goAway)
+        #expect(second.closed)
+        await #expect(throws: (any Error).self) { _ = try await transport.receive() }
     }
 
     @Test func aMissingSetupFileIsNil() {

@@ -417,48 +417,105 @@ class VertexBridge:
                 seeded.set()
             url = (f'wss://{CONVERSATION_LOCATION}-aiplatform.googleapis.com'
                    '/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent')
-            async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
-                upstream = await self.session.ws_connect(url, headers=await self.headers(), proxy=self.proxy,
-                                                         max_msg_size=4 * 1024 * 1024, heartbeat=20)
-            async with upstream:
-                await upstream.send_json({'setup': setup})
-                async def send():
-                    async for frame in ws:
+
+            async def connect(handle=None):
+                async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
+                    upstream = await self.session.ws_connect(url, headers=await self.headers(), proxy=self.proxy,
+                                                             max_msg_size=4 * 1024 * 1024, heartbeat=20)
+                try:
+                    await upstream.send_json({'setup': {**setup, 'sessionResumption': {'handle': handle}} if handle else setup})
+                    if handle:
+                        # The resumed session already has the recap; it takes audio after its setupComplete.
+                        async with asyncio.timeout(CONVERSATION_CONNECT_TIMEOUT):
+                            async for frame in upstream:
+                                if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                                    break
+                                if 'setupComplete' in json.loads(frame.data):
+                                    return upstream
+                        raise ConnectionError('Vertex closed the resumed session before setup')
+                    return upstream
+                except BaseException:
+                    await upstream.close()
+                    raise
+
+            # Vertex closes a connection after about ten minutes, warning with goAway first. The call goes
+            # on over a new upstream that resumes the session from its latest handle; the old one carries
+            # audio until the new one is set up, and Bento hears the goAway only if that fails.
+            link = {'upstream': await connect(), 'handle': None, 'rotation': None}
+
+            async def rotate(go_away):
+                try:
+                    upstream = await connect(link['handle'])
+                except Exception:
+                    link['rotation'] = None
+                    await (ws.send_str if isinstance(go_away, str) else ws.send_bytes)(go_away)
+                    return
+                old, link['upstream'], link['rotation'] = link['upstream'], upstream, None
+                await old.close()
+
+            async def moved(upstream):
+                """Whether upstream has been replaced, once a rotation under way has finished."""
+                if link['rotation']:
+                    await asyncio.wait([link['rotation']])
+                return link['upstream'] is not upstream
+
+            async def send():
+                async for frame in ws:
+                    if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                        break
+                    message = conversation_input(json.loads(frame.data))
+                    await seeded.wait()
+                    upstream = link['upstream']
+                    try:
+                        await upstream.send_json(message)
+                    except (aiohttp.ClientError, ConnectionError):
+                        if not await moved(upstream):
+                            raise
+                        await link['upstream'].send_json(message)
+
+            async def receive():
+                while True:
+                    upstream = link['upstream']
+                    async for frame in upstream:
                         if frame.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                             break
-                        message = conversation_input(json.loads(frame.data))
-                        await seeded.wait()
-                        await upstream.send_json(message)
-                async def receive():
-                    async for frame in upstream:
-                        if not seeded.is_set() and frame.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-                            event = json.loads(frame.data)
-                            if isinstance(event, dict) and 'setupComplete' in event:
-                                await upstream.send_json(conversation_recap(context))
-                                seeded.set()
+                        event = json.loads(frame.data)
+                        if not isinstance(event, dict):
+                            event = {}
+                        if not seeded.is_set() and 'setupComplete' in event:
+                            await upstream.send_json(conversation_recap(context))
+                            seeded.set()
+                        update = event.get('sessionResumptionUpdate')
+                        if isinstance(update, dict) and update.get('resumable') and isinstance(update.get('newHandle'), str) \
+                                and update['newHandle']:
+                            link['handle'] = update['newHandle']
+                        if 'goAway' in event and link['handle'] and not link['rotation']:
+                            link['rotation'] = asyncio.create_task(rotate(frame.data))
+                            continue
                         if frame.type == aiohttp.WSMsgType.TEXT:
                             await ws.send_str(frame.data)
-                        elif frame.type == aiohttp.WSMsgType.BINARY:
-                            await ws.send_bytes(frame.data)
                         else:
-                            break
-                tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
-                try:
-                    done, _ = await asyncio.wait(tasks, timeout=600, return_when=asyncio.FIRST_COMPLETED)
-                    if tasks[0] in done and isinstance(tasks[0].exception(), (aiohttp.ClientError, ConnectionError)):
-                        # Audio can fail to write to a closing upstream before its close frame is read.
-                        await asyncio.wait([tasks[1]], timeout=2)
-                    if tasks[1].done() and not tasks[1].cancelled() and tasks[1].exception() is None:
-                        failure = {'code': 'upstream_closed', 'close_code': upstream.close_code}
-                    elif not done:
-                        failure = {'code': 'timeout'}
-                    else:
-                        for task in done:
-                            task.result()
-                finally:
-                    for task in tasks:
+                            await ws.send_bytes(frame.data)
+                    if not await moved(upstream):
+                        return
+
+            tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if tasks[0] in done and isinstance(tasks[0].exception(), (aiohttp.ClientError, ConnectionError)):
+                    # Audio can fail to write to a closing upstream before its close frame is read.
+                    await asyncio.wait([tasks[1]], timeout=2)
+                if tasks[1].done() and not tasks[1].cancelled() and tasks[1].exception() is None:
+                    failure = {'code': 'upstream_closed', 'close_code': link['upstream'].close_code}
+                else:
+                    for task in done:
+                        task.result()
+            finally:
+                for task in tasks + [link['rotation']]:
+                    if task:
                         task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*tasks, *[t for t in [link['rotation']] if t], return_exceptions=True)
+                await link['upstream'].close()
         except aiohttp.WSServerHandshakeError as error:
             failure = {'code': 'http_error', 'http_status': error.status}
         except (ValueError, KeyError, TypeError, AttributeError):
