@@ -180,7 +180,7 @@ final class AzureLiveController {
     private func complete(_ id: String, result: String, token: UUID) async {
         guard active, generation == token else { return }
         do {
-            for part in AzureLiveProtocol.resultParts(result) {
+            for part in LiveHermesResult.parts(result) {
                 guard active, generation == token else { return }
                 try await send(["type": "session.commentary.append", "delegation_id": id, "content": part])
             }

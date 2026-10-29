@@ -443,7 +443,9 @@ class CallProtocolTest {
         assertEquals("Hermes returned no text. Do not infer success.", CallProtocol.fullResult(""))
         val long = "word ".repeat(8000)
         assertEquals(long, CallProtocol.fullResult(long))
-        val huge = "x".repeat(70_000)
-        assertEquals("x".repeat(64_000) + " [Bento cut Hermes's reply here at 64,000 characters.]", CallProtocol.fullResult(huge))
+        assertEquals("x".repeat(64_000), CallProtocol.fullResult("x".repeat(64_000)))
+        val marker = " [Bento cut Hermes's reply here at 64000 characters.]"
+        assertEquals("x".repeat(64_000) + marker, CallProtocol.fullResult("x".repeat(70_000)))
+        assertEquals("x".repeat(63_999) + marker, CallProtocol.fullResult("x".repeat(63_999) + "😀".repeat(10)))
     }
 }

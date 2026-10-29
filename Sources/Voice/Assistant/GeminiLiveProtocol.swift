@@ -103,7 +103,7 @@ struct GeminiLiveProtocol {
     static func response(id: String, name: String = tool, message: String, executed: Bool) -> [String: Any] {
         ["toolResponse": ["functionResponses": [[
             "id": id, "name": name, "scheduling": "WHEN_IDLE",
-            "response": ["status": executed ? "ok" : "not_executed", "retryable": false, "message": AzureLiveProtocol.fullResult(message)],
+            "response": ["status": executed ? "ok" : "not_executed", "retryable": false, "message": LiveHermesResult.full(message)],
         ] as [String: Any]]]]
     }
 }

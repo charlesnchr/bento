@@ -140,14 +140,16 @@ class CallProtocol {
             }
         }.toString()
 
-        /** The most of a Hermes reply the voice model gets (the Mac's `AzureLiveProtocol.resultLimit`). */
+        /** The most of a Hermes reply the voice model gets: the Mac's `LiveHermesResult.limit`, in UTF-16 units. */
         const val RESULT_LIMIT = 64000
 
-        /** What the voice model gets for a Hermes reply: all of it, marked only if it reached [RESULT_LIMIT]. */
+        /** What the voice model gets for a Hermes reply: all of it, marked only if Bento cut it at [RESULT_LIMIT]. */
         fun fullResult(result: String): String {
             if (result.isEmpty()) return "Hermes returned no text. Do not infer success."
-            if (result.length < RESULT_LIMIT) return result
-            return result.take(RESULT_LIMIT) + " [Bento cut Hermes's reply here at 64,000 characters.]"
+            if (result.length <= RESULT_LIMIT) return result
+            // Never split a surrogate pair.
+            val end = if (result[RESULT_LIMIT - 1].isHighSurrogate()) RESULT_LIMIT - 1 else RESULT_LIMIT
+            return result.take(end) + " [Bento cut Hermes's reply here at $RESULT_LIMIT characters.]"
         }
 
         internal fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
