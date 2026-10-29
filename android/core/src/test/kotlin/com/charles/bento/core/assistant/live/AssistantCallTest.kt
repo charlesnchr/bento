@@ -439,8 +439,11 @@ class CallProtocolTest {
         assertNull(p.request(p.delegation(CallProtocol.TOOL, "a", 20.0)!!))
     }
 
-    @Test fun excerpts() {
-        assertEquals("Hermes returned no text. Do not infer success.", CallProtocol.excerpt(""))
-        assertTrue(CallProtocol.excerpt("x".repeat(5000)).startsWith("Truncated excerpt."))
+    @Test fun theModelGetsTheWholeReply() {
+        assertEquals("Hermes returned no text. Do not infer success.", CallProtocol.fullResult(""))
+        val long = "word ".repeat(8000)
+        assertEquals(long, CallProtocol.fullResult(long))
+        val huge = "x".repeat(70_000)
+        assertEquals("x".repeat(64_000) + " [Bento cut Hermes's reply here at 64,000 characters.]", CallProtocol.fullResult(huge))
     }
 }

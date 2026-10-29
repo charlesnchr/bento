@@ -133,18 +133,21 @@ class CallProtocol {
                         putJsonObject("response") {
                             put("status", if (executed) "ok" else "not_executed")
                             put("retryable", false)
-                            put("message", excerpt(message))
+                            put("message", fullResult(message))
                         }
                     }
                 }
             }
         }.toString()
 
-        /** Long Hermes replies are on screen; the model gets enough to speak a summary. */
-        fun excerpt(result: String): String {
+        /** The most of a Hermes reply the voice model gets (the Mac's `AzureLiveProtocol.resultLimit`). */
+        const val RESULT_LIMIT = 64000
+
+        /** What the voice model gets for a Hermes reply: all of it, marked only if it reached [RESULT_LIMIT]. */
+        fun fullResult(result: String): String {
             if (result.isEmpty()) return "Hermes returned no text. Do not infer success."
-            if (result.length <= 4000) return result
-            return "Truncated excerpt. Full reply is visible in Bento's assistant screen: " + result.take(4000)
+            if (result.length < RESULT_LIMIT) return result
+            return result.take(RESULT_LIMIT) + " [Bento cut Hermes's reply here at 64,000 characters.]"
         }
 
         internal fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull

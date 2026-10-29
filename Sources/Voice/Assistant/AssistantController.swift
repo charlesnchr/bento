@@ -176,7 +176,7 @@ final class AssistantController: AssistantActions {
             if update["sessionUpdate"] as? String == "agent_message_chunk",
                let content = update["content"] as? [String: Any], let text = content["text"] as? String {
                 // A visible, stable reply separate from concurrent live speech.
-                let chunk = String(text.prefix(max(0, 64000 - result.count)))
+                let chunk = String(text.prefix(max(0, AzureLiveProtocol.resultLimit - result.count)))
                 result += chunk
                 AssistantTranscript.appendReply(chunk, id: replyID, speaker: "Hermes", to: &self.window.model.messages)
             } else if ["tool_call", "tool_call_update"].contains(update["sessionUpdate"] as? String ?? "") {

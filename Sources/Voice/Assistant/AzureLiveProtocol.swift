@@ -72,15 +72,31 @@ struct AzureLiveProtocol {
 
     mutating func discardRequest(for delegation: Delegation) { _ = request(for: delegation) }
 
-    static func spokenResult(_ result: String) -> String {
-        if result.utf8.count <= 400 { return result.isEmpty ? "Hermes returned no text. Do not infer success." : result }
-        let prefix = "Truncated excerpt. Full reply is visible in Bento's assistant window: "
-        var text = prefix
-        for character in result {
-            let next = String(character)
-            if text.utf8.count + next.utf8.count > 400 { break }
-            text += next
+    /// The most of a Hermes reply Bento keeps, on screen and for the voice model.
+    static let resultLimit = 64000
+
+    /// What a voice model gets for a Hermes reply on every route: all of it, marked
+    /// only if it reached `resultLimit`.
+    static func fullResult(_ result: String) -> String {
+        if result.isEmpty { return "Hermes returned no text. Do not infer success." }
+        guard result.count >= resultLimit else { return result }
+        return result.prefix(resultLimit) + " [Bento cut Hermes's reply here at 64,000 characters.]"
+    }
+
+    /// `fullResult` as consecutive appends for one delegation, split at whitespace
+    /// where possible. Each append stays within the helper's 400 UTF-8 bytes (the API
+    /// caps an append at 500 tokens but accepts several per delegation).
+    static func resultParts(_ result: String, limit: Int = 400) -> [String] {
+        var parts: [String] = [], part = ""
+        for character in fullResult(result) {
+            while !part.isEmpty, part.utf8.count + character.utf8.count > limit {
+                if let space = part.lastIndex(where: \.isWhitespace), space > part.startIndex {
+                    parts.append(String(part[...space])); part = String(part[part.index(after: space)...])
+                } else { parts.append(part); part = "" }
+            }
+            if character.utf8.count <= limit { part.append(character) }
         }
-        return text
+        if !part.isEmpty { parts.append(part) }
+        return parts
     }
 }
