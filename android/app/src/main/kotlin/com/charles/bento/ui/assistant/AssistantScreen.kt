@@ -86,6 +86,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.charles.bento.assistant.AssistantController
@@ -208,7 +209,9 @@ private fun Messages(
     // At the bottom, following the conversation, until the user scrolls away; back once they scroll to the very end.
     var pinned by remember(list) { mutableStateOf(restored?.pinned ?: true) }
     LaunchedEffect(list) { list.interactionSource.interactions.collect { if (it is DragInteraction.Start) pinned = false } }
-    LaunchedEffect(list) { snapshotFlow { list.layoutInfo.totalItemsCount > 0 && !list.canScrollForward }.collect { if (it) pinned = true } }
+    LaunchedEffect(list) {
+        snapshotFlow { list.layoutInfo.totalItemsCount > 0 && !list.canScrollForward && !list.isScrollInProgress }.collect { if (it) pinned = true }
+    }
     val current by rememberUpdatedState(list)
     val following by rememberUpdatedState(pinned)
     val session by rememberUpdatedState(sessionId)
@@ -221,7 +224,9 @@ private fun Messages(
             }.orEmpty()
         }
     }
-    DisposableEffect(Unit) { onDispose { save() } }
+    // Stopped, it has saved already, and its state may be stale (a new Hermes session moves the saved position).
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(Unit) { onDispose { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) save() } }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { save() }
     val last = messages.lastOrNull()
     // Follow the conversation while it grows, unless the user scrolled up to read (or had, when they left it).
