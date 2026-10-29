@@ -22,8 +22,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -63,10 +63,12 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,6 +81,8 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -87,6 +91,7 @@ import com.charles.bento.assistant.CallUi
 import com.charles.bento.core.assistant.ChatMessage
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.graph
+import com.charles.bento.settings.Prefs
 import com.charles.bento.ui.HomeAction
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.theme.SansCode
@@ -145,7 +150,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
             when {
                 !configured -> SetupCard { nav.navigate(SettingsRoute) }
                 state.messages.isEmpty() && !state.loading -> EmptyChat()
-                else -> Messages(state.messages, state.working, onAnswer = assistant::answer)
+                else -> Messages(state.sessionId, state.messages, state.working, graph.prefs.hermesScroll, onAnswer = assistant::answer)
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
@@ -186,13 +191,37 @@ private fun EmptyChat() {
 }
 
 @Composable
-private fun Messages(messages: List<ChatMessage>, working: Boolean, onAnswer: (String, String) -> Unit) {
-    val list = rememberLazyListState()
+private fun Messages(
+    sessionId: String?, messages: List<ChatMessage>, working: Boolean, saved: Prefs.Pref<String>, onAnswer: (String, String) -> Unit,
+) {
+    // Back where the user left this conversation (on another tab or screen, or before a new process), unless they were at
+    // the bottom and more has come since: then at its end, like a conversation not seen here before.
+    // A new list once the messages are in: another conversation, or the first load after a restart.
+    val loaded = messages.isNotEmpty()
+    val restored = remember(loaded) {
+        messages.lastOrNull()?.let { last -> ChatScroll.restore(saved.value, sessionId)?.takeUnless { it.follows(messages.size, last.text.length) } }
+    }
+    val list = remember(loaded) { LazyListState(restored?.index ?: messages.lastIndex.coerceAtLeast(0), restored?.offset ?: 0) }
+    val current by rememberUpdatedState(list)
+    val session by rememberUpdatedState(sessionId)
+    val shown by rememberUpdatedState(messages)
+    val save = {
+        val l = current
+        if (l.layoutInfo.totalItemsCount > 0 && shown.isNotEmpty()) {
+            saved.value = session?.let {
+                ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length, atEnd(l)).encode()
+            }.orEmpty()
+        }
+    }
+    DisposableEffect(Unit) { onDispose { save() } }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { save() }
     val last = messages.lastOrNull()
-    // Follow the conversation while it grows, unless the user scrolled up to read.
-    LaunchedEffect(messages.size, last?.text?.length, working) {
-        val atEnd = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
-        if (atEnd && list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
+    // Follow the conversation while it grows, unless the user scrolled up to read (or had, when they left it).
+    var returned by remember(list) { mutableStateOf(restored != null) }
+    LaunchedEffect(list, messages.size, last?.text?.length, working) {
+        val follow = !returned && atEnd(list)
+        returned = false
+        if (follow && list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
     }
     LazyColumn(Modifier.fillMaxSize().testTag("assistant-messages"), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -217,6 +246,10 @@ private fun Messages(messages: List<ChatMessage>, working: Boolean, onAnswer: (S
         }
     }
 }
+
+/** At the end of the conversation, or close enough to follow it as it grows. */
+private fun atEnd(list: LazyListState) =
+    list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
 
 @Composable
 private fun UserRow(m: ChatMessage) {
