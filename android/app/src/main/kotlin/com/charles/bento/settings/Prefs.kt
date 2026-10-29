@@ -69,6 +69,8 @@ class Prefs(context: Context) {
     val hermesSession = string("hermes.session", "")
     /** Conversations started on this phone, newest first, comma-separated: the history lists these. */
     val hermesConversations = string("hermes.conversations", "")
+    /** Where the Assistant tab's conversation was scrolled to when the user left it (ChatScroll). */
+    val hermesScroll = string("hermes.scroll", "")
     /** Voice calls: "continuous" (open mic) or "tap" (tap to talk). */
     val hermesTalkMode = string("hermes.talkMode", "continuous")
 
