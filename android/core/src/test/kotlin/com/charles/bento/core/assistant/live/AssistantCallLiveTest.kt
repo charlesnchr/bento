@@ -3,6 +3,7 @@ package com.charles.bento.core.assistant.live
 import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -48,7 +49,13 @@ class AssistantCallLiveTest {
 
     /** What a call does when Gemini rotates its connection: a new socket picks the session up from its handle. */
     @Test fun aNewSocketResumesTheSessionFromItsHandle() = blocking {
-        suspend fun OkHttpLiveTransport.next(): JsonObject = Json.parseToJsonElement(receive()).jsonObject
+        // Gemini may hand a memory question to Hermes; as a call would, it gets an answer (here: answer it yourself).
+        suspend fun OkHttpLiveTransport.next(): JsonObject = Json.parseToJsonElement(receive()).jsonObject.also { o ->
+            o["toolCall"]?.jsonObject?.get("functionCalls")?.jsonArray?.forEach { call ->
+                val id = call.jsonObject["id"]!!.jsonPrimitive.content
+                send(CallProtocol.response(id, message = "Not executed: answer from this conversation yourself.", executed = false))
+            }
+        }
         val first = OkHttpLiveTransport({ key!! })
         val handle = try {
             first.connect()
@@ -57,11 +64,13 @@ class AssistantCallLiveTest {
             first.send("""{"realtimeInput":{"text":"Remember the code word pineapple. Just acknowledge it briefly."}}""")
             withTimeout(30_000) {
                 var handle: String? = null
-                var answered = false
-                while (handle == null || !answered) {
+                // A tool call's answer starts another turn: closing before it ends leaves it running in the session.
+                var turns = 1
+                while (handle == null || turns > 0) {
                     val o = first.next()
                     o["sessionResumptionUpdate"]?.jsonObject?.get("newHandle")?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }?.let { handle = it }
-                    if (o["serverContent"]?.jsonObject?.get("turnComplete") != null) answered = true
+                    if (o["toolCall"] != null) turns++
+                    if (o["serverContent"]?.jsonObject?.get("turnComplete") != null) turns--
                 }
                 handle!!
             }
@@ -74,12 +83,12 @@ class AssistantCallLiveTest {
             second.send(CallSetup.setupFrame(handle = handle))
             withTimeout(20_000) { while (second.next()["setupComplete"] == null) Unit }
             second.send("""{"realtimeInput":{"text":"What was the code word? Answer in one word."}}""")
+            // The transcript can trail turnComplete, so read until the word or the deadline.
             val said = StringBuilder()
-            withTimeout(30_000) {
-                while (true) {
+            withTimeoutOrNull(30_000) {
+                while ("pineapple" !in said.toString().lowercase()) {
                     val content = second.next()["serverContent"]?.jsonObject ?: continue
                     content["outputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.content?.let(said::append)
-                    if (content["turnComplete"] != null) break
                 }
             }
             assertTrue("pineapple" in said.toString().lowercase(), "heard: $said")
