@@ -68,7 +68,10 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
     func send(_ data: Data) async throws {
         let to = current
         do { try await to.send(data) } catch {
-            // The old socket can close before its replacement is set up; send there instead.
+            // The old socket can close before its replacement is set up. Audio is dropped, since
+            // waiting would back the microphone up; anything else goes to the replacement.
+            if lock.withLock({ rotation != nil }),
+               ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["realtimeInput"] != nil { return }
             guard await replaced(to) else { throw error }
             try await current.send(data)
         }

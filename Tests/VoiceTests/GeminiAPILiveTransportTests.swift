@@ -132,6 +132,7 @@ import VoiceCore
         private var isClosed = false
         var connectFails = false
         init(_ inbox: [String] = []) { self.inbox = inbox }
+        func push(_ frame: String) { lock.withLock { inbox.append(frame) } }
         var sent: [Data] { lock.withLock { frames } }
         var closed: Bool { lock.withLock { isClosed } }
         func connect() async throws { if connectFails { throw URLError(.notConnectedToInternet) } }
@@ -179,6 +180,29 @@ import VoiceCore
         #expect(first.sent.count == 1, "Only the first setup went to the old socket")
         transport.close()
         #expect(second.closed)
+    }
+
+    @Test func audioTheClosedOldSocketCantTakeIsDroppedAndAResultWaitsForTheNewOne() async throws {
+        let first = QueueSocket([Self.setupComplete, Self.resumable, Self.goAway])
+        let second = QueueSocket()
+        let transport = GeminiAPILiveTransport(socket: first, setup: try #require(GeminiAPILiveTransport.setupFrame()),
+                                               reconnect: { second })
+        try await transport.connect()
+        _ = try await transport.receive()
+        _ = try await transport.receive()
+        let reading = Task { try await transport.receive() } // takes the goAway and starts the move
+        try await Task.sleep(for: .milliseconds(100))
+        first.close()
+        let audio = Data(#"{"realtimeInput":{"audio":{}}}"#.utf8), result = Data(#"{"toolResponse":{}}"#.utf8)
+        try await transport.send(audio) // returns at once rather than holding the microphone
+        let sending = Task { try await transport.send(result) }
+        try await Task.sleep(for: .milliseconds(100))
+        second.push(Self.setupComplete)
+        second.push(#"{"serverContent":{}}"#)
+        try await sending.value
+        #expect(text(try await reading.value) == #"{"serverContent":{}}"#)
+        #expect(second.sent.dropFirst().map { text($0) } == [text(result)])
+        transport.close()
     }
 
     @Test func withoutAHandleTheControllerHearsGoAway() async throws {

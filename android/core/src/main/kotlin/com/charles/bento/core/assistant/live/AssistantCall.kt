@@ -346,8 +346,9 @@ class AssistantCall(
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             if (!rotating && to === socket) { fail("Lost the connection to Gemini. Completed actions were not undone."); return }
+            if (!resend) return // waiting would back the microphone up
             while (rotating && active) delay(50)
-            if (resend && socket !== to) send(frame)
+            if (socket !== to) send(frame)
         }
     }
 

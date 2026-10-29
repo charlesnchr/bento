@@ -305,6 +305,24 @@ class AssistantCallTest {
         assertEquals(1, second.closeCount)
     }
 
+    @Test fun anOldSocketThatClosesEarlyDropsAudioWithoutEndingTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(emptyList())
+        val call = AssistantCall(first, FakeAudio(), null, { "" }, limits = fast, reconnect = { second })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "setup" in it } } // the move has begun
+        first.sendErrorAfter = first.sent.size
+        delay(800) // far more audio than the microphone buffer holds
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        second.push(Frames.setupComplete())
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
     @Test fun goAwayWithoutAHandleStillEndsAtTheLimit() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete(), json("sessionResumptionUpdate" to mapOf("resumable" to false))))
         var made = 0

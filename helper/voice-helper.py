@@ -469,6 +469,10 @@ class VertexBridge:
                     try:
                         await upstream.send_json(message)
                     except (aiohttp.ClientError, ConnectionError):
+                        # The old upstream can close before its replacement is set up. Audio is dropped,
+                        # since waiting would back Bento's microphone up; a result goes to the replacement.
+                        if 'realtimeInput' in message and link['rotation']:
+                            continue
                         if not await moved(upstream):
                             raise
                         await link['upstream'].send_json(message)
