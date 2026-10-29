@@ -67,6 +67,7 @@ enum class Tab(val label: String, val icon: ImageVector, val selectedIcon: Image
 /** Asks the home screen to do something (from a deep link, widget or shortcut). */
 sealed interface HomeAction {
     data object QuickAdd : HomeAction
+    data object NewCall : HomeAction
     data class ShowTab(val tab: Tab) : HomeAction
 }
 
@@ -103,6 +104,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
             MainActivity.ACTION_QUICK_ADD -> { tab = Tab.Todo; homeAction.value = HomeAction.QuickAdd }
             MainActivity.ACTION_OPEN_TODO -> tab = Tab.Todo
             MainActivity.ACTION_OPEN_ASSISTANT -> { nav.popBackStack(HomeRoute, inclusive = false); tab = Tab.Assistant }
+            MainActivity.ACTION_NEW_CALL -> { nav.popBackStack(HomeRoute, inclusive = false); tab = Tab.Assistant; homeAction.value = HomeAction.NewCall }
             MainActivity.ACTION_OPEN_TASK -> { tab = Tab.Todo; id?.let { Routes.openTask.value = it } }
             MainActivity.ACTION_OPEN_MEETING -> { tab = Tab.Voice; (id ?: graph.meetings.recording.value)?.let { nav.navigate(MeetingRoute(it)) } }
             MainActivity.ACTION_TOGGLE_MEETING -> {
@@ -141,7 +143,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                     Tab.Todo -> Screens.todo(m, nav, homeAction)
                     Tab.Voice -> Screens.voice(m, nav)
                     // the chat's composer rises with the keyboard, which covers the navigation bar
-                    Tab.Assistant -> Screens.assistant(m.consumeWindowInsets(PaddingValues(bottom = padding.calculateBottomPadding())), nav)
+                    Tab.Assistant -> Screens.assistant(m.consumeWindowInsets(PaddingValues(bottom = padding.calculateBottomPadding())), nav, homeAction)
                 }
             }
         }

@@ -87,15 +87,17 @@ import com.charles.bento.assistant.CallUi
 import com.charles.bento.core.assistant.ChatMessage
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.graph
+import com.charles.bento.ui.HomeAction
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.theme.SansCode
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.DateFormat
 import java.util.Date
 
 /** Chat with Hermes, and voice calls through Gemini Live that hand requests to Hermes. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantScreen(modifier: Modifier, nav: NavController) {
+fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableStateFlow<HomeAction?>) {
     val context = LocalContext.current
     val graph = context.graph
     val assistant = graph.assistant
@@ -110,6 +112,16 @@ fun AssistantScreen(modifier: Modifier, nav: NavController) {
         if (state.call != null || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             assistant.toggleCall()
         } else mic.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    // The Hermes call widget: a new chat and a call on it, unless a call is already running.
+    LaunchedEffect(Unit) {
+        homeAction.collect { a ->
+            if (a != HomeAction.NewCall) return@collect
+            homeAction.value = null
+            if (assistant.state.value.call != null) return@collect
+            assistant.newChat()
+            call()
+        }
     }
 
     Column(modifier.fillMaxSize().imePadding()) {

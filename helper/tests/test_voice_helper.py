@@ -389,7 +389,8 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('ask_hermes', setup['systemInstruction']['parts'][0]['text'])
         self.assertEqual(setup['tools'][0]['functionDeclarations'][0]['name'], helper.CONVERSATION_TOOL)
         self.assertEqual(set(setup), {'model', 'generationConfig', 'systemInstruction', 'tools',
-                                      'inputAudioTranscription', 'outputAudioTranscription'},
+                                      'inputAudioTranscription', 'outputAudioTranscription', 'contextWindowCompression',
+                                      'sessionResumption'},
                          'The app sends the same file to the Gemini API, so it holds nothing Vertex-only')
         self.assertNotIn('earlier_conversation', setup['systemInstruction']['parts'][0]['text'])
         context = azure_live.resume_context('User: hi')
@@ -442,10 +443,12 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError, msg=payload):
                 helper.conversation_input(payload)
 
-    async def conversation_client(self, upstream):
+    async def conversation_client(self, *upstreams):
+        remaining = list(upstreams)
         class UpstreamSession:
             async def ws_connect(self, url, headers, **kwargs):
                 self.url, self.headers = url, headers
+                upstream = remaining.pop(0) if len(remaining) > 1 else remaining[0]
                 if upstream is None:
                     await asyncio.sleep(99)
                 return upstream
@@ -476,7 +479,9 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                     yield types.SimpleNamespace(type=helper.aiohttp.WSMsgType.BINARY, data=json.dumps(data).encode())
                 await self.closing.wait()
                 self.close_code = close_code
-            def __aiter__(self): return self.frames()
+            # One iteration across loops, as a real socket's.
+            def __aiter__(self): return self.__dict__.setdefault('iterator', self.frames())
+            async def close(self): self.closing.set()
         return Upstream()
 
     async def test_conversation_forwards_to_regional_live_and_reports_only_safe_codes(self):
@@ -582,6 +587,7 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                 return
                 yield
             def __aiter__(self): return self.frames()
+            async def close(self): pass
         bridge, client = await self.conversation_client(Upstream())
         try:
             async with client.ws_connect('/conversation') as ws:
@@ -590,6 +596,46 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
                                                                      'code': 'upstream_closed', 'closeCode': 1000}})
         finally:
             await client.close()
+
+    async def test_conversation_moves_to_a_resumed_upstream_on_go_away(self):
+        first = self.upstream([{'setupComplete': {}}, {'sessionResumptionUpdate': {'newHandle': 'h1', 'resumable': True}},
+                               {'goAway': {'timeLeft': '10s'}}], 1000, close_after=99)
+        second = self.upstream([{'setupComplete': {}}, {'serverContent': {'turnComplete': True}}], 1011, close_after=2)
+        bridge, client = await self.conversation_client(first, second)
+        try:
+            async with client.ws_connect('/conversation') as ws:
+                self.assertEqual(json.loads((await ws.receive()).data), {'setupComplete': {}})
+                self.assertIn('sessionResumptionUpdate', json.loads((await ws.receive()).data))
+                # Neither the goAway nor the new upstream's setupComplete reaches Bento.
+                self.assertEqual(json.loads((await ws.receive()).data), {'serverContent': {'turnComplete': True}})
+                await ws.send_json({'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000', 'data': 'AAA='}}})
+                self.assertEqual(await ws.receive_json(), {'error': {'message': 'Gemini Live call ended',
+                                                                     'code': 'upstream_closed', 'closeCode': 1011}})
+        finally:
+            await client.close()
+        self.assertEqual(first.sent[0]['setup']['sessionResumption'], {})
+        self.assertEqual(first.sent[0]['setup']['contextWindowCompression'], {'slidingWindow': {}})
+        self.assertEqual(len(first.sent), 1)
+        self.assertTrue(first.closing.is_set(), 'The old upstream is closed')
+        self.assertEqual(second.sent[0]['setup']['sessionResumption'], {'handle': 'h1'})
+        self.assertEqual([next(iter(m)) for m in second.sent], ['setup', 'realtimeInput'])
+
+    async def test_conversation_go_away_reaches_bento_when_the_call_cannot_move(self):
+        original = helper.CONVERSATION_CONNECT_TIMEOUT
+        helper.CONVERSATION_CONNECT_TIMEOUT = .2
+        try:
+            # Without a handle there is nothing to resume; a stalled reconnect fails the same way.
+            for frames in ([{'setupComplete': {}}, {'goAway': {}}],
+                           [{'setupComplete': {}}, {'sessionResumptionUpdate': {'newHandle': 'h1', 'resumable': True}}, {'goAway': {}}]):
+                bridge, client = await self.conversation_client(self.upstream(frames, 1000, close_after=99), None)
+                try:
+                    async with client.ws_connect('/conversation') as ws:
+                        for frame in frames:
+                            self.assertEqual(json.loads((await ws.receive()).data), frame)
+                finally:
+                    await client.close()
+        finally:
+            helper.CONVERSATION_CONNECT_TIMEOUT = original
 
     async def test_conversation_stalled_upgrade_releases_the_slot(self):
         original = helper.CONVERSATION_CONNECT_TIMEOUT

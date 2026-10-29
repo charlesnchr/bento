@@ -16,8 +16,10 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.io.IOException
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -55,6 +57,8 @@ private object Live {
     fun audio(bytes: ByteArray, mime: String = AssistantCall.OUTPUT_MIME) =
         json("serverContent" to mapOf("modelTurn" to mapOf("parts" to listOf(mapOf("inlineData" to mapOf("mimeType" to mime, "data" to Base64.getEncoder().encodeToString(bytes)))))))
     fun interrupted() = json("serverContent" to mapOf("interrupted" to true))
+    fun resumable(handle: String) = json("sessionResumptionUpdate" to mapOf("newHandle" to handle, "resumable" to true))
+    const val GO_AWAY = """{"goAway":{"timeLeft":"10s"}}"""
 }
 
 class AssistantCallTest {
@@ -259,6 +263,90 @@ class AssistantCallTest {
         assertEquals("Gemini rejected the API key. Check it in Settings → Dictation.", call.ended().message)
     }
 
+    @Test fun aCallHasNoTimeLimit() = blocking {
+        val hours = AtomicLong(0)
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast, clock = { System.nanoTime() / 1e9 + hours.get() * 3600 })
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        hours.set(3)
+        delay(300) // several watchdog ticks
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun goAwayMovesTheCallToANewSocketThatResumesTheSession() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val asked = CompletableDeferred<HermesCall>()
+        val call = AssistantCall(first, FakeAudio(), CallSetup.resume("User: hi"), { c -> asked.complete(c); "Done." },
+                                 limits = fast, reconnect = { second })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(JsonObject(emptyMap()), Json.parseToJsonElement(first.sent.first()).jsonObject["setup"]!!.jsonObject["sessionResumption"])
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        val setup = Json.parseToJsonElement(second.sent.first()).jsonObject["setup"]!!.jsonObject
+        assertEquals("h1", setup["sessionResumption"]!!.jsonObject["handle"]!!.jsonPrimitive.content)
+        assertTrue(second.sent.none { "clientContent" in it }, "the resumed session already has the recap")
+        assertEquals(1, first.closeCount)
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        // The conversation carries on over the new socket.
+        second.push(Live.activity("ACTIVITY_START"))
+        second.push(Live.heard("Turn on the lights"))
+        second.push(Live.activity("ACTIVITY_END"))
+        second.push(Live.call("c1"))
+        assertEquals("Turn on the lights", withTimeout(5_000) { asked.await() }.task)
+        second.awaitSent { s -> s.any { "toolResponse" in it } }
+        assertTrue(first.sent.none { "toolResponse" in it })
+        call.stop()
+        assertNull(call.ended().message)
+        assertEquals(1, second.closeCount)
+    }
+
+    @Test fun anOldSocketThatClosesEarlyDropsAudioWithoutEndingTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(emptyList())
+        val call = AssistantCall(first, FakeAudio(), null, { "" }, limits = fast, reconnect = { second })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "setup" in it } } // the move has begun
+        first.sendErrorAfter = first.sent.size
+        delay(800) // far more audio than the microphone buffer holds
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        second.push(Frames.setupComplete())
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun goAwayWithoutAHandleStillEndsAtTheLimit() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), json("sessionResumptionUpdate" to mapOf("resumable" to false))))
+        var made = 0
+        val call = AssistantCall(first, FakeAudio(), null, { "" }, limits = fast, reconnect = { made++; FakeTransport(emptyList()) })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.GO_AWAY)
+        delay(100)
+        first.close()
+        assertEquals("Gemini ended the call at its time limit. Start again to continue.", call.ended().message)
+        assertEquals(0, made)
+    }
+
+    @Test fun aFailedReconnectEndsTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(emptyList()).apply { connectError = IOException("offline") }
+        val call = AssistantCall(first, FakeAudio(), null, { "" }, limits = fast, reconnect = { second })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.GO_AWAY)
+        assertEquals("Gemini voice couldn't reconnect. Start again to continue.", call.ended().message)
+        assertEquals(1, second.closeCount)
+    }
+
     @Test fun endings() {
         assertEquals("Gemini ended the call at its time limit. Start again to continue.", AssistantCall.endingMessage(LiveSocketEnding(), goingAway = true))
         assertEquals("Gemini rejected the API key. Check it in Settings → Dictation.", AssistantCall.endingMessage(LiveSocketEnding(httpStatus = 403), false))
@@ -275,7 +363,9 @@ class CallSetupTest {
         val mac = Json.parseToJsonElement(File(helper, "gemini_live_setup.json").readText()).jsonObject
         val phone = Json.parseToJsonElement(CallSetup.setupFrame()).jsonObject["setup"]!!.jsonObject
         assertEquals("models/gemini-3.8-live", phone["model"]!!.jsonPrimitive.content)
-        for (key in listOf("generationConfig", "inputAudioTranscription", "outputAudioTranscription")) assertEquals(mac[key], phone[key], key)
+        for (key in listOf("generationConfig", "inputAudioTranscription", "outputAudioTranscription", "contextWindowCompression", "sessionResumption")) {
+            assertEquals(mac[key], phone[key], key)
+        }
         val macTool = mac["tools"]!!.jsonArray[0].jsonObject["functionDeclarations"]!!.jsonArray.single().jsonObject
         val phoneTool = phone["tools"]!!.jsonArray[0].jsonObject["functionDeclarations"]!!.jsonArray.single().jsonObject
         assertEquals(macTool["name"], phoneTool["name"])

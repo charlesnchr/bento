@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -45,19 +46,24 @@ interface CallAudio {
  *
  * State is confined to one thread. Interrupting Gemini's speech flushes playback but
  * never cancels Hermes; [stop] ends the call and abandons a running request.
+ *
+ * A call has no time limit. Gemini closes a connection after about ten minutes, warning
+ * with `goAway` first; with [reconnect] the session carries on over a new socket from its
+ * latest resumption handle, and audio keeps going to the old one until the new one is set up.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AssistantCall(
-    private val transport: LiveTransport,
+    transport: LiveTransport,
     private val audio: CallAudio,
     private val resume: CallSetup.Resume?,
     private val onTool: suspend (HermesCall) -> String,
-    private val ending: () -> LiveSocketEnding = { LiveSocketEnding() },
+    private val ending: (LiveTransport) -> LiveSocketEnding = { LiveSocketEnding() },
     private val limits: Limits = Limits(),
     private val clock: () -> Double = { System.nanoTime() / 1e9 },
+    /** A new socket for when Gemini rotates the connection; without one the call ends at its time limit. */
+    private val reconnect: (() -> LiveTransport)? = null,
 ) {
     data class Limits(
-        val session: Double = 600.0,
         val connect: Double = 25.0,
         val capture: Double = 5.0,
         val tickMillis: Long = 1000,
@@ -83,9 +89,13 @@ class AssistantCall(
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
     var onTranscript: ((String, String) -> Unit)? = null
 
+    private var socket = transport
     private var active = false
     private var listening = false
     private var goingAway = false
+    /** The latest handle Gemini says the session can resume from. */
+    private var resumeHandle: String? = null
+    private var rotating = false
     private var started = 0.0
     @Volatile private var lastCaptureAt: Double? = null
     @Volatile private var mutedNow = false
@@ -122,13 +132,58 @@ class AssistantCall(
     }
 
     private suspend fun receiveLoop() {
+        val first = socket
         try {
-            transport.connect()
-            transport.send(CallSetup.setupFrame(resume))
-            while (active) receive(transport.receive())
+            first.connect()
+            first.send(CallSetup.setupFrame(resume))
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && !active) return
-            if (active) fail(endingMessage(ending(), goingAway))
+            if (active) fail(endingMessage(ending(first), goingAway))
+            return
+        }
+        read(first)
+    }
+
+    /** Reads [from] until it closes; one already replaced, or about to be, ends quietly. */
+    private suspend fun read(from: LiveTransport) {
+        try {
+            while (active && from === socket) receive(from.receive())
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException && !active) return
+            if (active && from === socket && !rotating) fail(endingMessage(ending(from), goingAway))
+        }
+    }
+
+    /** Moves the call to a new socket that resumes the session; the old one carries audio until it's set up. */
+    private fun rotate() {
+        val make = reconnect ?: return
+        val handle = resumeHandle ?: return
+        if (rotating) return
+        rotating = true
+        scope.launch {
+            val next = make()
+            var moved = false
+            try {
+                val ready = withTimeoutOrNull((limits.connect * 1000).toLong()) {
+                    runCatching {
+                        next.connect()
+                        next.send(CallSetup.setupFrame(resume, handle))
+                        // The resumed session already has the recap and the microphone: wait for it to take input.
+                        while (Json.parseToJsonElement(next.receive()).let { it as? JsonObject }?.get("setupComplete") == null) Unit
+                    }.isSuccess
+                } == true
+                rotating = false
+                if (!active) return@launch
+                if (!ready) { fail("Gemini voice couldn't reconnect. Start again to continue."); return@launch }
+                val old = socket
+                socket = next
+                moved = true
+                goingAway = false
+                old.close()
+                launch { read(next) }
+            } finally {
+                if (!moved) next.close()
+            }
         }
     }
 
@@ -138,7 +193,6 @@ class AssistantCall(
             if (!active) return
             val t = now()
             when {
-                t - started >= limits.session -> { fail("The ten-minute call ended. Start again to continue."); return }
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 listening && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
             }
@@ -148,8 +202,12 @@ class AssistantCall(
     private suspend fun receive(frame: String) {
         if (frame.length > 4 * 1024 * 1024) return
         val event = runCatching { Json.parseToJsonElement(frame) as? JsonObject }.getOrNull() ?: return
+        (event["sessionResumptionUpdate"] as? JsonObject)?.let { update ->
+            val handle = update.str("newHandle")
+            if ((update["resumable"] as? JsonPrimitive)?.booleanOrNull == true && !handle.isNullOrEmpty()) resumeHandle = handle
+        }
         // Gemini warns before closing a connection at its time limit.
-        if (event["goAway"] != null) goingAway = true
+        if (event["goAway"] != null) { goingAway = true; rotate() }
         (event["error"] as? JsonObject)?.let {
             fail("Gemini voice failed: " + (it.str("message") ?: "unknown error") + ". No task was retried.")
             return
@@ -276,16 +334,21 @@ class AssistantCall(
 
     private suspend fun respond(id: String, message: String, executed: Boolean, name: String = CallProtocol.TOOL) {
         if (!active) return
-        send(CallProtocol.response(id, name, message, executed))
+        send(CallProtocol.response(id, name, message, executed), resend = true)
     }
 
-    private suspend fun send(frame: String) {
+    /** A frame the old socket couldn't take while the call moves is dropped, or with [resend] sent on the new one. */
+    private suspend fun send(frame: String, resend: Boolean = false) {
         if (!active) return
+        val to = socket
         try {
-            transport.send(frame)
+            to.send(frame)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            fail("Lost the connection to Gemini. Completed actions were not undone.")
+            if (!rotating && to === socket) { fail("Lost the connection to Gemini. Completed actions were not undone."); return }
+            if (!resend) return // waiting would back the microphone up
+            while (rotating && active) delay(50)
+            if (socket !== to) send(frame)
         }
     }
 
@@ -298,7 +361,7 @@ class AssistantCall(
             active = false
             audio.stop()
             mic.close()
-            transport.close()
+            socket.close()
             _status.value = Status.Ended(message)
             scope.cancel()
         }
