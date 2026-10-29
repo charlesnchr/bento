@@ -103,14 +103,7 @@ struct GeminiLiveProtocol {
     static func response(id: String, name: String = tool, message: String, executed: Bool) -> [String: Any] {
         ["toolResponse": ["functionResponses": [[
             "id": id, "name": name, "scheduling": "WHEN_IDLE",
-            "response": ["status": executed ? "ok" : "not_executed", "retryable": false, "message": excerpt(message)],
+            "response": ["status": executed ? "ok" : "not_executed", "retryable": false, "message": LiveHermesResult.full(message)],
         ] as [String: Any]]]]
-    }
-
-    /// Long Hermes replies are on screen; the model gets enough to speak a summary.
-    static func excerpt(_ result: String) -> String {
-        if result.isEmpty { return "Hermes returned no text. Do not infer success." }
-        guard result.count > 4000 else { return result }
-        return "Truncated excerpt. Full reply is visible in Bento's assistant window: " + result.prefix(4000)
     }
 }

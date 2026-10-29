@@ -71,16 +71,4 @@ struct AzureLiveProtocol {
     }
 
     mutating func discardRequest(for delegation: Delegation) { _ = request(for: delegation) }
-
-    static func spokenResult(_ result: String) -> String {
-        if result.utf8.count <= 400 { return result.isEmpty ? "Hermes returned no text. Do not infer success." : result }
-        let prefix = "Truncated excerpt. Full reply is visible in Bento's assistant window: "
-        var text = prefix
-        for character in result {
-            let next = String(character)
-            if text.utf8.count + next.utf8.count > 400 { break }
-            text += next
-        }
-        return text
-    }
 }

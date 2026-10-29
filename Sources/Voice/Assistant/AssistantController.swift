@@ -166,7 +166,7 @@ final class AssistantController: AssistantActions {
         // Capture the target without bringing Bento to the foreground.
         _ = desktop.captureTarget()
         window.setStatus("Hermes is working...", busy: true)
-        var result = ""
+        var result = "", kept = 0
         let replyID = UUID()
         let toolID = UUID().uuidString
         window.updateTool(["toolCallId": toolID, "title": "Hermes task", "status": "in_progress",
@@ -175,9 +175,10 @@ final class AssistantController: AssistantActions {
             guard let self, self.live.active, self.turn == token else { return }
             if update["sessionUpdate"] as? String == "agent_message_chunk",
                let content = update["content"] as? [String: Any], let text = content["text"] as? String {
-                // A visible, stable reply separate from concurrent live speech.
-                let chunk = String(text.prefix(max(0, 64000 - result.count)))
-                result += chunk
+                // A visible, stable reply separate from concurrent live speech. One character
+                // past the limit is kept so `LiveHermesResult.full` can tell a cut reply.
+                let chunk = String(text.prefix(max(0, LiveHermesResult.limit + 1 - kept)))
+                result += chunk; kept += chunk.count
                 AssistantTranscript.appendReply(chunk, id: replyID, speaker: "Hermes", to: &self.window.model.messages)
             } else if ["tool_call", "tool_call_update"].contains(update["sessionUpdate"] as? String ?? "") {
                 self.window.updateTool(update)
