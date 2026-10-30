@@ -23,6 +23,37 @@ class DictationPlacementTest {
         assertFalse(TextInserter.isPlaceholder("", 0, listOf("")))
     }
 
+    private fun plan(read: String, shown: String, sel: Int, answer: TextInserter.CursorAnswer?, showingHint: Boolean = false): TextInserter.Edit {
+        var asked = false
+        val edit = TextInserter.plan("Hello", read, shown, showingHint, sel, sel) { asked = true; answer ?: error("not asked") }
+        if (answer != null) assertTrue(asked)
+        return edit
+    }
+
+    @Test fun anEmptyFieldShowingItsPlaceholderGetsJustTheDictation() {
+        // no selection to set over empty text (TextView, Compose, Chromium), or a cursor refused after "Message"
+        for (answer in listOf(TextInserter.CursorAnswer.NotOffered, TextInserter.CursorAnswer.Refused)) {
+            assertEquals(TextInserter.Edit("", 0, 0, "Hello", 5), plan(read = "", shown = "Message", sel = 0, answer = answer))
+        }
+    }
+
+    @Test fun textThatOnlyReadsLikeThePlaceholderIsKept() {
+        // typed "Message", cursor moved to its start: the field takes a cursor after it
+        assertEquals(TextInserter.Edit("Message", 0, 0, "Hello Message", 6),
+                     plan(read = "", shown = "Message", sel = 0, answer = TextInserter.CursorAnswer.Took))
+        // a slow refusal (Android timing out on a busy app) proves nothing: kept, never replaced
+        assertEquals("Hello Message", plan(read = "", shown = "Message", sel = 0, answer = TextInserter.CursorAnswer.NoAnswer).updated)
+        // an unknown cursor in kept text: at the end, as in any field
+        assertEquals("Message Hello", plan(read = "", shown = "Message", sel = -1, answer = TextInserter.CursorAnswer.Took).updated)
+    }
+
+    @Test fun ordinaryFieldsAreNotAsked() {
+        // a flagged hint, an empty field, real text: nothing to ask
+        assertEquals("Hello", plan(read = "", shown = "Message", sel = 0, answer = null, showingHint = true).updated)
+        assertEquals("Hello", plan(read = "", shown = "", sel = 0, answer = null).updated)
+        assertEquals(TextInserter.Edit("Hi", 2, 2, "Hi Hello", 8), plan(read = "Hi", shown = "Hi", sel = 2, answer = null))
+    }
+
     private fun top(fieldTop: Int?, fieldBottom: Int?, keyboardTop: Int = 1_500, keyboardBottom: Int = 2_400) =
         DictationOverlay.pillTop(height = 150, keyboardTop = keyboardTop, keyboardBottom = keyboardBottom, fieldTop = fieldTop,
                                  fieldBottom = fieldBottom, minTop = 80, screenBottom = 2_400, gap = 20)
