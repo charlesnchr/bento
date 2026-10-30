@@ -390,7 +390,7 @@ def cmd_roundtrip(ctx, args):
     ts = now_ms()
     if ctx.collection == "notes":
         body, stale_body = "# syncctl roundtrip", "stale"
-    else:  # other collections' bodies are JSON objects; the server refuses anything else
+    else:  # todos/voice bodies must be JSON objects; use one for any non-notes collection
         body = json.dumps({"type": "synctest", "fields": {"v": "roundtrip"}, "clocks": {}})
         stale_body = json.dumps({"type": "synctest", "fields": {"v": "stale"}, "clocks": {}})
     note = {"id": nid, "body": body, "created_at": ts, "updated_at": ts,
