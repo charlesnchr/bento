@@ -140,6 +140,9 @@ class AssistantCall(
     /** Results of calls an earlier session made, as (task, reply): they go to Gemini as a turn. */
     private val deliveries = ArrayList<Pair<String, String>>()
     private var delivering = false
+    /** When Gemini was last told something to say (a result, say), until it has said something and finished its turn. */
+    private var unspokenSince: Double? = null
+    private var spokeSince = false
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
@@ -264,7 +267,16 @@ class AssistantCall(
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
         return after > 0 && running > 0 && settling == 0 && deliveries.isEmpty() && listening && !standby && !waking &&
-            !rotating && reconnect != null && t - maxOf(lastSpeech, speechUntil) >= after
+            !rotating && reconnect != null && t - maxOf(lastSpeech, speechUntil) >= after &&
+            // Gemini hasn't spoken what it was told yet: closing now would lose it (unless it stays silent for long).
+            (unspokenSince?.let { t - it >= after * 3 } ?: true)
+    }
+
+    /** Gemini has been told something to say at its next pause. */
+    private fun toldToSpeak() {
+        lastSpeech = now()
+        unspokenSince = now()
+        spokeSince = false
     }
 
     /** Leaves Gemini while Hermes works: the socket closes, and the microphone runs on unheard. */
@@ -352,7 +364,7 @@ class AssistantCall(
         if (deliveries.isEmpty()) return
         val results = deliveries.toList()
         deliveries.clear()
-        lastSpeech = now()
+        toldToSpeak()
         send(CallSetup.resultFrame(results), resend = true)
     }
 
@@ -386,7 +398,7 @@ class AssistantCall(
                 protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
-                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now()
+                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now(); spokeSince = true
             }
         }
         if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
@@ -403,9 +415,11 @@ class AssistantCall(
                 fail("Gemini sent audio Bento can't play. Start a new call."); return
             }
             audio.play(pcm)
+            spokeSince = true
             // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
             speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
         }
+        if ((content["turnComplete"] as? JsonPrimitive)?.booleanOrNull == true && spokeSince) unspokenSince = null
         ((event["toolCallCancellation"] as? JsonObject)?.get("ids") as? JsonArray)?.take(32)?.forEach { id ->
             (id as? JsonPrimitive)?.contentOrNull?.let(cancelledCalls::add)
         }
@@ -497,7 +511,7 @@ class AssistantCall(
             when {
                 // Gemini dropped the call (the user talked over it, say), but the task ran on: its result goes in as a turn.
                 task.callId in cancelledCalls || task.session != session || standby || waking -> deliver(task, result)
-                else -> respond(task.callId, result, executed = true, task = task.id)
+                else -> respond(task.callId, CallProtocol.taskResult(task.id, result), executed = true, task = task.id)
             }
             afterTask()
         }
@@ -596,8 +610,8 @@ class AssistantCall(
         willContinue: Boolean = false,
     ) {
         if (!active) return
-        // Gemini speaks what it's told at its next pause: standby's quiet spell starts again, so the socket stays for it.
-        if (scheduling == "WHEN_IDLE") lastSpeech = now()
+        // Gemini speaks what it's told at its next pause: the socket stays for it.
+        if (scheduling == "WHEN_IDLE") toldToSpeak()
         send(CallProtocol.response(id, name, message, executed, task, status, scheduling, willContinue), resend = true)
     }
 

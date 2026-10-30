@@ -77,7 +77,7 @@ class AssistantCallLiveTest {
                 while (Json.parseToJsonElement(transport.receive()).jsonObject["serverContent"]?.jsonObject?.get("turnComplete") == null) Unit
             }
             delay(1_000)
-            transport.send(CallProtocol.response(id, message = "Tomorrow you have one appointment: the dentist, Dr Pineapple, at 3pm.",
+            transport.send(CallProtocol.response(id, message = CallProtocol.taskResult("1", "Tomorrow you have one appointment: the dentist, Dr Pineapple, at 3pm."),
                                                  executed = true, task = "1"))
             val said = StringBuilder()
             withTimeoutOrNull(30_000) {

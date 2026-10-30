@@ -161,6 +161,14 @@ class CallProtocol {
             }
         }.toString()
 
+        /**
+         * A task's result as its call's last response: labelled as finished, since a bare reply
+         * arriving while Gemini was about to say the task is running was sometimes taken for news
+         * that it still was, and never spoken.
+         */
+        fun taskResult(task: String, result: String): String =
+            "Task $task has finished. Hermes's reply:\n" + result.ifEmpty { "Hermes returned no text. Do not infer success." }
+
         /** The most of a Hermes reply the voice model gets: the Mac's `LiveHermesResult.limit`, in UTF-16 units. */
         const val RESULT_LIMIT = 64000
 

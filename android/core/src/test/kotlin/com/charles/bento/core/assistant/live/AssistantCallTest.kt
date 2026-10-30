@@ -154,7 +154,7 @@ class AssistantCallTest {
         assertNull(response["willContinue"], "the result ends the call")
         assertEquals("ok", response.status())
         assertEquals("1", response["response"]!!.jsonObject["task"]!!.jsonPrimitive.content)
-        assertEquals("It's sunny in London.", response.message())
+        assertEquals("Task 1 has finished. Hermes's reply:\nIt's sunny in London.", response.message())
         assertTrue(("user" to "What's the weather") in heard)
         assertTrue(("assistant" to "Hi, how can I help?") in heard)
         call.stop()
@@ -224,7 +224,7 @@ class AssistantCallTest {
         gates.getValue("Book a table").complete("Booked for 8pm.")
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
         val finals = transport.finals()
-        assertEquals(listOf("c2" to "A taxi is on its way.", "c1" to "Booked for 8pm."), finals.map { it.id() to it.message() })
+        assertEquals(listOf("c2" to CallProtocol.taskResult("2", "A taxi is on its way."), "c1" to CallProtocol.taskResult("1", "Booked for 8pm.")), finals.map { it.id() to it.message() })
         assertEquals(listOf("2", "1"), finals.map { it["response"]!!.jsonObject["task"]!!.jsonPrimitive.content })
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
         call.stop()
@@ -299,10 +299,10 @@ class AssistantCallTest {
         assertEquals(AssistantCall.Status.Working, call.status.value)
         gates.getValue("1").complete("Booked.")
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 7 }
-        assertEquals("c1" to "Booked.", transport.finals().last().let { it.id() to it.message() })
+        assertEquals("c1" to CallProtocol.taskResult("1", "Booked."), transport.finals().last().let { it.id() to it.message() })
         gates.getValue("2").complete("Too late.")
         delay(200)
-        assertTrue(transport.finals().none { it.message() == "Too late." })
+        assertTrue(transport.finals().none { "Too late." in it.message() })
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
         call.stop()
     }
@@ -757,7 +757,7 @@ class AssistantCallTest {
         // The resumed session is the same one, so its call is still open.
         result.complete("Booked.")
         second.awaitSent { s -> s.any { "toolResponse" in it } }
-        assertEquals("c1" to "Booked.", second.finals().single().let { it.id() to it.message() })
+        assertEquals("c1" to CallProtocol.taskResult("1", "Booked."), second.finals().single().let { it.id() to it.message() })
         assertTrue(second.turns().isEmpty())
         call.stop()
     }
@@ -809,6 +809,43 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun theCallWaitsForGeminiToSpeakAResultBeforeStandingBy() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
+        val call = AssistantCall(first, FakeAudio(), null, { c -> results.getValue(c.taskId).await() }, limits = fast,
+                                 reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.4 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "Book a table"); first.push(Live.call("c1"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        results.getValue("1").complete("Booked.")
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        delay(800) // twice the quiet spell, and Gemini hasn't said it yet
+        assertEquals(0, first.closeCount)
+        first.push(Live.said("Task 1 is booked."))
+        first.push(json("serverContent" to mapOf("turnComplete" to true)))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
+    @Test fun aResultGeminiNeverSpeaksHoldsOffStandbyOnlySoLong() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
+        val call = AssistantCall(first, FakeAudio(), null, { c -> results.getValue(c.taskId).await() }, limits = fast,
+                                 reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.3 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "Book a table"); first.push(Live.call("c1"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        results.getValue("1").complete("Booked.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
     @Test fun speechKeepsTheCallOnGemini() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
@@ -821,7 +858,7 @@ class AssistantCallTest {
         assertEquals(0, first.closeCount)
         result.complete("Done.")
         first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
-        assertEquals("Done.", first.finals().single().message())
+        assertEquals(CallProtocol.taskResult("1", "Done."), first.finals().single().message())
         assertEquals(0, made)
         call.stop()
     }
@@ -1047,6 +1084,11 @@ class CallProtocolTest {
         val p = CallProtocol()
         p.activityStarted(1.0); p.transcript("user", "Something", 1.2); p.activityEnded(2.0)
         assertNull(p.request(p.delegation(CallProtocol.TOOL, "a", 20.0)!!))
+    }
+
+    @Test fun aTaskResultSaysItFinished() {
+        assertEquals("Task 2 has finished. Hermes's reply:\nBooked.", CallProtocol.taskResult("2", "Booked."))
+        assertEquals("Task 2 has finished. Hermes's reply:\nHermes returned no text. Do not infer success.", CallProtocol.taskResult("2", ""))
     }
 
     @Test fun theModelGetsTheWholeReply() {
