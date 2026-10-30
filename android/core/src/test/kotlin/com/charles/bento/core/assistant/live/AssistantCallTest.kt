@@ -38,6 +38,8 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     @Volatile var flushes = 0
     @Volatile var stopped = false
     @Volatile var started = false
+    /** The microphone delivers nothing meanwhile, as one silenced by another recording might. */
+    @Volatile var quiet = false
     private var thread: Thread? = null
 
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
@@ -45,9 +47,11 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
         started = true
         if (delivers) thread = Thread {
             while (!stopped) {
-                val frame = if (loud) LOUD.copyOf() else ByteArray(640)
-                if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
-                onPcm(frame)
+                if (!quiet) {
+                    val frame = if (loud) LOUD.copyOf() else ByteArray(640)
+                    if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
+                    onPcm(frame)
+                }
                 Thread.sleep(20)
             }
         }.apply { isDaemon = true; start() }
@@ -890,8 +894,9 @@ class AssistantCallTest {
 
     /** A request Hermes is still working on, asked on [first], with standby after 0.3 s. */
     private suspend fun waitingOnHermes(first: FakeTransport, next: () -> FakeTransport, result: CompletableDeferred<String>,
-                                        standbyAfter: Double = 0.3): AssistantCall {
-        val call = AssistantCall(first, FakeAudio(), null, { result.await() }, limits = fast, reconnect = next,
+                                        standbyAfter: Double = 0.3, audio: FakeAudio = FakeAudio(),
+                                        limits: AssistantCall.Limits = fast): AssistantCall {
+        val call = AssistantCall(first, audio, null, { result.await() }, limits = limits, reconnect = next,
                                  standbyAfter = { standbyAfter }, recap = { CallSetup.resume("User: what's on my calendar?") })
         call.start()
         first.awaitSent { s -> s.any { "realtimeInput" in it } }
@@ -984,6 +989,86 @@ class AssistantCallTest {
         result.complete("Done.")
         third.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         call.stop()
+    }
+
+    @Test fun aMicrophoneLentInStandbyHoldsTheComebackUntilItsReclaimed() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; second }, result)
+        assertFalse(call.lend(), "a call on Gemini keeps the microphone")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        assertFalse(call.lend(), "lent once at a time")
+        result.complete("Done.")
+        call.wake()
+        delay(400)
+        assertEquals(AssistantCall.Status.Standby, call.status.value, "neither the answer nor wake brings it back while lent")
+        assertEquals(0, made)
+        call.reclaim()
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(1, made)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        assertFalse(call.lend())
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aMicrophoneLentAndReclaimedWithNothingFinishedLeavesTheCallInStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        call.reclaim()
+        delay(300)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        assertEquals(0, made)
+        // Lent again, and the answer comes after it's back: the call returns as it always does.
+        assertTrue(call.lend())
+        call.reclaim()
+        result.complete("Done.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun aCallEndedWhileLentEndsCleanlyAndReclaimingDoesNothing() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; FakeTransport(listOf(Frames.setupComplete())) }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        call.stop()
+        assertNull(call.ended().message)
+        call.reclaim()
+        result.complete("Done.")
+        delay(200)
+        assertEquals(0, made)
+        assertFalse(call.lend())
+    }
+
+    @Test fun aLentMicrophoneGoingQuietDoesntEndTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { second }, result, audio = audio, limits = fast.copy(capture = 0.3))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        audio.quiet = true
+        delay(800)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        audio.quiet = false
+        call.reclaim()
+        result.complete("Done.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+        assertNull(call.ended().message)
     }
 
     /** Two requests Hermes is working on, asked on [first] as tasks 1 and 2, with standby after 0.3 s. */
@@ -1332,6 +1417,39 @@ class AssistantCallTest {
             java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
         }
         assertEquals((numbers.first() until numbers.first() + 200).toList(), numbers, "no frame dropped or reordered")
+        call.stop()
+    }
+
+    @Test fun aDictationOnTheLentMicrophoneDoesntWakeTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        var made = 0
+        val audio = FakeAudio()
+        val call = AssistantCall(first, audio, null, { CompletableDeferred<String>().await() }, limits = fast,
+                                 reconnect = { made++; second }, standbyAfter = { 0.3 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "What's on my calendar?"); first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        audio.loud = true // the user dictating
+        delay(800)
+        assertEquals(0, made, "dictation isn't talking to Gemini")
+        audio.loud = false
+        call.reclaim()
+        delay(400)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        // Talking after the dictation still wakes it, and none of the dictation goes in.
+        audio.numbered = true
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        assertEquals(1, made)
+        assertTrue(second.sent.filter { "realtimeInput" in it }.none { frame ->
+            val data = Json.parseToJsonElement(frame).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+            val pcm = Base64.getDecoder().decode(data)
+            // An unnumbered loud frame could only be the dictation's.
+            pcm.contentEquals(FakeAudio.LOUD)
+        }, "none of the dictation's audio goes to Gemini")
         call.stop()
     }
 

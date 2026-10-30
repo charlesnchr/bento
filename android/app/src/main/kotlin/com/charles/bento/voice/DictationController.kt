@@ -66,7 +66,10 @@ class DictationController(
     private val pipeline: () -> VoicePipeline,
     private val sinks: () -> DictationSinks,
     private val modes: () -> List<Pair<String, String>>, // id to name
-    private val meetingRecording: () -> Boolean,
+    /** Claims the microphone for a dictation: null when it may record, else why not (a meeting, a call that's listening). */
+    private val claimMicrophone: () -> String?,
+    /** Gives back what [claimMicrophone] claimed (a call in standby takes its microphone back). */
+    private val releaseMicrophone: () -> Unit,
 ) {
     private val _state = MutableStateFlow<DictationState>(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
@@ -104,9 +107,9 @@ class DictationController(
             _state.value = DictationState.Failed(it, canRetry = false)
             return false
         }
-        if (meetingRecording()) {
-            // one recording at a time: the meeting has the microphone
-            _state.value = DictationState.Failed("A meeting is recording. Stop it to dictate", canRetry = false)
+        claimMicrophone()?.let {
+            // one recording at a time: a meeting, or a call that isn't in standby, has the microphone
+            _state.value = DictationState.Failed(it, canRetry = false)
             return false
         }
         editing = false
@@ -124,6 +127,7 @@ class DictationController(
     fun startEdit() {
         val t = lastTarget ?: return
         if (lastInserted == null || isBusy) return
+        claimMicrophone()?.let { _state.value = DictationState.Failed(it, canRetry = false); return }
         editing = true
         target = t
         begin(VoiceRequest(t.context, null, VoiceRequest.Purpose.Instruction), handsFree = true)
@@ -192,7 +196,7 @@ class DictationController(
             val text = runCatching { s?.finish() ?: "" }
             log("finished: ${text.exceptionOrNull()?.message ?: "${text.getOrNull()?.length} chars"}")
             releaseMic()
-            VoiceService.exit(context)
+            VoiceService.exit(context, VoiceService.KIND_DICTATION)
             if (peak < SILENT && (text.isFailure || text.getOrNull().isNullOrBlank())) {
                 fail("No sound reached the microphone. Is microphone access turned off in Quick Settings?")
                 return@launch
@@ -202,9 +206,11 @@ class DictationController(
         }
     }
 
+    /** Every way a dictation ends comes through here, so whatever the microphone was claimed from gets it back. */
     private fun releaseMic() {
         capture?.stop()
         capture = null
+        releaseMicrophone()
     }
 
     fun cancel() {
@@ -220,7 +226,7 @@ class DictationController(
         releaseMic()
         session?.cancel()
         session = null
-        VoiceService.exit(context)
+        VoiceService.exit(context, VoiceService.KIND_DICTATION)
     }
 
     fun dismiss() {
@@ -315,7 +321,7 @@ class DictationController(
 
     private fun fail(message: String, canRetry: Boolean = false, heard: String? = null) {
         releaseMic()
-        VoiceService.exit(context)
+        VoiceService.exit(context, VoiceService.KIND_DICTATION)
         if (prefs.sounds.value) sounds.play(Earcons.ERROR)
         _state.value = DictationState.Failed(message, canRetry, heard)
     }

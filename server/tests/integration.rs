@@ -484,10 +484,10 @@ async fn collections_are_isolated() {
     recv(&mut mixed).await;
     quiet(&mut old).await;
     for (path, body) in [
-        ("/v1/c/todos/x", doc("notes", "x", "", 1)),
+        ("/v1/c/todos/x", doc("notes", "x", "{}", 1)),
         ("/v1/notes/x", doc("todos", "x", "", 1)),
         ("/v1/c/Todos/x", note("x", "", 1)),
-        ("/v1/c/todos/x", doc("", "x", "", 1)),
+        ("/v1/c/todos/x", doc("", "x", "{}", 1)),
     ] {
         let (st, r) = http(a, "PUT", path, tok, Some(&body.to_string())).await;
         assert_eq!(st, 400, "{path} {body}: {r}");
@@ -497,7 +497,7 @@ async fn collections_are_isolated() {
 
     // Ids are unique across collections: 409 over REST, error with id over WS.
     for (method, path, body) in [
-        ("PUT", "/v1/c/todos/n1", Some(note("n1", "x", 9999).to_string())),
+        ("PUT", "/v1/c/todos/n1", Some(note("n1", "{}", 9999).to_string())),
         ("PUT", "/v1/notes/t1", Some(note("t1", "x", 9999).to_string())),
         ("DELETE", "/v1/c/todos/n1?updated_at=9999", None),
         ("DELETE", "/v1/notes/t1?updated_at=9999", None),
@@ -509,8 +509,21 @@ async fn collections_are_isolated() {
     send(&mut old, json!({"type": "put", "note": note("t1", "x", 9999)})).await;
     let e = recv(&mut old).await;
     assert_eq!((e["type"].clone(), e["id"].clone()), (json!("error"), json!("t1")));
-    send(&mut todo, json!({"type": "put", "note": note("n1", "x", 9999)})).await;
-    assert_eq!(recv(&mut todo).await["id"], "n1");
+    send(&mut todo, json!({"type": "put", "note": note("n1", "{}", 9999)})).await;
+    let e = recv(&mut todo).await;
+    assert_eq!(e["id"], "n1");
+    assert!(e["message"].as_str().unwrap().contains("already exists"), "{e}");
+    quiet(&mut mixed).await;
+
+    // A todo body that isn't a JSON object (here a raw newline inside a string) is refused
+    // over REST and WS and never stored or broadcast; notes bodies stay free text.
+    let raw = "{\"type\":\"task\",\"fields\":{\"description\":\"a\nb\"}}";
+    let (st, r) = http(a, "PUT", "/v1/c/todos/bad", tok, Some(&note("bad", raw, 1).to_string())).await;
+    assert_eq!(st, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("JSON object"), "{r}");
+    send(&mut todo, json!({"type": "put", "note": note("bad", raw, 1)})).await;
+    let e = recv(&mut todo).await;
+    assert_eq!((e["type"].clone(), e["id"].clone()), (json!("error"), json!("bad")));
     quiet(&mut mixed).await;
 
     // A put to a collection the connection didn't subscribe to: acked, never sent back to it.
@@ -518,7 +531,7 @@ async fn collections_are_isolated() {
     assert_eq!(recv(&mut old).await, json!({"type": "ack", "id": "t5", "seq": 8, "accepted": true}));
     assert_eq!(recv(&mut todo).await["note"]["id"], "t5");
     recv(&mut mixed).await;
-    send(&mut old, json!({"type": "put", "note": doc("todos", "t5", "stale", 1)})).await;
+    send(&mut old, json!({"type": "put", "note": doc("todos", "t5", "{}", 1)})).await;
     assert_eq!(recv(&mut old).await, json!({"type": "ack", "id": "t5", "seq": 8, "accepted": false}));
     quiet(&mut old).await;
     send(&mut old, json!({"type": "put", "note": doc("No!", "z", "", 1)})).await;

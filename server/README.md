@@ -202,7 +202,8 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   followed by `{"type":"note","note":<stored>}` to the sender only.
 * **Validation:** `id` 1–128 chars `[A-Za-z0-9-_.:]` (UUIDs), `collection`
   `[a-z][a-z0-9_-]{0,31}` (absent/`null` → default, see above), `updated_at` required,
-  `created_at` defaults to `updated_at`, `body` ≤ 1 MiB (413), `meta` must be an
+  `created_at` defaults to `updated_at`, `body` ≤ 1 MiB (413) and, for live `todos` and
+  `voice` docs, a JSON object (400), `meta` must be an
   object ≤ 4 KiB serialized (413; `null`/absent → `{}`), `device` defaults to the
   hello device (WS) or `"rest"`. `deleted:true` forces `body:""`. Request/WS message
   cap 3 MiB to allow for JSON escaping. Unknown fields (incl. `seq`) are ignored.

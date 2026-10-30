@@ -22,7 +22,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * A microphone foreground service for as long as Bento listens (a dictation into another
  * app, a captured thought, a meeting, a voice call with Hermes). Android only lets an app
  * record while it is in the foreground or runs one of these, so it starts before the
- * microphone opens and stops right after.
+ * microphone opens and stops right after. A dictation while a call is in standby shares it:
+ * the service stops when the last of them leaves.
  */
 class VoiceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -58,9 +59,16 @@ class VoiceService : Service() {
         const val NOTIFICATION_ID = 41
         const val CHANNEL_LISTENING = "listening"
         private var ready: CompletableDeferred<Boolean>? = null
+        private val holders = VoiceHolders()
 
-        /** Starts the service and waits until it's in the foreground (false: not allowed right now). */
+        /** Starts the service and waits until it's in the foreground (false: not allowed right now). Main thread. */
         suspend fun enter(context: Context, kind: String): Boolean {
+            if (!holders.empty) {
+                // already in the foreground for another (a call in standby, during a dictation; a meeting
+                // still finishing its notes, as a call starts): this one joins it
+                holders.add(kind)?.let { show(context, it) }
+                return true
+            }
             ensureChannels(context)
             val d = CompletableDeferred<Boolean>()
             ready = d
@@ -68,11 +76,25 @@ class VoiceService : Service() {
                 ContextCompat.startForegroundService(context, Intent(context, VoiceService::class.java).putExtra(EXTRA_KIND, kind))
             }.isSuccess
             if (!ok) return false
-            return withTimeoutOrNull(3_000) { d.await() } ?: false
+            val started = withTimeoutOrNull(3_000) { d.await() } ?: false
+            if (started) holders.add(kind)
+            return started
         }
 
-        fun exit(context: Context) {
-            runCatching { context.startService(Intent(context, VoiceService::class.java).setAction(ACTION_STOP)) }
+        /** [kind] is done: the service stops when nothing else is in it, else shows what's left. Main thread. */
+        fun exit(context: Context, kind: String) {
+            val changed = holders.remove(kind)
+            // also when kind never got in: an enter cancelled midway may still have started the service
+            if (holders.empty) {
+                runCatching { context.startService(Intent(context, VoiceService::class.java).setAction(ACTION_STOP)) }
+                return
+            }
+            changed?.let { show(context, it) }
+        }
+
+        /** Replaces the running service's notification with [kind]'s. */
+        private fun show(context: Context, kind: String) {
+            runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context, kind)) }
         }
 
         fun ensureChannels(context: Context) {
@@ -116,5 +138,27 @@ class VoiceService : Service() {
             }
             return builder.build()
         }
+    }
+}
+
+/**
+ * The kinds in the [VoiceService] and the one whose notification it shows: the call's while
+ * there is one (it has End call), else the latest to come in. Main thread.
+ */
+internal class VoiceHolders {
+    private val kinds = LinkedHashSet<String>()
+    val empty: Boolean get() = kinds.isEmpty()
+    val shown: String? get() = if (VoiceService.KIND_ASSISTANT in kinds) VoiceService.KIND_ASSISTANT else kinds.lastOrNull()
+
+    /** Adds [kind]; the notification to show now, or null when it stays as it is. */
+    fun add(kind: String): String? = change { kinds.remove(kind); kinds.add(kind) }
+
+    /** Removes [kind] (fine if it never got in); the notification to show now, or null when it stays or nothing is left. */
+    fun remove(kind: String): String? = change { kinds.remove(kind) }
+
+    private inline fun change(f: () -> Unit): String? {
+        val before = shown
+        f()
+        return shown.takeIf { it != before }
     }
 }

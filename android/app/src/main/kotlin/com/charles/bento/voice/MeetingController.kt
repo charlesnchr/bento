@@ -114,14 +114,14 @@ class MeetingController(
             return
         }
         val s = runCatching { engine.start(config(key)) }.getOrElse {
-            VoiceService.exit(context)
+            VoiceService.exit(context, VoiceService.KIND_MEETING)
             Toast.makeText(context, it.message ?: "Couldn't start the meeting", Toast.LENGTH_LONG).show()
             return
         }
         val c = AudioCapture(onFrame = { s.feed(it) }, noiseSuppression = true)
         if (!c.start()) {
             runCatching { s.stop() }
-            VoiceService.exit(context)
+            VoiceService.exit(context, VoiceService.KIND_MEETING)
             Toast.makeText(context, "The microphone is in use by another app", Toast.LENGTH_LONG).show()
             return
         }
@@ -143,7 +143,7 @@ class MeetingController(
         timer?.cancel()
         scope.launch {
             val notes = runCatching { s.stop() }
-            VoiceService.exit(context)
+            VoiceService.exit(context, VoiceService.KIND_MEETING)
             notes.onSuccess { n -> file(id, n) }
                 .onFailure { e -> failures.value = failures.value + (id to (e.message ?: "Couldn't finish the notes")) }
             finishing.value = finishing.value - id

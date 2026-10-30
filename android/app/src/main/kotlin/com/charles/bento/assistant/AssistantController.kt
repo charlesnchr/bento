@@ -123,12 +123,34 @@ class AssistantController(
     private var loadedSession: String? = null
     private var call: AssistantCall? = null
     private var callJob: Job? = null
+    /** The call in standby whose microphone a dictation has ([lendMicrophone]). */
+    private var lentFrom: AssistantCall? = null
     /** The next voice fragment starts a new row (after a Hermes reply, say). */
     private var voiceBoundary = true
 
     fun endpoint(): HermesEndpoint? = HermesEndpoint.of(prefs.hermesUrl.value, secrets.hermesToken)
     val configured: Boolean get() = endpoint() != null
     val callActive: Boolean get() = call != null
+
+    /**
+     * For a dictation: true when no call is on, and when one is in standby, which then stays
+     * there until [reclaimMicrophone] (a task finishing meanwhile brings it back after). False
+     * while a call is connecting, listening or speaking: it has the microphone.
+     */
+    fun lendMicrophone(): Boolean {
+        if (lentFrom != null) return true // already lent: the call can't have come back meanwhile
+        if (call == null && callJob == null) return true
+        val c = call ?: return false
+        if (!c.lend()) return false
+        lentFrom = c
+        return true
+    }
+
+    /** The dictation is done with the microphone [lendMicrophone] lent it. */
+    fun reclaimMicrophone() {
+        lentFrom?.reclaim()
+        lentFrom = null
+    }
 
     private fun set(f: (AssistantUi) -> AssistantUi) = _state.update(f)
     private fun messages(f: (List<ChatMessage>) -> List<ChatMessage>) = set { it.copy(messages = f(it.messages)) }
@@ -493,7 +515,8 @@ class AssistantController(
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
                     is AssistantCall.Status.Ended -> {
                         call = null
-                        VoiceService.exit(context)
+                        if (lentFrom === c) lentFrom = null
+                        VoiceService.exit(context, VoiceService.KIND_ASSISTANT)
                         // A request the call abandoned ends with it: nothing on screen keeps spinning.
                         val all = TurnState(ids = _state.value.messages.map { it.id }.toSet(), status = "cancelled")
                         val (list, _) = AssistantTranscript.finish(_state.value.messages, all)
@@ -516,7 +539,7 @@ class AssistantController(
         val c = call
         if (c != null) c.stop() else {
             callJob?.cancel(); callJob = null
-            VoiceService.exit(context)
+            VoiceService.exit(context, VoiceService.KIND_ASSISTANT)
             set { it.copy(call = null, caption = null) }
         }
     }

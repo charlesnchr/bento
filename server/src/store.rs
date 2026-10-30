@@ -126,6 +126,10 @@ pub fn valid_collection(name: &str) -> bool {
 
 pub const INVALID_COLLECTION: &str = "invalid collection (1-32 chars: a-z, then a-z 0-9 - _)";
 
+/// Collections whose live bodies are JSON objects (field-clock documents). Clients drop a
+/// body they can't parse, so the server refuses one rather than store it.
+pub const JSON_BODY_COLLECTIONS: [&str; 2] = ["todos", "voice"];
+
 impl NoteIn {
     /// Validate a client note. `path_id` / `path_collection` come from the URL
     /// (REST) if any and must match the body's; without either, the body's
@@ -168,6 +172,12 @@ impl NoteIn {
         let body = if deleted { String::new() } else { self.body.unwrap_or_default() };
         if body.len() > MAX_BODY_BYTES {
             return Err(Error::TooLarge(format!("body exceeds {MAX_BODY_BYTES} bytes")));
+        }
+        if !deleted
+            && JSON_BODY_COLLECTIONS.contains(&collection.as_str())
+            && !matches!(serde_json::from_str(&body), Ok(Value::Object(_)))
+        {
+            return Err(Error::BadRequest(format!("{collection} body must be a JSON object")));
         }
         let meta = match self.meta {
             None | Some(Value::Null) => Value::Object(Map::new()),
@@ -876,7 +886,12 @@ mod tests {
         for bad in ["", "Notes", "1abc", "-a", "_a", "a b", "a.b", "a/b", "é", &"x".repeat(33)] {
             assert!(!valid_collection(bad), "{bad}");
         }
-        let n = NoteIn { id: Some("a".into()), updated_at: Some(1), ..Default::default() };
+        let n = NoteIn {
+            id: Some("a".into()),
+            body: Some("{}".into()),
+            updated_at: Some(1),
+            ..Default::default()
+        };
         assert_eq!(n.clone().into_change(None, None, "d").unwrap().collection, "notes");
         assert_eq!(n.clone().into_change(None, Some("todos"), "d").unwrap().collection, "todos");
         let t = NoteIn { collection: Some("todos".into()), ..n.clone() };
@@ -888,6 +903,31 @@ mod tests {
         let empty = NoteIn { collection: Some(String::new()), ..n.clone() };
         assert!(matches!(empty.into_change(None, None, "d"), Err(Error::BadRequest(_))));
         assert!(matches!(n.into_change(None, Some("BAD"), "d"), Err(Error::BadRequest(_))));
+    }
+
+    #[test]
+    fn field_doc_bodies_must_be_json_objects() {
+        let put = |collection: &str, body: &str, deleted: bool| {
+            NoteIn {
+                id: Some("a".into()),
+                body: Some(body.into()),
+                updated_at: Some(1),
+                deleted: Some(deleted),
+                ..Default::default()
+            }
+            .into_change(None, Some(collection), "d")
+        };
+        // A raw newline inside a string: what an unescaping writer produced.
+        let raw_newline = "{\"type\":\"task\",\"fields\":{\"description\":\"a\nb\"},\"clocks\":{}}";
+        for c in JSON_BODY_COLLECTIONS {
+            assert!(put(c, r#"{"type":"task","fields":{"description":"a\nb"},"clocks":{}}"#, false).is_ok());
+            for bad in [raw_newline, "", "not json", "[1]", "\"s\"", "{\"type\":"] {
+                assert!(matches!(put(c, bad, false), Err(Error::BadRequest(_))), "{c}: {bad:?}");
+            }
+            assert_eq!(put(c, "not json", true).unwrap().body, "", "tombstones carry no body");
+        }
+        assert_eq!(put("notes", raw_newline, false).unwrap().body, raw_newline, "notes bodies are markdown");
+        assert!(put("other", "not json", false).is_ok());
     }
 
     #[test]
