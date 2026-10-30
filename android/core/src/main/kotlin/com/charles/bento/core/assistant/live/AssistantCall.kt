@@ -176,6 +176,8 @@ class AssistantCall(
      * or from before it, and never reaches Gemini, however far behind the call's thread is.
      */
     @Volatile private var lends = 0
+    /** The [lends] count the held audio and speech counted belong to; on the call's thread. */
+    private var heardUnder = 0
     /** A comeback held off while the microphone was lent: it happens on [reclaim]. */
     private var wakeHeld = false
     private var wakeStarted = 0.0
@@ -425,11 +427,20 @@ class AssistantCall(
             lends++
         }
         scope.launch {
-            // What was held, or heard, before the dictation is stale now.
-            held.clear(); heldBytes = 0; voiced = 0.0; voiceWoke = false
+            freshAudio(lends)
             val wasHeld = synchronized(lending) { wakeHeld.also { wakeHeld = false } }
             if (wasHeld) comeBack()
         }
+    }
+
+    /**
+     * What was held, or heard, under an earlier [lends] count (before or during a dictation) is
+     * stale: dropped once per count, before its first frame or a comeback, whichever is first.
+     */
+    private fun freshAudio(count: Int) {
+        if (count == heardUnder) return
+        heardUnder = count
+        held.clear(); heldBytes = 0; voiced = 0.0; voiceWoke = false
     }
 
     /** A new session with the conversation so far; the read loop finishes it at setupComplete ([cameBack]). */
@@ -666,6 +677,7 @@ class AssistantCall(
             for ((captured, pcm) in mic) {
                 if (!active) return@launch
                 if (captured != lends) continue
+                freshAudio(captured)
                 if (standby || rejoining) { hold(pcm); continue }
                 send(audioFrame(pcm))
                 captions?.feed(pcm)

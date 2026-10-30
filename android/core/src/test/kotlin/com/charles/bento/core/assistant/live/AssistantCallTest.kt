@@ -1484,6 +1484,8 @@ class AssistantCallTest {
             java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
         }
         assertTrue(numbers.all { it >= reclaimedAt }, "frames from the dictation (before $reclaimedAt) reached Gemini: ${numbers.take(10)}")
+        // The words said just after the dictation, while the thread was stalled, are kept: they open what Gemini hears.
+        assertTrue(numbers.first() <= reclaimedAt + 1, "the first words after the dictation were lost: ${numbers.take(10)} (reclaimed at $reclaimedAt)")
         call.stop()
     }
 
