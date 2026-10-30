@@ -779,6 +779,29 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aLateTranscriptSkipsOnlyItsOwnWordsOfAnUnsplitCaption() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Book a table"))
+        transport.push(Live.activity("ACTIVITY_END"))
+        delay(200)
+        // Gemini splits the pause, the captioner doesn't, and the first turn's transcript is late.
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Partial("Book a table for two"))
+        shown.awaitSize(2)
+        transport.push(Live.heard("Book a table."))
+        heard.awaitSize(1)
+        captions.say(Caption.Partial("Book a table for two please"))
+        shown.awaitSize(3)
+        assertEquals("for two please", shown.last())
+        call.stop()
+    }
+
     @Test fun aShortReplyAfterACoughGetsItsWordsBackWhenItEnds() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val captions = FakeCaptions()

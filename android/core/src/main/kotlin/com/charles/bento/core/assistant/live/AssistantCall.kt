@@ -379,8 +379,9 @@ class AssistantCall(
         for (source in listOf(content, event)) {
             (source["inputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
                 transcribedUntil = maxOf(transcribedUntil ?: 0.0, transcribedTurnEnd())
-                // The captioner's words so far are the ones covered (the transcript may span earlier utterances of its).
-                if (captionTranscribed()) captionWordsTranscribed = words(captionGuess).size
+                // Covered: this transcript's words, but no more than the captioner has guessed so far (the transcript
+                // may span earlier utterances of its; a late one may come after the user has said more).
+                if (captionTranscribed()) captionWordsTranscribed = minOf(words(captionGuess).size, captionWordsTranscribed + words(it).size)
                 // The controller takes the caption down with these words; one of later words comes back.
                 val later = captionText.takeIf { captionShownFrom?.let { from -> from > transcribedUntil!! } == true }
                 if (later == null) captionEndedAt = null
@@ -613,7 +614,10 @@ class AssistantCall(
     companion object {
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
-        /** Seconds after its ACTIVITY_END a turn's transcript can still come (they came 0.01 s apart on 2026-10-30). */
+        /**
+         * Seconds after its ACTIVITY_END a turn's transcript can still come (they came 0.01 s apart on
+         * 2026-10-30). Once a next turn has started, [TURN_SILENCE] after its start bounds this too.
+         */
         const val LATE_TRANSCRIPT = 1.5
         /** Silence Gemini Live waits for before it ends a turn (about 0.8 s on 2026-10-30). */
         const val TURN_SILENCE = 0.8
