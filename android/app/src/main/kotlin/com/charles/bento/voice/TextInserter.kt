@@ -65,14 +65,17 @@ class TextInserter(private val context: Context, private val node: Accessibility
         if (node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_SET_SELECTION }) return CursorAnswer.NotOffered
         val asked = android.os.SystemClock.uptimeMillis()
         // two places: a field refuses the selection it already has, but real text can't have both
+        val slow = { android.os.SystemClock.uptimeMillis() - asked >= PROMPT_ANSWER_MS }
         for (at in listOf(shown.length, shown.length - 1).distinct()) {
             if (setSelection(at, at)) {
-                if (start >= 0 && end >= 0) setSelection(start, end)
+                // back where it was; an unknown cursor at the end, where the insertion goes
+                if (start >= 0 && end >= 0) setSelection(start, end) else setSelection(shown.length, shown.length)
                 return CursorAnswer.Took
             }
+            // performAction is also false when Android gives up waiting on a busy app (after seconds)
+            if (slow()) return CursorAnswer.NoAnswer
         }
-        // performAction is also false when Android gives up waiting on a busy app (after seconds)
-        return if (android.os.SystemClock.uptimeMillis() - asked < PROMPT_ANSWER_MS) CursorAnswer.Refused else CursorAnswer.NoAnswer
+        return CursorAnswer.Refused
     }
 
     /** Puts the field back as it was before the last insertion. */
