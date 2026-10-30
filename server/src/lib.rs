@@ -144,6 +144,7 @@ fn error_response(e: store::Error) -> Response {
         store::Error::BadRequest(_) => StatusCode::BAD_REQUEST,
         store::Error::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
         store::Error::Conflict(_) => StatusCode::CONFLICT,
+        store::Error::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         store::Error::Db(_) | store::Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     if status.is_server_error() {
@@ -186,8 +187,10 @@ async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response 
 async fn health(State(st): State<AppState>) -> Response {
     match st.with_store(|s, _| s.latest_seq()).await {
         // `collections`: clients of other collections must not sync with a server that would
-        // file their documents under notes.
-        Ok(seq) => json_response(StatusCode::OK, json!({"ok": true, "seq": seq, "collections": true})),
+        // file their documents under notes. `blobs`: it stores images (/v1/blobs).
+        Ok(seq) => {
+            json_response(StatusCode::OK, json!({"ok": true, "seq": seq, "collections": true, "blobs": true}))
+        }
         Err(e) => error_response(e),
     }
 }
@@ -319,6 +322,45 @@ async fn delete(st: AppState, collection: &str, id: String, q: DeleteQuery, keys
     }
 }
 
+/// Stores an image; the path's hash must be the SHA-256 of the body. Idempotent.
+async fn put_blob(State(st): State<AppState>, Path(hash): Path<String>, body: Bytes) -> Response {
+    let res = st.with_store(move |s, _| s.put_blob(&hash, &body, now_ms())).await;
+    match res {
+        Ok((b, created)) => json_response(
+            StatusCode::OK,
+            json!({"hash": b.hash, "type": b.mime, "size": b.data.len(), "created": created}),
+        ),
+        Err(e) => error_response(e),
+    }
+}
+
+/// The image's bytes; a blob never changes, so clients and proxies may cache it for good.
+async fn get_blob(State(st): State<AppState>, Path(hash): Path<String>) -> Response {
+    if !store::valid_blob_hash(&hash) {
+        return bad_request("invalid blob hash (64 lowercase hex digits of SHA-256)");
+    }
+    match st.with_store(move |s, _| s.get_blob(&hash)).await {
+        Ok(Some(b)) => {
+            let mime = HeaderValue::from_str(&b.mime)
+                .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+            let etag = HeaderValue::from_str(&format!("\"{}\"", b.hash)).expect("hex is a valid header");
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable")),
+                    (header::ETAG, etag),
+                    (header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+                ],
+                b.data,
+            )
+                .into_response()
+        }
+        Ok(None) => not_found().await,
+        Err(e) => error_response(e),
+    }
+}
+
 async fn not_found() -> Response {
     json_response(StatusCode::NOT_FOUND, json!({"error": "not found"}))
 }
@@ -329,6 +371,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/notes/{id}", axum::routing::put(put_note).delete(delete_note))
         .route("/v1/c/{collection}", get(list_docs))
         .route("/v1/c/{collection}/{id}", axum::routing::put(put_doc).delete(delete_doc))
+        .route(
+            "/v1/blobs/{hash}",
+            get(get_blob).put(put_blob).layer(DefaultBodyLimit::max(store::MAX_BLOB_BYTES + 1)),
+        )
         .route("/v1/sync", get(ws::handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()

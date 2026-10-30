@@ -36,7 +36,37 @@ vector, at most 16 (the most recently edited); only valid while `at` equals the 
 `updated_at`, so a client that edits the note without rewriting `base` invalidates it;
 see Client behaviour). Unknown keys must be preserved.
 
-`body` max size 1 MB. The title is derived by clients (first non-empty line, markdown stripped); the server never parses `body`.
+`body` max size 1 MB. The title is derived by clients (first non-empty line that isn't an
+image, markdown stripped); the server never parses `body` (except `gc-blobs`, see Images).
+
+## Images
+
+Images aren't in the note text. Each is a **blob**, stored once on the server under the
+lowercase hex SHA-256 of its bytes, and the note refers to it with a Markdown image on a
+line of its own:
+
+```markdown
+![alt text](bento-image:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)
+```
+
+* **Format.** `bento-image:` then 64 lowercase hex digits. The alt text is optional
+  (`![](…)`), may not contain `]`, and isn't shown. Only a line that is nothing but one
+  such image (spaces around it allowed) is an image; anywhere else the text is just
+  text. A client that doesn't know images shows the line as it is.
+* **Blobs** are PNG, JPEG, GIF, WebP or HEIC/HEIF, at most 10 MB. Clients convert other
+  formats (TIFF, BMP…) to PNG, or JPEG for photos, and scale down anything larger before
+  hashing. A blob never changes, so it can be cached for good.
+* **Inserting.** Write the blob to the local cache, insert the line, upload it with
+  `PUT /v1/blobs/<hash>` (raw bytes), retrying until the server has it, and keep it
+  pending across restarts. Clients only upload to a server whose `/v1/health` says
+  `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
+* **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404
+  (the sending device hasn't uploaded it yet) shows a placeholder and is retried later:
+  when the note is shown again or sync reconnects.
+* **Removing** an image is removing its line. The server keeps blobs no document refers
+  to until an admin runs `bento-sync gc-blobs` (only blobs uploaded over 30 days ago, so
+  an upload whose note hasn't arrived yet is safe; a trashed note's text still refers to
+  its images).
 
 ## Collections
 
@@ -149,13 +179,16 @@ Wrong/missing token → HTTP 401 (WebSocket upgrade refused with 401).
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>,"collections":true}` (no auth; `collections` only on servers that have them) |
+| GET | `/v1/health` | – | `{"ok":true,"seq":<latest seq>,"collections":true,"blobs":true}` (no auth; `collections` and `blobs` only on servers that have them) |
 | GET | `/v1/notes?since=<seq>` | – | `{"notes":[Note…],"seq":<latest seq>}` – all notes (incl. tombstones) with `seq > since`, ascending |
 | PUT | `/v1/notes/<id>` | Note (no `seq`) | `{"note":Note,"accepted":true}` or `{"note":<stored Note>,"accepted":false}` |
 | DELETE | `/v1/notes/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
 | GET | `/v1/c/<collection>?since=<seq>` | – | `{"docs":[Doc…],"seq":<latest seq>}` – like `/v1/notes`, for any collection |
 | PUT | `/v1/c/<collection>/<id>` | Doc (no `seq`) | `{"doc":Doc,"accepted":bool}` |
 | DELETE | `/v1/c/<collection>/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
+
+| PUT | `/v1/blobs/<hash>` | image bytes | `{"hash":…,"type":"image/png","size":<bytes>,"created":bool}`; 400 when `hash` isn't the SHA-256 of the body, 413 over 10 MB, 415 when it isn't an image. Idempotent |
+| GET | `/v1/blobs/<hash>` | – | the bytes, `Content-Type` from them, `Cache-Control: immutable`; 404 when the server doesn't have it (`HEAD` works too) |
 
 `/v1/notes…` is `/v1/c/notes…` with the original response keys (`notes`, `note`). A
 `collection` in a PUT body must match the path (400 otherwise).

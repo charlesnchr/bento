@@ -11,6 +11,8 @@ USAGE:
                                      keep the newest N backups (default 14)
   bento-sync purge <id>...           hard-delete documents of any collection
                                      (admin; e.g. test data)
+  bento-sync gc-blobs [--days N]     delete images no document refers to that
+                                     were uploaded over N days ago (default 30)
   bento-sync --version
 
 ENV:
@@ -26,6 +28,7 @@ fn main() -> ExitCode {
         None | Some("serve") => serve(),
         Some("backup") => backup(&args[1..]),
         Some("purge") => purge(&args[1..]),
+        Some("gc-blobs") => gc_blobs(&args[1..]),
         Some("-V" | "--version" | "version") => {
             println!("bento-sync {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -172,6 +175,21 @@ fn purge(ids: &[String]) -> Result<(), String> {
     let mut store = open_store(&db_path())?;
     let n = store.purge(ids).map_err(|e| e.to_string())?;
     println!("purged {n} document(s)");
+    Ok(())
+}
+
+fn gc_blobs(args: &[String]) -> Result<(), String> {
+    let days: i64 = match args {
+        [] => 30,
+        [flag, n] if flag == "--days" => {
+            n.parse().ok().filter(|&d| d >= 1).ok_or("--days needs a number >= 1")?
+        }
+        _ => return Err("usage: bento-sync gc-blobs [--days N]".into()),
+    };
+    let mut store = open_store(&db_path())?;
+    let before = bento_sync::now_ms() - days * 86_400_000;
+    let (n, bytes) = store.gc_blobs(before).map_err(|e| e.to_string())?;
+    println!("deleted {n} unused image(s), {bytes} bytes");
     Ok(())
 }
 
