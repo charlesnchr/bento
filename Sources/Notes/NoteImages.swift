@@ -191,8 +191,6 @@ final class NoteImageStore {
         fm.createFile(atPath: u.path, contents: nil)
     }
 
-    /// Every image here is to be uploaded again (the server lost what it had: a restore or a new server).
-    func markAllPending() { allHashes.forEach(markPending) }
 
     func uploaded(_ hash: String) {
         if let u = uploadDir?.appendingPathComponent(hash) { try? fm.removeItem(at: u) }

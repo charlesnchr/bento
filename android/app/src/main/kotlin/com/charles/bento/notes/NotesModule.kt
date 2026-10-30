@@ -85,11 +85,9 @@ class NotesModule(
             applying = id to store.note(id)?.body.orEmpty()
         }
         engine.onConflictCopy = { copy, original -> _conflicts.tryEmit(copy to original) }
-        // the server lost what we sent (a restore, a new server): images go up again with the notes
-        engine.onServerReset = {
-            images.store.markAllPending()
-            images.connected() // also while polling, where the status doesn't change
-        }
+        // the server lost what we sent (a restore, a new server): it gets back the images it lacks,
+        // also while polling, where the status doesn't change
+        engine.onServerReset = { images.connected() }
         engineScope.launch { purgeOldTrash() }
         // connected (or polling): images made while offline go up, missing ones are asked for again
         engineScope.launch {

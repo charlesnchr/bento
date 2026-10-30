@@ -154,9 +154,6 @@ class NoteImageStore(val dir: File) {
 
     /** An image here is to be uploaded (again). */
     fun markPending(hash: String) { if (has(hash)) File(uploadDir, hash).createNewFile() }
-
-    /** Every image here is to be uploaded again (the server lost what it had: a restore or a new server). */
-    fun markAllPending() = allHashes.forEach(::markPending)
 }
 
 /**

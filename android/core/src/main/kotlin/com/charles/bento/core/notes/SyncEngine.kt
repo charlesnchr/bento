@@ -195,7 +195,7 @@ class SyncEngine(val repo: NoteRepository) {
     var beforeApply: ((String) -> Unit)? = null
     /** Called after a conflicted copy was created or updated (the copy, the original's id). */
     var onConflictCopy: ((Note, String) -> Unit)? = null
-    /** The server lost what we sent (restored from a backup, or a new one): images go up again too. */
+    /** The server lost what we sent (restored from a backup, or a new one): its images are checked too. */
     var onServerReset: (() -> Unit)? = null
 
     // MARK: Incoming

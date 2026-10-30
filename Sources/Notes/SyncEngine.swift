@@ -143,7 +143,7 @@ final class SyncEngine {
     var beforeApply: ((String) -> Void)?
     /// Called after a conflicted copy was created or updated (the copy, the original's id).
     var onConflictCopy: ((Note, String) -> Void)?
-    /// The server lost what we sent (restored from a backup, or a new one): images go up again too.
+    /// The server lost what we sent (restored from a backup, or a new one): its images are checked too.
     var onServerReset: (() -> Void)?
 
     init(repo: NoteRepository) { self.repo = repo }

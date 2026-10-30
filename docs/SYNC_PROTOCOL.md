@@ -64,8 +64,8 @@ line of its own:
   `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
 * **Server reset.** On every connect a client asks `POST /v1/blobs/missing` which of the
   images in its cache the server lacks (in batches) and uploads those: a server restored
-  from a backup, or a new one, gets back the images uploaded since. When the server's seq
-  goes backwards the client also marks every cached image for upload straight away.
+  from a backup, or a new one, gets back the images uploaded since (only those it lacks
+  are sent). A client also asks right away when it sees the server's seq go backwards.
 * **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404
   (the sending device hasn't uploaded it yet) shows a placeholder and is retried later:
   when the note is shown again or sync reconnects.

@@ -727,6 +727,16 @@ async fn blobs() {
     let many = json!({"hashes": vec![unknown.clone(); bento_sync::MAX_MISSING_QUERY + 1]}).to_string();
     assert_eq!(http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(&many)).await.0, 400);
 
+    // a big one comes in several chunks, whole, with its length
+    let mut photo = png.clone();
+    photo.extend((0..700_000u32).map(|i| (i % 251) as u8));
+    let photo_path = format!("/v1/blobs/{}", sha256_hex(&photo));
+    assert_eq!(http_bytes(a, "PUT", &photo_path, Some(TOKEN), &photo).await.0, 200);
+    let (st, head, body) = http_bytes(a, "GET", &photo_path, Some(TOKEN), b"").await;
+    assert_eq!(st, 200);
+    assert!(head.contains(&format!("content-length: {}", photo.len())), "{head}");
+    assert_eq!(body, photo);
+
     // documents keep their own limit
     let doc = format!("{{\"updated_at\":1,\"body\":\"{}\"}}", "x".repeat(bento_sync::MAX_REQUEST_BYTES));
     assert_eq!(http(a, "PUT", "/v1/notes/n", Some(TOKEN), Some(&doc)).await.0, 413);
