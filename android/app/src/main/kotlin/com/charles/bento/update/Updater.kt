@@ -22,7 +22,9 @@ import com.charles.bento.MainActivity
 import com.charles.bento.R
 import com.charles.bento.graph
 import com.charles.bento.settings.Prefs
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,17 +44,17 @@ import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Bento for Android updates itself from GitHub releases tagged `android-v<x.y.z>` (the
  * Mac app's releases are `v<x.y.z>`): a check when the app opens and a daily one, then
  * "Update now?" ([offer]) downloads the APK and hands it to the package installer, which
  * asks once to allow installs from Bento. Once the running version holds
- * UPDATE_PACKAGES_WITHOUT_USER_ACTION, its updates skip the installer's confirmation
- * screen, where Play Protect otherwise offers to scan an app it hasn't seen (Android 12+,
- * for an app updating itself that targets a recent enough API level); Android may still ask
- * ([InstallResultReceiver] shows it). The app closes as it's replaced, so [UpdatedReceiver]
- * says it's done.
+ * UPDATE_PACKAGES_WITHOUT_USER_ACTION, Android 12+ can install its updates without the
+ * installer's confirmation screen (for an app updating itself that targets a recent enough
+ * API level). Android may still ask ([InstallResultReceiver] shows it), and Play Protect still
+ * checks each new APK. The app closes as it's replaced, so [UpdatedReceiver] says it's done.
  */
 class Updater(private val context: Context, private val http: OkHttpClient, private val prefs: Prefs) {
     data class Release(val version: String, val apkUrl: String, val size: Long, val notes: String, val page: String, val sha256: String?)
@@ -64,14 +66,20 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         data class Available(val release: Release) : State
         data class Downloading(val release: Release, val progress: Float) : State
         data class Installing(val release: Release) : State
-        data class Failed(val message: String) : State
+        /** [installing]: the download or installation failed, rather than a check. */
+        data class Failed(val message: String, val installing: Boolean = false) : State
     }
 
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    /** Versions put off with "Later" since Bento started; "Skip" remembers one for good. */
+    /** Versions put off with "Later" until Bento is next opened; "Skip" remembers one for good. */
     private val postponed = MutableStateFlow<Set<String>>(emptySet())
+
+    /** The version the user chose to install, whose download and outcome the prompt follows. */
+    val following = MutableStateFlow<String?>(null)
+
+    private val installRunning = AtomicBoolean(false)
 
     /** The release to ask "Update now?" about: a newer one, neither skipped nor put off. */
     val offer: Flow<Release?> = combine(state, prefs.skippedVersion.flow, postponed) { s, skipped, later ->
@@ -84,8 +92,21 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         prefs.skippedVersion.value = release.version
     }
 
-    /** The update notification was tapped: ask again even if put off. */
+    /** Bento was left (not rotated) or the update notification tapped: ask again even if put off. */
     fun offerAgain() = postponed.update { emptySet() }
+
+    /** "Update now": follows the release from here and installs it in [scope], which outlives the screen. */
+    fun start(release: Release, scope: CoroutineScope) {
+        following.value = release.version
+        scope.launch { install(release) }
+    }
+
+    /** The installer turned the update down; true when the prompt shows it. */
+    fun installFailed(message: String): Boolean {
+        val release = (state.value as? State.Installing)?.release
+        _state.value = State.Failed(message, installing = true)
+        return release != null && following.value == release.version
+    }
 
     @Volatile private var checkedAt = 0L
 
@@ -99,6 +120,8 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
     }
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
+        // the daily check mustn't replace a download in progress
+        if (state.value.let { it is State.Downloading || it is State.Installing }) return@withContext null
         _state.value = State.Checking
         val release = runCatching { latest() }.getOrElse {
             _state.value = State.Failed(it.message ?: "Couldn't reach GitHub")
@@ -140,15 +163,24 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
             .maxWithOrNull { a, b -> compareVersions(a.version, b.version) }
     }
 
-    /** Downloads and installs; the system shows its confirmation. */
+    /** Downloads and installs, one at a time; the system shows its confirmation if it needs one. */
     suspend fun install(release: Release) = withContext(Dispatchers.IO) {
+        if (!installRunning.compareAndSet(false, true)) return@withContext
+        try {
+            installNow(release)
+        } finally {
+            installRunning.set(false)
+        }
+    }
+
+    private fun installNow(release: Release) {
         if (!context.packageManager.canRequestPackageInstalls()) {
             context.startActivity(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri())
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
             _state.value = State.Available(release)
-            return@withContext
+            return
         }
         try {
             val apk = File(context.cacheDir, "update-${release.version}.apk")
@@ -174,7 +206,7 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
             }
         } catch (e: Exception) {
             prefs.installingVersion.value = ""
-            _state.value = State.Failed(e.message ?: "Update failed")
+            _state.value = State.Failed(e.message ?: "Update failed", installing = true)
         }
     }
 
@@ -295,7 +327,9 @@ class InstallResultReceiver : BroadcastReceiver() {
             else -> {
                 context.graph.prefs.installingVersion.value = ""
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Installation failed"
-                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                if (!context.graph.updater.installFailed(msg)) {
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

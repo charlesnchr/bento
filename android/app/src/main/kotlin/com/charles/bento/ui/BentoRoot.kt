@@ -121,8 +121,6 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
         }
     }
 
-    LaunchedEffect(Unit) { graph.updater.checkOnOpen() }
-
     NavHost(nav, startDestination = HomeRoute, enterTransition = { fadeIn() }, exitTransition = { fadeOut() }) {
         composable<HomeRoute> {
             Scaffold(

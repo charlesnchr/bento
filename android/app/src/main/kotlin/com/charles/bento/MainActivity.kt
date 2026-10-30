@@ -9,10 +9,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.charles.bento.ui.BentoRoot
 import com.charles.bento.ui.theme.BentoTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     /** The latest intent (deep link, widget tap, shortcut) for the UI to act on. */
@@ -27,6 +29,17 @@ class MainActivity : ComponentActivity() {
             val theme by graph.prefs.theme.flow.collectAsStateWithLifecycle()
             BentoTheme(theme) { BentoRoot(this, pendingIntent) }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch { graph.updater.checkOnOpen() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Bento was left, not rotated: an update put off with "Later" is offered again next time
+        if (!isChangingConfigurations) graph.updater.offerAgain()
     }
 
     override fun onNewIntent(intent: Intent) {

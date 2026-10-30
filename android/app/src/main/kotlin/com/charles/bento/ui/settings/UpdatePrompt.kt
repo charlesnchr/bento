@@ -10,9 +10,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -20,12 +17,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.charles.bento.BuildConfig
 import com.charles.bento.graph
 import com.charles.bento.update.Updater
-import kotlinx.coroutines.launch
 
 /**
  * "Update now?" when the updater finds a newer release, over whatever screen is open; then
- * the download's progress, until the installer takes over. Later asks again next launch,
- * Skip not until a newer version.
+ * the download's progress, until the installer takes over, and a failure. Later asks again
+ * the next time Bento is opened, Skip not until a newer version.
  */
 @Composable
 fun UpdatePrompt() {
@@ -33,8 +29,8 @@ fun UpdatePrompt() {
     val updater = graph.updater
     val offer by updater.offer.collectAsStateWithLifecycle(null)
     val state by updater.state.collectAsStateWithLifecycle()
-    // the release being installed, to follow its download after the offer is gone
-    var accepted by remember { mutableStateOf<Updater.Release?>(null) }
+    // kept by the updater, so a rotation or a new screen still shows the download
+    val following by updater.following.collectAsStateWithLifecycle()
 
     when (val s = state) {
         is Updater.State.Available -> offer?.let { release ->
@@ -49,11 +45,8 @@ fun UpdatePrompt() {
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        accepted = release
-                        // the app's scope: leaving this screen mustn't stop the download
-                        graph.main.launch { updater.install(release) }
-                    }) { Text("Update now") }
+                    // the app's scope: leaving this screen mustn't stop the download
+                    TextButton(onClick = { updater.start(release, graph.main) }) { Text("Update now") }
                 },
                 dismissButton = {
                     Row {
@@ -63,9 +56,9 @@ fun UpdatePrompt() {
                 },
             )
         }
-        is Updater.State.Downloading -> if (accepted == s.release) {
+        is Updater.State.Downloading -> if (following == s.release.version) {
             AlertDialog(
-                onDismissRequest = { accepted = null },
+                onDismissRequest = { updater.following.value = null },
                 title = { Text("Downloading Bento ${s.release.version}") },
                 text = {
                     Column {
@@ -73,15 +66,15 @@ fun UpdatePrompt() {
                         LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
                     }
                 },
-                confirmButton = { TextButton(onClick = { accepted = null }) { Text("Hide") } },
+                confirmButton = { TextButton(onClick = { updater.following.value = null }) { Text("Hide") } },
             )
         }
-        is Updater.State.Failed -> if (accepted != null) {
+        is Updater.State.Failed -> if (s.installing && following != null) {
             AlertDialog(
-                onDismissRequest = { accepted = null },
+                onDismissRequest = { updater.following.value = null },
                 title = { Text("Bento couldn't update") },
                 text = { Text(s.message) },
-                confirmButton = { TextButton(onClick = { accepted = null }) { Text("OK") } },
+                confirmButton = { TextButton(onClick = { updater.following.value = null }) { Text("OK") } },
             )
         }
         else -> {}

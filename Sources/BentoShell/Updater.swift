@@ -174,75 +174,127 @@ final class Updater: ObservableObject {
             return
         }
         state = .available(latest)
-        let seen = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
-        UserDefaults.standard.set(latest, forKey: Self.notifiedKey)
-        if origin == .url || (origin == .automatic && !seen) {
+        let offered = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
+        if origin == .url || (origin == .automatic && !offered) {
             offerInstall(latest, whenQuiet: origin == .automatic)
         }
     }
 
     // MARK: Offering
 
-    private var offering = false
+    /// The "Update now?" window while it's up; its buttons' targets (controls hold them weakly).
+    private var offerAlert: NSAlert?
+    private var offerTargets: [ButtonAction] = []
+    /// The version an automatic offer is waiting to show.
+    private var pendingOffer: String?
 
     /// Asks "Update now?" for a new version: once per version after an automatic check,
-    /// and on `bento://update`. After an automatic check it waits until nothing is using the
-    /// microphone and the keyboard has been still for a few seconds, so it doesn't land in
-    /// a dictation, a meeting, a call or a sentence: the dialog would take the keystrokes,
-    /// and updating restarts Bento. Later leaves the update in the menu bar menu.
+    /// and on `bento://update`. After an automatic check it waits until no microphone is in
+    /// use and the keyboard has been still for a while, so it doesn't land in a dictation, a
+    /// meeting, a call or a sentence. It's an ordinary window, not a modal one, so Bento's
+    /// other windows keep working while it waits for an answer, and Return means Later:
+    /// updating restarts Bento, so it takes a click. Later leaves the update in the menu
+    /// bar menu and Settings.
     func offerInstall(_ version: String, whenQuiet: Bool) {
-        guard case .available(version) = state, !offering else { return }
-        if whenQuiet, Self.isBusy() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.offerInstall(version, whenQuiet: true) }
+        guard case .available(version) = state else { return }
+        if let window = offerAlert?.window {
+            AppActivation.show(window)
             return
         }
-        offering = true
-        defer { offering = false }
+        if whenQuiet, Self.isBusy() {
+            guard pendingOffer != version else { return }
+            pendingOffer = version
+            retryOffer(version)
+            return
+        }
+        pendingOffer = nil
+        // Offered once it's on screen: a launch that quit while it waited offers it again.
+        UserDefaults.standard.set(version, forKey: Self.notifiedKey)
         let alert = NSAlert()
         alert.messageText = "Update Bento to \(version)?"
+        var actions: [(close: Bool, run: () -> Void)] = []
         if isHomebrew {
             alert.informativeText = "You have \(currentVersion). Bento installs the update with Homebrew and restarts; the permission grants carry over."
             alert.addButton(withTitle: "Update Now")
             alert.addButton(withTitle: "Later")
             alert.addButton(withTitle: "Release Notes")
+            actions = [(true, { [weak self] in self?.install() }),
+                       (true, { Self.returnToPreviousApp() }),
+                       (false, { NSWorkspace.shared.open(Self.releaseURL(version)) })]
         } else {
             alert.informativeText = "You have \(currentVersion). This copy is a local build, so it can't update itself: get \(version) from the release page, or `brew install \(Self.formula)`."
             alert.addButton(withTitle: "Open Release Page")
             alert.addButton(withTitle: "Later")
-        }
-        let previous = AppActivation.previousApp
-        AppActivation.activateSelf()
-        let choice = alert.runModal()
-        switch choice {
-        case .alertFirstButtonReturn:
             // A local build's install() opens the release page.
-            install()
-        case .alertThirdButtonReturn:
-            NSWorkspace.shared.open(Self.releaseURL(version))
-        default:
-            if let previous, !previous.isTerminated { previous.activate() }
+            actions = [(true, { [weak self] in self?.install() }),
+                       (true, { Self.returnToPreviousApp() })]
+        }
+        alert.buttons[0].keyEquivalent = ""
+        alert.buttons[1].keyEquivalent = "\r"
+        offerTargets = zip(alert.buttons, actions).map { button, action in
+            let target = ButtonAction { [weak self] in
+                if action.close { self?.closeOffer() }
+                action.run()
+            }
+            button.target = target
+            button.action = #selector(ButtonAction.run)
+            return target
+        }
+        alert.layout()
+        // A panel hides when its app deactivates; this one waits on screen for an answer.
+        alert.window.hidesOnDeactivate = false
+        offerAlert = alert
+        AppActivation.show(alert.window)
+    }
+
+    private func retryOffer(_ version: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self, self.pendingOffer == version else { return }
+            guard case .available(version) = self.state else { self.pendingOffer = nil; return }
+            if Self.isBusy() { self.retryOffer(version) } else { self.offerInstall(version, whenQuiet: false) }
         }
     }
 
-    /// Something an update prompt shouldn't interrupt: typing in the last few seconds, or a
+    private func closeOffer() {
+        offerAlert?.window.orderOut(nil)
+        offerAlert = nil
+        offerTargets = []
+    }
+
+    private static func returnToPreviousApp() {
+        if let previous = AppActivation.previousApp, !previous.isTerminated { previous.activate() }
+    }
+
+    /// Something an update offer shouldn't interrupt: typing in the last 10 seconds, or a
     /// microphone in use by any app (Bento's dictation and meetings included).
     static func isBusy() -> Bool {
-        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 5 || microphoneInUse()
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 10 || microphoneInUse()
     }
 
+    /// Whether any input device is running, not only the default one (a call can pick a headset).
     private static func microphoneInUse() -> Bool {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                                  mScope: kAudioObjectPropertyScopeGlobal,
                                                  mElement: kAudioObjectPropertyElementMain)
-        var device = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
-              device != kAudioObjectUnknown else { return false }
-        address.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
-        var running: UInt32 = 0
-        size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running) == noErr else { return false }
-        return running != 0
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return false }
+        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return false }
+        return devices.contains { device in
+            // Input-capable: it has streams in the input scope.
+            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                                     mScope: kAudioObjectPropertyScopeInput,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var streamsSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamsSize) == noErr, streamsSize > 0 else { return false }
+            var running = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var value: UInt32 = 0
+            var valueSize = UInt32(MemoryLayout<UInt32>.size)
+            return AudioObjectGetPropertyData(device, &running, 0, nil, &valueSize, &value) == noErr && value != 0
+        }
     }
 
     /// Version of the app at the Homebrew install path, read fresh (Bundle caches).
@@ -270,6 +322,7 @@ final class Updater: ObservableObject {
     /// reads itself. Restarts into the new version when it's in place.
     func install() {
         guard case .available(let version) = state else { return }
+        closeOffer()
         guard let prefix = homebrewPrefix else {
             NSWorkspace.shared.open(Self.releaseURL(version))
             return
@@ -376,4 +429,11 @@ final class Updater: ObservableObject {
         ["version": currentVersion, "homebrew": homebrewPrefix ?? "", "state": String(describing: state),
          "automatic": timer != nil, "lastChecked": lastChecked?.timeIntervalSince1970 ?? 0]
     }
+}
+
+/// A button target that runs a closure.
+private final class ButtonAction: NSObject {
+    private let handler: () -> Void
+    init(_ handler: @escaping () -> Void) { self.handler = handler }
+    @objc func run() { handler() }
 }

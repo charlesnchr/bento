@@ -75,7 +75,7 @@ public enum APIKeyStore {
         let saved = write(key)
         if saved {
             unsaved = nil
-            defaults.set(true, forKey: movedKey)
+            supersedeKeychain()
         }
         lock.unlock()
         guard saved else {
@@ -93,7 +93,7 @@ public enum APIKeyStore {
         lock.lock()
         let deleted = (try? FileManager.default.removeItem(at: fileURL)) != nil || unsaved != nil
         unsaved = nil
-        defaults.set(true, forKey: movedKey)
+        supersedeKeychain()
         lock.unlock()
         if deleted { NotificationCenter.default.post(name: .gtSettingDidChange, object: "apiKey") }
         return deleted
@@ -133,6 +133,15 @@ public enum APIKeyStore {
     }
 
     // MARK: Moving out of the keychain
+
+    /// A key saved or removed in Settings replaces whatever the keychain still holds (a move
+    /// that was denied or hasn't happened yet): delete it, and never read it again. Not from an
+    /// isolated instance, which shares the installed app's defaults but not its key file.
+    private static func supersedeKeychain() {
+        guard sharedURL == nil, !defaults.bool(forKey: movedKey) else { return }
+        defaults.set(true, forKey: movedKey)
+        keychain.delete()
+    }
 
     private static func moveFromKeychain() -> String? {
         guard !askedKeychain, !defaults.bool(forKey: movedKey) else { return nil }

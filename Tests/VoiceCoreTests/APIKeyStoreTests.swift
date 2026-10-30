@@ -69,6 +69,8 @@ import Testing
     @Test func savesRemovesAndNeverFallsBackToTheKeychain() throws {
         keychainItem = .found("AIza-old")
         #expect(APIKeyStore.saveAPIKey("AIza-new"))
+        // the key it replaces doesn't stay behind in the keychain
+        #expect(keychainDeletes == 1)
         #expect(mode(file) == 0o600)
         #expect(APIKeyStore.loadAPIKey() == "AIza-new")
         #expect(APIKeyStore.deleteAPIKey())
@@ -99,5 +101,20 @@ import Testing
         try? FileManager.default.removeItem(at: shared)
         #expect(APIKeyStore.loadAPIKey() == nil)
         #expect(keychainReads == 0)
+    }
+
+    @Test func anIsolatedInstanceSavingAKeyLeavesTheInstalledAppsMoveToIt() {
+        let installed = APIKeyStore.fileURL
+        APIKeyStore.fileURL = dir.appendingPathComponent("isolated-key")
+        APIKeyStore.sharedURL = installed
+        keychainItem = .found("AIza-old")
+        #expect(APIKeyStore.saveAPIKey("AIza-dev"))
+        #expect(APIKeyStore.deleteAPIKey())
+        #expect(keychainDeletes == 0)
+        // the installed app, sharing the defaults, still moves its key
+        APIKeyStore.fileURL = installed
+        APIKeyStore.sharedURL = nil
+        APIKeyStore.resetLaunchState()
+        #expect(APIKeyStore.loadAPIKey() == "AIza-old")
     }
 }

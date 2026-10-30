@@ -429,7 +429,7 @@ private fun UpdatesSection(context: Context) {
         when (val s = state) {
             is Updater.State.Available -> SettingsRow("Install Bento ${s.release.version}", "Downloads from GitHub and restarts Bento",
                                                       Icons.Rounded.SystemUpdate, iconTint = MaterialTheme.colorScheme.primary,
-                                                      onClick = { scope.launch { graph.updater.install(s.release) } })
+                                                      onClick = { graph.main.launch { graph.updater.install(s.release) } })
             is Updater.State.Downloading -> Column(Modifier.padding(16.dp)) {
                 Text("Downloading ${s.release.version}…")
                 LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))

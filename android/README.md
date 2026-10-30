@@ -70,15 +70,15 @@ same key, or phones can't update in place), tags `android-v0.1.0` and uploads
 with their daily check, and ask **Update Bento?**.
 
 Updates go through `PackageInstaller` sessions. The first one asks Android to allow installs
-from Bento. After that, Bento holds `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, so Android 12+
-installs its own updates without the confirmation screen, and Play Protect doesn't offer to
-"scan app" there; Bento then posts "Bento x.y.z is installed". The update that first brings
-this permission still asks once, since the version doing the installing doesn't have it yet.
-What code can't remove: installing the APK from a browser or file manager the first time
-goes through the system installer and Play Protect, which may offer to scan an app it hasn't
-seen. Only a Play-distributed build, or one registered through Android developer
-verification (rolling out country by country from September 2026), is known to Play
-Protect from the start.
+from Bento. After that, Bento holds `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, so Android 12+ can
+install its own updates without the installer's confirmation screen; Bento then posts "Bento
+x.y.z is installed". The update that first brings this permission still asks once, since the
+version doing the installing doesn't have it yet. Play Protect still checks every APK, and
+for one it hasn't seen before it may offer to scan it or send it to Google, the first install
+from a browser or file manager especially. No app code removes that. A Play-distributed build
+is known to Play Protect from the start. Android developer verification, rolling out country by
+country from September 2026, registers the developer and package rather than exempting an APK
+from scanning, but certified phones in those countries will need it to install Bento at all.
 
 ## Setting up a phone
 
