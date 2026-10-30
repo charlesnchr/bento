@@ -725,6 +725,22 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aCallEndedWhileLentEndsCleanlyAndReclaimingDoesNothing() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; FakeTransport(listOf(Frames.setupComplete())) }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        call.stop()
+        assertNull(call.ended().message)
+        call.reclaim()
+        result.complete("Done.")
+        delay(200)
+        assertEquals(0, made)
+        assertFalse(call.lend())
+    }
+
     @Test fun aLentMicrophoneGoingQuietDoesntEndTheCall() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val second = FakeTransport(listOf(Frames.setupComplete()))

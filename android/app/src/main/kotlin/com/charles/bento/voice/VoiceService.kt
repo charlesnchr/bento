@@ -59,14 +59,14 @@ class VoiceService : Service() {
         const val NOTIFICATION_ID = 41
         const val CHANNEL_LISTENING = "listening"
         private var ready: CompletableDeferred<Boolean>? = null
-        /** The kinds in the service now (main thread); the call's notification shows while it's one of them. */
-        private val holders = LinkedHashSet<String>()
+        private val holders = VoiceHolders()
 
         /** Starts the service and waits until it's in the foreground (false: not allowed right now). Main thread. */
         suspend fun enter(context: Context, kind: String): Boolean {
-            if (holders.isNotEmpty()) {
-                // already in the foreground for another (a call in standby, during a dictation): its notification stays
-                holders.add(kind)
+            if (!holders.empty) {
+                // already in the foreground for another (a call in standby, during a dictation; a meeting
+                // still finishing its notes, as a call starts): this one joins it
+                holders.add(kind)?.let { show(context, it) }
                 return true
             }
             ensureChannels(context)
@@ -83,16 +83,18 @@ class VoiceService : Service() {
 
         /** [kind] is done: the service stops when nothing else is in it, else shows what's left. Main thread. */
         fun exit(context: Context, kind: String) {
-            holders.remove(kind)
+            val changed = holders.remove(kind)
             // also when kind never got in: an enter cancelled midway may still have started the service
-            val left = holders.lastOrNull() ?: run {
+            if (holders.empty) {
                 runCatching { context.startService(Intent(context, VoiceService::class.java).setAction(ACTION_STOP)) }
                 return
             }
-            if (kind == KIND_ASSISTANT) {
-                // the call ended during a dictation: its notification (and End call) goes
-                runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context, left)) }
-            }
+            changed?.let { show(context, it) }
+        }
+
+        /** Replaces the running service's notification with [kind]'s. */
+        private fun show(context: Context, kind: String) {
+            runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context, kind)) }
         }
 
         fun ensureChannels(context: Context) {
@@ -136,5 +138,27 @@ class VoiceService : Service() {
             }
             return builder.build()
         }
+    }
+}
+
+/**
+ * The kinds in the [VoiceService] and the one whose notification it shows: the call's while
+ * there is one (it has End call), else the latest to come in. Main thread.
+ */
+internal class VoiceHolders {
+    private val kinds = LinkedHashSet<String>()
+    val empty: Boolean get() = kinds.isEmpty()
+    val shown: String? get() = if (VoiceService.KIND_ASSISTANT in kinds) VoiceService.KIND_ASSISTANT else kinds.lastOrNull()
+
+    /** Adds [kind]; the notification to show now, or null when it stays as it is. */
+    fun add(kind: String): String? = change { kinds.remove(kind); kinds.add(kind) }
+
+    /** Removes [kind] (fine if it never got in); the notification to show now, or null when it stays or nothing is left. */
+    fun remove(kind: String): String? = change { kinds.remove(kind) }
+
+    private inline fun change(f: () -> Unit): String? {
+        val before = shown
+        f()
+        return shown.takeIf { it != before }
     }
 }
