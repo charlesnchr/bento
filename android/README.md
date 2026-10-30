@@ -76,10 +76,11 @@ x.y.z is installed". The update that first brings this permission still asks onc
 version doing the installing doesn't have it yet. Play Protect still checks every APK, and
 for one it hasn't seen before it may offer to scan it or send it to Google, the first install
 from a browser or file manager especially. No app code removes that. A Play-distributed build
-is known to Play Protect from the start. Android developer verification, rolling out country by
-country from September 2026, registers the developer and package rather than exempting an APK
-from scanning. Once it reaches a country, certified phones there will only install an
-unregistered Bento through Android's advanced install flow or `adb`.
+is known to Play Protect from the start. Android developer verification registers the
+developer and package rather than exempting an APK from scanning. Since 30 September 2026 it
+covers installs from participating stores in Brazil, Indonesia, Singapore and Thailand; Google
+plans to extend it to all apps on certified phones in 2027, after which an unregistered Bento
+installs only through Android's advanced install flow or `adb`.
 
 ## Setting up a phone
 
