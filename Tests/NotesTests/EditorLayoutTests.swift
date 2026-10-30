@@ -52,6 +52,8 @@ import Testing
         #expect(maxX <= clip.bounds.width - 48 + 0.5) // nothing past the right inset
     }
 
+    /// Catches the original bug (a text view set up 300 pt wider than the scroll view) on
+    /// macOS 15 only: macOS 26 corrects that width itself.
     @Test func longLinesWrapInsideTheWindow() throws {
         let body = "chat with max\n- 3 qs: is research interesting, what do you want for career profile, is there value "
             + String(repeating: "in a longer line ", count: 12)
