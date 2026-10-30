@@ -55,6 +55,8 @@ sealed interface DictationState {
         val startedAt: Long,
         /** Recording an instruction for the text just inserted ("make that shorter"). */
         val editing: Boolean = false,
+        /** The recording's limit is near ("One minute left — 10-minute limit"). */
+        val notice: String? = null,
     ) : DictationState
 
     data class Processing(val partial: String, val editing: Boolean = false) : DictationState

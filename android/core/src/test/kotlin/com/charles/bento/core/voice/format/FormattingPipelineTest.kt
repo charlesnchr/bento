@@ -112,6 +112,18 @@ class ValidationGateTest {
         assertEquals("Hello.", ValidationGate.stripArtifacts("Transcript: Hello."))
     }
 
+    @Test fun dropsAnEchoedFieldHint() {
+        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message: See you at 3.", "see you at 3", "Message"))
+        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message see you at 3.", "see you at 3", "Message"))
+        assertEquals("Hi Anna,", ValidationGate.stripEchoedLabel("Add a subject - Hi Anna,", "hi anna", "Add a subject"))
+        // the speaker said it, or the model didn't echo it
+        assertEquals("Message received, thanks.", ValidationGate.stripEchoedLabel("Message received, thanks.", "message received thanks", "Message"))
+        assertEquals("Messages are late.", ValidationGate.stripEchoedLabel("Messages are late.", "messages are late", "Message"))
+        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("See you at 3.", "see you at 3", "Message"))
+        assertEquals("Message", ValidationGate.stripEchoedLabel("Message", "uh", "Message"))
+        assertEquals("Message: hi", ValidationGate.stripEchoedLabel("Message: hi", "hi", null))
+    }
+
     @Test fun stripsWrappingQuotes() = assertEquals("Hello there.", ValidationGate.stripArtifacts("\"Hello there.\""))
 
     @Test fun leavesInternalQuotesAlone() =

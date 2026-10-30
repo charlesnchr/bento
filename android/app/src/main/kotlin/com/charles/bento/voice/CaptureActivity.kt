@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.service.quicksettings.TileService
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -81,9 +80,6 @@ class CaptureActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // the screen going off (the power button; the timeout is held off while listening) isn't
-        // leaving: keep listening, and the sheet is back when the screen comes on
-        if (getSystemService(PowerManager::class.java)?.isInteractive == false) return
         // leaving the sheet keeps what was said: finish it rather than drop it
         if (graph.dictation.state.value is DictationState.Listening) graph.dictation.stop()
         if (!isChangingConfigurations) finish()
@@ -120,7 +116,8 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
             else -> {}
         }
     }
-    // a long thought outlasts the screen timeout: the screen stays on while listening
+    // the screen timing out stopped the sheet and with it the thought: it stays on while listening
+    // (the power button still ends it, like leaving the sheet)
     val view = LocalView.current
     val listening = state is DictationState.Listening
     DisposableEffect(listening) {
@@ -164,7 +161,9 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
                                 Waveform(levels, MaterialTheme.colorScheme.primary)
                             } else LiveTranscript(s.partial, Modifier.heightIn(min = 64.dp), maxHeight = cap, style = transcript)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Tap anywhere when you're done", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                // a minute before the 10-minute limit, which stops and files what was said
+                                Text(s.notice ?: "Tap anywhere when you're done",
+                                     color = if (s.notice != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                      style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                                 Box(
                                     Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { graph.dictation.stop() },

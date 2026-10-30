@@ -214,6 +214,9 @@ class DictationOverlay(
         }
         val params = baseParams(Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             width = WindowManager.LayoutParams.MATCH_PARENT
+            // y is a screen coordinate (the field's bounds, the keyboard's top): no status bar or cutout offset
+            fitInsetsTypes = 0
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
         val p = window(params) { Pill(pillState, dictation, prefs) }
         pill = p
@@ -231,7 +234,8 @@ class DictationOverlay(
     /** Clear of the field being filled: above the keyboard, else above the field, else over the keyboard. */
     private fun placePill(p: Window) {
         val f = pillField
-        val screenH = f?.screen?.bottom?.takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels
+        // the display, not the app's window: a resized app ends at the keyboard
+        val screenH = runCatching { wm.currentWindowMetrics.bounds.height() }.getOrNull() ?: context.resources.displayMetrics.heightPixels
         val height = p.view.height.takeIf { it > 0 } ?: px(76)
         val bounds = f?.node?.let { n -> Rect().also { r -> if (n.refresh()) n.getBoundsInScreen(r) } }?.takeUnless { it.isEmpty }
         val y = pillTop(height, keyboardTop = f?.keyboardTop ?: (screenH - px(140)), fieldTop = bounds?.top, fieldBottom = bounds?.bottom,
