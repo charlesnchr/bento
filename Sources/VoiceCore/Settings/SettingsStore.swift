@@ -15,7 +15,7 @@
 import Foundation
 
 public extension Notification.Name {
-    /// Posted after any SettingsStore write and after Keychain API-key writes,
+    /// Posted after any SettingsStore write and after API-key writes,
     /// with `object` = the key ("showIdleIndicator", "apiKey", …). Runtime
     /// surfaces that render a setting (pill, status line, hotkey engine) observe
     /// this so toggles take effect the moment they're flipped — never "on the
@@ -314,8 +314,8 @@ public struct SettingsStore: Sendable {
         }
     }
 
-    /// Asks the Keychain (cached there). Tests swap it, so they never depend on this Mac's key.
-    nonisolated(unsafe) static var hasGeminiAPIKey: () -> Bool = { KeychainStore.hasAPIKey }
+    /// Reads the key file (`APIKeyStore`). Tests swap it, so they never depend on this Mac's key.
+    nonisolated(unsafe) static var hasGeminiAPIKey: () -> Bool = { APIKeyStore.hasAPIKey }
 
     /// Whether the Gemini API path can work: a stored key, or an endpoint
     /// override (a local proxy holding its own credentials) that needs none.

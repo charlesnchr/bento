@@ -60,7 +60,7 @@ import Testing
 }
 
 extension SharedStateTests {
-    /// The same rules through the runtime file, Keychain and saved override.
+    /// The same rules through the runtime file, API key and saved override.
     @Suite struct GeminiLiveRouteSettingsTests {
         private let state = SharedStateGuard()
 

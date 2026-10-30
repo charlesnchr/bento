@@ -12,7 +12,7 @@ public enum PhonePairing {
         case noServer, noToken
     }
 
-    /// Reads the Gemini API key, which lives in the voice modules' Keychain item. Set by
+    /// Reads the Gemini API key, which the voice modules keep (`APIKeyStore`). Set by
     /// the app; nil in builds without them (the sheet then offers no key).
     public static var geminiAPIKey: (() -> String?)?
 

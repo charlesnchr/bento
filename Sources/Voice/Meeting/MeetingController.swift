@@ -117,7 +117,7 @@ final class MeetingController: ObservableObject {
         case .invalid:
             return MeetingServices(batch: nil, text: nil)
         case .notConfigured:
-            let models = GeminiMeetingModels(client: GeminiClient(apiKey: { KeychainStore.loadAPIKey() }))
+            let models = GeminiMeetingModels(client: GeminiClient(apiKey: { APIKeyStore.loadAPIKey() }))
             return MeetingServices(batch: models, text: models)
         }
     }
@@ -132,7 +132,7 @@ final class MeetingController: ObservableObject {
         return {
             if SettingsStore().transcriptionEngine.helperModel != nil { return nil }
             if vertex == nil, SettingsStore().usesLegacyTranscribeEndpoint { return nil }
-            guard let key = vertex?.bifrostKey ?? KeychainStore.loadAPIKey(), !key.isEmpty else { return nil }
+            guard let key = vertex?.bifrostKey ?? APIKeyStore.loadAPIKey(), !key.isEmpty else { return nil }
             let model = vertex?.isDirect == true ? "gemini-3.5-transcribe-live-preview" : "gemini-3.5-transcribe-live"
             return MeetingLiveSession(
                 transport: WebSocketTransport(apiKey: { key },

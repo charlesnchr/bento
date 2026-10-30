@@ -388,7 +388,7 @@ final class PillPresenter {
         switch failure {
         case .network: return "Couldn't reach Gemini — saved to History"
         case .auth:
-            return KeychainStore.loadAPIKey() == nil
+            return APIKeyStore.loadAPIKey() == nil
                 ? "Add your Gemini API key in Settings — recording saved to History"
                 : "API key isn't working — saved to History"
         case .modelAccess:

@@ -1,5 +1,6 @@
 import AppKit
 import BentoCore
+import CoreAudio
 
 /// Version and install-location rules for the updater, kept pure for tests.
 enum UpdateRules {
@@ -124,9 +125,9 @@ final class Updater: ObservableObject {
 
     // MARK: Checking
 
-    /// Who asked: automatic checks stay quiet except to announce a new version
+    /// Who asked: automatic checks stay quiet except to offer a new version
     /// (once per version); the settings pane shows progress and errors inline;
-    /// `bento://update` reports everything with a HUD.
+    /// `bento://update` reports everything, offering a new version at once.
     enum Origin { case automatic, settings, url }
 
     func check(_ origin: Origin = .automatic) {
@@ -176,8 +177,72 @@ final class Updater: ObservableObject {
         let seen = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
         UserDefaults.standard.set(latest, forKey: Self.notifiedKey)
         if origin == .url || (origin == .automatic && !seen) {
-            HUD.show("Bento \(latest) is available: install it from the menu bar", symbol: "arrow.down.circle", duration: 4)
+            offerInstall(latest, whenQuiet: origin == .automatic)
         }
+    }
+
+    // MARK: Offering
+
+    private var offering = false
+
+    /// Asks "Update now?" for a new version: once per version after an automatic check,
+    /// and on `bento://update`. After an automatic check it waits until nothing is using the
+    /// microphone and the keyboard has been still for a few seconds, so it doesn't land in
+    /// a dictation, a meeting, a call or a sentence: the dialog would take the keystrokes,
+    /// and updating restarts Bento. Later leaves the update in the menu bar menu.
+    func offerInstall(_ version: String, whenQuiet: Bool) {
+        guard case .available(version) = state, !offering else { return }
+        if whenQuiet, Self.isBusy() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.offerInstall(version, whenQuiet: true) }
+            return
+        }
+        offering = true
+        defer { offering = false }
+        let alert = NSAlert()
+        alert.messageText = "Update Bento to \(version)?"
+        if isHomebrew {
+            alert.informativeText = "You have \(currentVersion). Bento installs the update with Homebrew and restarts; the permission grants carry over."
+            alert.addButton(withTitle: "Update Now")
+            alert.addButton(withTitle: "Later")
+            alert.addButton(withTitle: "Release Notes")
+        } else {
+            alert.informativeText = "You have \(currentVersion). This copy is a local build, so it can't update itself: get \(version) from the release page, or `brew install \(Self.formula)`."
+            alert.addButton(withTitle: "Open Release Page")
+            alert.addButton(withTitle: "Later")
+        }
+        let previous = AppActivation.previousApp
+        AppActivation.activateSelf()
+        let choice = alert.runModal()
+        switch choice {
+        case .alertFirstButtonReturn:
+            // A local build's install() opens the release page.
+            install()
+        case .alertThirdButtonReturn:
+            NSWorkspace.shared.open(Self.releaseURL(version))
+        default:
+            if let previous, !previous.isTerminated { previous.activate() }
+        }
+    }
+
+    /// Something an update prompt shouldn't interrupt: typing in the last few seconds, or a
+    /// microphone in use by any app (Bento's dictation and meetings included).
+    static func isBusy() -> Bool {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 5 || microphoneInUse()
+    }
+
+    private static func microphoneInUse() -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return false }
+        address.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
+        var running: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running) == noErr else { return false }
+        return running != 0
     }
 
     /// Version of the app at the Homebrew install path, read fresh (Bundle caches).

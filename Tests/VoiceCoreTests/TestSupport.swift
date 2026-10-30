@@ -14,7 +14,7 @@ import Testing
 /// puts both back on deinit. Until a test picks a runtime config it points at a
 /// file that doesn't exist: left unset, the code under test would read this
 /// Mac's real `voice-runtime.json`. The Gemini API key reads as stored, never
-/// from this Mac's Keychain; `useAPIKey(false)` is a fresh install.
+/// from this Mac's key file; `useAPIKey(false)` is a fresh install.
 final class SharedStateGuard {
     /// Every key `SettingsStore` and `DictionaryStore` read or write.
     static let settingsKeys = [
@@ -42,7 +42,7 @@ final class SharedStateGuard {
         useAPIKey(true)
     }
 
-    /// Whether `SettingsStore` sees a Gemini API key in the Keychain.
+    /// Whether `SettingsStore` sees a Gemini API key.
     func useAPIKey(_ stored: Bool) {
         SettingsStore.hasGeminiAPIKey = { stored }
     }
@@ -64,7 +64,7 @@ final class SharedStateGuard {
             if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
         }
         if let savedRuntime { setenv("BENTO_VOICE_RUNTIME", savedRuntime, 1) } else { unsetenv("BENTO_VOICE_RUNTIME") }
-        SettingsStore.hasGeminiAPIKey = { KeychainStore.hasAPIKey }
+        SettingsStore.hasGeminiAPIKey = { APIKeyStore.hasAPIKey }
         for url in files { try? FileManager.default.removeItem(at: url) }
     }
 }
