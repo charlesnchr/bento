@@ -2,8 +2,8 @@ package com.charles.bento.core.fielddoc
 
 /**
  * Storage the sync engine and the typed layers work against: the app's SQLite store, or
- * [InMemoryFieldDocRepository] in tests. One repository per collection (each has its own
- * `last_seq`). Port of the Mac's `TodoRepository`.
+ * [InMemoryFieldDocRepository] in tests. One repository per collection. Port of the Mac's
+ * `FieldDocRepository`.
  *
  * Documents go in and out by value: implementations must not hand out an instance they
  * keep (return copies, or never mutate what was saved).
@@ -19,9 +19,6 @@ interface FieldDocRepository {
         for (d in docs) save(d, remote = false)
     }
 
-    /** Highest server seq applied. */
-    var lastSeq: Long
-
     val allDocs: List<FieldDoc>
 }
 
@@ -31,8 +28,6 @@ class InMemoryFieldDocRepository : FieldDocRepository {
 
     /** Called after documents change: their ids and whether the change came from the server. */
     var onChange: ((ids: Set<String>, remote: Boolean) -> Unit)? = null
-
-    override var lastSeq: Long = 0
 
     override fun doc(id: String): FieldDoc? = docs[id]?.copy()
 

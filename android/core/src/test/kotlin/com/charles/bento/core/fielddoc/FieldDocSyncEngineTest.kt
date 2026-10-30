@@ -87,7 +87,7 @@ class FieldDocSyncEngineTest {
         assertEquals(FieldDocSyncEngine.RemoteResult.INSERTED, e.applyRemote(r))
         val r2 = r.copy().apply { setTitle("New", 2000); seq = 2 }
         assertEquals(FieldDocSyncEngine.RemoteResult.OVERWRITTEN, e.applyRemote(r2))
-        assertTrue(repo.doc("t1")?.title == "New" && repo.doc("t1")?.dirty == false && repo.lastSeq == 2L)
+        assertTrue(repo.doc("t1")?.title == "New" && repo.doc("t1")?.dirty == false)
         assertEquals(FieldDocSyncEngine.RemoteResult.UNCHANGED, e.applyRemote(r2))
     }
 
@@ -163,12 +163,15 @@ class FieldDocSyncEngineTest {
         assertTrue(s.title == "theirs" && s.dirty && s.updatedAt > r.updatedAt)
     }
 
-    @Test fun seqRegressionMarksEverythingForResend() {
+    @Test fun documentsTheServerLacksAreSentAgain() {
         val repo = InMemoryFieldDocRepository()
         val e = FieldDocSyncEngine(repo)
-        e.applySnapshot(listOf(task().apply { seq = 10 }), 10)
-        assertTrue(e.applySnapshot(emptyList(), 3))
-        assertTrue(repo.doc("t1")!!.dirty && repo.lastSeq == 0L)
+        e.applySnapshot(listOf(task("a").apply { seq = 10 }, task("b").apply { seq = 11 }), setOf("a", "b"))
+        // restored from a backup: a is gone; b is there but its body can't be read here
+        e.applySnapshot(emptyList(), setOf("b"))
+        assertTrue(repo.doc("a")!!.dirty && repo.doc("a")!!.seq == null)
+        assertFalse(repo.doc("b")!!.dirty)
+        assertEquals(listOf("a"), e.docsToSend().map { it.id })
     }
 
     @Test fun newerLocalDeletionOutlivesAnOlderRemoteOne() {
@@ -184,16 +187,6 @@ class FieldDocSyncEngineTest {
         // an edit stamped between the two deletions doesn't resurrect it
         e.applyRemote(base.copy().apply { setTitle("between", 2500); seq = 3 })
         assertTrue(repo.doc("t1")!!.deleted)
-    }
-
-    @Test fun rejectedPutWinnerDoesNotMoveTheCursor() {
-        val repo = InMemoryFieldDocRepository()
-        val e = FieldDocSyncEngine(repo)
-        val a = task().apply { seq = 10 }
-        e.applySnapshot(listOf(a), 10)
-        val stored = a.copy().apply { setTitle("theirs", 5000); seq = 12 }
-        e.applyRemote(stored, advanceCursor = false)
-        assertTrue(repo.doc("t1")!!.title == "theirs" && repo.lastSeq == 10L)
     }
 
     @Test fun deletingAtTheLargestTimestampDoesNotTrap() {

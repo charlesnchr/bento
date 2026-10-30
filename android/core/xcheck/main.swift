@@ -1,5 +1,5 @@
-// Cross-check vector generator: runs the Mac's real Todo code (copied from Sources/Todo by
-// run.sh) and writes what it computes as JSON, which the Kotlin tests replay
+// Cross-check vector generator: runs the Mac's real Todo code (copied from Sources/Todo and
+// Sources/BentoCore by run.sh) and writes what it computes as JSON, which the Kotlin tests replay
 // (android/core/src/test/resources/xcheck/). Build: see run.sh.
 //
 // Strings travel as base64 UTF-8 and doubles as their IEEE bit patterns, so nothing is lost
@@ -9,13 +9,9 @@ import Foundation
 
 // MARK: - Plumbing
 
-/// The repository protocol from TodoStore.swift (which needs SQLite/BentoCore).
-protocol TodoRepository: AnyObject {
-    func doc(_ id: String) -> TodoDoc?
-    func save(_ doc: TodoDoc, remote: Bool)
-    var lastSeq: Int64 { get set }
-    var allDocs: [TodoDoc] { get }
-}
+// The names TodoStore.swift and TodoSyncClient.swift give BentoCore's types (they need SQLite).
+typealias TodoRepository = FieldDocRepository
+typealias TodoSyncEngine = FieldSyncEngine
 
 struct RNG {
     var state: UInt64
@@ -232,7 +228,6 @@ do {
 
 final class MemoryRepo: TodoRepository {
     var docs: [String: TodoDoc] = [:]
-    var lastSeq: Int64 = 0
     func doc(_ id: String) -> TodoDoc? { docs[id] }
     func save(_ doc: TodoDoc, remote: Bool) { docs[doc.id] = doc }
     var allDocs: [TodoDoc] { Array(docs.values) }
@@ -270,7 +265,7 @@ func docLine(_ d: TodoDoc) -> String {
 func stateText(_ devices: [MemoryRepo], _ engines: [TodoSyncEngine], _ server: FakeServer) -> String {
     var s = ""
     for (i, r) in devices.enumerated() {
-        s += "D\(i) last=\(r.lastSeq) pending=\(engines[i].pendingCount) blocked=\(engines[i].blockedCount)\n"
+        s += "D\(i) pending=\(engines[i].pendingCount) blocked=\(engines[i].blockedCount)\n"
         for id in r.docs.keys.sorted() { s += docLine(r.docs[id]!) }
         s += "inflight=" + engines[i].inflight.keys.sorted().map { "\($0):" + engines[i].inflight[$0]!.map(String.init).joined(separator: ",") }.joined(separator: ";") + "\n"
         s += "failed=" + engines[i].failed.keys.sorted().map { "\($0):\(engines[i].failed[$0]!)" }.joined(separator: ";") + "\n"
@@ -312,10 +307,10 @@ do {
             } else {
                 let (stored, accepted) = server.put(q.doc, device: "d\(q.device)")
                 switch mode {
-                case 1: e.ack(id: q.doc.id, seq: accepted ? stored.seq : nil, accepted: accepted, ordered: true)
+                case 1: e.ack(id: q.doc.id, seq: accepted ? stored.seq : nil, accepted: accepted)
                 default: e.ack(id: q.doc.id, seq: accepted ? stored.seq : nil, accepted: accepted, version: q.doc.updatedAt)
                 }
-                if !accepted { e.applyRemote(stored, advanceCursor: mode != 2) }
+                if !accepted { e.applyRemote(stored) }
                 for (j, o) in engines.enumerated() where j != q.device && accepted { o.applyRemote(stored) }
             }
             record(["t": "deliver", "mode": mode])
@@ -329,13 +324,7 @@ do {
             queued.removeAll { $0.device == dev }
             engines[dev].reset()
             engines[dev].clearFailed()
-            var since = devices[dev].lastSeq
-            var docs = server.docs.values.filter { ($0.seq ?? 0) > since }
-            if engines[dev].applySnapshot(docs, seq: server.seq) {
-                since = 0
-                docs = server.docs.values.filter { ($0.seq ?? 0) > since }
-                _ = engines[dev].applySnapshot(docs, seq: server.seq)
-            }
+            engines[dev].applySnapshot(Array(server.docs.values), ids: Set(server.docs.keys))
             record(["t": "reconnect", "dev": dev])
         }
         for _ in 0..<70 {

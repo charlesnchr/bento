@@ -4,8 +4,11 @@ import kotlin.math.max
 
 /**
  * The client side of the sync protocol for field-clock documents (transport independent).
- * Exact port of the Mac's `TodoSyncEngine`; the collection only matters to the wire layer.
+ * Exact port of the Mac's `FieldSyncEngine`; the collection only matters to the wire layer.
  *
+ * - Every connection (and every poll) fetches the server's full set and reconciles it with
+ *   ours ([applySnapshot]); there is no cursor, so a document missed once (unreadable, lost
+ *   in a crash) arrives with the next pass instead of never.
  * - `dirty` documents have local changes the server hasn't acknowledged.
  * - [inflight] remembers which versions (updated_at) of a document were sent, oldest first.
  *   Acks arrive in send order on a connection, so each ack pops the version it acknowledges
@@ -34,13 +37,7 @@ class FieldDocSyncEngine(val repo: FieldDocRepository) {
 
     // MARK: Incoming
 
-    /**
-     * `advanceCursor`: the transport delivered every earlier change before this one
-     * (WebSocket, polls), so last_seq may move to its seq. Not for a REST put's stored
-     * winner, whose seq can be ahead of changes this client hasn't seen.
-     */
-    fun applyRemote(r: FieldDoc, advanceCursor: Boolean = true): RemoteResult {
-        if (advanceCursor) r.seq?.let { s -> if (s > repo.lastSeq) repo.lastSeq = s }
+    fun applyRemote(r: FieldDoc): RemoteResult {
         val local = repo.doc(r.id)
         if (local == null) {
             val d = r.copy(dirty = false)
@@ -108,37 +105,27 @@ class FieldDocSyncEngine(val repo: FieldDocRepository) {
     private fun plusOne(t: Long) = if (t == Long.MAX_VALUE) Long.MAX_VALUE else t + 1
 
     /**
-     * Applies a snapshot (reply to hello / REST poll). Returns true when the server's seq
-     * went backwards (backup restore) and a full resync is needed.
+     * The server's full set (reply to hello / REST poll): every document is merged into ours,
+     * and ours that the server doesn't have (restored from a backup, a new server) are sent
+     * again. [ids] names every document the server sent, including any [docs] lacks because
+     * its body couldn't be read: those are the server's, never overwritten from here.
      */
-    fun applySnapshot(docs: List<FieldDoc>, seq: Long): Boolean {
-        if (seq < repo.lastSeq) {
-            // Everything the server lost must be resent.
-            for (d in repo.allDocs) {
-                if ((d.seq ?: 0) > seq || d.seq == null) repo.save(d.copy(dirty = true, seq = null), remote = false)
-            }
-            repo.lastSeq = 0
-            return true
+    fun applySnapshot(docs: List<FieldDoc>, ids: Set<String>) {
+        for (d in repo.allDocs) {
+            if (!d.dirty && d.id !in ids) repo.save(d.copy(dirty = true, seq = null), remote = false)
         }
         for (d in docs.sortedBy { it.seq ?: 0 }) applyRemote(d)
-        if (seq > repo.lastSeq) repo.lastSeq = seq
-        return false
     }
 
     /**
      * An ack for a put. `version` is the updated_at that was sent when the transport knows
-     * it (REST); WebSocket acks arrive in send order and pop the oldest version. `ordered`:
-     * the server sent every earlier change of our collections before this ack (WebSocket),
-     * so last_seq may jump to it over other collections' seqs.
+     * it (REST); WebSocket acks arrive in send order and pop the oldest version.
      */
-    fun ack(id: String, seq: Long?, accepted: Boolean, version: Long? = null, ordered: Boolean = false) {
+    fun ack(id: String, seq: Long?, accepted: Boolean, version: Long? = null) {
         val sent = popInflight(id, version)
         if (!accepted) return // the stored winner follows as a `note` message
         val d = repo.doc(id)?.copy() ?: return
-        if (seq != null) {
-            if (seq == repo.lastSeq + 1 || (ordered && seq > repo.lastSeq)) repo.lastSeq = seq
-            d.seq = max(d.seq ?: 0, seq)
-        }
+        if (seq != null) d.seq = max(d.seq ?: 0, seq)
         if (sent != null && d.updatedAt == sent) d.dirty = false
         repo.save(d, remote = false)
     }

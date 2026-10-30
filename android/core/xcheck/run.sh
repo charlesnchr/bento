@@ -14,9 +14,10 @@ out="$here/../src/test/resources/xcheck"
 ssh "$host" "rm -rf $scratch && mkdir -p $scratch"
 scp -q "$here/main.swift" \
   "$repo/Sources/Todo/TodoModel.swift" "$repo/Sources/Todo/DateParser.swift" \
-  "$repo/Sources/Todo/QuickAddParser.swift" "$repo/Sources/Todo/TodoSyncEngine.swift" \
-  "$repo/Sources/Todo/TodoQueries.swift" "$host:$scratch/"
-ssh "$host" "cd $scratch && swiftc -O -swift-version 5 main.swift TodoModel.swift DateParser.swift QuickAddParser.swift TodoSyncEngine.swift TodoQueries.swift -o xcheck 2>&1 | grep -v warning: | grep -v '^ *|' || true; ./xcheck"
+  "$repo/Sources/Todo/QuickAddParser.swift" "$repo/Sources/Todo/TodoQueries.swift" \
+  "$repo/Sources/BentoCore/FieldDoc.swift" "$repo/Sources/BentoCore/FieldSyncEngine.swift" "$host:$scratch/"
+# one module: BentoCore's files are compiled in, so nothing imports it
+ssh "$host" "cd $scratch && sed -i '' '/^import BentoCore\$/d' *.swift && swiftc -O -swift-version 5 *.swift -o xcheck 2>&1 | grep -v warning: | grep -v '^ *|' || true; ./xcheck"
 ssh "$host" "cd $scratch/out && gzip -9 -n -f *.json"
 mkdir -p "$out"
 rm -f "$out"/*.json.gz

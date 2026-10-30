@@ -63,10 +63,6 @@ class FieldDocStore(context: Context, file: String) : FieldDocRepository {
         onChange?.invoke(changed.map { it.id }.toSet(), false)
     }
 
-    override var lastSeq: Long
-        get() = kv["last_seq"]?.toLongOrNull() ?: 0
-        set(v) { kv["last_seq"] = v.toString(); db.setKV("last_seq", v.toString()) }
-
     override val allDocs: List<FieldDoc> get() = cache.values.map { it.copy() }
 
     fun kv(key: String): String? = kv[key]

@@ -87,7 +87,6 @@ class SnapshotRepo(docs: List<FieldDoc>) : FieldDocRepository {
     private val byId = docs.associateBy { it.id }
     override fun doc(id: String): FieldDoc? = byId[id]
     override fun save(doc: FieldDoc, remote: Boolean) = error("read only")
-    override var lastSeq: Long = 0
     override val allDocs: List<FieldDoc> = docs
 }
 

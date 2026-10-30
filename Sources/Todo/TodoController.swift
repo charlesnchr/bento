@@ -1197,7 +1197,6 @@ final class TodoController: ObservableObject {
             "tasks": store.tasks.count,
             "projects": projects.count,
             "pending": engine.pendingCount,
-            "lastSeq": store.lastSeq,
             "sync": client.status.summary,
             "windowVisible": windowController?.isVisible ?? false,
         ]

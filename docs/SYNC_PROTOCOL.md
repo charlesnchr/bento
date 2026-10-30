@@ -129,6 +129,14 @@ handled the same way with the stored winner. A tombstone (`deleted:true`) wins
 over every field change older than its `updated_at`; a field change made after it
 resurrects the task (its put carries the full body).
 
+**No cursor.** Todo and voice clients keep no `last_seq`: every `hello` and every poll
+asks for `since: 0`, and the client reconciles the full set. Each document is merged as
+above, and a synced local document the set lacks (the server was restored from a
+backup, or is new) is sent again. A document missed once (a body that couldn't be read,
+a crash halfway) therefore arrives with the next pass rather than never. Clients read a
+body whose strings hold raw control characters (newlines a writer forgot to escape) as
+if they were escaped, so every client reads the same documents.
+
 ## Voice documents (`collection: "voice"`)
 
 Dictation's personal dictionary and cleanup settings, shared by every Mac and the

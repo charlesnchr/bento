@@ -321,12 +321,13 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
         generation += 1
         helloDone = false
         let t = session.webSocketTask(with: req)
-        // The hello snapshot carries every changed document in one message.
+        // The hello snapshot carries every document in one message.
         t.maximumMessageSize = 256 * 1024 * 1024
         task = t
         t.resume()
         receive(on: t, gen: generation)
-        send(["type": "hello", "since": engine.repo.lastSeq, "device": device, "collections": [wire.collection]])
+        // since 0: the full set on every connection, reconciled by the engine
+        send(["type": "hello", "since": 0, "device": device, "collections": [wire.collection]])
     }
 
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
@@ -369,14 +370,7 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
               let type = obj["type"] as? String else { return }
         switch type {
         case "snapshot":
-            let notes = (obj["notes"] as? [Any] ?? []).compactMap(wire.decode)
-            let seq = (obj["seq"] as? NSNumber)?.int64Value ?? 0
-            if engine.applySnapshot(notes, seq: seq) {
-                log.info("Server seq went backwards (\(seq)); resyncing from 0")
-                task?.cancel(with: .normalClosure, reason: nil)
-                connect()
-                return
-            }
+            applySnapshot(obj["notes"])
             helloDone = true
             engine.clearFailed() // refused puts get another try on every connection
             backoff = 1
@@ -390,7 +384,7 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
         case "ack":
             guard let id = obj["id"] as? String else { return }
             let accepted = obj["accepted"] as? Bool ?? false
-            engine.ack(id: id, seq: (obj["seq"] as? NSNumber)?.int64Value, accepted: accepted, ordered: true)
+            engine.ack(id: id, seq: (obj["seq"] as? NSNumber)?.int64Value, accepted: accepted)
             markSynced()
         case "note":
             if let n = wire.decode(obj["note"]) {
@@ -411,6 +405,15 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
         // edits made while puts were in flight, merges to resend after a rejection: all go out with the normal debounce
         if helloDone, sendWork == nil, !engine.docsToSend().isEmpty { scheduleFlush() }
         updatePending()
+    }
+
+    /// The server's full set, as a hello snapshot or a poll returns it.
+    private func applySnapshot(_ list: Any?) {
+        let (docs, ids) = wire.decodeSnapshot(list)
+        if docs.count < ids.count {
+            log.error("\(ids.count - docs.count, privacy: .public) \(self.profile.noun.many, privacy: .public) from the server couldn't be read")
+        }
+        engine.applySnapshot(docs, ids: ids)
     }
 
     /// Sends one message; false when it couldn't even be encoded/queued.
@@ -675,7 +678,7 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func poll() {
-        guard var req = request("/v1/c/\(wire.collection)?since=\(engine.repo.lastSeq)") else { return }
+        guard var req = request("/v1/c/\(wire.collection)?since=0") else { return }
         req.timeoutInterval = 15
         session.dataTask(with: req) { [weak self] data, resp, err in
             DispatchQueue.main.async {
@@ -685,12 +688,7 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
                     self.status.lastError = err?.localizedDescription ?? "bad response"
                     return
                 }
-                let notes = (obj["docs"] as? [Any] ?? []).compactMap(self.wire.decode)
-                let seq = (obj["seq"] as? NSNumber)?.int64Value ?? 0
-                if self.engine.applySnapshot(notes, seq: seq) {
-                    self.poll() // resync from 0
-                    return
-                }
+                self.applySnapshot(obj["docs"])
                 self.lastPoll = Date()
                 self.status.lastError = nil
                 self.markSynced()
@@ -722,7 +720,7 @@ public final class FieldSyncClient: NSObject, URLSessionWebSocketDelegate {
                 let stored = self.wire.decode(obj["doc"])
                 let accepted = obj["accepted"] as? Bool ?? false
                 self.engine.ack(id: n.id, seq: accepted ? stored?.seq : nil, accepted: accepted, version: n.updatedAt)
-                if !accepted, let stored { self.engine.applyRemote(stored, advanceCursor: false) }
+                if !accepted, let stored { self.engine.applyRemote(stored) }
                 self.markSynced()
                 self.updatePending()
             }

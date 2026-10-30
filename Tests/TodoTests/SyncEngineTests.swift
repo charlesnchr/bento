@@ -5,7 +5,6 @@ import BentoCore
 
 final class MemoryRepo: TodoRepository {
     var docs: [String: TodoDoc] = [:]
-    var lastSeq: Int64 = 0
     func doc(_ id: String) -> TodoDoc? { docs[id] }
     func save(_ doc: TodoDoc, remote: Bool) { docs[doc.id] = doc }
     var allDocs: [TodoDoc] { Array(docs.values) }
@@ -79,7 +78,7 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         #expect(e.applyRemote(r) == .inserted)
         var r2 = r; r2.setTitle("New", at: 2000); r2.seq = 2
         #expect(e.applyRemote(r2) == .overwritten)
-        #expect(repo.docs["t1"]?.title == "New" && repo.docs["t1"]?.dirty == false && repo.lastSeq == 2)
+        #expect(repo.docs["t1"]?.title == "New" && repo.docs["t1"]?.dirty == false)
         #expect(e.applyRemote(r2) == .unchanged)
     }
 
@@ -155,12 +154,49 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         #expect(s.title == "theirs" && s.dirty && s.updatedAt > r.updatedAt)
     }
 
-    @Test func seqRegressionMarksEverythingForResend() {
+    @Test func documentsTheServerLacksAreSentAgain() {
         let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
-        var r = task(); r.seq = 10
-        e.applySnapshot([r], seq: 10)
-        #expect(e.applySnapshot([], seq: 3))
-        #expect(repo.docs["t1"]!.dirty && repo.lastSeq == 0)
+        var a = task("a"); a.seq = 10
+        var b = task("b"); b.seq = 11
+        e.applySnapshot([a, b], ids: ["a", "b"])
+        // restored from a backup: a is gone; b is there but its body can't be read here
+        e.applySnapshot([], ids: ["b"])
+        #expect(repo.docs["a"]!.dirty && repo.docs["a"]!.seq == nil)
+        #expect(!repo.docs["b"]!.dirty)
+        #expect(e.docsToSend().map(\.id) == ["a"])
+    }
+
+    /// The Mac showed a subset of a project's tasks: tasks written with raw newlines in
+    /// their JSON body couldn't be read, and the cursor moved past them for good. One
+    /// pass now brings every task, however many and whatever their seqs.
+    @Test func onePassBringsEveryTaskTheServerHas() {
+        let wire = FieldDocWire(collection: TodoWire.collection)
+        let project = "P1"
+        var list: [[String: Any]] = []
+        for i in 0..<1200 {
+            var d = task("t\(i)", title: "Task \(i)", at: Int64(1000 + i))
+            d.setProject(project, at: Int64(1000 + i))
+            var o = wire.encode(d, device: i % 2 == 0 ? "Pixel" : "Hermes")
+            o["seq"] = 2000 - i // newest first, seqs well below any cursor the Mac had
+            if i % 3 == 0 {
+                // what syncctl wrote: a description whose newline isn't escaped
+                d.setNotes("line one\nline two", at: Int64(1000 + i))
+                o["body"] = (d.body as NSString).replacingOccurrences(of: "\\n", with: "\n")
+            }
+            list.append(o)
+        }
+        let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
+        var seen = task("seen", title: "Already here"); seen.seq = 5000
+        e.applySnapshot([seen], ids: ["seen"])
+
+        let wireList = list + [wire.encode(seen, device: "Pixel").merging(["seq": 5000]) { $1 }]
+        let (docs, ids) = wire.decodeSnapshot(wireList)
+        e.applySnapshot(docs, ids: ids)
+
+        let tasks = repo.docs.values.filter { $0.project == project }
+        #expect(tasks.count == 1200 && repo.docs.count == 1201)
+        #expect(repo.docs["t0"]?.notes == "line one\nline two")
+        #expect(repo.docs.values.allSatisfy { !$0.dirty })
     }
 
     @Test func newerLocalDeletionOutlivesAnOlderRemoteOne() {
@@ -178,15 +214,6 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         var edit = base; edit.setTitle("between", at: 2500); edit.seq = 3
         e.applyRemote(edit)
         #expect(repo.docs["t1"]!.deleted)
-    }
-
-    @Test func rejectedPutWinnerDoesNotMoveTheCursor() {
-        let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
-        var a = task(); a.seq = 10
-        e.applySnapshot([a], seq: 10)
-        var stored = a; stored.setTitle("theirs", at: 5000); stored.seq = 12
-        e.applyRemote(stored, advanceCursor: false)
-        #expect(repo.docs["t1"]!.title == "theirs" && repo.lastSeq == 10)
     }
 
     @Test func deletingAtTheLargestTimestampDoesNotTrap() {
