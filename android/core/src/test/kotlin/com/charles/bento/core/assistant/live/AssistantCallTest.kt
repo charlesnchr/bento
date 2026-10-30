@@ -624,7 +624,10 @@ class AssistantCallTest {
         captions.say(Caption.Started())
         captions.say(Caption.Partial("First request"))
         captions.say(Caption.Ended)
+        transport.push(Live.activity("ACTIVITY_END"))
         delay(700)
+        // Gemini's next turn starts before the last one's transcript arrives.
+        transport.push(Live.activity("ACTIVITY_START"))
         captions.say(Caption.Started())
         captions.say(Caption.Partial("Second request"))
         shown.awaitSize(2)
@@ -638,19 +641,26 @@ class AssistantCallTest {
         call.stop()
     }
 
-    @Test fun aCaptionThatStartsAfterGeminiTranscribedItsWordsIsntShown() = blocking {
+    @Test fun theNextTurnsOwnTranscriptStillReplacesItsCaption() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val captions = FakeCaptions()
         val (call, shown) = captioned(transport, captions)
         val heard = CopyOnWriteArrayList<String>()
         call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
         transport.push(Live.activity("ACTIVITY_START"))
-        transport.push(Live.heard("Hello there."))
+        transport.push(Live.heard("First request."))
+        transport.push(Live.activity("ACTIVITY_END"))
         heard.awaitSize(1)
+        delay(700)
+        transport.push(Live.activity("ACTIVITY_START"))
         captions.say(Caption.Started())
-        captions.say(Caption.Partial("Hello"))
+        captions.say(Caption.Partial("Second"))
+        shown.awaitSize(1)
+        transport.push(Live.heard("Second request."))
+        heard.awaitSize(2)
+        captions.say(Caption.Partial("Second request"))
         delay(200)
-        assertTrue(shown.isEmpty(), "the captioner was slower than Gemini: its words are already in the chat")
+        assertEquals(listOf("Second"), shown.toList(), "the second turn's transcript replaced its caption for good")
         call.stop()
     }
 
@@ -670,6 +680,75 @@ class AssistantCallTest {
         captions.say(Caption.Partial("Yes, do it"))
         delay(200)
         assertTrue(shown.isEmpty(), "words Gemini has transcribed don't come back as a caption")
+        call.stop()
+    }
+
+    @Test fun aPauseGeminiSplitsAndTheCaptionerDoesntCaptionsTheSecondHalf() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        captions.say(Caption.Started())
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Partial("Book a table"))
+        shown.awaitSize(1)
+        transport.push(Live.heard("Book a table."))
+        transport.push(Live.activity("ACTIVITY_END"))
+        heard.awaitSize(1)
+        captions.say(Caption.Partial("Book a table for"))
+        delay(200)
+        assertEquals(listOf("Book a table"), shown.toList(), "until Gemini hears more, guesses at transcribed words are stale")
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        captions.say(Caption.Partial("Book a table for two"))
+        shown.awaitSize(2)
+        assertEquals("for two", shown.last(), "the words after the transcribed ones")
+        call.stop()
+    }
+
+    @Test fun aPauseTheCaptionerSplitsAndGeminiDoesntIsntShownTwice() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Book a table"))
+        captions.say(Caption.Ended)
+        delay(700)
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("for two"))
+        shown.awaitSize(3)
+        transport.push(Live.heard("Book a table for two."))
+        heard.awaitSize(1)
+        captions.say(Caption.Partial("for two please"))
+        delay(200)
+        assertEquals(listOf("Book a table", null, "for two"), shown.toList(), "both halves are in the transcript: neither comes back")
+        call.stop()
+    }
+
+    @Test fun aTurnGeminiNeverTranscribedDoesntClaimTheNextOnesWords() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        // A cough: a turn with no words.
+        transport.push(Live.activity("ACTIVITY_START"))
+        transport.push(Live.activity("ACTIVITY_END"))
+        delay(300)
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Hello there"))
+        shown.awaitSize(1)
+        delay(1500)
+        transport.push(Live.heard("Hello there."))
+        heard.awaitSize(1)
+        captions.say(Caption.Partial("Hello there."))
+        delay(200)
+        assertEquals(listOf("Hello there"), shown.toList(), "the transcript replaced its own caption")
         call.stop()
     }
 
