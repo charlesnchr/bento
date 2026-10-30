@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
@@ -37,19 +38,30 @@ object NoteImage {
 
     /** The hash of the image when the line (without its newline) is nothing but one image. */
     fun hash(line: String): String? {
-        if (line.length < 78 || SCHEME !in line) return null
+        if (line.length < 81 || SCHEME !in line) return null
         return lineRe.matchEntire(line)?.groupValues?.get(1)
     }
 
     fun markdown(hash: String): String = "![]($SCHEME$hash)"
 
-    /** Hashes of the image lines in a body, in order, without repeats. */
-    fun hashes(body: String): List<String> {
+    /** The image lines of a body (not those in code blocks): their ranges without the line break, and hashes. */
+    private fun imageLines(body: String): List<Pair<TextRange, String>> {
         if (SCHEME !in body) return emptyList()
-        val out = LinkedHashSet<String>()
-        SwiftText.enumerateLines(body) { line, _ -> hash(line)?.let(out::add) }
-        return out.toList()
+        return MarkdownParser.parseLines(body).mapNotNull { pl ->
+            if (pl.line.kind != BlockKind.Paragraph) return@mapNotNull null
+            hash(body.substring(pl.range.location, pl.range.end))?.let { pl.range to it }
+        }
     }
+
+    /** Whether any line of the body is an image (code blocks included: for keeping text). */
+    fun hasImageLine(body: String): Boolean {
+        if (SCHEME !in body) return false
+        SwiftText.enumerateLines(body) { line, _ -> if (hash(line) != null) return true }
+        return false
+    }
+
+    /** Hashes of the image lines in a body, in order, without repeats. */
+    fun hashes(body: String): List<String> = imageLines(body).map { it.second }.distinct()
 
     /** Inserts images at the selection (replacing it), each on a line of its own, with the caret on the line after them. */
     fun insertion(text: String, selection: TextRange, hashes: List<String>): EditResult {
@@ -60,8 +72,10 @@ object NoteImage {
 
     /** Removes the lines showing the image (with their line breaks); null when there are none. */
     fun removal(text: String, hash: String): EditResult? {
-        val edits = ArrayList<TextEdit>()
-        SwiftText.enumerateLines(text) { line, full -> if (hash(line) == hash) edits.add(TextEdit(full, "")) }
+        val edits = imageLines(text).filter { it.second == hash }.map { (r, _) ->
+            // with its line break
+            TextEdit(SwiftText.lineRange(text, r.location), "")
+        }.toMutableList()
         if (edits.isEmpty()) return null
         // a last line without a line break takes the one before it
         val last = edits.last()
@@ -156,27 +170,63 @@ class NoteImageSync(
     /** Images the server didn't have, and when we last asked (asked again after a while). */
     private val missing = ConcurrentHashMap<String, Long>()
     @Volatile private var serverHasBlobs: Pair<String, Boolean>? = null
+    /** Uploads that failed are tried again after this long (doubling to 10 minutes) while paired. */
+    @Volatile private var retryDelayMs = 30_000L
+    private var retryJob: kotlinx.coroutines.Job? = null
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Sync (re)connected: upload what's pending and ask again for what was missing. */
     fun connected() {
+        val wasMissing = missing.keys.toList()
         missing.clear()
+        // placeholders on screen ask again
+        wasMissing.forEach { _changed.tryEmit(it) }
         serverHasBlobs = null
+        retryDelayMs = 30_000L
         uploadPending()
     }
 
-    fun uploadPending() { scope.launch { uploadPendingNow() } }
-
-    /** Uploads what's pending; true when nothing is left. */
-    suspend fun uploadPendingNow(): Boolean = withContext(Dispatchers.IO) {
-        val (base, token) = target() ?: return@withContext store.pendingUploads.isEmpty()
-        if (!hasBlobs(base)) return@withContext store.pendingUploads.isEmpty()
-        for (hash in store.pendingUploads) {
-            if (!uploading.add(hash)) continue
-            try { upload(hash, base, token) } finally { uploading.remove(hash) }
+    /** Uploads what's pending; what fails is tried again later (with a backoff) while paired. */
+    fun uploadPending() {
+        scope.launch {
+            if (uploadPendingNow()) { retryDelayMs = 30_000L; return@launch }
+            if (target() == null) return@launch
+            synchronized(this@NoteImageSync) {
+                if (retryJob?.isActive == true) return@launch
+                val wait = retryDelayMs
+                retryDelayMs = minOf(wait * 2, 600_000L)
+                retryJob = scope.launch {
+                    kotlinx.coroutines.delay(wait)
+                    synchronized(this@NoteImageSync) { retryJob = null }
+                    uploadPending()
+                }
+            }
         }
-        store.pendingUploads.isEmpty()
     }
+
+    /**
+     * Uploads what's pending, one at a time (the server serves blob requests one by one).
+     * False when something should be tried again: an upload failed or the server didn't
+     * answer. True when everything went up, or there's nowhere to send it (not paired, or a
+     * server that doesn't store images).
+     */
+    suspend fun uploadPendingNow(): Boolean = uploads.withLock {
+        withContext(Dispatchers.IO) {
+            val (base, token) = target() ?: return@withContext true
+            if (store.pendingUploads.isEmpty()) return@withContext true
+            when (hasBlobs(base)) {
+                null -> return@withContext false
+                false -> return@withContext true
+                true -> {}
+            }
+            for (hash in store.pendingUploads) {
+                if (!uploading.add(hash)) continue
+                try { upload(hash, base, token) } finally { uploading.remove(hash) }
+            }
+            store.pendingUploads.isEmpty()
+        }
+    }
+    private val uploads = kotlinx.coroutines.sync.Mutex()
 
     /** Whether the image is coming (being fetched, or not known to be missing while paired). */
     fun isLoading(hash: String): Boolean = hash in fetching || (missing[hash] == null && target() != null)
@@ -228,15 +278,15 @@ class NoteImageSync(
         return base to token
     }
 
-    /** Whether the server stores images (`/v1/health` says `blobs`). */
-    private fun hasBlobs(base: String): Boolean {
+    /** Whether the server stores images (`/v1/health` says `blobs`); null when it didn't answer (ask again next time). */
+    private fun hasBlobs(base: String): Boolean? {
         serverHasBlobs?.takeIf { it.first == base }?.let { return it.second }
         val ok = runCatching {
             http.newCall(Request.Builder().url("$base/v1/health").build()).also { it.timeout().timeout(15, TimeUnit.SECONDS) }.execute().use { r ->
-                if (!r.isSuccessful) return false // unreachable: ask again next time
-                json.parseToJsonElement(r.body.string()).jsonObject["blobs"]?.jsonPrimitive?.boolean == true
+                if (!r.isSuccessful) return null
+                runCatching { json.parseToJsonElement(r.body.string()).jsonObject["blobs"]?.jsonPrimitive?.boolean == true }.getOrDefault(false)
             }
-        }.getOrElse { return false }
+        }.getOrElse { return null }
         serverHasBlobs = base to ok
         if (!ok) log("Sync server doesn't store images yet; they stay on this device")
         return ok

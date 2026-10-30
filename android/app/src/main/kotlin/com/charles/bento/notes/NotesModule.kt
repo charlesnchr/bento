@@ -48,7 +48,7 @@ class NotesModule(
     val connection = hub.register(sync)
 
     /** The notes' images: a local cache, uploaded to and fetched from the server (docs/SYNC_PROTOCOL.md, Images). */
-    val images = NoteImageSync(NoteImageStore(java.io.File(context.filesDir, "note-images")), http, hub::endpointNow, engineScope,
+    val images = NoteImageSync(NoteImageStore(java.io.File(context.filesDir, IMAGES_DIR)), http, hub::endpointNow, engineScope,
                                log = { android.util.Log.i("BentoImages", it) })
 
     /** Every note incl. tombstones, as of the last change. */
@@ -235,5 +235,10 @@ class NotesModule(
         changed()
         _remote.tryEmit(Change(n, target?.body.orEmpty()))
         NoteText.displayTitle(n.body)
+    }
+
+    companion object {
+        /** The images' directory under filesDir. */
+        const val IMAGES_DIR = "note-images"
     }
 }

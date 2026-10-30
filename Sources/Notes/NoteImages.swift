@@ -16,9 +16,12 @@ enum NoteImage {
 
     private static let lineRE = try! NSRegularExpression(pattern: #"^[ \t]*!\[[^\]\n]*\]\(bento-image:([0-9a-f]{64})\)[ \t]*$"#)
 
+    /// UTF-16 length of the shortest image line, `![](bento-image:<64 hex>)`.
+    static let minLineLength = 81
+
     /// The hash of the image when the line (without its newline) is nothing but one image.
     static func hash(inLine line: String) -> String? {
-        guard line.utf16.count >= 78, line.contains(scheme) else { return nil }
+        guard line.utf16.count >= minLineLength, line.contains(scheme) else { return nil }
         let ns = line as NSString
         guard let m = lineRE.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
         return ns.substring(with: m.range(at: 1))
@@ -26,14 +29,24 @@ enum NoteImage {
 
     static func markdown(_ hash: String) -> String { "![](\(scheme)\(hash))" }
 
-    /// Hashes of the image lines in a body, in order, without repeats.
+    /// Hashes of the image lines in a body (not in code blocks), in order, without repeats.
     static func hashes(in body: String) -> [String] {
         guard body.contains(scheme) else { return [] }
-        var seen = Set<String>(), out: [String] = []
+        var seen = Set<String>(), out: [String] = [], inCode = false
         body.enumerateLines { line, _ in
-            if let h = hash(inLine: line), seen.insert(h).inserted { out.append(h) }
+            let kind = MarkdownParser.parseLine(line, inCode: inCode).kind
+            if case .fence(let opening, _) = kind { inCode = opening }
+            if kind == .paragraph, let h = hash(inLine: line), seen.insert(h).inserted { out.append(h) }
         }
         return out
+    }
+
+    /// Whether any line of the body is an image (code blocks included: for keeping text).
+    static func hasImageLine(_ body: String) -> Bool {
+        guard body.contains(scheme) else { return false }
+        var found = false
+        body.enumerateLines { line, stop in if hash(inLine: line) != nil { found = true; stop = true } }
+        return found
     }
 
     /// Inserts images at the selection (replacing it), each on a line of its own, with the
@@ -115,7 +128,9 @@ final class NoteImageStore {
     func image(_ hash: String) -> NSImage? {
         if let i = cache.object(forKey: hash as NSString) { return i }
         guard let d = data(hash), let i = NSImage(data: d) else { return nil }
-        cache.setObject(i, forKey: hash as NSString, cost: d.count)
+        // what it takes once drawn: the decoded bitmap
+        let px = i.representations.map { $0.pixelsWide * $0.pixelsHigh }.max() ?? 0
+        cache.setObject(i, forKey: hash as NSString, cost: max(d.count, px * 4))
         return i
     }
 
@@ -125,6 +140,11 @@ final class NoteImageStore {
     /// Adds an image made here; returns its hash. It's uploaded on the next chance.
     func add(_ raw: Data) -> String? {
         guard let data = NoteImage.prepare(raw) else { return nil }
+        return add(prepared: data)
+    }
+
+    /// Adds bytes already `NoteImage.prepare`d (that's slow: do it off the main thread).
+    func add(prepared data: Data) -> String? {
         let hash = NoteImage.sha256(data)
         guard let f = file(hash) else { return nil }
         if !has(hash) {
@@ -166,6 +186,9 @@ final class NoteImageSync {
     /// Images the server didn't have, and when we last asked (asked again after a while).
     private var missing: [String: Date] = [:]
     private var serverHasBlobs: (base: URL, ok: Bool)?
+    /// Uploads that failed are tried again after this long (doubling to 10 minutes).
+    private var retryDelay: TimeInterval = 30
+    private var retryWork: DispatchWorkItem?
 
     init(store: NoteImageStore) {
         self.store = store
@@ -177,17 +200,32 @@ final class NoteImageSync {
 
     /// Sync (re)connected: upload what's pending and ask again for what was missing.
     func connected() {
+        let wasMissing = Array(missing.keys)
         missing.removeAll()
         serverHasBlobs = nil
+        retryDelay = 30
         uploadPending()
+        // placeholders on screen ask again (drawing them fetches)
+        for h in wasMissing { NotificationCenter.default.post(name: NoteImageStore.didLoad, object: h) }
     }
 
+    /// Uploads the pending images one at a time (the server serves blob requests one by one).
     func uploadPending() {
-        let pending = store.pendingUploads.filter { !uploading.contains($0) }
-        guard !pending.isEmpty, let ep = endpoint() else { return }
-        withBlobs(ep) { [weak self] in
-            for h in pending { self?.upload(h, ep) }
+        guard uploading.isEmpty, let next = store.pendingUploads.first, let ep = endpoint() else { return }
+        withBlobs(ep) { [weak self] in self?.upload(next, ep) }
+    }
+
+    /// Something didn't go up (offline, server error, health check failed): try again later
+    /// while sync runs, as well as on the next reconnect.
+    private func retryLater() {
+        guard retryWork == nil, endpoint() != nil else { return }
+        let w = DispatchWorkItem { [weak self] in
+            self?.retryWork = nil
+            self?.uploadPending()
         }
+        retryWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: w)
+        retryDelay = min(retryDelay * 2, 600)
     }
 
     /// The image for a note, fetching it when it isn't here (`store.didLoad` follows).
@@ -233,13 +271,18 @@ final class NoteImageSync {
             self.uploading.remove(hash)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             switch code {
-            case 200: self.store.uploaded(hash)
+            case 200:
+                self.store.uploaded(hash)
+                if self.store.pendingUploads.isEmpty { self.retryDelay = 30 }
+                self.uploadPending()
             case 400, 413, 415:
                 // the server will never take it: stop trying, the image stays on this Mac
                 self.store.uploaded(hash)
                 self.log.error("Image \(hash.prefix(12), privacy: .public) refused by the server (HTTP \(code))")
+                self.uploadPending()
             default:
                 self.log.info("Image \(hash.prefix(12), privacy: .public) not uploaded: \(err?.localizedDescription ?? "HTTP \(code)", privacy: .public)")
+                self.retryLater()
             }
         }.resume()
     }
@@ -251,8 +294,9 @@ final class NoteImageSync {
             return
         }
         session.dataTask(with: ep.base.appendingPathComponent("v1/health")) { [weak self] data, resp, _ in
-            guard let self, (resp as? HTTPURLResponse)?.statusCode == 200, let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            guard let self else { return }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { self.retryLater(); return }
             let ok = obj["blobs"] as? Bool == true
             self.serverHasBlobs = (ep.base, ok)
             if ok { then() } else { self.log.info("Sync server doesn't store images yet; they stay on this Mac") }

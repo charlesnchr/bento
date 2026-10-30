@@ -218,12 +218,20 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     /// Inserts images (pasted, dropped or chosen) at the selection, each on its own line.
+    /// Converting and hashing them happens off the main thread.
     func insertImages(_ datas: [Data]) {
-        let hashes = datas.compactMap { controller.images.add($0) }
-        guard !hashes.isEmpty else { NSSound.beep(); return }
-        panel.makeFirstResponder(textView)
-        textView.apply(NoteImage.insertion(textView.string as NSString, selection: textView.selectedRange(), hashes: hashes))
-        controller.imageSync.uploadPending()
+        let id = noteID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let prepared = datas.compactMap(NoteImage.prepare)
+            DispatchQueue.main.async {
+                guard let self, self.noteID == id else { return }
+                let hashes = prepared.compactMap { self.controller.images.add(prepared: $0) }
+                guard !hashes.isEmpty else { NSSound.beep(); return }
+                self.panel.makeFirstResponder(self.textView)
+                self.textView.apply(NoteImage.insertion(self.textView.string as NSString, selection: self.textView.selectedRange(), hashes: hashes))
+                self.controller.imageSync.uploadPending()
+            }
+        }
     }
 
     /// Insert Image…: pick image files.
@@ -235,7 +243,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         open.message = "Choose images to insert into the note"
         open.beginSheetModal(for: panel) { [weak self] r in
             guard r == .OK else { return }
-            self?.insertImages(open.urls.compactMap { try? Data(contentsOf: $0) })
+            let urls = open.urls
+            DispatchQueue.global(qos: .userInitiated).async {
+                let datas = urls.compactMap { try? Data(contentsOf: $0) }
+                DispatchQueue.main.async { self?.insertImages(datas) }
+            }
         }
     }
 

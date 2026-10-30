@@ -234,7 +234,7 @@ enum NoteText {
     }
 
     /// Body of a conflicted copy: the title line gets " (conflicted copy, <device>)".
-    /// nil when the body has no visible text (nothing worth keeping).
+    /// nil when the body has no visible text or images (nothing worth keeping).
     static func conflictCopyBody(_ body: String, device: String) -> String? {
         // same line `title(of:)` picks, so the copy is recognisable in the notes list
         var lines = body.components(separatedBy: "\n")
@@ -243,6 +243,10 @@ enum NoteText {
             let suffix = device.isEmpty ? " (conflicted copy)" : " (conflicted copy, \(device))"
             lines[i] = line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) + suffix
             return lines.joined(separator: "\n")
+        }
+        // only images: they're worth keeping too, under a title line of their own
+        if NoteImage.hasImageLine(body) {
+            return "Untitled" + (device.isEmpty ? " (conflicted copy)" : " (conflicted copy, \(device))") + "\n" + body
         }
         return nil
     }

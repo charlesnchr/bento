@@ -42,6 +42,10 @@ class NoteImagesTest {
         val body = "# T\n${NoteImage.markdown(a)}\ntext\n${NoteImage.markdown(b)}\n${NoteImage.markdown(a)}"
         assertEquals(listOf(a, b), NoteImage.hashes(body))
         assertEquals(emptyList(), NoteImage.hashes("no images"))
+        // in a code block it's text
+        val fenced = "```\n${NoteImage.markdown(a)}\n```\n${NoteImage.markdown(b)}"
+        assertEquals(listOf(b), NoteImage.hashes(fenced))
+        assertNull(NoteImage.removal(fenced, a))
     }
 
     @Test fun insertingAndRemoving() {
@@ -63,6 +67,14 @@ class NoteImagesTest {
         assertEquals("", remove(img, a))
         assertNull(remove("abc", a))
         assertNull(remove("x $img", a))
+    }
+
+    @Test fun aConflictedCopyKeepsImageOnlyText() {
+        val img = NoteImage.markdown(a)
+        assertEquals("Untitled (conflicted copy, Pixel)\n$img", NoteText.conflictCopyBody(img, "Pixel"))
+        assertEquals("Untitled (conflicted copy)\n\n$img\n", NoteText.conflictCopyBody("\n$img\n", ""))
+        assertEquals("Hi (conflicted copy, Pixel)\n$img", NoteText.conflictCopyBody("Hi\n$img", "Pixel"))
+        assertNull(NoteText.conflictCopyBody("  \n", "Pixel"))
     }
 
     @Test fun titlesAndCountsSkipImages() {
@@ -129,7 +141,8 @@ class NoteImagesTest {
             // not paired: nothing happens
             val unpaired = NoteImageSync(NoteImageStore(tempDir()), http, { null }, scope)
             unpaired.store.add(png("x"))
-            assertFalse(unpaired.uploadPendingNow())
+            assertTrue(unpaired.uploadPendingNow(), "nowhere to send it: nothing to retry")
+            assertEquals(1, unpaired.store.pendingUploads.size)
             assertFalse(unpaired.fetchNow(hash))
         } finally {
             scope.cancel()

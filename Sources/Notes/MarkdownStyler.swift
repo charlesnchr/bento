@@ -272,7 +272,7 @@ final class MarkdownStyler {
         switch p.kind {
         case .paragraph:
             counters.removeAll()
-            if let hash = NoteImage.hash(inLine: text.substring(with: r)) {
+            if r.length >= NoteImage.minLineLength, let hash = NoteImage.hash(inLine: text.substring(with: r)) {
                 let size = imageDisplaySize(hash)
                 return .image(hash: hash, width: size.width, height: size.height, revealed: selectionTouches(r))
             }

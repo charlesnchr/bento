@@ -100,6 +100,16 @@ import Testing
         #expect(store.add(Data("nope".utf8)) == nil)
     }
 
+    @Test func aConflictedCopyKeepsImageOnlyText() {
+        let img = NoteImage.markdown(a)
+        #expect(NoteText.conflictCopyBody(img, device: "Pixel") == "Untitled (conflicted copy, Pixel)\n\(img)")
+        #expect(NoteText.conflictCopyBody("\n\(img)\n", device: "") == "Untitled (conflicted copy)\n\n\(img)\n")
+        #expect(NoteText.conflictCopyBody("Hi\n\(img)", device: "Pixel") == "Hi (conflicted copy, Pixel)\n\(img)")
+        #expect(NoteText.conflictCopyBody("  \n", device: "Pixel") == nil)
+        // in a code block it's text
+        #expect(NoteImage.hashes(in: "```\n\(img)\n```\n\(NoteImage.markdown(b))") == [b])
+    }
+
     @Test func titlesAndCountsSkipImages() {
         let body = "\(NoteImage.markdown(a))\n# Trip\nsome words"
         #expect(NoteText.title(of: body) == "Trip")

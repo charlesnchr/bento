@@ -320,7 +320,7 @@ object NoteText {
 
     /**
      * Body of a conflicted copy: the title line gets " (conflicted copy, <device>)".
-     * null when the body has no visible text (nothing worth keeping).
+     * null when the body has no visible text or images (nothing worth keeping).
      */
     fun conflictCopyBody(body: String, device: String): String? {
         // same line `title` picks, so the copy is recognisable in the notes list
@@ -331,6 +331,8 @@ object NoteText {
             lines[i] = trimTrailingWhiteSpace(line) + suffix
             return lines.joinToString("\n")
         }
+        // only images: they're worth keeping too, under a title line of their own
+        if (NoteImage.hasImageLine(body)) return "Untitled" + (if (device.isEmpty()) " (conflicted copy)" else " (conflicted copy, $device)") + "\n" + body
         return null
     }
 

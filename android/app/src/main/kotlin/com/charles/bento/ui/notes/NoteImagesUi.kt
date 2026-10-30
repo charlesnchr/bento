@@ -3,7 +3,7 @@ package com.charles.bento.ui.notes
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.util.LruCache
 import androidx.compose.foundation.Image
@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,14 +61,16 @@ private val decoded = object : LruCache<String, ImageBitmap>(48 * 1024 * 1024) {
     override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
 }
 
-/** Decodes a stored image at most about `maxPx` on its longest side. */
+/** Decodes a stored image at most about `maxPx` on its longest side, upright (EXIF orientation applied). */
 private fun decode(sync: NoteImageSync, hash: String, maxPx: Int): ImageBitmap? {
     val file = sync.store.path(hash) ?: return null
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(file.path, bounds)
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxPx) sample *= 2
-    return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    return runCatching {
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
+            var sample = 1
+            while (maxOf(info.size.width, info.size.height) / (sample * 2) >= maxPx) sample *= 2
+            decoder.setTargetSampleSize(sample)
+        }.asImageBitmap()
+    }.getOrNull()
 }
 
 /** A note image, fetched from the server when it isn't here (null until then). */
@@ -79,7 +82,9 @@ fun rememberNoteImage(sync: NoteImageSync, hash: String, maxPx: Int): ImageBitma
     LaunchedEffect(hash) { sync.changed.collect { if (it == hash) version++ } }
     LaunchedEffect(key, version) {
         if (image != null) return@LaunchedEffect
-        image = withContext(Dispatchers.IO) { decode(sync, hash, maxPx) }?.also { decoded.put(key, it) }
+        // one bigger than a quarter of the cache (a full-screen view) isn't kept: it would push out the rest
+        image = withContext(Dispatchers.IO) { decode(sync, hash, maxPx) }
+            ?.also { if (it.width * it.height * 4 <= decoded.maxSize() / 4) decoded.put(key, it) }
         if (image == null) sync.fetch(hash)
     }
     return image
@@ -92,7 +97,7 @@ fun rememberNoteImage(sync: NoteImageSync, hash: String, maxPx: Int): ImageBitma
 @Composable
 fun NoteImageStrip(hashes: List<String>, sync: NoteImageSync, onOpen: (String) -> Unit, modifier: Modifier = Modifier) {
     if (hashes.size == 1) {
-        NoteImageTile(hashes[0], sync, onOpen, Modifier.fillMaxWidth().heightIn(max = 300.dp), single = true, modifier = modifier)
+        NoteImageTile(hashes[0], sync, onOpen, Modifier.fillMaxWidth(), single = true, modifier = modifier)
         return
     }
     LazyRow(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -107,9 +112,10 @@ private fun NoteImageTile(hash: String, sync: NoteImageSync, onOpen: (String) ->
     Box(modifier.clip(shape).clickable { onOpen(hash) }) {
         if (image != null) {
             val aspect = image.width.toFloat() / image.height.coerceAtLeast(1)
-            val shaped = if (single) size else size.width((160 * aspect).coerceIn(80f, 320f).dp)
-            Image(image, contentDescription = "Image", modifier = shaped, contentScale = if (single) ContentScale.FillWidth else ContentScale.Crop,
-                  alignment = Alignment.TopStart)
+            // one: all of it, as wide as fits and at most 360 dp high; several: cropped tiles
+            val shaped = if (single) Modifier.heightIn(max = 360.dp).aspectRatio(aspect.coerceIn(0.2f, 5f))
+                         else size.width((160 * aspect).coerceIn(80f, 320f).dp)
+            Image(image, contentDescription = "Image", modifier = shaped, contentScale = if (single) ContentScale.Fit else ContentScale.Crop)
         } else {
             Box(size.then(if (single) Modifier.height(96.dp) else Modifier.width(160.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center) {
@@ -144,12 +150,12 @@ fun NoteImageViewer(hash: String, sync: NoteImageSync, onDismiss: () -> Unit, on
 fun ImageToolButton(onPick: () -> Unit, onPaste: (List<Uri>) -> Unit) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
-    var clipboard by remember { mutableStateOf(emptyList<Uri>()) }
+    var canPaste by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { clipboard = NoteImageImport.clipboardImages(context); open = true }) { Icon(Icons.Rounded.Image, "Insert image") }
+        IconButton(onClick = { canPaste = NoteImageImport.clipboardHasImage(context); open = true }) { Icon(Icons.Rounded.Image, "Insert image") }
         DropdownMenu(open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("Choose photos") }, onClick = { open = false; onPick() })
-            DropdownMenuItem(text = { Text("Paste image") }, enabled = clipboard.isNotEmpty(), onClick = { open = false; onPaste(clipboard) })
+            DropdownMenuItem(text = { Text("Paste image") }, enabled = canPaste, onClick = { open = false; onPaste(NoteImageImport.clipboardImages(context)) })
         }
     }
 }

@@ -51,21 +51,23 @@ line of its own:
 
 * **Format.** `bento-image:` then 64 lowercase hex digits. The alt text is optional
   (`![](…)`), may not contain `]`, and isn't shown. Only a line that is nothing but one
-  such image (spaces around it allowed) is an image; anywhere else the text is just
-  text. A client that doesn't know images shows the line as it is.
+  such image (spaces around it allowed), outside a fenced code block, is an image;
+  anywhere else the text is just text. A client that doesn't know images shows the line as it is.
 * **Blobs** are PNG, JPEG, GIF, WebP or HEIC/HEIF, at most 10 MB. Clients convert other
   formats (TIFF, BMP…) to PNG, or JPEG for photos, and scale down anything larger before
-  hashing. A blob never changes, so it can be cached for good.
-* **Inserting.** Write the blob to the local cache, insert the line, upload it with
-  `PUT /v1/blobs/<hash>` (raw bytes), retrying until the server has it, and keep it
-  pending across restarts. Clients only upload to a server whose `/v1/health` says
+  hashing. A blob never changes, so it can be cached for good. Clients show images
+  upright per their EXIF orientation (the bytes are kept as they are).
+* **Inserting.** Write the blob to the local cache, insert the line, upload it (one at a
+  time; the server serves blob requests one by one) with
+  `PUT /v1/blobs/<hash>` (raw bytes), retrying (with a backoff while connected, and on
+  every reconnect) until the server has it, and keep it pending across restarts. Clients only upload to a server whose `/v1/health` says
   `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
 * **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404
   (the sending device hasn't uploaded it yet) shows a placeholder and is retried later:
   when the note is shown again or sync reconnects.
 * **Removing** an image is removing its line. The server keeps blobs no document refers
-  to until an admin runs `bento-sync gc-blobs` (only blobs uploaded over 30 days ago, so
-  an upload whose note hasn't arrived yet is safe; a trashed note's text still refers to
+  to until an admin runs `bento-sync gc-blobs` (only blobs last uploaded over 30 days ago,
+  so an upload whose note hasn't arrived yet is safe; a trashed note's text still refers to
   its images).
 
 ## Collections
@@ -186,7 +188,6 @@ Wrong/missing token → HTTP 401 (WebSocket upgrade refused with 401).
 | GET | `/v1/c/<collection>?since=<seq>` | – | `{"docs":[Doc…],"seq":<latest seq>}` – like `/v1/notes`, for any collection |
 | PUT | `/v1/c/<collection>/<id>` | Doc (no `seq`) | `{"doc":Doc,"accepted":bool}` |
 | DELETE | `/v1/c/<collection>/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
-
 | PUT | `/v1/blobs/<hash>` | image bytes | `{"hash":…,"type":"image/png","size":<bytes>,"created":bool}`; 400 when `hash` isn't the SHA-256 of the body, 413 over 10 MB, 415 when it isn't an image. Idempotent |
 | GET | `/v1/blobs/<hash>` | – | the bytes, `Content-Type` from them, `Cache-Control: immutable`; 404 when the server doesn't have it (`HEAD` works too) |
 

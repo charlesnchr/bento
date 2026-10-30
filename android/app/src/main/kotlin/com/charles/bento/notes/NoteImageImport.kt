@@ -38,6 +38,12 @@ object NoteImageImport {
         null
     }.getOrNull()
 
+    /** Whether the clipboard holds a picture (from its description only: reading it shows the "pasted" notice). */
+    fun clipboardHasImage(context: Context): Boolean {
+        val desc = context.getSystemService(ClipboardManager::class.java)?.primaryClipDescription ?: return false
+        return (0 until desc.mimeTypeCount).any { desc.getMimeType(it).startsWith("image/") }
+    }
+
     /** Image URIs on the clipboard (a copied picture), empty when there are none. */
     fun clipboardImages(context: Context): List<Uri> {
         val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip ?: return emptyList()

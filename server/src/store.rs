@@ -473,8 +473,9 @@ pub const IMAGE_SCHEME: &str = "bento-image:";
 
 impl Store {
     /// Stores an image under the SHA-256 of its bytes, which must equal `hash`. Storing
-    /// one that exists is a no-op; returns whether it was new.
-    pub fn put_blob(&mut self, hash: &str, data: &[u8], now: i64) -> Result<(Blob, bool), Error> {
+    /// one that exists only moves its `created_at` (the last upload, which `gc_blobs`'s grace
+    /// period counts from) to `now`. Returns its type and whether it was new.
+    pub fn put_blob(&mut self, hash: &str, data: &[u8], now: i64) -> Result<(&'static str, bool), Error> {
         if !valid_blob_hash(hash) {
             return Err(Error::BadRequest("invalid blob hash (64 lowercase hex digits of SHA-256)".into()));
         }
@@ -486,11 +487,19 @@ impl Store {
         if sha256_hex(data) != hash {
             return Err(Error::BadRequest("blob hash does not match its SHA-256".into()));
         }
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO blobs (hash, type, size, data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![hash, mime, data.len() as i64, data, now],
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let refreshed = tx.execute(
+            "UPDATE blobs SET created_at = max(created_at, ?2) WHERE hash = ?1",
+            params![hash, now],
         )?;
-        Ok((Blob { hash: hash.into(), mime: mime.into(), data: data.to_vec() }, n > 0))
+        if refreshed == 0 {
+            tx.execute(
+                "INSERT INTO blobs (hash, type, size, data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![hash, mime, data.len() as i64, data, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok((mime, refreshed == 0))
     }
 
     pub fn get_blob(&self, hash: &str) -> Result<Option<Blob>, Error> {
@@ -883,11 +892,10 @@ mod tests {
         let h = sha256_hex(PNG);
         assert_eq!(h.len(), 64);
         assert!(s.get_blob(&h).unwrap().is_none());
-        let (b, new) = s.put_blob(&h, PNG, 10).unwrap();
-        assert!(new);
-        assert_eq!((b.mime.as_str(), b.data.as_slice()), ("image/png", PNG));
-        assert!(!s.put_blob(&h, PNG, 20).unwrap().1, "storing it again is a no-op");
-        assert_eq!(s.get_blob(&h).unwrap().unwrap(), b);
+        assert_eq!(s.put_blob(&h, PNG, 10).unwrap(), ("image/png", true));
+        assert_eq!(s.put_blob(&h, PNG, 20).unwrap(), ("image/png", false), "storing it again isn't new");
+        let b = s.get_blob(&h).unwrap().unwrap();
+        assert_eq!((b.hash.as_str(), b.mime.as_str(), b.data.as_slice()), (h.as_str(), "image/png", PNG));
         // blobs don't touch the documents' seq
         assert_eq!(s.latest_seq().unwrap(), 0);
 
@@ -941,5 +949,16 @@ mod tests {
         assert!(kept(&s, &used) && kept(&s, &trashed) && kept(&s, &recent));
         assert!(!kept(&s, &gone) && !kept(&s, &deleted));
         assert_eq!(s.gc_blobs(50).unwrap(), (0, 0));
+
+        // uploading an old unused one again restarts its grace period
+        let old = png("old");
+        s.put_blob(&sha256_hex(&old), &old, 1).unwrap();
+        s.put_blob(&sha256_hex(&old), &old, 100).unwrap();
+        assert_eq!(s.gc_blobs(50).unwrap().0, 0);
+        assert!(kept(&s, &old));
+        // an earlier clock doesn't move it back
+        s.put_blob(&sha256_hex(&old), &old, 2).unwrap();
+        assert_eq!(s.gc_blobs(50).unwrap().0, 0);
+        assert_eq!(s.gc_blobs(101).unwrap().0, 2, "old and recent");
     }
 }

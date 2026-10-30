@@ -27,6 +27,9 @@ use tokio::sync::{broadcast, watch};
 /// limit to leave room for JSON escaping; the decoded body is checked exactly.
 pub const MAX_REQUEST_BYTES: usize = 3 * 1024 * 1024;
 const BROADCAST_CAPACITY: usize = 256;
+/// Blob requests served at once (the rest wait, their bodies unread). One 10 MB upload
+/// peaks near 50 MB RSS; deploy/bento-sync.service allows 128 MB.
+const BLOB_SLOTS: usize = 1;
 
 /// A committed change, fanned out to every WebSocket connection.
 pub(crate) struct Event {
@@ -45,6 +48,9 @@ struct Inner {
     next_conn: AtomicU64,
     active_conns: AtomicUsize,
     shutdown: watch::Receiver<bool>,
+    /// Blob requests hold a whole image (up to 10 MB, several copies) in memory: one at a
+    /// time, so a batch of uploads stays inside the service's memory limit.
+    blob_slots: tokio::sync::Semaphore,
 }
 
 #[derive(Clone)]
@@ -60,6 +66,7 @@ impl AppState {
             next_conn: AtomicU64::new(1),
             active_conns: AtomicUsize::new(0),
             shutdown,
+            blob_slots: tokio::sync::Semaphore::new(BLOB_SLOTS),
         }))
     }
 
@@ -324,11 +331,12 @@ async fn delete(st: AppState, collection: &str, id: String, q: DeleteQuery, keys
 
 /// Stores an image; the path's hash must be the SHA-256 of the body. Idempotent.
 async fn put_blob(State(st): State<AppState>, Path(hash): Path<String>, body: Bytes) -> Response {
+    let (hash2, size) = (hash.clone(), body.len());
     let res = st.with_store(move |s, _| s.put_blob(&hash, &body, now_ms())).await;
     match res {
-        Ok((b, created)) => json_response(
+        Ok((mime, created)) => json_response(
             StatusCode::OK,
-            json!({"hash": b.hash, "type": b.mime, "size": b.data.len(), "created": created}),
+            json!({"hash": hash2, "type": mime, "size": size, "created": created}),
         ),
         Err(e) => error_response(e),
     }
@@ -361,6 +369,14 @@ async fn get_blob(State(st): State<AppState>, Path(hash): Path<String>) -> Respo
     }
 }
 
+/// Waits for a blob slot before the request's body is read.
+async fn blob_slot(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let Ok(_slot) = st.0.blob_slots.acquire().await else {
+        return error_response(store::Error::Internal("shutting down".into()));
+    };
+    next.run(req).await
+}
+
 async fn not_found() -> Response {
     json_response(StatusCode::NOT_FOUND, json!({"error": "not found"}))
 }
@@ -373,7 +389,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/c/{collection}/{id}", axum::routing::put(put_doc).delete(delete_doc))
         .route(
             "/v1/blobs/{hash}",
-            get(get_blob).put(put_blob).layer(DefaultBodyLimit::max(store::MAX_BLOB_BYTES + 1)),
+            get(get_blob)
+                .put(put_blob)
+                .layer(DefaultBodyLimit::max(store::MAX_BLOB_BYTES + 1))
+                .layer(middleware::from_fn_with_state(state.clone(), blob_slot)),
         )
         .route("/v1/sync", get(ws::handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
