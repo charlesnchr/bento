@@ -35,13 +35,14 @@ class TextInserter(private val context: Context, private val node: Accessibility
         if (dictated.isEmpty()) return true
         node.refresh()
         var text = currentText() ?: ""
-        val shown = node.text?.toString().orEmpty()
-        if (text.isEmpty() && shown.isNotEmpty() && !node.isShowingHintText && holdsText(shown)) {
-            log("typed text that matches the placeholder (${node.className})")
-            text = shown
-        }
+        // read before asking the field below, which may move the cursor
         var start = node.textSelectionStart
         var end = node.textSelectionEnd
+        val shown = node.text?.toString().orEmpty()
+        if (text.isEmpty() && shown.isNotEmpty() && !node.isShowingHintText && !refusesCursorAfter(shown, start, end)) {
+            log("text that reads like the placeholder kept as typed text (${node.className})")
+            text = shown
+        }
         if (start !in 0..text.length || end !in 0..text.length) { start = text.length; end = text.length }
         if (start > end) start = end.also { end = start }
         val insertion = spaced(dictated, text.substring(0, start), text.substring(end))
@@ -67,20 +68,16 @@ class TextInserter(private val context: Context, private val node: Accessibility
     }
 
     /**
-     * A field read as its placeholder may hold text typed to match the hint after all: typed text
-     * takes a cursor at its end, a placeholder (nothing behind it) doesn't. Asks without touching
-     * the text or the clipboard, then puts the cursor back.
+     * A field read as its placeholder may hold text typed to match the hint after all, and setting
+     * its text would replace that. Only a field that refuses a cursor at the end of [shown] (nothing
+     * is behind it) counts as showing its placeholder; one that takes the cursor, or can't be asked,
+     * keeps the text as typed (the old "Message " prefix at worst, never lost text). Puts the cursor back.
      */
-    private suspend fun holdsText(shown: String): Boolean {
-        val start = node.textSelectionStart
-        val end = node.textSelectionEnd
-        if (!setSelection(shown.length, shown.length)) return false
-        kotlinx.coroutines.delay(100) // Compose applies it on the next frame
-        node.refresh()
-        val holds = node.textSelectionStart == shown.length
-        if (holds && start >= 0 && end >= 0) setSelection(start, end)
-        node.refresh()
-        return holds
+    private fun refusesCursorAfter(shown: String, start: Int, end: Int): Boolean {
+        if (node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_SET_SELECTION }) return false
+        if (!setSelection(shown.length, shown.length)) return true
+        if (start >= 0 && end >= 0) setSelection(start, end)
+        return false
     }
 
     /** Puts the field back as it was before the last insertion. */
@@ -159,7 +156,7 @@ class TextInserter(private val context: Context, private val node: Accessibility
          * Kept, it was inserted before every dictation and sent as text before the cursor.
          * `selection`: the far end of the selection (selected text is real). Typed text that
          * matches the hint with the cursor moved to its start reads the same: insert asks
-         * the field ([holdsText]) before taking it as empty.
+         * the field ([refusesCursorAfter]) before taking it as empty.
          */
         fun isPlaceholder(text: String, selection: Int, labels: List<CharSequence>): Boolean {
             if (text.isBlank() || selection > 0) return false

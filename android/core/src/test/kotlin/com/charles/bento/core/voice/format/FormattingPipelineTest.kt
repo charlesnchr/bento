@@ -114,7 +114,9 @@ class ValidationGateTest {
 
     @Test fun dropsAnEchoedFieldHint() {
         assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message: See you at 3.", "see you at 3", "Message"))
-        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message see you at 3.", "see you at 3", "Message"))
+        assertEquals("iPhone at 3.", ValidationGate.stripEchoedLabel("Message: iPhone at 3.", "iphone at 3", "Message"))
+        // not set off by a colon or dash: it may be the speaker's word, cleaned up ("massage me later")
+        assertEquals("Message me later.", ValidationGate.stripEchoedLabel("Message me later.", "massage me later", "Message"))
         assertEquals("Tell Anna to message me.", ValidationGate.stripEchoedLabel("Message: Tell Anna to message me.", "tell anna to message me", "Message"))
         assertEquals("Hi Anna,", ValidationGate.stripEchoedLabel("Add a subject - Hi Anna,", "hi anna", "Add a subject"))
         // the speaker said it, or the model didn't echo it
