@@ -104,7 +104,7 @@ object CallSetup {
     /** What Gemini is told when a result outlived the session its call came from; the reply is fenced like the recap. */
     fun resultText(result: String): String {
         val close = Regex("</\\s*" + Regex.escape(RESULT_TAG) + "\\s*>", RegexOption.IGNORE_CASE)
-        var text = CallProtocol.excerpt(result)
+        var text = CallProtocol.fullResult(result)
         while (close.containsMatchIn(text)) text = close.replace(text, "")
         return "$RESULT_PREAMBLE\n<$RESULT_TAG>\n${text.trim()}\n</$RESULT_TAG>"
     }

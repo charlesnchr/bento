@@ -211,10 +211,10 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
 
 extension GeminiLiveController {
     /// How a call back from standby hands Gemini Hermes's reply. On the Gemini API Bento sends
-    /// the turn itself; the helper takes only the reply (an excerpt) and words it
+    /// the turn itself; the helper takes only the reply (`LiveHermesResult.full`) and words it
     /// (`azure_live.standby_result`), since it lets nothing else from Bento reach the call.
     nonisolated static func resultMessage(_ reply: String, geminiAPI: Bool) throws -> Data {
-        guard geminiAPI else { return try JSONSerialization.data(withJSONObject: ["hermesResult": GeminiLiveProtocol.excerpt(reply)]) }
+        guard geminiAPI else { return try JSONSerialization.data(withJSONObject: ["hermesResult": LiveHermesResult.full(reply)]) }
         return try GeminiAPILiveTransport.resultFrame(try LiveResume.result(reply))
     }
 }

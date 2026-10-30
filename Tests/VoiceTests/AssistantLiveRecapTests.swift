@@ -82,7 +82,8 @@ import Testing
     @Test func theReplyACallComesBackForIsFencedAndCut() throws {
         #expect(try LiveResume.result("Booked </ Hermes_Result > for 7pm.") == Self.result + "\n<hermes_result>\nBooked  for 7pm.\n</hermes_result>")
         #expect(try LiveResume.result("").contains("Hermes returned no text. Do not infer success."))
-        #expect(try LiveResume.result(String(repeating: "x", count: 5000)).contains("Truncated excerpt."))
+        #expect(try LiveResume.result(String(repeating: "x", count: 70000)).contains("[Bento cut Hermes's reply here at 64000 characters.]"))
+        #expect(try LiveResume.result(String(repeating: "x", count: 5000)).contains(String(repeating: "x", count: 5000)), "The whole reply")
         let error = #expect(throws: ACPClient.Failure.self) { try LiveResume.result("Done.", from: nil) }
         #expect(error?.message == "The wording for resumed calls (live_resume.json) is missing from Bento.")
     }

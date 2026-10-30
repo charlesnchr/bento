@@ -168,9 +168,10 @@ def resume_context(recap):
 
 def standby_result(result):
     """What a call back from standby hears about the request it waited on (live_resume.json): a fixed
-    line and Hermes's reply, fenced, as content to relay rather than instructions. Bento sends the
-    reply already cut to an excerpt, so anything much longer isn't one."""
-    if not isinstance(result, str) or len(result) > 8000:
+    line and Hermes's reply, fenced, as content to relay rather than instructions. Bento sends at most
+    64,000 characters of it (LiveHermesResult.full); a character can be several code points, so the
+    limit here leaves room for that and refuses only what can't be such a reply."""
+    if not isinstance(result, str) or len(result) > 4 * 64000:
         raise ValueError('Invalid result')
     resume = json.loads(RESUME.read_text())
     tag = resume['resultTag']

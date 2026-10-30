@@ -608,7 +608,8 @@ class CallSetupTest {
         assertEquals("user", turn["role"]!!.jsonPrimitive.content)
         val text = turn["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
         assertEquals("${CallSetup.RESULT_PREAMBLE}\n<hermes_result>\nDone  now\n</hermes_result>", text)
-        assertTrue(CallSetup.resultText("x".repeat(5000)).contains("Truncated excerpt"))
+        assertTrue(CallSetup.resultText("x".repeat(70_000)).contains("[Bento cut Hermes's reply here at 64000 characters.]"))
+        assertTrue(CallSetup.resultText("x".repeat(5000)).contains("x".repeat(5000)), "the whole reply")
         assertTrue(CallSetup.resultText("").contains("Hermes returned no text"))
     }
 

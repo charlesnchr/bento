@@ -47,14 +47,14 @@ enum LiveResume {
     }
 
     /// What a call back from standby hears about the request it waited on: a fixed line and
-    /// Hermes's reply, cut to an excerpt and fenced like the recap (`azure_live.standby_result`).
+    /// Hermes's whole reply (`LiveHermesResult.full`), fenced like the recap (`azure_live.standby_result`).
     static func result(_ reply: String, from url: URL? = VoiceResources.url("live_resume", "json", in: "helper")) throws -> String {
         guard let url, let data = try? Data(contentsOf: url),
               let resume = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let tag = resume["resultTag"] as? String, let preamble = resume["result"] as? String else {
             throw ACPClient.Failure(message: "The wording for resumed calls (live_resume.json) is missing from Bento.")
         }
-        return preamble + "\n<" + tag + ">\n" + fenced(GeminiLiveProtocol.excerpt(reply), tag: tag) + "\n</" + tag + ">"
+        return preamble + "\n<" + tag + ">\n" + fenced(LiveHermesResult.full(reply), tag: tag) + "\n</" + tag + ">"
     }
 
     /// `text` unable to close a `tag` fence, however the tag is cased, spaced or split.
