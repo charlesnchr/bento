@@ -62,7 +62,7 @@ private fun open(context: Context, action: String, id: String? = null) =
     Intent(context, MainActivity::class.java).setAction(action).apply { id?.let { putExtra(MainActivity.EXTRA_ID, it) } }
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-private fun capture(context: Context, kind: String) = CaptureActivity.intent(context, kind)
+private fun capture(context: Context, kind: String, view: String? = null) = CaptureActivity.intent(context, kind, view)
 
 // MARK: Notes (like Google Keep's list widget)
 
@@ -218,7 +218,7 @@ class TasksWidget : GlanceAppWidget() {
             val today by Widgets.today.collectAsState()
             val configs by graph.widgetConfigs.changes.collectAsState()
             val list = remember(docs, configs, today) { graph.widgetData.tasks(graph.widgetConfigs.taskView(appWidgetId), 40) }
-            GlanceTheme { TasksContent(context, appWidgetId, list) }
+            GlanceTheme { TasksContent(context, appWidgetId, graph.widgetConfigs.taskView(appWidgetId), list) }
         }
     }
 }
@@ -234,7 +234,7 @@ class TasksWidgetReceiver : GlanceAppWidgetReceiver() {
 }
 
 @Composable
-private fun TasksContent(context: Context, appWidgetId: Int, list: TaskList) {
+private fun TasksContent(context: Context, appWidgetId: Int, view: String, list: TaskList) {
     // the title switches the list (Today, Inbox, Upcoming, a project or label), for this widget only
     val switchList = WidgetConfigActivity.intent(context, appWidgetId, WidgetConfigActivity.KIND_TASKS)
     WidgetSurface {
@@ -244,7 +244,8 @@ private fun TasksContent(context: Context, appWidgetId: Int, list: TaskList) {
             subtitle = if (list.overdueCount > 0) "${list.overdueCount} overdue" else list.tasks.count { !it.completed }.takeIf { it > 0 }?.toString(),
             onTitle = actionStartActivity(switchList),
             buttons = listOf(
-                R.drawable.ic_w_mic to actionStartActivity(capture(context, CaptureActivity.KIND_TASK)),
+                // a dictated task goes into the list on show, with its defaults (due today in Today)
+                R.drawable.ic_w_mic to actionStartActivity(capture(context, CaptureActivity.KIND_TASK, view)),
                 R.drawable.ic_w_add to actionStartActivity(open(context, MainActivity.ACTION_QUICK_ADD)),
             ),
         )

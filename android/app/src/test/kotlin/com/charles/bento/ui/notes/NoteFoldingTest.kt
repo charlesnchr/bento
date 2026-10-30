@@ -46,6 +46,19 @@ class NoteFoldingTest {
         assertEquals(listOf(-18f to 65f, 65f to 148f), chevronTargets(listOf(0f to 60f, 70f to 130f), slack = 18f))
     }
 
+    @Test fun theBlankSpaceBelowAFoldShrinksToWhatTheScrollPositionNeeds() {
+        // laid out with 1000 of blank space: the text alone scrolls to 400, the position is 700
+        assertEquals(300, FoldAnchor.trimmed(laidOut = 1000, value = 700, maxValue = 1400))
+        // scrolled back up within the text: none needed
+        assertEquals(0, FoldAnchor.trimmed(laidOut = 300, value = 200, maxValue = 700))
+        // trimmed to 300 but not laid out yet, and a fling went on to 900: it keeps what it scrolled into
+        assertEquals(500, FoldAnchor.trimmed(laidOut = 1000, value = 900, maxValue = 1400))
+        // at most what was laid out
+        assertEquals(1000, FoldAnchor.trimmed(laidOut = 1000, value = 1400, maxValue = 1400))
+        // the note fits on the screen with room to spare: nothing to keep in place
+        assertEquals(0, FoldAnchor.trimmed(laidOut = 500, value = 0, maxValue = 0))
+    }
+
     @Test fun aStaleFoldStateStillGivesAValidMapping() {
         val folds = HeadingFolds.of(note)
         val changed = note.replace("Plant tulips.", "x")

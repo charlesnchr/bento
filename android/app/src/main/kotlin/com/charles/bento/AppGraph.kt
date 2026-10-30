@@ -1,7 +1,6 @@
 package com.charles.bento
 
 import android.app.Application
-import com.charles.bento.core.todo.TodoListView
 import com.charles.bento.core.todo.title
 import com.charles.bento.settings.Prefs
 import com.charles.bento.settings.SecretStore
@@ -10,6 +9,7 @@ import com.charles.bento.update.Updater
 import com.charles.bento.voice.DictationController
 import com.charles.bento.voice.DictationSinks
 import com.charles.bento.voice.VoicePipeline
+import com.charles.bento.widget.WidgetConfigs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.SupervisorJob
@@ -73,8 +73,8 @@ class AppGraph(val app: Application) {
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
-        override suspend fun addTask(text: String): String? = todo.perform {
-            val (defaults, anchor) = addDefaults(TodoListView.Inbox)
+        override suspend fun addTask(text: String, view: String?): String? = todo.perform {
+            val (defaults, anchor) = addDefaults(WidgetConfigs.addTo(view, store.projects.map { it.id }))
             quickAdd(spokenTask(text), defaults, anchor)?.title
         }
     }

@@ -26,8 +26,11 @@ sealed interface DictationTarget {
         override val context = FieldContext(appLabel = "Bento Notes", hint = "A thought to keep in a note")
     }
 
-    /** A task, parsed with the quick-add syntax ("call mum tomorrow 5pm p1"). */
-    data object Task : DictationTarget {
+    /**
+     * A task, parsed with the quick-add syntax ("call mum tomorrow 5pm p1"). [view] is the stored
+     * view id of the list it's added in (a task widget's list), with that list's defaults; null: the Inbox.
+     */
+    data class Task(val view: String? = null) : DictationTarget {
         override val context = FieldContext(appLabel = "Bento Todo", hint = "A task, possibly with a date, #project, @label or p1–p4")
     }
 }

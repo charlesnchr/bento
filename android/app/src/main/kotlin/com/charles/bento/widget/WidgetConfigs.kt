@@ -46,5 +46,9 @@ class WidgetConfigs(private val get: (String) -> String?, private val put: (Stri
                 is TodoListView.Project -> if (v.id in projectIds) v else TodoListView.Today
                 else -> v
             }
+
+        /** The list a task dictated from a task widget showing `view` goes into; the Inbox without one. */
+        fun addTo(view: String?, projectIds: Collection<String>): TodoListView =
+            view?.let { resolve(it, projectIds) } ?: TodoListView.Inbox
     }
 }

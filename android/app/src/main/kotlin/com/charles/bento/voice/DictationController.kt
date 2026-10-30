@@ -52,7 +52,7 @@ interface DictationSinks {
     /** Appends a captured thought; returns the note's title for the confirmation. */
     suspend fun captureThought(noteId: String?, text: String): String?
     /** Adds a task from quick-add text; returns its title. */
-    suspend fun addTask(text: String): String?
+    suspend fun addTask(text: String, view: String?): String?
 }
 
 /**
@@ -113,7 +113,7 @@ class DictationController(
         this.target = target
         val purpose = when (target) {
             is DictationTarget.Thought -> VoiceRequest.Purpose.Thought
-            DictationTarget.Task -> VoiceRequest.Purpose.Task
+            is DictationTarget.Task -> VoiceRequest.Purpose.Task
             else -> VoiceRequest.Purpose.Dictation
         }
         begin(VoiceRequest(target.context, prefs.activeMode.value.ifEmpty { null }, purpose), handsFree)
@@ -300,8 +300,8 @@ class DictationController(
                 _state.value = DictationState.Done(if (title != null) "Added to “$title”" else text, undo = null, canEdit = false,
                                                    detail = text.takeIf { title != null })
             }
-            DictationTarget.Task -> {
-                val title = sinks().addTask(text)
+            is DictationTarget.Task -> {
+                val title = sinks().addTask(text, t.view)
                 _state.value = DictationState.Done(if (title != null) "Task added" else text, undo = null, canEdit = false, detail = title)
             }
         }
