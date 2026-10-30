@@ -2,6 +2,7 @@ package com.charles.bento.core.assistant.live
 
 import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -42,6 +43,50 @@ class AssistantCallLiveTest {
                 @Suppress("UNREACHABLE_CODE") error("unreachable")
             }
             assertEquals(CallProtocol.TOOL, call["name"]!!.jsonPrimitive.content)
+        } finally {
+            transport.close()
+        }
+    }
+
+    /**
+     * The call doesn't block: Gemini takes the "started" answer silently and talks on, and the
+     * result Bento sends later to the same call (WHEN_IDLE) is spoken unprompted.
+     */
+    @Test fun aTaskResultArrivesAfterTheCallStarted() = blocking {
+        val transport = OkHttpLiveTransport({ key!! })
+        try {
+            transport.connect()
+            transport.send(CallSetup.setupFrame())
+            withTimeout(20_000) {
+                do { val frame = Json.parseToJsonElement(transport.receive()).jsonObject } while (frame["setupComplete"] == null)
+            }
+            transport.send("""{"realtimeInput":{"text":"Please ask Hermes to check my calendar for tomorrow."}}""")
+            val id = withTimeout(30_000) {
+                while (true) {
+                    val o = Json.parseToJsonElement(transport.receive()).jsonObject
+                    val call = o["toolCall"]?.jsonObject?.get("functionCalls")?.jsonArray?.first()?.jsonObject ?: continue
+                    assertEquals(CallProtocol.TOOL, call["name"]!!.jsonPrimitive.content)
+                    return@withTimeout call["id"]!!.jsonPrimitive.content
+                }
+                @Suppress("UNREACHABLE_CODE") error("unreachable")
+            }
+            transport.send(CallProtocol.response(id, message = "Started task 1. Hermes is working on it.", executed = true, task = "1",
+                                                 status = "started", scheduling = "SILENT", willContinue = true))
+            // Hermes takes a while: the result comes once Gemini has said it's working on it.
+            withTimeoutOrNull(20_000) {
+                while (Json.parseToJsonElement(transport.receive()).jsonObject["serverContent"]?.jsonObject?.get("turnComplete") == null) Unit
+            }
+            delay(1_000)
+            transport.send(CallProtocol.response(id, message = "Tomorrow you have one appointment: the dentist, Dr Pineapple, at 3pm.",
+                                                 executed = true, task = "1"))
+            val said = StringBuilder()
+            withTimeoutOrNull(30_000) {
+                while ("pineapple" !in said.toString().lowercase()) {
+                    val content = Json.parseToJsonElement(transport.receive()).jsonObject["serverContent"]?.jsonObject ?: continue
+                    content["outputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.content?.let(said::append)
+                }
+            }
+            assertTrue("pineapple" in said.toString().lowercase(), "heard: $said")
         } finally {
             transport.close()
         }

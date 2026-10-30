@@ -9,8 +9,11 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.addJsonObject
 
-/** A spoken request for Hermes: the user's own transcribed words, and what was said before them. */
-data class HermesCall(val id: String, val task: String, val context: String)
+/**
+ * A spoken request for Hermes: the user's own transcribed words, and what was said before them.
+ * [taskId] is the call's task as Gemini and the screen name it ("1", "2", …), once it starts.
+ */
+data class HermesCall(val id: String, val task: String, val context: String, val taskId: String = "")
 
 /**
  * Port of the Mac's `GeminiLiveProtocol`. A function call is only a request ID: Hermes
@@ -119,19 +122,37 @@ class CallProtocol {
     companion object {
         const val TOOL = "ask_hermes"
 
+        /** Gemini's supervisor tools: answered by Bento at once, never handed to Hermes. */
+        const val LIST_TASKS = "list_tasks"
+        const val CHECK_TASK = "check_task"
+        const val CANCEL_TASK = "cancel_task"
+
         /**
          * A function response in the shape Google asks for: status, retryable and a message.
-         * WHEN_IDLE waits for the user to finish speaking, so the model always says the outcome.
+         * WHEN_IDLE waits for the user to finish speaking, so the model always says the outcome;
+         * SILENT only informs it. [willContinue] keeps a non-blocking call open for a later
+         * response: `ask_hermes` answers "started" at once and its result when Hermes finishes.
          */
-        fun response(id: String, name: String = TOOL, message: String, executed: Boolean): String = buildJsonObject {
+        fun response(
+            id: String,
+            name: String = TOOL,
+            message: String,
+            executed: Boolean,
+            task: String? = null,
+            status: String = if (executed) "ok" else "not_executed",
+            scheduling: String = "WHEN_IDLE",
+            willContinue: Boolean = false,
+        ): String = buildJsonObject {
             putJsonObject("toolResponse") {
                 putJsonArray("functionResponses") {
                     addJsonObject {
                         put("id", id)
                         put("name", name)
-                        put("scheduling", "WHEN_IDLE")
+                        put("scheduling", scheduling)
+                        if (willContinue) put("willContinue", true)
                         putJsonObject("response") {
-                            put("status", if (executed) "ok" else "not_executed")
+                            put("status", status)
+                            task?.let { put("task", it) }
                             put("retryable", false)
                             put("message", fullResult(message))
                         }
