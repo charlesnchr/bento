@@ -509,6 +509,34 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aFollowUpGeminiDropsLeavesACancelledTaskCancelled() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = AssistantCall(transport, FakeAudio(), null, { CompletableDeferred<String>().await() }, limits = fast)
+        val held = CompletableDeferred<Unit>()
+        val holding = CompletableDeferred<Unit>()
+        transport.beforeSend = { frame -> if ("toolResponse" in frame && "\"c2\"" in frame && "\"started\"" in frame) { holding.complete(Unit); held.await() } }
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        call.cancelTask("1")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        withTimeout(5_000) { holding.await() }
+        // Gemini drops the follow-up while it hears it started: it never runs, and the task is as it was.
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c2"))))
+        delay(200)
+        held.complete(Unit)
+        delay(200)
+        transport.push(Live.call("k1", name = CallProtocol.CHECK_TASK, args = mapOf("task_id" to "1")))
+        transport.awaitSent { s -> s.any { "\"k1\"" in it } }
+        val check = transport.responses().single { it.id() == "k1" }.message()
+        assertTrue(check.startsWith("Task 1 (Book a table) is cancelled."), check)
+        call.stop()
+    }
+
     @Test fun aQueuedFollowUpWaitsForGeminiToHearItStartedBeforeItRuns() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val first = CompletableDeferred<String>()

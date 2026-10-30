@@ -212,6 +212,8 @@ class AssistantCall(
         var closed = false
         /** What its call is told when it was cancelled: its own, since a later follow-up has a result of its own. */
         var cancelled: String? = null
+        /** How the task had ended before this follow-up brought it back, for if it never runs. */
+        var after: String? = null
     }
 
     /** A sub-agent: one Hermes session, its first request and the follow-ups it was given since. */
@@ -762,6 +764,7 @@ class AssistantCall(
             runIfStill(task, run)
             return
         }
+        run.after = task.state
         task.state = RUNNING
         task.current = run
         task.progress = null
@@ -806,7 +809,7 @@ class AssistantCall(
         if (task.current !== run || run.started || advance(task)) return
         when {
             // A follow-up that never ran leaves the task as its last request did.
-            run.followUp && task.result != null -> finished(task, FINISHED, task.result!!)
+            run.followUp && task.result != null -> finished(task, run.after ?: FINISHED, task.result!!)
             else -> finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started.")
         }
     }
