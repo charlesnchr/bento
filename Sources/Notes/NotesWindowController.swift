@@ -72,10 +72,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         container.lineFragmentPadding = 0
         storage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(container)
-        textView = NoteTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 300), textContainer: container)
+        // Sized and set up before it goes into the (still empty) scroll view: autoresizing
+        // keeps any difference between their widths.
+        textView = NoteTextView(frame: .zero, textContainer: container)
         super.init()
-        setUpWindow()
         setUpTextView()
+        setUpWindow()
         applySettings(settings, initial: true)
         controller.sync.status.objectWillChange
             .receive(on: RunLoop.main)
