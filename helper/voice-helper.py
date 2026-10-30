@@ -96,9 +96,15 @@ def conversation_resume(payload):
 
 
 def conversation_input(payload):
-    """Microphone audio and function results only; nothing else reaches the call."""
+    """Microphone audio, function results and, for a call back from standby, the reply to the request it
+    waited on; nothing else reaches the call. The reply carries only Hermes's text: the helper words it
+    (azure_live.standby_result) and sends it as a turn Gemini answers by speaking."""
     if not isinstance(payload, dict) or len(payload) != 1:
         raise ValueError('Expected one client message')
+    if 'hermesResult' in payload:
+        from azure_live import standby_result
+        text = standby_result(payload['hermesResult'])
+        return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': text}]}], 'turnComplete': True}}
     if 'realtimeInput' in payload:
         realtime = payload['realtimeInput']
         if not isinstance(realtime, dict) or not realtime or set(realtime) - {'audio', 'audioStreamEnd'}:

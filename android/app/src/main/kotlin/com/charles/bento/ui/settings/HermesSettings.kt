@@ -48,6 +48,7 @@ fun HermesSection(context: Context) {
     val url by prefs.hermesUrl.flow.collectAsStateWithLifecycle()
     val name by prefs.hermesName.flow.collectAsStateWithLifecycle()
     val talk by prefs.hermesTalkMode.flow.collectAsStateWithLifecycle()
+    val standby by prefs.hermesStandbySeconds.flow.collectAsStateWithLifecycle()
     val secretsVersion by graph.secrets.version.collectAsStateWithLifecycle()
     val configured = remember(url, secretsVersion) { graph.assistant.configured }
     var edit by remember { mutableStateOf(false) }
@@ -80,6 +81,15 @@ fun HermesSection(context: Context) {
             modes.forEachIndexed { i, (id, label) ->
                 SegmentedButton(selected = talk == id, onClick = { prefs.hermesTalkMode.value = id },
                                 shape = SegmentedButtonDefaults.itemShape(i, modes.size)) { Text(label) }
+            }
+        }
+        SettingsRow("Pause Gemini while Hermes works",
+                    "After this long without speech the call leaves Gemini, which bills by the second, and reconnects to speak Hermes's answer")
+        val waits = listOf(0 to "Never", 10 to "10 s", 20 to "20 s", 30 to "30 s", 60 to "1 min")
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+            waits.forEachIndexed { i, (seconds, label) ->
+                SegmentedButton(selected = standby == seconds, onClick = { prefs.hermesStandbySeconds.value = seconds },
+                                shape = SegmentedButtonDefaults.itemShape(i, waits.size)) { Text(label, maxLines = 1) }
             }
         }
         if (configured) {

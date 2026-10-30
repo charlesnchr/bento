@@ -50,6 +50,12 @@ interface CallAudio {
  * A call has no time limit. Gemini closes a connection after about ten minutes, warning
  * with `goAway` first; with [reconnect] the session carries on over a new socket from its
  * latest resumption handle, and audio keeps going to the old one until the new one is set up.
+ *
+ * Gemini bills a connection by the second, so a call waiting on Hermes in silence for
+ * [standbyAfter] seconds leaves it ([Status.Standby]): the socket closes and the microphone
+ * keeps running unheard. When Hermes finishes, or on [wake], a new session starts with the
+ * conversation so far ([recap]); a result that outlived its session goes in as a new turn
+ * for Gemini to speak ([CallSetup.resultFrame]), since the old session's call is gone with it.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AssistantCall(
@@ -60,8 +66,12 @@ class AssistantCall(
     private val ending: (LiveTransport) -> LiveSocketEnding = { LiveSocketEnding() },
     private val limits: Limits = Limits(),
     private val clock: () -> Double = { System.nanoTime() / 1e9 },
-    /** A new socket for when Gemini rotates the connection; without one the call ends at its time limit. */
+    /** A new socket for when Gemini rotates the connection; without one the call ends at its time limit and never stands by. */
     private val reconnect: (() -> LiveTransport)? = null,
+    /** Seconds without speech after which a call waiting on Hermes leaves Gemini (0 = never); read as the call goes. */
+    private val standbyAfter: () -> Double = { 0.0 },
+    /** The conversation so far, for the session a call starts when it comes back from standby. */
+    private val recap: () -> CallSetup.Resume? = { null },
 ) {
     data class Limits(
         val connect: Double = 25.0,
@@ -76,6 +86,10 @@ class AssistantCall(
         data object Listening : Status
         /** Hermes is working on a spoken request. */
         data object Working : Status
+        /** Hermes is working and the call has left Gemini until it finishes or [wake]. */
+        data object Standby : Status
+        /** Coming back from standby: a new session is being set up. */
+        data object Waking : Status
         data class Ended(val message: String?) : Status
     }
 
@@ -103,6 +117,19 @@ class AssistantCall(
     private var toolTask: Job? = null
     private var runningTurn: Int? = null
     private val cancelledCalls = HashSet<String>()
+    /** How the current session was set up: the call's [resume], or after standby the conversation then. */
+    private var setupResume = resume
+    private var hermesWorking = false
+    private var standby = false
+    private var waking = false
+    private var wakeStarted = 0.0
+    /** The running request outlived the session its call came from: its result goes back as a turn. */
+    private var parked = false
+    /** A parked result waiting for the session being set up. */
+    private var delivery: String? = null
+    /** When someone last spoke, and when Gemini's speech already received finishes playing. */
+    private var lastSpeech = 0.0
+    private var speechUntil = 0.0
 
     private fun now() = clock()
 
@@ -125,6 +152,7 @@ class AssistantCall(
             if (active) return@launch
             active = true
             started = now()
+            lastSpeech = started
             _status.value = Status.Connecting
             launch { receiveLoop() }
             launch { watchdog() }
@@ -135,7 +163,7 @@ class AssistantCall(
         val first = socket
         try {
             first.connect()
-            first.send(CallSetup.setupFrame(resume))
+            first.send(CallSetup.setupFrame(setupResume))
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && !active) return
             if (active) fail(endingMessage(ending(first), goingAway))
@@ -144,13 +172,19 @@ class AssistantCall(
         read(first)
     }
 
-    /** Reads [from] until it closes; one already replaced, or about to be, ends quietly. */
+    /** Reads [from] until it closes; one already replaced, about to be, or left for standby ends quietly. */
     private suspend fun read(from: LiveTransport) {
         try {
-            while (active && from === socket) receive(from.receive())
+            while (active && from === socket) {
+                val frame = from.receive()
+                // A frame still buffered on a connection left for standby is the old session's.
+                if (from !== socket || (standby && !waking)) return
+                receive(frame)
+            }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && !active) return
-            if (active && from === socket && !rotating) fail(endingMessage(ending(from), goingAway))
+            if (!active || from !== socket || rotating) return
+            if (waking) fail(RECONNECT_FAILED) else if (!standby) fail(endingMessage(ending(from), goingAway))
         }
     }
 
@@ -167,7 +201,7 @@ class AssistantCall(
                 val ready = withTimeoutOrNull((limits.connect * 1000).toLong()) {
                     runCatching {
                         next.connect()
-                        next.send(CallSetup.setupFrame(resume, handle))
+                        next.send(CallSetup.setupFrame(setupResume, handle))
                         // The resumed session already has the recap and the microphone: wait for it to take input.
                         while (Json.parseToJsonElement(next.receive()).let { it as? JsonObject }?.get("setupComplete") == null) Unit
                     }.isSuccess
@@ -195,7 +229,71 @@ class AssistantCall(
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 listening && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
+                waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
+                idleWhileHermesWorks(t) -> standBy()
             }
+        }
+    }
+
+    /** Hermes is working and nobody has spoken (Gemini included) for the standby time. */
+    private fun idleWhileHermesWorks(t: Double): Boolean {
+        val after = standbyAfter()
+        return after > 0 && hermesWorking && listening && !standby && !rotating && reconnect != null &&
+            t - maxOf(lastSpeech, speechUntil) >= after
+    }
+
+    /** Leaves Gemini while Hermes works: the socket closes, and the microphone runs on unheard. */
+    private fun standBy() {
+        standby = true
+        parked = true
+        goingAway = false
+        resumeHandle = null
+        _status.value = Status.Standby
+        socket.close()
+    }
+
+    /** Brings a call in standby back now, to talk before Hermes finishes. */
+    fun wake() {
+        scope.launch { comeBack() }
+    }
+
+    /** A new session with the conversation so far; the read loop finishes it at setupComplete ([cameBack]). */
+    private fun comeBack() {
+        if (!active || !standby || waking) return
+        val make = reconnect ?: return
+        waking = true
+        wakeStarted = now()
+        _status.value = Status.Waking
+        setupResume = runCatching { recap() }.getOrNull()
+        val next = make()
+        socket = next
+        scope.launch {
+            try {
+                next.connect()
+                next.send(CallSetup.setupFrame(setupResume))
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException && !active) return@launch
+                if (active && socket === next) fail(RECONNECT_FAILED)
+                return@launch
+            }
+            read(next)
+        }
+    }
+
+    /** Back from standby: a result that was waiting goes in for Gemini to speak. */
+    private suspend fun cameBack() {
+        lastSpeech = now()
+        speechUntil = 0.0
+        delivery?.let { delivery = null; send(CallSetup.resultFrame(it), resend = true) }
+        _status.value = if (hermesWorking) Status.Working else Status.Listening
+    }
+
+    /** A parked request's result: spoken now, or once the call is back from standby. */
+    private suspend fun deliver(result: String) {
+        when {
+            waking -> delivery = result
+            standby -> { delivery = result; comeBack() }
+            else -> send(CallSetup.resultFrame(result), resend = true)
         }
     }
 
@@ -213,24 +311,29 @@ class AssistantCall(
             return
         }
         if (event["setupComplete"] != null) {
-            resume?.let { send(CallSetup.recapFrame(it.recap)) }
-            listen()
+            val back = waking
+            if (back) { waking = false; standby = false }
+            setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
+            if (back) cameBack() else listen()
         }
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
-            "ACTIVITY_START" -> protocol.activityStarted(now())
-            "ACTIVITY_END" -> protocol.activityEnded(now())
+            "ACTIVITY_START" -> { protocol.activityStarted(now()); lastSpeech = now() }
+            "ACTIVITY_END" -> { protocol.activityEnded(now()); lastSpeech = now() }
         }
         val content = event["serverContent"] as? JsonObject ?: JsonObject(emptyMap())
         // Transcripts arrive inside serverContent; the reference also allows them top level.
         for (source in listOf(content, event)) {
             (source["inputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
-                protocol.transcript("user", it, now()); onTranscript?.invoke("user", it)
+                protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
-                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it)
+                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now()
             }
         }
-        if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) audio.flush()
+        if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
+            audio.flush()
+            speechUntil = now() // the flushed speech won't play
+        }
         val parts = ((content["modelTurn"] as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
         for (part in parts) {
             val inline = (part as? JsonObject)?.get("inlineData") as? JsonObject ?: continue
@@ -241,6 +344,8 @@ class AssistantCall(
                 fail("Gemini sent audio Bento can't play. Start a new call."); return
             }
             audio.play(pcm)
+            // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
+            speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
         }
         ((event["toolCallCancellation"] as? JsonObject)?.get("ids") as? JsonArray)?.take(32)?.forEach { id ->
             (id as? JsonPrimitive)?.contentOrNull?.let(cancelledCalls::add)
@@ -259,6 +364,7 @@ class AssistantCall(
         scope.launch {
             for (pcm in mic) {
                 if (!active) return@launch
+                if (standby) continue
                 send(audioFrame(pcm))
             }
         }
@@ -297,8 +403,8 @@ class AssistantCall(
         runningTurn = d.turn
         toolTask = scope.launch {
             fun finish() {
-                toolTask = null; runningTurn = null
-                if (active) _status.value = Status.Listening
+                toolTask = null; runningTurn = null; parked = false
+                if (active && !standby) _status.value = Status.Listening
             }
             if (!settle(d)) return@launch
             // Gemini cancels a call when the user interrupts; one cancelled before Hermes starts never runs.
@@ -309,12 +415,20 @@ class AssistantCall(
                 finish(); return@launch
             }
             _status.value = Status.Working
+            hermesWorking = true
             val result = runCatching { onTool(request) }.getOrElse {
                 if (it is kotlinx.coroutines.CancellationException) throw it
                 "Task failed. No automatic retry. Completed actions were not undone. " + (it.message ?: "")
             }
+            hermesWorking = false
             if (!active) return@launch
-            if (d.id in cancelledCalls) { finish(); return@launch } // Gemini dropped the call; the reply stays in the chat.
+            if (d.id in cancelledCalls) {
+                // Gemini dropped the call; the reply stays in the chat. A call in standby still comes back.
+                finish()
+                comeBack()
+                return@launch
+            }
+            if (parked) { deliver(result); finish(); return@launch }
             respond(d.id, result, executed = true)
             finish()
         }
@@ -339,12 +453,13 @@ class AssistantCall(
 
     /** A frame the old socket couldn't take while the call moves is dropped, or with [resend] sent on the new one. */
     private suspend fun send(frame: String, resend: Boolean = false) {
-        if (!active) return
+        if (!active || standby) return
         val to = socket
         try {
             to.send(frame)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
+            if (standby) return // the connection left for standby fails its last sends; the call goes on
             if (!rotating && to === socket) { fail("Lost the connection to Gemini. Completed actions were not undone."); return }
             if (!resend) return // waiting would back the microphone up
             while (rotating && active) delay(50)
@@ -369,6 +484,7 @@ class AssistantCall(
 
     companion object {
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
+        const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
 
         fun audioFrame(pcm: ByteArray): String = buildJsonObject {

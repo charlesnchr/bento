@@ -45,8 +45,15 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -60,6 +67,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -92,6 +100,7 @@ import androidx.navigation.NavController
 import com.charles.bento.assistant.AssistantController
 import com.charles.bento.assistant.CallUi
 import com.charles.bento.core.assistant.ChatMessage
+import com.charles.bento.core.assistant.HermesChoice
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.graph
 import com.charles.bento.settings.Prefs
@@ -159,8 +168,11 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
         // A running call always keeps its bar (and its End button), whatever happens to the setup.
         val c = state.call
-        if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onStop = assistant::stop, onEnd = { assistant.endCall() })
-        else if (configured) Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
+        if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onStop = assistant::stop, onEnd = { assistant.endCall() })
+        else if (configured) {
+            ModelPicker(assistant)
+            Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
+        }
     }
 
     if (showHistory) HistorySheet(assistant, state.sessionId, onDismiss = { showHistory = false })
@@ -399,8 +411,81 @@ private fun Composer(working: Boolean, onSend: (String) -> Unit, onStop: () -> U
     }
 }
 
+/** The model and reasoning effort Hermes runs this phone's turns on, typed and spoken alike. */
 @Composable
-private fun CallBar(c: CallUi, onMute: () -> Unit, onStop: () -> Unit, onEnd: () -> Unit) {
+private fun ModelPicker(assistant: AssistantController) {
+    val prefs = LocalContext.current.graph.prefs
+    // Read so a pick recomposes; the controller makes the choice out of them.
+    val provider by prefs.hermesModelProvider.flow.collectAsStateWithLifecycle()
+    val model by prefs.hermesModel.flow.collectAsStateWithLifecycle()
+    val effort by prefs.hermesEffort.flow.collectAsStateWithLifecycle()
+    val models by assistant.models.collectAsStateWithLifecycle()
+    val choice = remember(provider, model, effort) { assistant.choice }
+    var modelMenu by remember { mutableStateOf(false) }
+    var effortMenu by remember { mutableStateOf(false) }
+    val options = models.options
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f, fill = false)) {
+                TextButton(onClick = { assistant.loadModels(); modelMenu = true }, modifier = Modifier.testTag("assistant-model")) {
+                    Icon(Icons.Rounded.Memory, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    // Two providers can serve a model of the same name: then the label says whose.
+                    val shared = options != null && options.providers.count { choice.model in it.models } > 1
+                    val label = choice.model?.let { m -> if (shared) "$m · ${options?.providerName(choice.provider) ?: choice.provider}" else m } ?: "Default model"
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Rounded.ArrowDropDown, null, Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }, modifier = Modifier.heightIn(max = 480.dp)) {
+                    MenuChoice("Hermes's default" + (options?.model?.let { " ($it)" } ?: ""), !choice.picked) {
+                        assistant.pickModel(null, null); modelMenu = false
+                    }
+                    when {
+                        options == null && models.loading -> DropdownMenuItem(text = { Text("Loading models…") }, onClick = {}, enabled = false)
+                        options == null -> DropdownMenuItem(text = { Text(models.error ?: "Couldn't load Hermes's models. Tap to retry.") },
+                                                            onClick = { assistant.loadModels(force = true) })
+                    }
+                    // A pick Hermes no longer lists stays visible, so it can be seen and replaced.
+                    if (choice.picked && options != null && options.providers.none { it.slug == choice.provider && choice.model in it.models }) {
+                        MenuChoice("${choice.model} (not offered by Hermes now)", true) { modelMenu = false }
+                    }
+                    options?.providers?.forEach { p ->
+                        HorizontalDivider()
+                        Text(p.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                        for (m in p.models) {
+                            MenuChoice(m, choice.provider == p.slug && choice.model == m) { assistant.pickModel(p.slug, m); modelMenu = false }
+                        }
+                    }
+                }
+            }
+            Box {
+                TextButton(onClick = { effortMenu = true }, modifier = Modifier.testTag("assistant-effort")) {
+                    Icon(Icons.Rounded.Psychology, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (choice.effort == null) "Default effort" else HermesChoice.effortLabel(choice.effort) + " effort",
+                         maxLines = 1, style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Rounded.ArrowDropDown, null, Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = effortMenu, onDismissRequest = { effortMenu = false }) {
+                    MenuChoice("Hermes's default", choice.effort == null) { assistant.pickEffort(null); effortMenu = false }
+                    for (e in HermesChoice.EFFORTS) {
+                        MenuChoice(HermesChoice.effortLabel(e), choice.effort == e) { assistant.pickEffort(e); effortMenu = false }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuChoice(label: String, selected: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(text = { Text(label) }, onClick = onClick,
+                     trailingIcon = if (selected) ({ Icon(Icons.Rounded.Check, "Selected", Modifier.size(18.dp)) }) else null)
+}
+
+@Composable
+private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onStop: () -> Unit, onEnd: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -411,7 +496,14 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onStop: () -> Unit, onEnd: ()
                      style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                if (c.tapToTalk) {
+                if (c.standby) {
+                    // Gemini isn't listening in standby: talking first brings it back.
+                    FilledTonalButton(onClick = onWake, modifier = Modifier.heightIn(min = 56.dp).testTag("assistant-wake-call")) {
+                        Icon(Icons.Rounded.Mic, null, Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Talk now")
+                    }
+                } else if (c.tapToTalk) {
                     FilledIconButton(onClick = onMute, enabled = !c.connecting, modifier = Modifier.size(72.dp),
                                      colors = if (!c.muted) IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary) else IconButtonDefaults.filledIconButtonColors()) {
                         Icon(Icons.Rounded.Mic, if (c.muted) "Talk" else "Done talking", Modifier.size(32.dp))

@@ -89,6 +89,8 @@ protocol AssistantActions: AnyObject {
     func liveVoice()
     /// Starts or ends a live call.
     func call()
+    /// Brings a call in standby back to Gemini before Hermes finishes.
+    func wakeLive()
     /// Records a request with the normal dictation path and sends it to Hermes.
     func dictate()
     func hide()
@@ -111,6 +113,8 @@ final class AssistantChatModel: ObservableObject {
     @Published var busy = false
     @Published var stopping = false
     @Published var liveVoice = false
+    /// The call left Gemini while Hermes works (`GeminiLiveController.standby`).
+    @Published var liveStandby = false
     /// The provider of the current or last call, for labels.
     @Published var liveName = "Azure GPT-Live"
     @Published var recording = false

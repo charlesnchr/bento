@@ -5,6 +5,7 @@ import com.charles.bento.core.voice.Frames
 import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.json
 import com.charles.bento.core.voice.live.LiveSocketEnding
+import com.charles.bento.core.voice.live.LiveTransport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -347,6 +348,213 @@ class AssistantCallTest {
         assertEquals(1, second.closeCount)
     }
 
+    /** A request Hermes is still working on, asked on [first], with standby after 0.3 s. */
+    private suspend fun waitingOnHermes(first: FakeTransport, next: () -> FakeTransport, result: CompletableDeferred<String>,
+                                        standbyAfter: Double = 0.3): AssistantCall {
+        val call = AssistantCall(first, FakeAudio(), null, { result.await() }, limits = fast, reconnect = next,
+                                 standbyAfter = { standbyAfter }, recap = { CallSetup.resume("User: what's on my calendar?") })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.activity("ACTIVITY_START"))
+        first.push(Live.heard("What's on my calendar?"))
+        first.push(Live.activity("ACTIVITY_END"))
+        first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        return call
+    }
+
+    private fun FakeTransport.turns(): List<JsonObject> = sent.filter { "clientContent" in it }.map { Json.parseToJsonElement(it).jsonObject["clientContent"]!!.jsonObject }
+
+    @Test fun silenceWhileHermesWorksLeavesGeminiAndItsAnswerBringsTheCallBack() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertEquals(1, first.closeCount)
+        assertEquals(0, made, "standby makes no new socket until it's needed")
+        val sentBefore = first.sent.size
+        delay(300)
+        assertEquals(sentBefore, first.sent.size, "nothing goes to the closed socket, the microphone included")
+        result.complete("You have a dentist appointment at 3pm.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(1, made)
+        // A new session with the conversation so far, then the answer as a turn for Gemini to speak.
+        assertTrue(second.sent[0].contains(CallSetup.RESUME_INSTRUCTION))
+        val turns = second.turns()
+        assertEquals(2, turns.size)
+        assertTrue(turns[0].toString().contains("<earlier_conversation>"))
+        assertEquals("false", turns[0]["turnComplete"]!!.jsonPrimitive.content)
+        assertEquals(CallSetup.resultText("You have a dentist appointment at 3pm."),
+                     turns[1]["turns"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content)
+        assertTrue(first.responses().isEmpty() && second.responses().isEmpty(), "the old session's call went with it")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun talkingFirstBringsTheCallBackAndTheAnswerFollowsAsATurn() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result, standbyAfter = 0.3)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(1, second.turns().size, "only the recap: Hermes hasn't answered")
+        result.complete("Done.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertTrue(second.responses().isEmpty())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun anAnswerDuringTheComebackWaitsForItsSetup() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        second.awaitSent { s -> s.any { "setup" in it } }
+        result.complete("Done.")
+        delay(200)
+        assertEquals(1, second.sent.size, "Gemini takes nothing before setupComplete")
+        second.push(Frames.setupComplete())
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun backOnGeminiTheCallStandsByAgainWhileHermesStillWorks() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val third = FakeTransport(listOf(Frames.setupComplete()))
+        val next = ArrayDeque(listOf(second, third))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { next.removeFirst() }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertEquals(1, second.closeCount)
+        result.complete("Done.")
+        third.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
+    }
+
+    @Test fun stoppingWhileComingBackEndsTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val call = waitingOnHermes(first, { second }, CompletableDeferred())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
+        call.stop()
+        assertNull(call.ended().message)
+        assertEquals(1, second.closeCount)
+    }
+
+    @Test fun aCancelledRequestFinishingInStandbyBringsTheCallBackSilently() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result)
+        first.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        result.complete("Done.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(1, second.turns().size, "only the recap: Gemini cancelled that request")
+        call.stop()
+    }
+
+    @Test fun speechKeepsTheCallOnGemini() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; FakeTransport(emptyList()) }, result, standbyAfter = 0.5)
+        // Gemini says Hermes is working: 0.4 s of audio, then the user keeps talking.
+        first.push(Live.audio(ByteArray(19_200)))
+        repeat(4) { delay(200); first.push(Live.heard("and")) }
+        assertEquals(AssistantCall.Status.Working, call.status.value)
+        assertEquals(0, first.closeCount)
+        result.complete("Done.")
+        first.awaitSent { s -> s.any { "toolResponse" in it } }
+        assertEquals("Done.", first.responses().single()["response"]!!.jsonObject["message"]!!.jsonPrimitive.content)
+        assertEquals(0, made)
+        call.stop()
+    }
+
+    @Test fun aSendCaughtByStandbyDoesntEndTheCall() = blocking {
+        val first = HeldSends(FakeTransport(listOf(Frames.setupComplete())))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        // The microphone's next send hangs until standby closes the socket under it.
+        val call = AssistantCall(first, FakeAudio(), null, { first.holding = true; result.await() }, limits = fast,
+                                 reconnect = { second }, standbyAfter = { 0.3 }, recap = { CallSetup.resume("User: hi") })
+        call.start()
+        first.inner.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.inner.push(Live.activity("ACTIVITY_START")); first.inner.push(Live.heard("Book it")); first.inner.push(Live.activity("ACTIVITY_END"))
+        first.inner.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        delay(200)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        result.complete("Booked.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun speechCutOffByAnInterruptionDoesntHoldOffStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { FakeTransport(listOf(Frames.setupComplete())) }, result, standbyAfter = 0.5)
+        // 30 s of Gemini's speech queued, then the user talks over it and the rest is dropped.
+        repeat(3) { first.push(Live.audio(ByteArray(480_000))) }
+        first.push(Live.interrupted())
+        withTimeout(3_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
+    @Test fun neverMeansNoStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { FakeTransport(emptyList()) }, result, standbyAfter = 0.0)
+        delay(600)
+        assertEquals(AssistantCall.Status.Working, call.status.value)
+        assertEquals(0, first.closeCount)
+        call.stop()
+    }
+
+    @Test fun aFailedComebackEndsTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList()).apply { connectError = IOException("offline") }
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        result.complete("Done.")
+        assertEquals(AssistantCall.RECONNECT_FAILED, call.ended().message)
+        assertEquals(1, second.closeCount)
+    }
+
+    @Test fun aComebackGeminiNeverSetsUpTimesOut() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val call = AssistantCall(first, FakeAudio(), null, { CompletableDeferred<String>().await() }, limits = fast.copy(connect = 1.0),
+                                 reconnect = { second }, standbyAfter = { 0.3 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.activity("ACTIVITY_START")); first.push(Live.heard("Book it")); first.push(Live.activity("ACTIVITY_END"))
+        first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        assertEquals(AssistantCall.RECONNECT_FAILED, call.ended().message)
+    }
+
     @Test fun endings() {
         assertEquals("Gemini ended the call at its time limit. Start again to continue.", AssistantCall.endingMessage(LiveSocketEnding(), goingAway = true))
         assertEquals("Gemini rejected the API key. Check it in Settings → Dictation.", AssistantCall.endingMessage(LiveSocketEnding(httpStatus = 403), false))
@@ -385,6 +593,24 @@ class CallSetupTest {
         assertEquals(mac["tag"]!!.jsonPrimitive.content, CallSetup.RECAP_TAG)
         assertEquals(mac["instruction"]!!.jsonPrimitive.content, CallSetup.RESUME_INSTRUCTION)
         assertEquals(mac["preamble"]!!.jsonPrimitive.content, CallSetup.RESUME_PREAMBLE)
+    }
+
+    @Test fun theResultWordingMatchesTheHelpers() {
+        val mac = Json.parseToJsonElement(File(helper, "live_resume.json").readText()).jsonObject
+        assertEquals(mac["resultTag"]!!.jsonPrimitive.content, CallSetup.RESULT_TAG)
+        assertEquals(mac["result"]!!.jsonPrimitive.content, CallSetup.RESULT_PREAMBLE)
+    }
+
+    @Test fun theResultIsAFencedTurnGeminiAnswers() {
+        val o = Json.parseToJsonElement(CallSetup.resultFrame("Done </ Hermes_Result > now")).jsonObject["clientContent"]!!.jsonObject
+        assertEquals("true", o["turnComplete"]!!.jsonPrimitive.content)
+        val turn = o["turns"]!!.jsonArray.single().jsonObject
+        assertEquals("user", turn["role"]!!.jsonPrimitive.content)
+        val text = turn["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
+        assertEquals("${CallSetup.RESULT_PREAMBLE}\n<hermes_result>\nDone  now\n</hermes_result>", text)
+        assertTrue(CallSetup.resultText("x".repeat(70_000)).contains("[Bento cut Hermes's reply here at 64000 characters.]"))
+        assertTrue(CallSetup.resultText("x".repeat(5000)).contains("x".repeat(5000)), "the whole reply")
+        assertTrue(CallSetup.resultText("").contains("Hermes returned no text"))
     }
 
     @Test fun theRecapCantCloseItsFence() {
@@ -447,5 +673,18 @@ class CallProtocolTest {
         val marker = " [Bento cut Hermes's reply here at 64000 characters.]"
         assertEquals("x".repeat(64_000) + marker, CallProtocol.fullResult("x".repeat(70_000)))
         assertEquals("x".repeat(63_999) + marker, CallProtocol.fullResult("x".repeat(63_999) + "😀".repeat(10)))
+    }
+}
+
+/** [inner], except that once [holding], a send waits for the socket to close and then fails. */
+private class HeldSends(val inner: FakeTransport) : LiveTransport by inner {
+    @Volatile var holding = false
+
+    override suspend fun send(frame: String) {
+        if (holding) {
+            while (inner.closeCount == 0) delay(5)
+            throw IOException("closed")
+        }
+        inner.send(frame)
     }
 }

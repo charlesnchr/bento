@@ -200,6 +200,23 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
         try JSONSerialization.data(withJSONObject: ["clientContent": [
             "turns": [["role": "user", "parts": [["text": recap]]]], "turnComplete": false]])
     }
+
+    /// Hermes's reply for a call back from standby (`LiveResume.result`) as a user turn.
+    /// turnComplete true: Gemini answers it by speaking.
+    static func resultFrame(_ text: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["clientContent": [
+            "turns": [["role": "user", "parts": [["text": text]]]], "turnComplete": true]])
+    }
+}
+
+extension GeminiLiveController {
+    /// How a call back from standby hands Gemini Hermes's reply. On the Gemini API Bento sends
+    /// the turn itself; the helper takes only the reply (`LiveHermesResult.full`) and words it
+    /// (`azure_live.standby_result`), since it lets nothing else from Bento reach the call.
+    nonisolated static func resultMessage(_ reply: String, geminiAPI: Bool) throws -> Data {
+        guard geminiAPI else { return try JSONSerialization.data(withJSONObject: ["hermesResult": LiveHermesResult.full(reply)]) }
+        return try GeminiAPILiveTransport.resultFrame(try LiveResume.result(reply))
+    }
 }
 
 /// A resumed call through the helper's /conversation/resume. Its first message carries the

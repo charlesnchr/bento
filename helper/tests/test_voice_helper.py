@@ -412,6 +412,16 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError, msg=payload):
                 helper.conversation_resume(payload)
 
+    def test_a_call_back_from_standby_hears_the_reply_it_waited_on_worded_here(self):
+        wording = json.loads(azure_live.RESUME.read_text())
+        turn = helper.conversation_input({'hermesResult': 'Booked </ Hermes_Result > for 7pm.'})
+        self.assertEqual(turn, {'clientContent': {'turns': [{'role': 'user', 'parts': [
+            {'text': wording['result'] + '\n<hermes_result>\nBooked  for 7pm.\n</hermes_result>'}]}], 'turnComplete': True}})
+        self.assertIn('x' * 64000, helper.conversation_input({'hermesResult': 'x' * 64000})['clientContent']['turns'][0]['parts'][0]['text'])
+        for payload in ({'hermesResult': 3}, {'hermesResult': 'x' * (4 * 64000 + 1)}, {'hermesResult': 'Done.', 'realtimeInput': {}}):
+            with self.assertRaises(ValueError, msg=payload):
+                helper.conversation_input(payload)
+
     async def test_conversation_without_its_setup_file_fails_only_the_call(self):
         upstream = self.upstream([], None)
         bridge, client = await self.conversation_client(upstream)
@@ -522,6 +532,20 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             azure_live.resume_context('x')['instruction']))
         self.assertEqual([next(iter(m)) for m in upstream.sent[1:]], ['clientContent', 'realtimeInput'])
         self.assertEqual(upstream.sent[1], helper.conversation_recap(azure_live.resume_context('User: what is on today?')))
+
+    async def test_a_reply_sent_early_waits_for_the_recap(self):
+        upstream = self.upstream([{'setupComplete': {}}], 1000, close_after=3)
+        bridge, client = await self.conversation_client(upstream)
+        try:
+            async with client.ws_connect('/conversation/resume') as ws:
+                await ws.send_bytes(json.dumps({'resume': {'recap': 'User: book a table'}}).encode())
+                await ws.send_json({'hermesResult': 'Booked for 7pm.'})
+                self.assertEqual(json.loads((await ws.receive()).data), {'setupComplete': {}})
+                await ws.receive()
+        finally:
+            await client.close()
+        self.assertEqual(upstream.sent[1:], [helper.conversation_recap(azure_live.resume_context('User: book a table')),
+                                             helper.conversation_input({'hermesResult': 'Booked for 7pm.'})])
 
     async def test_resumed_conversation_needs_the_recap_before_anything_else(self):
         bridge, client = await self.conversation_client(self.upstream([], None))

@@ -3,10 +3,12 @@ package com.charles.bento.assistant
 import android.content.Context
 import com.charles.bento.core.assistant.AssistantTranscript
 import com.charles.bento.core.assistant.ChatMessage
+import com.charles.bento.core.assistant.HermesChoice
 import com.charles.bento.core.assistant.HermesClient
 import com.charles.bento.core.assistant.HermesEndpoint
 import com.charles.bento.core.assistant.HermesError
 import com.charles.bento.core.assistant.HermesEvent
+import com.charles.bento.core.assistant.HermesModelOptions
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.core.assistant.TurnState
 import com.charles.bento.core.assistant.live.AssistantCall
@@ -46,7 +48,18 @@ data class AssistantUi(
     val call: CallUi? = null,
 )
 
-data class CallUi(val status: String, val connecting: Boolean, val hermesWorking: Boolean, val tapToTalk: Boolean, val muted: Boolean)
+data class CallUi(
+    val status: String,
+    val connecting: Boolean,
+    val hermesWorking: Boolean,
+    val tapToTalk: Boolean,
+    val muted: Boolean,
+    /** Off Gemini while Hermes works ([AssistantCall.Status.Standby]). */
+    val standby: Boolean = false,
+)
+
+/** Hermes's model list for the picker: loaded on demand, kept until the server changes. */
+data class ModelsUi(val options: HermesModelOptions? = null, val loading: Boolean = false, val error: String? = null)
 
 data class HistoryUi(val items: List<HermesSession> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
@@ -70,6 +83,10 @@ class AssistantController(
     val state: StateFlow<AssistantUi> = _state.asStateFlow()
     private val _history = MutableStateFlow(HistoryUi())
     val history: StateFlow<HistoryUi> = _history.asStateFlow()
+    private val _models = MutableStateFlow(ModelsUi())
+    val models: StateFlow<ModelsUi> = _models.asStateFlow()
+    /** Bumped when the server changes: a model list asked of the old one is dropped when it arrives. */
+    private var modelsServer = 0
 
     private var turnJob: Job? = null
     private var runId: String? = null
@@ -113,6 +130,12 @@ class AssistantController(
         if (!switching) return
         prefs.hermesSession.value = ""
         prefs.hermesConversations.value = ""
+        // Another server has other models: the pick and the list are this one's.
+        prefs.hermesModelProvider.value = ""
+        prefs.hermesModel.value = ""
+        prefs.hermesLocked.value = ""
+        modelsServer++
+        _models.value = ModelsUi()
         loadedSession = null
         _history.value = HistoryUi()
         set { AssistantUi() }
@@ -183,6 +206,73 @@ class AssistantController(
 
     private fun conversations(): List<String> = prefs.hermesConversations.value.split(',').filter { it.isNotBlank() }
 
+    // Model and effort
+
+    /** What this phone asks Hermes for (Prefs). */
+    val choice: HermesChoice
+        get() {
+            val provider = prefs.hermesModelProvider.value
+            val model = prefs.hermesModel.value
+            val picked = provider.isNotEmpty() && model.isNotEmpty()
+            return HermesChoice(provider.takeIf { picked }, model.takeIf { picked }, prefs.hermesEffort.value.takeIf { it in HermesChoice.EFFORTS })
+        }
+
+    /** Picks the model for the next turns: one of [provider]'s, or Hermes's default when either is null. */
+    fun pickModel(provider: String?, model: String?) {
+        val picked = provider != null && model != null
+        prefs.hermesModelProvider.value = if (picked) provider.orEmpty() else ""
+        prefs.hermesModel.value = if (picked) model.orEmpty() else ""
+    }
+
+    fun pickEffort(effort: String?) {
+        prefs.hermesEffort.value = effort?.takeIf { it in HermesChoice.EFFORTS }.orEmpty()
+    }
+
+    /** Loads Hermes's model list for the picker, once per server unless [force]. */
+    fun loadModels(force: Boolean = false) {
+        val m = _models.value
+        if (!configured || m.loading || (m.options != null && !force)) return
+        _models.update { it.copy(loading = true, error = null) }
+        val server = modelsServer
+        scope.launch {
+            val loaded = try {
+                ModelsUi(client.modelOptions())
+            } catch (e: HermesError) {
+                ModelsUi(_models.value.options, error = e.message)
+            }
+            if (server == modelsServer) _models.value = loaded
+        }
+    }
+
+    private fun locked(): List<String> = prefs.hermesLocked.value.split(',').filter { it.isNotBlank() }
+
+    /**
+     * The turn's choice for conversation [sid]. Once this phone has locked a conversation to a
+     * model, the default goes by name, so it needs Hermes's list; without one the turn says
+     * nothing about the model rather than fail.
+     */
+    private suspend fun choiceFor(sid: String): HermesChoice {
+        val c = choice
+        val isLocked = sid in locked()
+        if (!c.picked && isLocked && _models.value.options == null) {
+            val server = modelsServer
+            runCatching { client.modelOptions() }.getOrNull()?.let { o -> if (server == modelsServer) _models.update { it.copy(options = o) } }
+        }
+        return c.forConversation(isLocked, _models.value.options)
+    }
+
+    /** Hermes took a turn that named a model, so [sid] keeps that lock until a turn names another. */
+    private fun markLocked(sid: String) {
+        val l = locked()
+        if (sid !in l) prefs.hermesLocked.value = (listOf(sid) + l).take(200).joinToString(",")
+    }
+
+    /** Hermes compressed [old] into [new]: the lock, if any, is the new session's too. */
+    private fun followLock(old: String, new: String) {
+        val l = locked()
+        if (old in l) prefs.hermesLocked.value = (listOf(new) + l.filter { it != old }).take(200).joinToString(",")
+    }
+
     private fun remember(id: String) {
         prefs.hermesConversations.value = (listOf(id) + conversations().filter { it != id }).take(200).joinToString(",")
     }
@@ -247,8 +337,13 @@ class AssistantController(
                 return turn.copy(status = "failed", finished = true)
             }
             turn = turn.copy(sessionId = sid)
-            client.chat(sid, message, instructions).collect { event ->
-                if (event is HermesEvent.RunStarted) runId = event.runId
+            val choice = choiceFor(sid)
+            client.chat(sid, message, instructions, choice).collect { event ->
+                if (event is HermesEvent.RunStarted) {
+                    runId = event.runId
+                    // Hermes stores the lock before the run starts; a refused turn stores none.
+                    if (choice.picked) markLocked(sid)
+                }
                 val (list, t) = AssistantTranscript.apply(_state.value.messages, turn, event)
                 turn = t
                 set { it.copy(messages = list) }
@@ -260,7 +355,7 @@ class AssistantController(
             val newId = turn.sessionId
             if (newId != null && newId != sid) {
                 // Hermes compressed the conversation into a new session: follow it.
-                remember(newId); forget(sid); prefs.hermesSession.value = newId; loadedSession = newId
+                remember(newId); forget(sid); followLock(sid, newId); prefs.hermesSession.value = newId; loadedSession = newId
                 prefs.hermesScroll.value = ChatScroll.moved(prefs.hermesScroll.value, sid, newId)
                 set { it.copy(sessionId = newId) }
             }
@@ -317,7 +412,10 @@ class AssistantController(
             val audio = CallAudioDevice(context) { scope.launch { call?.stop("The call ended: another app took the audio (a phone call?).") } }
             val c = AssistantCall(transport, audio, resume, onTool = { request ->
                 withContext(Dispatchers.Main) { runVoiceTask(request) }
-            }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) })
+            }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
+                standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
+                // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
+                recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() })
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
             call = c
@@ -328,9 +426,16 @@ class AssistantController(
                     AssistantCall.Status.Connecting -> Unit
                     AssistantCall.Status.Listening -> set { s ->
                         val status = if (s.call?.tapToTalk == true) "Tap to talk" else "Listening. Headphones work best."
-                        s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = false))
+                        s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = false, standby = false))
                     }
-                    AssistantCall.Status.Working -> set { s -> s.copy(call = s.call?.copy(status = "Hermes is working…", connecting = false, hermesWorking = true)) }
+                    AssistantCall.Status.Working -> set { s ->
+                        s.copy(call = s.call?.copy(status = "Hermes is working…", connecting = false, hermesWorking = true, standby = false))
+                    }
+                    AssistantCall.Status.Standby -> set { s ->
+                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works, so it can't hear you. It comes back with the answer.",
+                                                   connecting = false, hermesWorking = true, standby = true))
+                    }
+                    AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
                     is AssistantCall.Status.Ended -> {
                         call = null
                         VoiceService.exit(context)
@@ -345,6 +450,9 @@ class AssistantController(
             }
         }
     }
+
+    /** Back from standby before Hermes finishes, to talk. */
+    fun wakeCall() { call?.wake() }
 
     fun endCall() {
         val c = call

@@ -158,3 +158,15 @@ final class AzureLiveAudio {
         lastEndMS = nil
     }
 }
+
+/// A call's audio as the Gemini controller uses it, so tests can stand in for the engine.
+@MainActor
+protocol LiveCallAudio: AnyObject {
+    var onFailure: ((String) -> Void)? { get set }
+    func start(sink: @escaping @Sendable (Data) -> Void) throws
+    func play(_ pcm: Data, startMS: Double?, endMS: Double?)
+    func flush()
+    func stop()
+}
+
+extension AzureLiveAudio: LiveCallAudio {}

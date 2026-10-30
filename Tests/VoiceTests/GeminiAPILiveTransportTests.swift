@@ -103,6 +103,15 @@ import VoiceCore
         #expect(socket.sent.last == Data("audio".utf8))
     }
 
+    @Test func aCallBackFromStandbyHandsGeminiTheReplyAsATurnOrTheHelperJustTheReply() throws {
+        let api = try JSONSerialization.jsonObject(with: try GeminiLiveController.resultMessage("Booked.", geminiAPI: true)) as? [String: Any]
+        let expected: [String: Any] = ["clientContent": ["turns": [["role": "user", "parts": [["text": try LiveResume.result("Booked.")]]]],
+                                                         "turnComplete": true]]
+        #expect(NSDictionary(dictionary: api ?? [:]) == NSDictionary(dictionary: expected))
+        let helper = try JSONSerialization.jsonObject(with: try GeminiLiveController.resultMessage("", geminiAPI: false)) as? [String: Any]
+        #expect(NSDictionary(dictionary: helper ?? [:]) == NSDictionary(dictionary: ["hermesResult": "Hermes returned no text. Do not infer success."]))
+    }
+
     @Test func connectSendsTheSetupFirst() async throws {
         let socket = FakeSocket()
         let frame = try #require(GeminiAPILiveTransport.setupFrame())

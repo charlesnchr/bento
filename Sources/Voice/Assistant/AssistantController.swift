@@ -78,6 +78,10 @@ final class AssistantController: AssistantActions {
                 self.endLive()
             }
         }
+        // A Gemini call waiting on Hermes in silence leaves the connection, and comes back with the conversation so far.
+        geminiLive.standbyAfter = { Double(SettingsStore().assistantLiveStandbySeconds) }
+        geminiLive.recap = { [weak self] in self.flatMap { AssistantTranscript.liveRecap($0.model.messages) } }
+        geminiLive.onStandby = { [weak self] standby in self?.window.model.liveStandby = standby }
         // The last app the user worked in is the target for @ context and Hermes' desktop tool.
         // A running turn keeps the app the request came from.
         activation = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -513,6 +517,11 @@ final class AssistantController: AssistantActions {
     }
 
     func call() { toggleLive() }
+
+    func wakeLive() {
+        guard live === geminiLive else { return }
+        geminiLive.wake()
+    }
 
     func dictate() {
         guard !isLive else { return }

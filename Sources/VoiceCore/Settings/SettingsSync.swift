@@ -41,7 +41,7 @@ public final class SettingsSync {
         "transcribeModelOverride": .string, "cleanupModelOverride": .string,
         "meetingCaptureSystemAudio": .bool, "meetingSummaryEnabled": .bool, "meetingExcludesDictation": .bool,
         "audioRetentionDays": .int,
-        "assistantLiveCall": .bool, "assistantLiveProvider": .string, "syncDictionary": .bool,
+        "assistantLiveCall": .bool, "assistantLiveProvider": .string, "assistantLiveStandby": .int, "syncDictionary": .bool,
     ]
     static let dictionaryKey = "dictionary"
     static let dictionaryDefaultsKey = "dictionaryEntries"

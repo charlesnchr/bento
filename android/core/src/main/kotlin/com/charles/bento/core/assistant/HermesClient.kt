@@ -61,6 +61,9 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
 
     suspend fun delete(sessionId: String) { send("DELETE", "api/sessions/${seg(sessionId)}", null) }
 
+    /** The providers and models Hermes can run (its own model picker's list), and its default. */
+    suspend fun modelOptions(): HermesModelOptions = HermesModelOptions.parse(get("api/model/options?include_unconfigured=false"))
+
     suspend fun stop(runId: String) { send("POST", "v1/runs/${seg(runId)}/stop", JsonObject(emptyMap())) }
 
     suspend fun approve(runId: String, choice: String) {
@@ -69,14 +72,12 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
 
     /**
      * One turn. Cancelling the collector closes the stream, which Hermes treats as a stop
-     * (it interrupts the agent); errors arrive as [HermesError].
+     * (it interrupts the agent); errors arrive as [HermesError]. [choice] picks the model and
+     * effort for this turn ([chatBody]).
      */
-    fun chat(sessionId: String, message: String, instructions: String? = null): Flow<HermesEvent> = callbackFlow {
+    fun chat(sessionId: String, message: String, instructions: String? = null, choice: HermesChoice = HermesChoice()): Flow<HermesEvent> = callbackFlow {
         val e = endpoint() ?: throw notConfigured()
-        val body = buildJsonObject {
-            put("message", message)
-            if (instructions != null) put("instructions", instructions)
-        }
+        val body = chatBody(message, instructions, choice)
         val call = streaming.newCall(request(e, "api/sessions/${seg(sessionId)}/chat/stream", "POST", body.toString())
             .newBuilder().header("Accept", "text/event-stream").build())
         launch(Dispatchers.IO) {
@@ -144,6 +145,23 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
         private const val MAX_LINE = 4L * 1024 * 1024
 
         private fun seg(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+        /**
+         * A turn's request. A picked model goes with its provider and `require_model_lock`:
+         * otherwise the model a conversation last ran on wins over the request's, and a
+         * missing provider would fall back to another quietly. The lock stays on the
+         * conversation until a later turn names another model.
+         */
+        internal fun chatBody(message: String, instructions: String?, choice: HermesChoice): JsonObject = buildJsonObject {
+            put("message", message)
+            if (instructions != null) put("instructions", instructions)
+            if (choice.picked) {
+                put("provider", choice.provider)
+                put("model", choice.model)
+                put("require_model_lock", true)
+            }
+            choice.effort?.let { effort -> put("model_options", buildJsonObject { put("reasoning_effort", effort) }) }
+        }
 
         internal fun resolve(base: HttpUrl, path: String): HttpUrl {
             val prefix = base.encodedPath.trimEnd('/')
