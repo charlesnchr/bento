@@ -118,6 +118,8 @@ class ValidationGateTest {
         assertEquals("Hi Anna,", ValidationGate.stripEchoedLabel("Add a subject - Hi Anna,", "hi anna", "Add a subject"))
         // the speaker said it, or the model didn't echo it
         assertEquals("Message received, thanks.", ValidationGate.stripEchoedLabel("Message received, thanks.", "message received thanks", "Message"))
+        assertEquals("Message Anna that I'll be late.", ValidationGate.stripEchoedLabel("Message Anna that I'll be late.", "um message anna that i'll be late", "Message"))
+        assertEquals("Message me when you land.", ValidationGate.stripEchoedLabel("Message me when you land.", "um message me when you land", "Message"))
         assertEquals("Messages are late.", ValidationGate.stripEchoedLabel("Messages are late.", "messages are late", "Message"))
         assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("See you at 3.", "see you at 3", "Message"))
         assertEquals("Message", ValidationGate.stripEchoedLabel("Message", "uh", "Message"))

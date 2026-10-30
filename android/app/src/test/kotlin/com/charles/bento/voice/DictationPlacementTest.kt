@@ -44,8 +44,13 @@ class DictationPlacementTest {
     @Test fun pillMovesOverTheKeyboardWhenTheFieldFillsTheScreen() {
         // a note editor from the top bar to the keyboard: no room above or below it
         val y = top(150, 1_490)
-        assertEquals(1_520, y)
+        assertEquals(1_510, y)
         assertTrue(y >= 1_490)
+    }
+
+    @Test fun pillGoesBelowATallFieldWithRoomUnderIt() {
+        // a floating keyboard over a tall editor that ends lower down
+        assertEquals(1_720, top(100, 1_700))
     }
 
     @Test fun pillStaysOnScreen() {

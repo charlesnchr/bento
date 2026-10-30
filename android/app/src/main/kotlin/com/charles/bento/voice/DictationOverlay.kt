@@ -257,8 +257,8 @@ class DictationOverlay(
         /**
          * The pill's top edge (screen pixels) so it never covers the field being filled:
          * just above the keyboard, which is below the field unless the field sits on the
-         * keyboard (a chat's message box); then just above the field; and when the field
-         * is too tall for that, over the top of the keyboard.
+         * keyboard (a chat's message box); then just above the field, or below it (a floating
+         * keyboard over a tall field); and when neither fits, over the top of the keyboard.
          */
         fun pillTop(height: Int, keyboardTop: Int, fieldTop: Int?, fieldBottom: Int?, minTop: Int, screenBottom: Int, gap: Int): Int {
             val aboveKeyboard = keyboardTop - gap - height
@@ -267,6 +267,8 @@ class DictationOverlay(
             if (!overlaps && aboveKeyboard >= minTop) return aboveKeyboard
             val aboveField = fieldTop - gap - height
             if (aboveField >= minTop) return aboveField
+            val belowField = fieldBottom + gap
+            if (belowField + height <= screenBottom) return belowField
             return (keyboardTop + gap).coerceAtMost(screenBottom - height).coerceAtLeast(minTop)
         }
     }
