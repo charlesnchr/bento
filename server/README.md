@@ -153,7 +153,8 @@ the live documents the server lacks.)
 
 Remove specific documents of any collection (e.g. test data) without touching seq.
 Todo and voice clients send back any live document the server lacks, so delete one
-first (`syncctl.py --collection todos delete ID`) and purge the tombstone:
+first (`syncctl.py --collection todos delete ID`), wait until every device has synced
+the deletion (one still offline would send its live copy back), then purge the tombstone:
 
 ```sh
 ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \
