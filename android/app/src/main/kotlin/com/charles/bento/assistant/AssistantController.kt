@@ -258,9 +258,13 @@ class AssistantController(
             val server = modelsServer
             runCatching { client.modelOptions() }.getOrNull()?.let { o -> if (server == modelsServer) _models.update { it.copy(options = o) } }
         }
-        val sent = c.forConversation(isLocked, _models.value.options)
-        if (sent.picked && !isLocked) prefs.hermesLocked.value = (listOf(sid) + locked()).take(200).joinToString(",")
-        return sent
+        return c.forConversation(isLocked, _models.value.options)
+    }
+
+    /** Hermes took a turn that named a model, so [sid] keeps that lock until a turn names another. */
+    private fun markLocked(sid: String) {
+        val l = locked()
+        if (sid !in l) prefs.hermesLocked.value = (listOf(sid) + l).take(200).joinToString(",")
     }
 
     /** Hermes compressed [old] into [new]: the lock, if any, is the new session's too. */
@@ -333,8 +337,13 @@ class AssistantController(
                 return turn.copy(status = "failed", finished = true)
             }
             turn = turn.copy(sessionId = sid)
-            client.chat(sid, message, instructions, choiceFor(sid)).collect { event ->
-                if (event is HermesEvent.RunStarted) runId = event.runId
+            val choice = choiceFor(sid)
+            client.chat(sid, message, instructions, choice).collect { event ->
+                if (event is HermesEvent.RunStarted) {
+                    runId = event.runId
+                    // Hermes stores the lock before the run starts; a refused turn stores none.
+                    if (choice.picked) markLocked(sid)
+                }
                 val (list, t) = AssistantTranscript.apply(_state.value.messages, turn, event)
                 turn = t
                 set { it.copy(messages = list) }
@@ -423,7 +432,7 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = "Hermes is working…", connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works. It reconnects with the answer.",
+                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works, so it can't hear you. It comes back with the answer.",
                                                    connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }

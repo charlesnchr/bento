@@ -74,7 +74,7 @@ final class GeminiLiveController {
 
     private var now: Double { ProcessInfo.processInfo.systemUptime }
     private static let listening = "Gemini Live listening. Use headphones. Stop ends voice and tools."
-    private static let standing = "Gemini paused while Hermes works, to save cost. It reconnects with the answer; Talk reconnects now."
+    private static let standing = "Gemini paused while Hermes works, to save cost, so it can't hear you. It comes back with the answer; Talk brings it back now."
     private static let reconnectFailed = "Gemini voice couldn't reconnect after standby. Voice stopped."
 
     func start(recap: String?) throws {
@@ -159,6 +159,19 @@ final class GeminiLiveController {
     /// Brings a call in standby back now, to talk before Hermes finishes.
     func wake() { comeBack() }
 
+    private func retryComeback(token: UUID) {
+        link = UUID() // the refused connection's reader ends quietly
+        transport?.close(); transport = nil
+        let started = wakeStarted
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, self.active, self.generation == token, self.waking, self.transport == nil else { return }
+            self.waking = false
+            self.comeBack()
+            self.wakeStarted = started // the reconnect deadline counts from the first try
+        }
+    }
+
     /// A new connection with the conversation so far; the reader finishes it at setupComplete (`cameBack`).
     private func comeBack() {
         guard active, standby, !waking else { return }
@@ -212,6 +225,12 @@ final class GeminiLiveController {
         if event["goAway"] != nil { goingAway = true }
         if let error = event["error"] as? [String: Any] {
             let code = error["code"] as? String
+            // The helper runs one call at a time and frees it once the connection left for standby
+            // has closed upstream: a comeback that beats that waits a moment and tries again.
+            if waking, code == "busy", now - wakeStarted < 20 {
+                retryComeback(token: token)
+                return
+            }
             // A helper older than standby refuses Hermes's reply.
             let outdated = resultSent && code == "invalid_message"
             let message = code == "busy" ? "Another Gemini voice call is already running."
@@ -344,15 +363,15 @@ final class GeminiLiveController {
             let result = await self.onTool?(request) ?? "Not executed: local tools unavailable."
             self.hermesWorking = false
             guard self.active, self.generation == token, !Task.isCancelled else { return }
+            if self.cancelledCalls.contains(delegation.id) {
+                // Gemini dropped the call; the reply stays in the chat.
+                finish(); self.onStatus?("Hermes finished. Gemini cancelled that request, so it hasn't heard the result.")
+                return
+            }
             if self.parked {
                 // The call it answers went with its session: the reply goes in as a turn.
                 finish()
                 await self.deliver(result, token: token)
-                return
-            }
-            if self.cancelledCalls.contains(delegation.id) {
-                // Gemini dropped the call; the reply stays in the chat.
-                finish(); self.onStatus?("Hermes finished. Gemini cancelled that request, so it hasn't heard the result.")
                 return
             }
             await self.respond(delegation.id, result, executed: true, token: token)

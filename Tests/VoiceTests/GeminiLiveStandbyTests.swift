@@ -169,6 +169,22 @@ import VoiceCore
         controller.stop()
     }
 
+    @Test func aComebackTheHelperRefusesAsBusyTriesAgain() async throws {
+        let sockets = Sockets(), answer = Answer()
+        let controller = try await waitingOnHermes(sockets, answer: answer)
+        // The helper still holds the call left for standby; the next try gets through.
+        sockets.next = { [unowned sockets] in
+            sockets.next = { Socket() }
+            let busy = Socket(setsUp: false)
+            busy.push(#"{"error":{"message":"Gemini Live call ended","code":"busy"}}"#)
+            return busy
+        }
+        await answer.give("Done.")
+        await eventually("the answer goes in on the second try") { sockets.made.count == 3 && !sockets.made[2].sent("hermesResult").isEmpty }
+        #expect(sockets.made[1].isClosed && controller.active)
+        controller.stop()
+    }
+
     @Test func aSendCaughtByStandbyDoesntEndTheCall() async throws {
         let sockets = Sockets(), answer = Answer()
         // The microphone's next send hangs until standby closes the socket under it.

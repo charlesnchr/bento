@@ -143,11 +143,7 @@ class AssistantCall(
                 if (value && !streamEnded) {
                     streamEnded = true
                     send(STREAM_END)
-                } else if (!value) {
-                    streamEnded = false
-                    // Tap to talk: talking brings the call back.
-                    if (standby) comeBack()
-                }
+                } else if (!value) streamEnded = false
             }
         }
 
@@ -181,7 +177,8 @@ class AssistantCall(
         try {
             while (active && from === socket) {
                 val frame = from.receive()
-                if (standby && !waking) return
+                // A frame still buffered on a connection left for standby is the old session's.
+                if (from !== socket || (standby && !waking)) return
                 receive(frame)
             }
         } catch (e: Exception) {
@@ -422,8 +419,8 @@ class AssistantCall(
             }
             hermesWorking = false
             if (!active) return@launch
-            if (parked) { deliver(result); finish(); return@launch }
             if (d.id in cancelledCalls) { finish(); return@launch } // Gemini dropped the call; the reply stays in the chat.
+            if (parked) { deliver(result); finish(); return@launch }
             respond(d.id, result, executed = true)
             finish()
         }

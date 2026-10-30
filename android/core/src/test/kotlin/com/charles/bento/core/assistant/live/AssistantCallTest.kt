@@ -412,6 +412,52 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun anAnswerDuringTheComebackWaitsForItsSetup() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        second.awaitSent { s -> s.any { "setup" in it } }
+        result.complete("Done.")
+        delay(200)
+        assertEquals(1, second.sent.size, "Gemini takes nothing before setupComplete")
+        second.push(Frames.setupComplete())
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun backOnGeminiTheCallStandsByAgainWhileHermesStillWorks() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val third = FakeTransport(listOf(Frames.setupComplete()))
+        val next = ArrayDeque(listOf(second, third))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { next.removeFirst() }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertEquals(1, second.closeCount)
+        result.complete("Done.")
+        third.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
+    }
+
+    @Test fun stoppingWhileComingBackEndsTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val call = waitingOnHermes(first, { second }, CompletableDeferred())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
+        call.stop()
+        assertNull(call.ended().message)
+        assertEquals(1, second.closeCount)
+    }
+
     @Test fun speechKeepsTheCallOnGemini() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
