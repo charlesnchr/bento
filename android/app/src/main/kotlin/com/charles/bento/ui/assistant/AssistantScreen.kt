@@ -88,6 +88,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -169,9 +170,9 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         Box(Modifier.weight(1f)) {
             when {
                 !configured -> SetupCard { nav.navigate(SettingsRoute) }
-                state.messages.isEmpty() && !state.loading -> EmptyChat()
+                state.messages.isEmpty() && state.caption == null && !state.loading -> EmptyChat()
                 // A task's session opens in the chat once the call is over; during it, the task's sheet shows it.
-                else -> Messages(state.sessionId, state.messages, state.working, graph.prefs.hermesScroll, onAnswer = assistant::answer,
+                else -> Messages(state.sessionId, state.messages, state.caption, state.working, graph.prefs.hermesScroll, onAnswer = assistant::answer,
                                  onOpen = { m -> m.link?.let { link -> state.call?.tasks?.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
@@ -225,8 +226,8 @@ private fun EmptyChat() {
 
 @Composable
 private fun Messages(
-    sessionId: String?, messages: List<ChatMessage>, working: Boolean, saved: Prefs.Pref<String>, onAnswer: (String, String) -> Unit,
-    onOpen: (ChatMessage) -> Unit,
+    sessionId: String?, messages: List<ChatMessage>, caption: String?, working: Boolean, saved: Prefs.Pref<String>,
+    onAnswer: (String, String) -> Unit, onOpen: (ChatMessage) -> Unit,
 ) {
     // Back where the user left this conversation (on another tab or screen, or before a new process), unless they were at
     // the bottom and more has come since: then at its end, like a conversation not seen here before.
@@ -262,7 +263,7 @@ private fun Messages(
     val last = messages.lastOrNull()
     // Follow the conversation while it grows, unless the user scrolled up to read (or had, when they left it).
     var returned by remember(list) { mutableStateOf(restored != null) }
-    LaunchedEffect(list, messages.size, last?.text?.length, working) {
+    LaunchedEffect(list, messages.size, last?.text?.length, caption?.length, working) {
         val atEnd = !returned && list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
         returned = false
         if (atEnd && list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
@@ -279,6 +280,8 @@ private fun Messages(
                              modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp))
             }
         }
+        // What the user is saying, until Gemini's transcript takes its place.
+        if (caption != null) item(key = "caption") { UserRow(ChatMessage("caption", "user", caption, voice = true), caption = true) }
         if (working && (last == null || !(last.role == "assistant" && last.streaming && last.text.isNotEmpty()))) {
             item(key = "working") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -291,11 +294,12 @@ private fun Messages(
     }
 }
 
+/** A [caption] is the user's words still being heard: fainter, until Gemini's transcript replaces it. */
 @Composable
-private fun UserRow(m: ChatMessage) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+private fun UserRow(m: ChatMessage, caption: Boolean = false) {
+    Row(Modifier.fillMaxWidth().then(if (caption) Modifier.testTag("assistant-caption") else Modifier), horizontalArrangement = Arrangement.End) {
         Surface(shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp), color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.widthIn(max = 320.dp)) {
+                modifier = Modifier.widthIn(max = 320.dp).alpha(if (caption) 0.6f else 1f)) {
             Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
                 if (m.voice) {
                     Icon(Icons.Rounded.Mic, "Spoken", Modifier.size(16.dp).padding(top = 3.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))

@@ -133,6 +133,9 @@ step, a button that opens its Hermes conversation and one that cancels it. Each 
 session joins the conversation list; the call's transcript and the tasks' replies stay in the
 chat on screen, are what a typed follow-up there hears as reference, and aren't stored by
 Hermes. After the call a task's row opens its session in a sheet, leaving the chat as it is.
+Gemini Live transcribes the user only once they stop speaking, so the audio it hears also
+goes to `gemini-3.5-transcribe-live`, whose running guess shows in a faint bubble while
+they talk. Gemini Live's transcript replaces the bubble and is the only one Hermes gets.
 A call continues the conversation on screen (Gemini gets a recap, `helper/live_resume.json`),
 runs in a microphone foreground service, uses the voice-call microphone with echo
 cancellation and plays through a headset or the loudspeaker. Open mic or tap to talk is a
