@@ -48,13 +48,13 @@ class NoteFoldingTest {
 
     @Test fun theBlankSpaceBelowAFoldShrinksToWhatTheScrollPositionNeeds() {
         // laid out with 1000 of blank space: the text alone scrolls to 400, the position is 700
-        assertEquals(300, FoldAnchor.trimmed(tail = 1000, laidOut = 1000, value = 700, maxValue = 1400))
+        assertEquals(300, FoldAnchor.trimmed(laidOut = 1000, value = 700, maxValue = 1400))
         // scrolled back up within the text: none needed
-        assertEquals(0, FoldAnchor.trimmed(tail = 300, laidOut = 300, value = 200, maxValue = 700))
-        // never grows
-        assertEquals(100, FoldAnchor.trimmed(tail = 100, laidOut = 100, value = 900, maxValue = 500))
-        // trimmed again before the layout: measured against what was laid out, not the new height
-        assertEquals(300, FoldAnchor.trimmed(tail = 300, laidOut = 1000, value = 700, maxValue = 1400))
+        assertEquals(0, FoldAnchor.trimmed(laidOut = 300, value = 200, maxValue = 700))
+        // trimmed to 300 but not laid out yet, and a fling went on to 900: it keeps what it scrolled into
+        assertEquals(500, FoldAnchor.trimmed(laidOut = 1000, value = 900, maxValue = 1400))
+        // at most what was laid out
+        assertEquals(1000, FoldAnchor.trimmed(laidOut = 1000, value = 1400, maxValue = 1400))
     }
 
     @Test fun aStaleFoldStateStillGivesAValidMapping() {

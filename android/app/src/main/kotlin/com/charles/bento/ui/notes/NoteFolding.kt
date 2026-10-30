@@ -164,10 +164,13 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
         if (holding) 0f else base.calculateScrollDistance(offset, size, containerSize)
 
-    /** A fold is about to toggle in text laid out `textHeight` tall (as far as a fold can shorten it). */
+    /**
+     * A fold is about to toggle in text laid out `textHeight` tall (as far as a fold can shorten
+     * it), on top of the blank space an earlier fold still needs.
+     */
     fun toggling(textHeight: Int) {
         holding = true
-        tail = maxOf(tail, textHeight)
+        tail += textHeight
         toggles++
     }
 
@@ -178,7 +181,7 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
     fun laidOut(height: Int) { laidOutTail = height }
 
     private fun trim() {
-        tail = trimmed(tail, laidOutTail, scroll.value, scroll.maxValue)
+        tail = trimmed(laidOutTail, scroll.value, scroll.maxValue)
     }
 
     @Composable
@@ -196,10 +199,12 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
     companion object {
         /**
          * Only the blank space still needed to fill the screen below the scroll position `value`:
-         * `maxValue` is the last layout's, with `laidOut` of blank space in it.
+         * `maxValue` is the last layout's, with `laidOut` of blank space in it. Never more than
+         * that (the scroll can't pass `maxValue`), but it can be all of it again: a fling going
+         * on down before a trim is laid out keeps what it scrolls into.
          */
-        fun trimmed(tail: Int, laidOut: Int, value: Int, maxValue: Int): Int =
-            minOf(tail, maxOf(0, value - (maxValue - laidOut)))
+        fun trimmed(laidOut: Int, value: Int, maxValue: Int): Int =
+            maxOf(0, value - (maxValue - laidOut))
     }
 }
 
