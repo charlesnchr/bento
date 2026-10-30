@@ -241,6 +241,7 @@ class AssistantCall(
                 socket = next
                 moved = true
                 goingAway = false
+                newSession()
                 old.close()
                 launch { read(next) }
             } finally {
@@ -281,6 +282,12 @@ class AssistantCall(
         unspokenSince = now()
         spokeSince = false
         skipTurn = geminiSpeaking
+    }
+
+    /** A new connection: no turn of Gemini's is underway on it. */
+    private fun newSession() {
+        geminiSpeaking = false
+        skipTurn = false
     }
 
     /** Gemini said something: it counts towards what it was told unless its turn began before. */
@@ -331,6 +338,7 @@ class AssistantCall(
     private suspend fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
+        newSession()
         sendDeliveries()
         settled()
     }
@@ -596,7 +604,7 @@ class AssistantCall(
                 }
                 else -> if (taskId.isNullOrEmpty()) "Not executed: say which task to cancel." else cancelNow(taskId)
             }
-            respond(id, message, executed = name != CallProtocol.CANCEL_TASK || message.startsWith("Cancelled"), name = name)
+            respond(id, message, executed = name != CallProtocol.CANCEL_TASK || message.startsWith("Cancelled"), name = name, toSpeak = false)
         }
     }
 
@@ -626,10 +634,11 @@ class AssistantCall(
         status: String = if (executed) "ok" else "not_executed",
         scheduling: String = "WHEN_IDLE",
         willContinue: Boolean = false,
+        /** Gemini is to speak it at its next pause, so the socket stays for it; a blocking tool's answer is part of the turn that asked. */
+        toSpeak: Boolean = scheduling == "WHEN_IDLE",
     ) {
         if (!active) return
-        // Gemini speaks what it's told at its next pause: the socket stays for it.
-        if (scheduling == "WHEN_IDLE") toldToSpeak()
+        if (toSpeak) toldToSpeak()
         send(CallProtocol.response(id, name, message, executed, task, status, scheduling, willContinue), resend = true)
     }
 
