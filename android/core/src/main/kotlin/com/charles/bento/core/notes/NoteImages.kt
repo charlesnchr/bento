@@ -168,6 +168,8 @@ class NoteImageSync(
     private val scope: CoroutineScope,
     private val log: (String) -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
+    /** The images the notes here refer to (trashed ones included): what a server must have. */
+    private val referenced: () -> Set<String> = { emptySet() },
 ) {
     private val _changed = MutableSharedFlow<String>(extraBufferCapacity = 64)
     /** An image arrived, or turned out not to be on the server yet (the placeholder says so). */
@@ -201,11 +203,16 @@ class NoteImageSync(
         }
     }
 
-    /** Marks pending every image here the server doesn't have (`POST /v1/blobs/missing`). False when it couldn't ask. */
+    /**
+     * Marks pending every image here that a note refers to and the server doesn't have
+     * (`POST /v1/blobs/missing`). Images no note refers to any more are left out, so the
+     * server's `gc-blobs` can delete them. False when it couldn't ask.
+     */
     suspend fun reconcileNow(): Boolean = withContext(Dispatchers.IO) {
         val (base, token) = target() ?: return@withContext false
         if (hasBlobs(base) != true) return@withContext false
-        for (batch in store.allHashes.chunked(1000)) {
+        val refs = referenced()
+        for (batch in store.allHashes.filter { it in refs }.chunked(1000)) {
             val body = kotlinx.serialization.json.buildJsonObject {
                 put("hashes", kotlinx.serialization.json.JsonArray(batch.map { kotlinx.serialization.json.JsonPrimitive(it) }))
             }.toString()

@@ -2,6 +2,7 @@ package com.charles.bento.notes
 
 import android.content.Context
 import com.charles.bento.core.notes.Note
+import com.charles.bento.core.notes.NoteImage
 import com.charles.bento.core.notes.NoteImageStore
 import com.charles.bento.core.notes.NoteImageSync
 import com.charles.bento.core.notes.NoteQueries
@@ -49,7 +50,8 @@ class NotesModule(
 
     /** The notes' images: a local cache, uploaded to and fetched from the server (docs/SYNC_PROTOCOL.md, Images). */
     val images = NoteImageSync(NoteImageStore(java.io.File(context.filesDir, IMAGES_DIR)), http, hub::endpointNow, engineScope,
-                               log = { android.util.Log.i("BentoImages", it) })
+                               log = { android.util.Log.i("BentoImages", it) },
+                               referenced = { store.notes.value.filter { !it.deleted }.flatMap { NoteImage.hashes(it.body) }.toSet() })
 
     /** Every note incl. tombstones, as of the last change. */
     val notes: StateFlow<List<Note>> = store.notes

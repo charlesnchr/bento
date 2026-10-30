@@ -138,8 +138,8 @@ class NoteImagesTest {
             val restored = TestServer(binary, token).also { it.start() }
             try {
                 val toRestored = { SyncEndpoint("http://127.0.0.1:${restored.port}", token) }
-                val phone2 = NoteImageSync(phone.store, http, toRestored, scope)
-                val mac2 = NoteImageSync(mac.store.let { NoteImageStore(tempDir()) }, http, toRestored, scope)
+                val phone2 = NoteImageSync(phone.store, http, toRestored, scope, referenced = { setOf(hash) })
+                val mac2 = NoteImageSync(NoteImageStore(tempDir()), http, toRestored, scope)
                 assertEquals(emptyList(), phone2.store.pendingUploads)
                 assertFalse(mac2.fetchNow(hash))
                 assertTrue(phone2.reconcileNow())
@@ -147,6 +147,11 @@ class NoteImagesTest {
                 assertTrue(phone2.uploadPendingNow())
                 assertTrue(mac2.fetchNow(hash))
                 // nothing missing: nothing marked
+                assertTrue(phone2.reconcileNow())
+                assertEquals(emptyList(), phone2.store.pendingUploads)
+                // an image no note refers to any more isn't sent back (the server's gc-blobs may delete it)
+                val gone = phone2.store.add(png("removed from its note"))!!
+                phone2.store.uploaded(gone)
                 assertTrue(phone2.reconcileNow())
                 assertEquals(emptyList(), phone2.store.pendingUploads)
             } finally {

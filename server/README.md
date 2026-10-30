@@ -159,8 +159,9 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
 Delete images that no document refers to any more (last uploaded over 30 days ago, so an
 upload whose note hasn't arrived yet is safe; trashed notes keep theirs). Not run
 automatically: images are small next to the disk. A reference that comes back after the
-image was deleted (an undo, a long-offline device's copy) shows "Image not available"
-unless a device that has the image inserts it again, which uploads it again.
+image was deleted (an undo, a long-offline device's copy) is healed by any device that
+still has the image cached: clients upload the referenced images the server lacks on every
+connect. Until one does, it shows "Image not available".
 
 ```sh
 ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \

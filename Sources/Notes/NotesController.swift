@@ -43,6 +43,9 @@ final class NotesController {
         }
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
         imageSync.endpoint = { [weak sync = self.sync] in sync?.blobEndpoint }
+        imageSync.referenced = { [weak store = self.store] in
+            Set((store?.allNotes(includeTombstones: false) ?? []).flatMap { NoteImage.hashes(in: $0.body) })
+        }
         sync.onConnected = { [weak imageSync = self.imageSync] in imageSync?.connected() }
         // the server lost what we sent (a restore, a new server): it gets back the images it lacks,
         // also while polling, where nothing reconnects

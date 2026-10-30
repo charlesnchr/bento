@@ -63,7 +63,8 @@ line of its own:
   every reconnect) until the server has it, and keep it pending across restarts. Clients only upload to a server whose `/v1/health` says
   `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
 * **Server reset.** On every connect a client asks `POST /v1/blobs/missing` which of the
-  images in its cache the server lacks (in batches) and uploads those: a server restored
+  images in its cache that its notes refer to (trashed ones included) the server lacks, in
+  batches, and uploads those: a server restored
   from a backup, or a new one, gets back the images uploaded since (only those it lacks
   are sent). A client also asks right away when it sees the server's seq go backwards.
 * **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404

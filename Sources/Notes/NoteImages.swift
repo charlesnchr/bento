@@ -191,7 +191,6 @@ final class NoteImageStore {
         fm.createFile(atPath: u.path, contents: nil)
     }
 
-
     func uploaded(_ hash: String) {
         if let u = uploadDir?.appendingPathComponent(hash) { try? fm.removeItem(at: u) }
     }
@@ -203,6 +202,8 @@ final class NoteImageSync {
     let store: NoteImageStore
     /// The server and token while sync runs; nil otherwise.
     var endpoint: () -> (base: URL, token: String)? = { nil }
+    /// The images the notes here refer to (trashed ones included): what a server must have.
+    var referenced: () -> Set<String> = { [] }
     private let session: URLSession
     private let log = BentoLog.make("notes.images")
     private var uploading = Set<String>()
@@ -235,11 +236,16 @@ final class NoteImageSync {
         for h in wasMissing { NotificationCenter.default.post(name: NoteImageStore.didLoad, object: h) }
     }
 
-    /// Marks pending every image here the server doesn't have (`POST /v1/blobs/missing`, in
-    /// batches), then calls `done`.
+    /// Marks pending every image here that a note refers to and the server doesn't have
+    /// (`POST /v1/blobs/missing`, in batches), then calls `done`. Images no note refers to
+    /// any more are left out, so the server's `gc-blobs` can delete them.
     func reconcile(done: @escaping () -> Void) {
         guard let ep = endpoint() else { done(); return }
-        withBlobs(ep) { [weak self] in self?.reconcile(ArraySlice(self?.store.allHashes ?? []), ep, done) }
+        withBlobs(ep) { [weak self] in
+            guard let self else { return }
+            let refs = self.referenced()
+            self.reconcile(ArraySlice(self.store.allHashes.filter(refs.contains)), ep, done)
+        }
     }
 
     private func reconcile(_ hashes: ArraySlice<String>, _ ep: (base: URL, token: String), _ done: @escaping () -> Void) {
