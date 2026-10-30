@@ -85,9 +85,11 @@ Opening Bento normally shows Settings. For a quiet scripted launch, use
 `open -g /opt/homebrew/opt/bento/Bento.app --args --background`. Launch at login
 and the updater restart quietly.
 
-Bento checks for a new release once a day. When there is one, **Install Bento
-x.y.z and Restart** appears in its menu bar menu and under Settings → General →
-Updates; it runs `brew upgrade` and restarts into the new version.
+Bento checks for a new release once a day. When there is one, it asks **Update
+Bento to x.y.z?** (once per version, waiting until nothing is using the microphone
+and you've stopped typing), and **Install Bento x.y.z and Restart** stays in its
+menu bar menu and under Settings → General → Updates; either runs `brew upgrade`
+and restarts into the new version.
 `brew upgrade` in a terminal works too: Bento then offers a restart, and the
 next launch replaces the old instance anyway. Releases are all signed with the
 same (self-signed) certificate, so the permission grants carry over. They aren't
@@ -123,8 +125,9 @@ notes to the phone, synced live with your Macs through the same `bento-sync` ser
   `bento://hermes` code (`android/README.md`).
 
 Install the APK from the latest `android-v*` [release](https://github.com/charlesnchr/bento/releases)
-(allow installs from your browser once); the app checks for updates daily and installs them
-from Settings → Updates. Then on the Mac choose **Pair Android Phone…** and scan the code
+(allow installs from your browser once); the app checks for updates when it opens and daily,
+asks **Update Bento?** when there is one, and installs it from GitHub (also from Settings →
+Updates). Then on the Mac choose **Pair Android Phone…** and scan the code
 in Bento's Voice tab or Settings. The Voice tab's checklist walks through the microphone,
 **Accessibility → Bento dictation** (for the bubble and the volume key; Android greys the
 switch out for APKs opened from a browser or file manager until App info → ⋮ → **Allow
@@ -168,7 +171,9 @@ Without a key nothing formats the text, so Parakeet's words go in as heard. Add
 a Gemini API key (Settings → Dictation → Advanced) for Gemini Transcribe and the
 cleanup model; Parakeet v3 and Ultra stay selectable beside it. Adding a key
 switches the fallback back to Gemini unless you downloaded or picked Parakeet.
-The key also carries Gemini 3.8 Live voice calls in the assistant. The other
+Bento keeps the key in `~/.config/bento/gemini-api-key`, readable only by you
+(it moved there from the keychain, which asked for your password after every
+update). The key also carries Gemini 3.8 Live voice calls in the assistant. The other
 transcription models, meeting notes through Vertex AI and Gemini Live calls on
 Vertex go through a small local helper you run yourself: see `helper/README.md`.
 Gemini Live always uses dictation's Google connection, the key or the helper,

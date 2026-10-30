@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- updates Bento installs itself skip the installer's confirmation (Updater) -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
@@ -129,6 +131,10 @@
         </service>
 
         <receiver android:name=".update.InstallResultReceiver" android:exported="false" />
+        <!-- protected broadcast (only the system sends it) -->
+        <receiver android:name=".update.UpdatedReceiver" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
+        </receiver>
 
         <activity
             android:name=".widget.WidgetConfigActivity"

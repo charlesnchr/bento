@@ -1,5 +1,6 @@
 import AppKit
 import BentoCore
+import CoreAudio
 
 /// Version and install-location rules for the updater, kept pure for tests.
 enum UpdateRules {
@@ -124,9 +125,9 @@ final class Updater: ObservableObject {
 
     // MARK: Checking
 
-    /// Who asked: automatic checks stay quiet except to announce a new version
+    /// Who asked: automatic checks stay quiet except to offer a new version
     /// (once per version); the settings pane shows progress and errors inline;
-    /// `bento://update` reports everything with a HUD.
+    /// `bento://update` reports everything, offering a new version at once.
     enum Origin { case automatic, settings, url }
 
     func check(_ origin: Origin = .automatic) {
@@ -173,11 +174,153 @@ final class Updater: ObservableObject {
             return
         }
         state = .available(latest)
-        let seen = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
-        UserDefaults.standard.set(latest, forKey: Self.notifiedKey)
-        if origin == .url || (origin == .automatic && !seen) {
-            HUD.show("Bento \(latest) is available: install it from the menu bar", symbol: "arrow.down.circle", duration: 4)
+        // An offer still up for an older version (a check from Settings found a newer one).
+        if let shown = offerVersion, shown != latest { closeOffer() }
+        let offered = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
+        if origin == .url || (origin == .automatic && !offered) {
+            offerInstall(latest, whenQuiet: origin == .automatic)
         }
+    }
+
+    // MARK: Offering
+
+    /// The "Update now?" window while it's up; its buttons' targets (controls hold them weakly).
+    private var offerAlert: NSAlert?
+    private var offerVersion: String?
+    private var offerTargets: [ButtonAction] = []
+    /// The version an automatic offer is waiting to show.
+    private var pendingOffer: String?
+
+    /// Asks "Update now?" for a new version: once per version after an automatic check,
+    /// and on `bento://update`. After an automatic check it waits until no microphone is in
+    /// use and the keyboard has been still for a while, so it doesn't land in a dictation, a
+    /// meeting, a call or a sentence. It's an ordinary window, not a modal one, so Bento's
+    /// other windows keep working while it waits for an answer, and Return means Later:
+    /// updating restarts Bento, so it takes a click. Later leaves the update in the menu
+    /// bar menu and Settings.
+    func offerInstall(_ version: String, whenQuiet: Bool) {
+        guard case .available(version) = state else { return }
+        if let alert = offerAlert {
+            // Still up: an automatic check leaves it where it is; an older version's makes way.
+            if offerVersion == version {
+                if !whenQuiet { AppActivation.show(alert.window) }
+                return
+            }
+            closeOffer()
+        }
+        if whenQuiet, Self.isBusy() {
+            guard pendingOffer != version else { return }
+            pendingOffer = version
+            retryOffer(version)
+            return
+        }
+        pendingOffer = nil
+        // Offered once it's on screen: a launch that quit while it waited offers it again.
+        UserDefaults.standard.set(version, forKey: Self.notifiedKey)
+        let alert = NSAlert()
+        alert.messageText = "Update Bento to \(version)?"
+        var actions: [(close: Bool, run: () -> Void)] = []
+        if isHomebrew {
+            alert.informativeText = "You have \(currentVersion). Bento installs the update with Homebrew and restarts; the permission grants carry over."
+            alert.addButton(withTitle: "Update Now")
+            alert.addButton(withTitle: "Later")
+            alert.addButton(withTitle: "Release Notes")
+            actions = [(true, { [weak self] in self?.install() }),
+                       (false, { [weak self] in self?.closeOffer(returningFocus: true) }),
+                       (false, { NSWorkspace.shared.open(Self.releaseURL(version)) })]
+        } else {
+            alert.informativeText = "You have \(currentVersion). This copy is a local build, so it can't update itself: get \(version) from the release page, or `brew install \(Self.formula)`."
+            alert.addButton(withTitle: "Open Release Page")
+            alert.addButton(withTitle: "Later")
+            // A local build's install() opens the release page.
+            actions = [(true, { [weak self] in self?.install() }),
+                       (false, { [weak self] in self?.closeOffer(returningFocus: true) })]
+        }
+        alert.buttons[0].keyEquivalent = ""
+        alert.buttons[1].keyEquivalent = "\r"
+        offerTargets = zip(alert.buttons, actions).map { button, action in
+            let target = ButtonAction { [weak self] in
+                if action.close { self?.closeOffer() }
+                action.run()
+            }
+            button.target = target
+            button.action = #selector(ButtonAction.run)
+            return target
+        }
+        alert.layout()
+        // A panel hides when its app deactivates; this one waits on screen for an answer.
+        alert.window.hidesOnDeactivate = false
+        offerAlert = alert
+        offerVersion = version
+        AppActivation.show(alert.window)
+    }
+
+    private func retryOffer(_ version: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self, self.pendingOffer == version else { return }
+            guard case .available(version) = self.state else { self.pendingOffer = nil; return }
+            if Self.isBusy() { self.retryOffer(version) } else { self.offerInstall(version, whenQuiet: false) }
+        }
+    }
+
+    /// `returningFocus` (Later) hands focus back to the app that had it, without another of
+    /// Bento's windows surfacing on the way.
+    private func closeOffer(returningFocus: Bool = false) {
+        if let alert = offerAlert {
+            if returningFocus {
+                AppActivation.orderOut(alert.window, activating: AppActivation.previousApp)
+                // orderOut may hide it only once Bento resigns, holding it weakly: keep it until then.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { withExtendedLifetime(alert) {} }
+            } else {
+                alert.window.orderOut(nil)
+            }
+        }
+        offerAlert = nil
+        offerVersion = nil
+        offerTargets = []
+    }
+
+    /// Something an update offer shouldn't interrupt: typing in the last 10 seconds, or a
+    /// microphone in use by any app (Bento's dictation and meetings included).
+    static func isBusy() -> Bool {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 10 || microphoneInUse()
+    }
+
+    /// Whether some process is recording: what drives the orange microphone indicator (macOS
+    /// 14.2+), else any input device running, which also counts a headset that's only playing.
+    private static func microphoneInUse() -> Bool {
+        if #available(macOS 14.2, *) {
+            if let objects = propertyArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList) {
+                return objects.contains { uint32(property: kAudioProcessPropertyIsRunningInput, of: $0) == 1 }
+            }
+        }
+        return (propertyArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices) ?? []).contains { device in
+            // Input-capable: it has streams in the input scope.
+            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                                     mScope: kAudioObjectPropertyScopeInput,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var size: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &size) == noErr, size > 0 else { return false }
+            return uint32(property: kAudioDevicePropertyDeviceIsRunningSomewhere, of: device) == 1
+        }
+    }
+
+    private static func propertyArray(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> [AudioObjectID]? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return nil }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &ids) == noErr else { return nil }
+        return ids
+    }
+
+    private static func uint32(property selector: AudioObjectPropertySelector, of object: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr ? value : nil
     }
 
     /// Version of the app at the Homebrew install path, read fresh (Bundle caches).
@@ -205,6 +348,7 @@ final class Updater: ObservableObject {
     /// reads itself. Restarts into the new version when it's in place.
     func install() {
         guard case .available(let version) = state else { return }
+        closeOffer()
         guard let prefix = homebrewPrefix else {
             NSWorkspace.shared.open(Self.releaseURL(version))
             return
@@ -311,4 +455,11 @@ final class Updater: ObservableObject {
         ["version": currentVersion, "homebrew": homebrewPrefix ?? "", "state": String(describing: state),
          "automatic": timer != nil, "lastChecked": lastChecked?.timeIntervalSince1970 ?? 0]
     }
+}
+
+/// A button target that runs a closure.
+private final class ButtonAction: NSObject {
+    private let handler: () -> Void
+    init(_ handler: @escaping () -> Void) { self.handler = handler }
+    @objc func run() { handler() }
 }

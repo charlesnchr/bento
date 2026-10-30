@@ -22,10 +22,15 @@ import com.charles.bento.MainActivity
 import com.charles.bento.R
 import com.charles.bento.graph
 import com.charles.bento.settings.Prefs
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -39,11 +44,17 @@ import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Bento for Android updates itself from GitHub releases tagged `android-v<x.y.z>` (the
- * Mac app's releases are `v<x.y.z>`): a daily check, then "Install update" downloads the
- * APK and hands it to the package installer, which asks once to allow installs from Bento.
+ * Mac app's releases are `v<x.y.z>`): a check when the app opens and a daily one, then
+ * "Update now?" ([offer]) downloads the APK and hands it to the package installer, which
+ * asks once to allow installs from Bento. Once the running version holds
+ * UPDATE_PACKAGES_WITHOUT_USER_ACTION, Android 12+ can install its updates without the
+ * installer's confirmation screen (for an app updating itself that targets a recent enough
+ * API level). Android may still ask ([InstallResultReceiver] shows it), and Play Protect still
+ * checks each new APK. The app closes as it's replaced, so [UpdatedReceiver] says it's done.
  */
 class Updater(private val context: Context, private val http: OkHttpClient, private val prefs: Prefs) {
     data class Release(val version: String, val apkUrl: String, val size: Long, val notes: String, val page: String, val sha256: String?)
@@ -55,24 +66,77 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         data class Available(val release: Release) : State
         data class Downloading(val release: Release, val progress: Float) : State
         data class Installing(val release: Release) : State
-        data class Failed(val message: String) : State
+        /** [installing]: the download or installation failed, rather than a check. */
+        data class Failed(val message: String, val installing: Boolean = false) : State
     }
 
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /** Versions put off with "Later" until Bento is next opened; "Skip" remembers one for good. */
+    private val postponed = MutableStateFlow<Set<String>>(emptySet())
+
+    /** The version the user chose to install, whose download and outcome the prompt follows. */
+    val following = MutableStateFlow<String?>(null)
+
+    private val installRunning = AtomicBoolean(false)
+
+    /** The release to ask "Update now?" about: a newer one, neither skipped nor put off. */
+    val offer: Flow<Release?> = combine(state, prefs.skippedVersion.flow, postponed) { s, skipped, later ->
+        (s as? State.Available)?.release?.takeIf { offered(it.version, skipped, later) }
+    }
+
+    fun later(release: Release) = postponed.update { it + release.version }
+
+    fun skip(release: Release) {
+        prefs.skippedVersion.value = release.version
+    }
+
+    /** Bento was left (not rotated) or the update notification tapped: ask again even if put off. */
+    fun offerAgain() = postponed.update { emptySet() }
+
+    /** "Update now": follows the release from here and installs it in [scope], which outlives the screen. */
+    fun start(release: Release, scope: CoroutineScope) {
+        following.value = release.version
+        // at once, so a check in flight can't put the offer back (see check)
+        _state.value = State.Downloading(release, 0f)
+        scope.launch { install(release) }
+    }
+
+    /** The installer turned the update down; true when the prompt shows it. */
+    fun installFailed(message: String): Boolean {
+        val release = (state.value as? State.Installing)?.release
+        _state.value = State.Failed(message, installing = true)
+        return release != null && following.value == release.version
+    }
+
+    @Volatile private var checkedAt = 0L
+
+    /**
+     * When the app opens: Bento's process outlives its screens (the accessibility service
+     * keeps it), so at most every few hours, and not while a release is found or installing.
+     */
+    suspend fun checkOnOpen() {
+        val due = System.currentTimeMillis() - checkedAt > OPEN_CHECK_INTERVAL_MS
+        if (prefs.autoUpdateCheck.value && due && state.value.let { it is State.Idle || it is State.UpToDate || it is State.Failed }) check()
+    }
+
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
-        _state.value = State.Checking
+        // never over a download in progress or another check
+        if (!beginCheck(_state)) return@withContext null
+        // Each outcome lands only if nothing (an install started meanwhile) replaced Checking.
         val release = runCatching { latest() }.getOrElse {
-            _state.value = State.Failed(it.message ?: "Couldn't reach GitHub")
+            finishCheck(_state, State.Failed(it.message ?: "Couldn't reach GitHub"))
             return@withContext null
         }
-        _state.value = if (release != null && newer(release.version, BuildConfig.VERSION_NAME.removeSuffix("-debug"))) {
+        checkedAt = System.currentTimeMillis()
+        val outcome = if (release != null && newer(release.version, BuildConfig.VERSION_NAME.removeSuffix("-debug"))) {
             State.Available(release)
         } else {
             State.UpToDate
         }
-        (state.value as? State.Available)?.release
+        if (!finishCheck(_state, outcome)) return@withContext null
+        (outcome as? State.Available)?.release
     }
 
     private fun latest(): Release? {
@@ -102,18 +166,28 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
             .maxWithOrNull { a, b -> compareVersions(a.version, b.version) }
     }
 
-    /** Downloads and installs; the system shows its confirmation. */
+    /** Downloads and installs, one at a time; the system shows its confirmation if it needs one. */
     suspend fun install(release: Release) = withContext(Dispatchers.IO) {
+        if (!installRunning.compareAndSet(false, true)) return@withContext
+        try {
+            installNow(release)
+        } finally {
+            installRunning.set(false)
+        }
+    }
+
+    private fun installNow(release: Release) {
         if (!context.packageManager.canRequestPackageInstalls()) {
             context.startActivity(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri())
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
             _state.value = State.Available(release)
-            return@withContext
+            return
         }
         try {
             val apk = File(context.cacheDir, "update-${release.version}.apk")
+            _state.value = State.Downloading(release, 0f)
             download(release, apk)
             _state.value = State.Installing(release)
             val installer = context.packageManager.packageInstaller
@@ -125,6 +199,7 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
                 setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
             }
             val id = installer.createSession(params)
+            prefs.installingVersion.value = release.version
             installer.openSession(id).use { session ->
                 session.openWrite("bento.apk", 0, apk.length()).use { out -> apk.inputStream().use { it.copyTo(out) }; session.fsync(out) }
                 val status = PendingIntent.getBroadcast(
@@ -134,7 +209,8 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
                 session.commit(status.intentSender)
             }
         } catch (e: Exception) {
-            _state.value = State.Failed(e.message ?: "Update failed")
+            prefs.installingVersion.value = ""
+            _state.value = State.Failed(e.message ?: "Update failed", installing = true)
         }
     }
 
@@ -189,6 +265,7 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         const val REPO = "charlesnchr/bento"
         private const val CHANNEL = "updates"
         private const val NOTIFICATION_ID = 51
+        private const val OPEN_CHECK_INTERVAL_MS = 6 * 3600_000L
 
         fun compareVersions(a: String, b: String): Int {
             val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
@@ -201,6 +278,38 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         }
 
         fun newer(candidate: String, current: String) = compareVersions(candidate, current) > 0
+
+        fun offered(version: String, skipped: String, postponed: Set<String>) = version != skipped && version !in postponed
+
+        /** Moves to Checking unless a check, download or install is under way; atomic against [start]. */
+        internal fun beginCheck(state: MutableStateFlow<State>): Boolean {
+            while (true) {
+                val before = state.value
+                if (before is State.Checking || before is State.Downloading || before is State.Installing) return false
+                if (state.compareAndSet(before, State.Checking)) return true
+            }
+        }
+
+        /** A check's outcome, unless something (an install) replaced Checking meanwhile. */
+        internal fun finishCheck(state: MutableStateFlow<State>, outcome: State) = state.compareAndSet(State.Checking, outcome)
+
+        /** After an update Bento installed: "Bento x.y.z is installed", since it closed without a word. */
+        fun notifyUpdated(context: Context, version: String) {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(CHANNEL) == null) {
+                nm.createNotificationChannel(NotificationChannel(CHANNEL, "Updates", NotificationManager.IMPORTANCE_DEFAULT))
+            }
+            val open = PendingIntent.getActivity(
+                context, 8, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            nm.notify(
+                NOTIFICATION_ID,
+                NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_stat_bento)
+                    .setContentTitle("Bento $version is installed")
+                    .setContentText("Tap to open Bento")
+                    .setContentIntent(open).setAutoCancel(true).build(),
+            )
+        }
 
         fun schedule(context: Context) {
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -232,9 +341,24 @@ class InstallResultReceiver : BroadcastReceiver() {
             }
             PackageInstaller.STATUS_SUCCESS -> {}
             else -> {
+                context.graph.prefs.installingVersion.value = ""
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Installation failed"
-                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                if (!context.graph.updater.installFailed(msg)) {
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
+    }
+}
+
+/** Bento was replaced by a newer version: after its own update, says so (it closed without a word). */
+class UpdatedReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        val prefs = context.graph.prefs
+        val version = prefs.installingVersion.value
+        if (version.isEmpty()) return // adb or a file manager, not the updater
+        prefs.installingVersion.value = ""
+        if (version == BuildConfig.VERSION_NAME) Updater.notifyUpdated(context, version)
     }
 }

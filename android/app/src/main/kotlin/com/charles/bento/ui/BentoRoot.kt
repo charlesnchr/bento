@@ -44,6 +44,7 @@ import com.charles.bento.settings.Pairing
 import com.charles.bento.ui.settings.HermesLinkDialog
 import com.charles.bento.ui.settings.PairingDialog
 import com.charles.bento.ui.settings.SettingsScreen
+import com.charles.bento.ui.settings.UpdatePrompt
 import com.charles.bento.ui.settings.WelcomeSheet
 import com.charles.bento.ui.settings.scanPairingCode
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,7 +117,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                     else -> graph.meetings.start()
                 }
             }
-            MainActivity.ACTION_OPEN_UPDATES -> nav.navigate(SettingsRoute)
+            MainActivity.ACTION_OPEN_UPDATES -> { graph.updater.offerAgain(); nav.navigate(SettingsRoute) }
         }
     }
 
@@ -157,6 +158,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
 
     pairing?.let { p -> PairingDialog(p, fromLink = pairingFromLink) { pairing = null; pairingFromLink = false } }
     hermesLink?.let { l -> HermesLinkDialog(l) { hermesLink = null } }
+    UpdatePrompt()
 
     val onboarded by graph.prefs.onboarded.flow.collectAsStateWithLifecycle()
     val server by graph.prefs.server.flow.collectAsStateWithLifecycle()

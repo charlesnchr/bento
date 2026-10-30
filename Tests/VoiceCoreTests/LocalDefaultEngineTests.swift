@@ -28,7 +28,7 @@ import Testing
         for engine in [Engine.parakeetV3, .parakeetUltra] {
             var asked = false
             #expect(SettingsStore.resolveEngine(stored: engine, runtime: .notConfigured, hasAPIKey: { asked = true; return true }) == engine)
-            #expect(!asked, "A local choice needs no Keychain read")
+            #expect(!asked, "A local choice needs no API key read")
             #expect(SettingsStore.resolveEngine(stored: engine, runtime: .notConfigured, hasAPIKey: { false }) == engine)
         }
     }

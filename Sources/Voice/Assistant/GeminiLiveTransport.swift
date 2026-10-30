@@ -22,7 +22,7 @@ extension GeminiLiveController {
             guard let setup = GeminiAPILiveTransport.setupFrame(instruction: resume?.instruction ?? "") else {
                 throw ACPClient.Failure(message: "Gemini Live's call setup (gemini_live_setup.json) is missing from Bento.")
             }
-            let socket: @Sendable () -> LiveTransport = { WebSocketTransport(apiKey: { KeychainStore.loadAPIKey() ?? "" }, requestTimeout: 660) }
+            let socket: @Sendable () -> LiveTransport = { WebSocketTransport(apiKey: { APIKeyStore.loadAPIKey() ?? "" }, requestTimeout: 660) }
             return GeminiAPILiveTransport(
                 socket: socket(), setup: setup,
                 recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) }, reconnect: socket)

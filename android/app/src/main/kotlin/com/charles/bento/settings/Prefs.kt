@@ -77,6 +77,8 @@ class Prefs(context: Context) {
     // Updates
     val autoUpdateCheck = bool("update.auto", true)
     val skippedVersion = string("update.skipped", "")
+    /** The version the updater handed to the installer, until it's installed or fails. */
+    val installingVersion = string("update.installing", "")
 
     // Onboarding
     val onboarded = bool("ui.onboarded", false)

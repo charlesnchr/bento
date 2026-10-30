@@ -57,7 +57,7 @@ final class DictationController {
     /// experimental and off by default.
     ///
     /// It lives here rather than in JotCore because it is the one place that
-    /// needs both the Keychain and the Dictionary, and the coordinator should
+    /// needs both the API key and the Dictionary, and the coordinator should
     /// know about neither.
     @MainActor
     private static func makeLiveSession(assistant: Bool = false) -> LiveTranscribing? {
@@ -77,7 +77,7 @@ final class DictationController {
             )
             return nil
         }
-        guard let key = vertex?.bifrostKey ?? KeychainStore.loadAPIKey(), !key.isEmpty else { return nil }
+        guard let key = vertex?.bifrostKey ?? APIKeyStore.loadAPIKey(), !key.isEmpty else { return nil }
         let model = vertex?.isDirect == true ? "gemini-3.5-transcribe-live-preview" : "gemini-3.5-transcribe-live"
         let dictionary = DictionaryStore()
         let session = LiveTranscriptionSession(
@@ -113,7 +113,7 @@ final class DictationController {
         case .invalid(let reason):
             service = UnavailableTranscriptionService(reason: "Invalid Vertex runtime config: \(reason)")
         case .notConfigured:
-            service = GeminiTranscriptionService(client: GeminiClient(apiKey: { KeychainStore.loadAPIKey() }))
+            service = GeminiTranscriptionService(client: GeminiClient(apiKey: { APIKeyStore.loadAPIKey() }))
         }
         transcriptionService = service
         let composer = ComposerWindow()

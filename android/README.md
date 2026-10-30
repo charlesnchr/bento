@@ -66,8 +66,21 @@ It tests, builds and signs the APK with the keystore in
 `~/.config/bento/android-signing.properties` (outside the repo; every release must use the
 same key, or phones can't update in place), tags `android-v0.1.0` and uploads
 `Bento-0.1.0.apk` to a GitHub release marked not-latest, so the Mac's releases keep the
-"Latest" badge and the Homebrew updater is unaffected. Phones find it with their daily
-check (Settings → Updates).
+"Latest" badge and the Homebrew updater is unaffected. Phones find it when Bento opens or
+with their daily check, and ask **Update Bento?**.
+
+Updates go through `PackageInstaller` sessions. The first one asks Android to allow installs
+from Bento. After that, Bento holds `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, so Android 12+ can
+install its own updates without the installer's confirmation screen; Bento then posts "Bento
+x.y.z is installed". The update that first brings this permission still asks once, since the
+version doing the installing doesn't have it yet. Play Protect still checks every APK, and
+for one it hasn't seen before it may offer to scan it or send it to Google, the first install
+from a browser or file manager especially. No app code removes that. A Play-distributed build
+is known to Play Protect from the start. Android developer verification registers the
+developer and package rather than exempting an APK from scanning. Since 30 September 2026 it
+covers installs from participating stores in Brazil, Indonesia, Singapore and Thailand; Google
+plans to extend it to all apps on certified phones in 2027, after which an unregistered Bento
+installs only through Android's advanced install flow or `adb`.
 
 ## Setting up a phone
 

@@ -559,7 +559,7 @@ private struct ParakeetDownloadRow: View {
 /// The public Gemini API key, only for installs without the helper runtime.
 private struct GeminiKeyRows: View {
     @State private var apiKey = ""
-    @State private var status = KeychainStore.loadAPIKey() == nil ? "No key stored" : "Key stored in Keychain"
+    @State private var status = APIKeyStore.loadAPIKey() == nil ? "No key stored" : "Key stored"
     @State private var checking = false
     @State private var model = SettingsStore().transcribeModelOverride ?? ""
 
@@ -569,9 +569,9 @@ private struct GeminiKeyRows: View {
             HStack {
                 SecureField("Paste your key", text: $apiKey).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
                 Button("Save") { save() }.disabled(checking || apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
-                if KeychainStore.loadAPIKey() != nil {
+                if APIKeyStore.loadAPIKey() != nil {
                     Button("Remove", role: .destructive) {
-                        KeychainStore.deleteAPIKey(notify: true)
+                        APIKeyStore.deleteAPIKey()
                         status = "No key stored"
                     }
                 }
@@ -600,11 +600,11 @@ private struct GeminiKeyRows: View {
             checking = false
             switch check {
             case .valid, .unreachable:
-                if KeychainStore.saveAPIKey(key) {
+                if APIKeyStore.saveAPIKey(key) {
                     apiKey = ""
                     status = check == .valid ? "Key saved and valid" : "Key saved; it will be checked on your first dictation"
                 } else {
-                    status = "Couldn't save to Keychain. Try again."
+                    status = "Couldn't save the key. Try again."
                 }
             case .rejected:
                 status = "That key didn't work; your saved key is unchanged."
