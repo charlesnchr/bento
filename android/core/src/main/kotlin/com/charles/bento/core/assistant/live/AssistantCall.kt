@@ -143,6 +143,9 @@ class AssistantCall(
     /** When Gemini was last told something to say (a result, say), until it has said something and finished its turn. */
     private var unspokenSince: Double? = null
     private var spokeSince = false
+    /** Gemini is partway through a turn; one already underway when it's told something doesn't say it. */
+    private var geminiSpeaking = false
+    private var skipTurn = false
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
@@ -277,6 +280,13 @@ class AssistantCall(
         lastSpeech = now()
         unspokenSince = now()
         spokeSince = false
+        skipTurn = geminiSpeaking
+    }
+
+    /** Gemini said something: it counts towards what it was told unless its turn began before. */
+    private fun geminiSpoke() {
+        geminiSpeaking = true
+        if (!skipTurn) spokeSince = true
     }
 
     /** Leaves Gemini while Hermes works: the socket closes, and the microphone runs on unheard. */
@@ -398,12 +408,14 @@ class AssistantCall(
                 protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
-                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now(); spokeSince = true
+                protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now(); geminiSpoke()
             }
         }
         if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
             audio.flush()
             speechUntil = now() // the flushed speech won't play
+            geminiSpeaking = false // the turn it was in is over
+            skipTurn = false
         }
         val parts = ((content["modelTurn"] as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
         for (part in parts) {
@@ -415,11 +427,15 @@ class AssistantCall(
                 fail("Gemini sent audio Bento can't play. Start a new call."); return
             }
             audio.play(pcm)
-            spokeSince = true
+            geminiSpoke()
             // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
             speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
         }
-        if ((content["turnComplete"] as? JsonPrimitive)?.booleanOrNull == true && spokeSince) unspokenSince = null
+        if ((content["turnComplete"] as? JsonPrimitive)?.booleanOrNull == true) {
+            if (spokeSince) unspokenSince = null
+            geminiSpeaking = false
+            skipTurn = false
+        }
         ((event["toolCallCancellation"] as? JsonObject)?.get("ids") as? JsonArray)?.take(32)?.forEach { id ->
             (id as? JsonPrimitive)?.contentOrNull?.let(cancelledCalls::add)
         }
@@ -500,6 +516,8 @@ class AssistantCall(
                 executed = true, task = task.id, status = "started", scheduling = "SILENT", willContinue = true)
         // Cancelled while Gemini was being told it started: Hermes never gets it, and the call gets its last response now.
         if (task.state != RUNNING) { closeCancelled(task); return }
+        // Gemini dropped the call meanwhile: as with one dropped before, nothing runs, and the dropped call needs no answer.
+        if (task.callId in cancelledCalls) { finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started."); settled(); return }
         settled()
         task.job = scope.launch {
             val result = runCatching { onTool(request.copy(taskId = task.id)) }.getOrElse {

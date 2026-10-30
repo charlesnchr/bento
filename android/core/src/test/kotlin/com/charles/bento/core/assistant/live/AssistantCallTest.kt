@@ -376,6 +376,25 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aCallGeminiDropsWhileItHearsItStartedNeverRuns() = blocking {
+        val inner = FakeTransport(listOf(Frames.setupComplete()))
+        val transport = SlowStarts(inner)
+        var ran = false
+        val call = AssistantCall(transport, FakeAudio(), null, { ran = true; "" }, limits = fast)
+        call.start()
+        inner.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(inner, "Email Sam")
+        inner.push(Live.call("c1"))
+        withTimeout(5_000) { while (!transport.holding) delay(10) }
+        inner.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        withTimeout(5_000) { while (transport.holding || inner.responses().isEmpty()) delay(10) }
+        delay(300)
+        assertFalse(ran, "Hermes never got the dropped call")
+        assertEquals(listOf("started"), inner.responses().map { it.status() })
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+    }
+
     @Test fun aTaskCancelledWhileGeminiHearsItStartedNeverRuns() = blocking {
         val inner = FakeTransport(listOf(Frames.setupComplete()))
         val transport = SlowStarts(inner)
@@ -824,6 +843,32 @@ class AssistantCallTest {
         first.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
         delay(800) // twice the quiet spell, and Gemini hasn't said it yet
         assertEquals(0, first.closeCount)
+        first.push(Live.said("Task 1 is booked."))
+        first.push(json("serverContent" to mapOf("turnComplete" to true)))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
+    @Test fun theEndOfATurnAlreadyUnderwayDoesntCountAsSpeakingAResult() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
+        val call = AssistantCall(first, FakeAudio(), null, { c -> results.getValue(c.taskId).await() }, limits = fast,
+                                 reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.4 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "Book a table"); first.push(Live.call("c1"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        first.push(Live.said("Hermes is working"))
+        delay(100)
+        results.getValue("1").complete("Booked.")
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        // The rest of the turn Gemini had begun, then its end: not task 1's result.
+        first.push(Live.said(" on that."))
+        first.push(json("serverContent" to mapOf("turnComplete" to true)))
+        delay(900) // past the quiet spell, inside the hold
+        assertEquals(0, first.closeCount, "Gemini hasn't said task 1's result yet")
         first.push(Live.said("Task 1 is booked."))
         first.push(json("serverContent" to mapOf("turnComplete" to true)))
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
