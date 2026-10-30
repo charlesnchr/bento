@@ -204,12 +204,18 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         set(TextFieldValue(text, r.selection.ui()), edits = r.edits, user = user)
     }
 
-    /** Images picked, pasted or dropped: stored, then each on its own line at the caret. */
+    /**
+     * Images picked, pasted or dropped: stored, then each on its own line where the selection
+     * was when they came, or, if the text changed meanwhile, after the current selection.
+     */
     fun insertImages(uris: List<Uri>) {
+        val before = value.text
+        val selection = value.sel()
         scope.launch {
             val hashes = withContext(Dispatchers.IO) { notesModule.addImages(uris.mapNotNull { NoteImageImport.read(context, it) }) }
-            if (hashes.isEmpty()) haptics.performHapticFeedback(HapticFeedbackType.Reject)
-            else applyResult(NoteImage.insertion(value.text, value.sel(), hashes))
+            if (hashes.isEmpty()) { haptics.performHapticFeedback(HapticFeedbackType.Reject); return@launch }
+            val at = if (value.text == before) selection else TextRange(value.selection.max, 0)
+            applyResult(NoteImage.insertion(value.text, at, hashes))
         }
     }
     val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { if (it.isNotEmpty()) insertImages(it) }

@@ -210,8 +210,10 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
 * **Blobs** (images) live in the `blobs` table of the same DB, so backups include them.
   `PUT /v1/blobs/<sha256>` checks the hash and that the bytes are PNG, JPEG, GIF, WebP
   or HEIC/HEIF (415 otherwise; the stored type comes from the bytes, not the request),
-  up to 10 MiB (413; that route's request cap). Blob requests are served one at a time
-  (a 10 MiB upload peaks near 50 MB RSS). Storing one again refreshes its upload time. Blobs
+  up to 10 MiB (413; that route's request cap). Uploads are stored one at a time
+  (a 10 MiB upload peaks near 50 MB RSS). Downloads are streamed from SQLite in 256 KiB
+  chunks as the client reads (16 slow readers of 10 MB images: ~36 MB RSS), and nginx
+  buffers them too (`location /v1/blobs/`). Storing one again refreshes its upload time. Blobs
   have no seq and aren't broadcast: the note that refers to one is.
 * **REST errors** are JSON `{"error": "..."}` with 400/401/404/409/413/415/500.
 * **Schema.** `meta.schema_version` is 3 (v3 adds the `blobs` table, created on

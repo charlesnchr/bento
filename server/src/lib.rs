@@ -5,6 +5,7 @@
 pub mod store;
 mod ws;
 
+use axum::handler::Handler;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
@@ -27,9 +28,11 @@ use tokio::sync::{broadcast, watch};
 /// limit to leave room for JSON escaping; the decoded body is checked exactly.
 pub const MAX_REQUEST_BYTES: usize = 3 * 1024 * 1024;
 const BROADCAST_CAPACITY: usize = 256;
-/// Blob requests served at once (the rest wait, their bodies unread). One 10 MB upload
-/// peaks near 50 MB RSS; deploy/bento-sync.service allows 128 MB.
+/// Uploads stored at once (the rest wait, their bodies unread). One 10 MB upload peaks
+/// near 50 MB RSS; deploy/bento-sync.service allows 128 MB.
 const BLOB_SLOTS: usize = 1;
+/// Downloads are sent in chunks of this size.
+const BLOB_CHUNK: usize = 256 * 1024;
 
 /// A committed change, fanned out to every WebSocket connection.
 pub(crate) struct Event {
@@ -48,7 +51,7 @@ struct Inner {
     next_conn: AtomicU64,
     active_conns: AtomicUsize,
     shutdown: watch::Receiver<bool>,
-    /// Blob requests hold a whole image (up to 10 MB, several copies) in memory: one at a
+    /// An upload holds a whole image (up to 10 MB, several copies) in memory: one at a
     /// time, so a batch of uploads stays inside the service's memory limit.
     blob_slots: tokio::sync::Semaphore,
 }
@@ -332,7 +335,17 @@ async fn delete(st: AppState, collection: &str, id: String, q: DeleteQuery, keys
 /// Stores an image; the path's hash must be the SHA-256 of the body. Idempotent.
 async fn put_blob(State(st): State<AppState>, Path(hash): Path<String>, body: Bytes) -> Response {
     let (hash2, size) = (hash.clone(), body.len());
-    let res = st.with_store(move |s, _| s.put_blob(&hash, &body, now_ms())).await;
+    // hashing 10 MB takes a while: not under the store lock, which every sync waits for
+    let checked =
+        tokio::task::spawn_blocking(move || store::check_blob(&hash, &body).map(|mime| (hash, body, mime)))
+            .await
+            .unwrap_or_else(|e| Err(store::Error::Internal(format!("internal error: {e}"))));
+    let res = match checked {
+        Ok((hash, body, mime)) => {
+            st.with_store(move |s, _| s.put_checked_blob(&hash, mime, &body, now_ms())).await
+        }
+        Err(e) => Err(e),
+    };
     match res {
         Ok((mime, created)) => json_response(
             StatusCode::OK,
@@ -347,20 +360,41 @@ async fn get_blob(State(st): State<AppState>, Path(hash): Path<String>) -> Respo
     if !store::valid_blob_hash(&hash) {
         return bad_request("invalid blob hash (64 lowercase hex digits of SHA-256)");
     }
-    match st.with_store(move |s, _| s.get_blob(&hash)).await {
-        Ok(Some(b)) => {
-            let mime = HeaderValue::from_str(&b.mime)
-                .unwrap_or(HeaderValue::from_static("application/octet-stream"));
-            let etag = HeaderValue::from_str(&format!("\"{}\"", b.hash)).expect("hex is a valid header");
+    let h = hash.clone();
+    match st.with_store(move |s, _| s.blob_info(&h)).await {
+        Ok(Some((mime, size))) => {
+            let mime =
+                HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("application/octet-stream"));
+            let etag = HeaderValue::from_str(&format!("\"{hash}\"")).expect("hex is a valid header");
+            // Sent in chunks read as the client takes them, so slow readers hold one chunk
+            // each, not a whole image.
+            let size = size.max(0) as usize;
+            let chunks = futures_util::stream::unfold(0usize, move |offset| {
+                let (st, hash) = (st.clone(), hash.clone());
+                async move {
+                    if offset >= size {
+                        return None;
+                    }
+                    let res = st.with_store(move |s, _| s.read_blob(&hash, offset, BLOB_CHUNK)).await;
+                    let chunk = match res {
+                        Ok(Some(c)) if !c.is_empty() => c,
+                        Ok(_) => return Some((Err(std::io::Error::other("blob deleted")), size)),
+                        Err(e) => return Some((Err(std::io::Error::other(e.to_string())), size)),
+                    };
+                    let next = offset + chunk.len();
+                    Some((Ok::<_, std::io::Error>(Bytes::from(chunk)), next))
+                }
+            });
             (
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, mime),
+                    (header::CONTENT_LENGTH, HeaderValue::from(size)),
                     (header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable")),
                     (header::ETAG, etag),
                     (header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
                 ],
-                b.data,
+                axum::body::Body::from_stream(chunks),
             )
                 .into_response()
         }
@@ -369,7 +403,7 @@ async fn get_blob(State(st): State<AppState>, Path(hash): Path<String>) -> Respo
     }
 }
 
-/// Waits for a blob slot before the request's body is read.
+/// Waits for an upload slot before the request's body is read.
 async fn blob_slot(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let Ok(_slot) = st.0.blob_slots.acquire().await else {
         return error_response(store::Error::Internal("shutting down".into()));
@@ -390,9 +424,8 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/blobs/{hash}",
             get(get_blob)
-                .put(put_blob)
-                .layer(DefaultBodyLimit::max(store::MAX_BLOB_BYTES + 1))
-                .layer(middleware::from_fn_with_state(state.clone(), blob_slot)),
+                .put(put_blob.layer(middleware::from_fn_with_state(state.clone(), blob_slot)))
+                .layer(DefaultBodyLimit::max(store::MAX_BLOB_BYTES + 1)),
         )
         .route("/v1/sync", get(ws::handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));

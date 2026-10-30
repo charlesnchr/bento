@@ -218,17 +218,22 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     }
 
     /// Inserts images (pasted, dropped or chosen) at the selection, each on its own line.
-    /// Converting and hashing them happens off the main thread.
-    func insertImages(_ datas: [Data]) {
-        let id = noteID
+    /// Reading, converting, hashing and storing them happen off the main thread.
+    /// They go where the selection was when they came, or, if the text changed meanwhile,
+    /// after the current selection (never over it).
+    func insertImages(_ sources: [ImageSource]) {
+        let id = noteID, images = controller.images
+        let before = textView.string, selection = textView.selectedRange()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let prepared = datas.compactMap(NoteImage.prepare)
+            let hashes = sources.compactMap { $0.data.flatMap(images.add) }
             DispatchQueue.main.async {
                 guard let self, self.noteID == id else { return }
-                let hashes = prepared.compactMap { self.controller.images.add(prepared: $0) }
                 guard !hashes.isEmpty else { NSSound.beep(); return }
+                let text = self.textView.string as NSString
+                let at = text as String == before ? selection
+                    : NSRange(location: min(NSMaxRange(self.textView.selectedRange()), text.length), length: 0)
                 self.panel.makeFirstResponder(self.textView)
-                self.textView.apply(NoteImage.insertion(self.textView.string as NSString, selection: self.textView.selectedRange(), hashes: hashes))
+                self.textView.apply(NoteImage.insertion(text, selection: at, hashes: hashes))
                 self.controller.imageSync.uploadPending()
             }
         }
@@ -243,11 +248,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         open.message = "Choose images to insert into the note"
         open.beginSheetModal(for: panel) { [weak self] r in
             guard r == .OK else { return }
-            let urls = open.urls
-            DispatchQueue.global(qos: .userInitiated).async {
-                let datas = urls.compactMap { try? Data(contentsOf: $0) }
-                DispatchQueue.main.async { self?.insertImages(datas) }
-            }
+            self?.insertImages(open.urls.map(ImageSource.file))
         }
     }
 

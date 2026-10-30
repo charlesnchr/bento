@@ -62,6 +62,9 @@ line of its own:
   `PUT /v1/blobs/<hash>` (raw bytes), retrying (with a backoff while connected, and on
   every reconnect) until the server has it, and keep it pending across restarts. Clients only upload to a server whose `/v1/health` says
   `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
+* **Server reset.** When the server's seq goes backwards (restored from a backup, or a new
+  server) and the client resends its notes, it uploads every image in its cache again too
+  (cheap: storing a blob the server has is a no-op).
 * **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404
   (the sending device hasn't uploaded it yet) shows a placeholder and is retried later:
   when the note is shown again or sync reconnects.

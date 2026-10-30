@@ -146,6 +146,11 @@ class NoteImageStore(val dir: File) {
         get() = uploadDir.list()?.filter { it.length == 64 && has(it) }?.sorted().orEmpty()
 
     fun uploaded(hash: String) { File(uploadDir, hash).delete() }
+
+    /** Every image here is to be uploaded again (the server lost what it had: a restore or a new server). */
+    fun markAllPending() {
+        dir.list()?.filter { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }?.forEach { File(uploadDir, it).createNewFile() }
+    }
 }
 
 /**

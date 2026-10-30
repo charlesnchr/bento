@@ -471,22 +471,40 @@ pub fn image_refs(body: &str) -> impl Iterator<Item = &str> {
 
 pub const IMAGE_SCHEME: &str = "bento-image:";
 
+/// Validates an upload: the hash's form, the size, that it's an image, and that `hash` is
+/// its SHA-256. Returns its MIME type.
+pub fn check_blob(hash: &str, data: &[u8]) -> Result<&'static str, Error> {
+    if !valid_blob_hash(hash) {
+        return Err(Error::BadRequest("invalid blob hash (64 lowercase hex digits of SHA-256)".into()));
+    }
+    if data.len() > MAX_BLOB_BYTES {
+        return Err(Error::TooLarge(format!("blob exceeds {MAX_BLOB_BYTES} bytes")));
+    }
+    let mime = image_type(data)
+        .ok_or_else(|| Error::Unsupported("not an image (PNG, JPEG, GIF, WebP or HEIC)".into()))?;
+    if sha256_hex(data) != hash {
+        return Err(Error::BadRequest("blob hash does not match its SHA-256".into()));
+    }
+    Ok(mime)
+}
+
 impl Store {
     /// Stores an image under the SHA-256 of its bytes, which must equal `hash`. Storing
     /// one that exists only moves its `created_at` (the last upload, which `gc_blobs`'s grace
     /// period counts from) to `now`. Returns its type and whether it was new.
     pub fn put_blob(&mut self, hash: &str, data: &[u8], now: i64) -> Result<(&'static str, bool), Error> {
-        if !valid_blob_hash(hash) {
-            return Err(Error::BadRequest("invalid blob hash (64 lowercase hex digits of SHA-256)".into()));
-        }
-        if data.len() > MAX_BLOB_BYTES {
-            return Err(Error::TooLarge(format!("blob exceeds {MAX_BLOB_BYTES} bytes")));
-        }
-        let mime = image_type(data)
-            .ok_or_else(|| Error::Unsupported("not an image (PNG, JPEG, GIF, WebP or HEIC)".into()))?;
-        if sha256_hex(data) != hash {
-            return Err(Error::BadRequest("blob hash does not match its SHA-256".into()));
-        }
+        let mime = check_blob(hash, data)?;
+        self.put_checked_blob(hash, mime, data, now)
+    }
+
+    /// `put_blob` for bytes `check_blob` passed (the server hashes outside the store lock).
+    pub fn put_checked_blob(
+        &mut self,
+        hash: &str,
+        mime: &'static str,
+        data: &[u8],
+        now: i64,
+    ) -> Result<(&'static str, bool), Error> {
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let refreshed = tx.execute(
             "UPDATE blobs SET created_at = max(created_at, ?2) WHERE hash = ?1",
@@ -509,6 +527,31 @@ impl Store {
                 Ok(Blob { hash: r.get(0)?, mime: r.get(1)?, data: r.get(2)? })
             })
             .optional()?)
+    }
+
+    /// A blob's type and size, without its bytes.
+    pub fn blob_info(&self, hash: &str) -> Result<Option<(String, i64)>, Error> {
+        Ok(self
+            .conn
+            .query_row("SELECT type, size FROM blobs WHERE hash = ?1", [hash], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?)
+    }
+
+    /// Up to `len` bytes of a blob from `offset`, read incrementally (the whole image is
+    /// never loaded); None when it's gone (deleted meanwhile).
+    pub fn read_blob(&self, hash: &str, offset: usize, len: usize) -> Result<Option<Vec<u8>>, Error> {
+        let Some(rowid) = self
+            .conn
+            .query_row("SELECT rowid FROM blobs WHERE hash = ?1", [hash], |r| r.get::<_, i64>(0))
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let blob = self.conn.blob_open(rusqlite::MAIN_DB, "blobs", "data", rowid, true)?;
+        let end = blob.len().min(offset.saturating_add(len));
+        let mut buf = vec![0u8; end.saturating_sub(offset)];
+        blob.read_at_exact(&mut buf, offset)?;
+        Ok(Some(buf))
     }
 
     /// Deletes blobs stored before `before` (ms) that no document's body refers to (admin;
@@ -908,6 +951,24 @@ mod tests {
         let mut big = PNG.to_vec();
         big.resize(MAX_BLOB_BYTES + 1, 0);
         assert!(matches!(s.put_blob(&sha256_hex(&big), &big, 1), Err(Error::TooLarge(_))));
+    }
+
+    #[test]
+    fn blobs_read_in_chunks() {
+        let mut s = Store::open_in_memory().unwrap();
+        let data: Vec<u8> = PNG.iter().copied().chain((0..1000u32).map(|i| i as u8)).collect();
+        let h = sha256_hex(&data);
+        s.put_blob(&h, &data, 1).unwrap();
+        assert_eq!(s.blob_info(&h).unwrap(), Some(("image/png".to_string(), data.len() as i64)));
+        let mut out = Vec::new();
+        while out.len() < data.len() {
+            out.extend(s.read_blob(&h, out.len(), 300).unwrap().unwrap());
+        }
+        assert_eq!(out, data);
+        assert_eq!(s.read_blob(&h, data.len(), 300).unwrap(), Some(vec![]));
+        let missing = sha256_hex(b"none");
+        assert_eq!(s.blob_info(&missing).unwrap(), None);
+        assert_eq!(s.read_blob(&missing, 0, 10).unwrap(), None);
     }
 
     #[test]

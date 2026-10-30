@@ -102,8 +102,23 @@ enum NoteImage {
     }
 }
 
+/// An image pasted, dropped or chosen: a file, or the bytes themselves.
+enum ImageSource {
+    case file(URL)
+    case bytes(Data)
+
+    /// Reads a file's bytes (slow: off the main thread).
+    var data: Data? {
+        switch self {
+        case .file(let url): return try? Data(contentsOf: url)
+        case .bytes(let d): return d
+        }
+    }
+}
+
 /// The images of notes on this Mac: `<support>/Notes/Images/<hash>`, with an empty
-/// `Images/upload/<hash>` while the server doesn't have it yet. Main thread only.
+/// `Images/upload/<hash>` while the server doesn't have it yet. Files only, so any thread;
+/// `store` posts on the main thread.
 final class NoteImageStore {
     /// Posted when an image becomes available (fetched from the server); object: the hash.
     static let didLoad = Notification.Name("BentoNoteImageDidLoad")
@@ -137,14 +152,10 @@ final class NoteImageStore {
     /// Size in points (a Retina screenshot shows at its point size).
     func size(_ hash: String) -> NSSize? { image(hash)?.size }
 
-    /// Adds an image made here; returns its hash. It's uploaded on the next chance.
+    /// Adds an image made here (converting and hashing it: slow, call it off the main
+    /// thread); returns its hash. It's uploaded on the next chance.
     func add(_ raw: Data) -> String? {
         guard let data = NoteImage.prepare(raw) else { return nil }
-        return add(prepared: data)
-    }
-
-    /// Adds bytes already `NoteImage.prepare`d (that's slow: do it off the main thread).
-    func add(prepared data: Data) -> String? {
         let hash = NoteImage.sha256(data)
         guard let f = file(hash) else { return nil }
         if !has(hash) {
@@ -166,6 +177,14 @@ final class NoteImageStore {
     var pendingUploads: [String] {
         guard let u = uploadDir, let names = try? fm.contentsOfDirectory(atPath: u.path) else { return [] }
         return names.filter { $0.count == 64 && has($0) }
+    }
+
+    /// Every image here is to be uploaded again (the server lost what it had: a restore or a new server).
+    func markAllPending() {
+        guard let dir, let u = uploadDir, let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names where name.count == 64 && name.allSatisfy(\.isHexDigit) {
+            fm.createFile(atPath: u.appendingPathComponent(name).path, contents: nil)
+        }
     }
 
     func uploaded(_ hash: String) {

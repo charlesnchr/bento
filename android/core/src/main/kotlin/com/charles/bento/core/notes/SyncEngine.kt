@@ -195,6 +195,8 @@ class SyncEngine(val repo: NoteRepository) {
     var beforeApply: ((String) -> Unit)? = null
     /** Called after a conflicted copy was created or updated (the copy, the original's id). */
     var onConflictCopy: ((Note, String) -> Unit)? = null
+    /** The server lost what we sent (restored from a backup, or a new one): images go up again too. */
+    var onServerReset: (() -> Unit)? = null
 
     // MARK: Incoming
 
@@ -433,6 +435,7 @@ class SyncEngine(val repo: NoteRepository) {
     fun applySnapshot(notes: List<Note>, seq: Long): Boolean {
         if (seq < (seenSeq ?: repo.lastSeq)) {
             // Server restored from a backup: everything we have that it lost must be resent.
+            onServerReset?.invoke()
             for (n in repo.allNotes(includeTombstones = true)) {
                 if (!((n.seq ?: 0) > seq || n.seq == null)) continue
                 if (n.seq == null && !n.dirty && !n.deleted && n.body.isEmpty()) continue // blank, never synced

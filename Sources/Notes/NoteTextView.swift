@@ -8,8 +8,8 @@ final class NoteTextView: NSTextView {
     var onToggleTask: ((Int, Bool) -> Void)?
     /// Collapse or open the section of the heading whose line starts at the given index.
     var onToggleHeading: ((Int) -> Void)?
-    /// Images pasted or dropped at the selection (the image files' or the images' bytes).
-    var onImages: (([Data]) -> Void)?
+    /// Images pasted or dropped at the selection.
+    var onImages: (([ImageSource]) -> Void)?
     var placeholder = "Start writing…"
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
@@ -252,17 +252,16 @@ final class NoteTextView: NSTextView {
 
     /// The images on a pasteboard: image files (Finder), or image data that is what was
     /// copied (not a picture of copied text, which comes with the text first). nil: none.
-    static func images(from pb: NSPasteboard) -> [Data]? {
+    static func images(from pb: NSPasteboard) -> [ImageSource]? {
         let fileOpts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true, .urlReadingContentsConformToTypes: [UTType.image.identifier]]
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: fileOpts) as? [URL], !urls.isEmpty {
-            let datas = urls.compactMap { try? Data(contentsOf: $0) }
-            return datas.isEmpty ? nil : datas
+            return urls.map(ImageSource.file)
         }
-        var out: [Data] = []
+        var out: [ImageSource] = []
         for item in pb.pasteboardItems ?? [] {
             guard let first = item.types.first, item.string(forType: .string) == nil || imageTypes.contains(first),
                   let type = imageTypes.first(where: item.types.contains), let d = item.data(forType: type) else { continue }
-            out.append(d)
+            out.append(.bytes(d))
         }
         return out.isEmpty ? nil : out
     }
