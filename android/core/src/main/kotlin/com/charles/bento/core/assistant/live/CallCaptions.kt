@@ -21,8 +21,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** What the captioner hears of the user's speech: display only, never a request. */
 sealed interface Caption {
-    /** The user started an utterance. */
-    data object Started : Caption
+    /** The user started an utterance; [at] is when its first audio was captured (the call's clock), if known. */
+    data class Started(val at: Double? = null) : Caption
     /** The utterance so far: each one replaces the last. */
     data class Partial(val text: String) : Caption
     /** The utterance ended (or the captioner lost it). */
@@ -64,10 +64,15 @@ class LiveCaptions(
     private val setupSeconds: Double = 10.0,
     private val retrySeconds: Double = 5.0,
     private val maxFailures: Int = 3,
+    /** The call's clock ([AssistantCall]'s), for when an utterance's audio was captured. */
+    private val clock: () -> Double = { System.nanoTime() / 1e9 },
 ) : CallCaptions {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
-    /** Audio, or null for "the microphone went quiet". About two seconds wait while a socket opens. */
-    private val audio = Channel<ByteArray?>(100, BufferOverflow.DROP_OLDEST)
+    /** Audio ([pcm] null: "the microphone went quiet") and when it came. */
+    private class Frame(val pcm: ByteArray?, val at: Double)
+
+    /** About two seconds wait while a socket opens. */
+    private val audio = Channel<Frame>(100, BufferOverflow.DROP_OLDEST)
     @Volatile private var stopped = false
 
     override fun start(onCaption: (Caption) -> Unit) {
@@ -75,11 +80,11 @@ class LiveCaptions(
     }
 
     override fun feed(pcm: ByteArray) {
-        if (!stopped) audio.trySend(pcm)
+        if (!stopped) audio.trySend(Frame(pcm, clock()))
     }
 
     override fun pause() {
-        if (!stopped) audio.trySend(null)
+        if (!stopped) audio.trySend(Frame(null, clock()))
     }
 
     override fun stop() {
@@ -92,15 +97,18 @@ class LiveCaptions(
         var failures = 0
         while (scope.isActive) {
             // Nothing opens until there is something to hear.
-            val first = audio.receiveCatching().getOrNull() ?: if (audio.isClosedForReceive) return else continue
+            val first = audio.receiveCatching().getOrNull() ?: return
+            if (first.pcm == null) continue
             val socket = transport()
-            val failed = try {
-                !open(socket) || stream(socket, first, onCaption)
+            val end = try {
+                if (open(socket)) stream(socket, first, onCaption) else End(broke = true, captioned = false)
             } finally {
                 socket.close()
             }
-            if (!failed) { failures = 0; continue }
-            if (++failures >= maxFailures) return
+            // Only captions prove the captioner works; a socket that broke waits before the next.
+            if (end.captioned) failures = 0
+            if (!end.broke) continue
+            if (!end.captioned && ++failures >= maxFailures) return
             delay((retrySeconds * 1000).toLong())
             while (audio.tryReceive().isSuccess) Unit // what was said meanwhile is gone
         }
@@ -121,48 +129,63 @@ class LiveCaptions(
         false
     }
 
-    /**
-     * Sends audio and relays captions until the socket ends or goes idle. Whether it failed: a
-     * socket that ends by itself having heard nothing (an error after setup, say).
-     */
-    private suspend fun stream(socket: LiveTransport, first: ByteArray, onCaption: (Caption) -> Unit): Boolean {
+    /** How a socket ended: [broke] by an error or a drop (not idle, goAway or stop), having [captioned] or not. */
+    private data class End(val broke: Boolean, val captioned: Boolean)
+
+    /** Sends audio and relays captions until the socket ends or goes idle. */
+    private suspend fun stream(socket: LiveTransport, first: Frame, onCaption: (Caption) -> Unit): End {
         var speaking = false
-        var heard = false
+        var captioned = false
         var broke = false
+        // Seconds of audio sent on this socket, and where it jumped in time (a mute, dropped frames):
+        // the server counts an utterance's start in audio, the call in time.
+        var sent = 0.0
+        val marks = ArrayDeque<Pair<Double, Double>>()
+        fun capturedAt(offset: Double): Double? = marks.lastOrNull { it.first <= offset }?.let { it.second + offset - it.first }
+        suspend fun send(frame: Frame) {
+            val pcm = frame.pcm
+            if (pcm == null) { socket.send(MeetingLiveProtocol.streamEndFrame()); return }
+            val expected = marks.lastOrNull()?.let { it.second + sent - it.first }
+            if (expected == null || kotlin.math.abs(frame.at - expected) > 0.1) {
+                marks.addLast(sent to frame.at)
+                if (marks.size > 64) marks.removeFirst()
+            }
+            socket.send(LiveProtocol.audioFrame(pcm))
+            sent += pcm.size / 32_000.0
+        }
         val reader = scope.launch {
             try {
                 while (isActive) {
                     for (event in MeetingLiveProtocol.decode(socket.receive())) when (event) {
-                        is MeetingLiveEvent.ActivityStart -> { speaking = true; heard = true; onCaption(Caption.Started) }
-                        is MeetingLiveEvent.Interim -> { heard = true; onCaption(Caption.Partial(event.text)) }
+                        is MeetingLiveEvent.ActivityStart -> { speaking = true; onCaption(Caption.Started(capturedAt(event.offset))) }
+                        is MeetingLiveEvent.Interim -> { captioned = true; onCaption(Caption.Partial(event.text)) }
                         is MeetingLiveEvent.Final, is MeetingLiveEvent.ActivityEnd -> if (speaking) { speaking = false; onCaption(Caption.Ended) }
-                        MeetingLiveEvent.GoAway, is MeetingLiveEvent.Failed -> return@launch
+                        MeetingLiveEvent.GoAway -> return@launch
+                        is MeetingLiveEvent.Failed -> { broke = true; return@launch }
                         else -> Unit
                     }
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                broke = true
             }
         }
         try {
-            socket.send(LiveProtocol.audioFrame(first))
+            send(first)
             while (reader.isActive) {
                 val next = withTimeoutOrNull((idleSeconds * 1000).toLong()) {
-                    select<ChannelResult<ByteArray?>?> { reader.onJoin { null }; audio.onReceiveCatching { it } }
+                    select<ChannelResult<Frame>?> { reader.onJoin { null }; audio.onReceiveCatching { it } }
                 } ?: break
-                if (next.isClosed) break
-                val pcm = next.getOrNull()
-                socket.send(if (pcm == null) MeetingLiveProtocol.streamEndFrame() else LiveProtocol.audioFrame(pcm))
+                send(next.getOrNull() ?: break)
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             broke = true
         } finally {
-            broke = broke || !reader.isActive
             reader.cancel()
             if (speaking) onCaption(Caption.Ended)
         }
-        return broke && !heard
+        return End(broke, captioned)
     }
 
     companion object {

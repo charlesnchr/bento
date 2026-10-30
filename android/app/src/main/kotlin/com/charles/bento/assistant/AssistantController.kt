@@ -468,15 +468,20 @@ class AssistantController(
         }
     }
 
-    /** A live transcript fragment: adjacent fragments of one speaker join (they aren't turn boundaries). */
+    /**
+     * A live transcript fragment: adjacent fragments of one speaker join (they aren't turn boundaries).
+     * The user's words take the caption's place in the same update ([AssistantCall.onCaption]).
+     */
     private fun heard(role: String, text: String) {
         if (call == null) return
         val speaker = if (role == "assistant") "Gemini" else null
-        messages { list ->
+        set { s ->
+            val list = s.messages
             val last = list.lastOrNull()
-            if (!voiceBoundary && last != null && last.voice && last.role == role && last.speaker == speaker) {
+            val messages = if (!voiceBoundary && last != null && last.voice && last.role == role && last.speaker == speaker) {
                 list.dropLast(1) + last.copy(text = last.text + text)
             } else list + ChatMessage(UUID.randomUUID().toString(), role, text, speaker = speaker, voice = true)
+            s.copy(messages = messages, caption = if (role == "user") null else s.caption)
         }
         voiceBoundary = false
     }

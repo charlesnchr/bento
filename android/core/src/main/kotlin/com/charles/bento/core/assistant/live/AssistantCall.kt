@@ -111,7 +111,11 @@ class AssistantCall(
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
     var onTranscript: ((String, String) -> Unit)? = null
 
-    /** What the user is saying, before Gemini transcribes it; null takes it down. Display only. Called on the call's thread. */
+    /**
+     * What the user is saying, before Gemini transcribes it; null takes it down. Display only.
+     * A user fragment from [onTranscript] takes it down too, so the two swap in one update; a
+     * caption of later words then comes straight back. Called on the call's thread.
+     */
     var onCaption: ((String?) -> Unit)? = null
 
     private var socket = transport
@@ -141,9 +145,16 @@ class AssistantCall(
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
-    private var captionShown = false
-    /** Gemini transcribed the utterance being captioned: the rest of the captioner's guesses at it are stale. */
-    private var captionStale = false
+    /** The caption on screen. */
+    private var captionText: String? = null
+    /**
+     * When Gemini's latest user turn started, the turn its transcript has reached, and when the
+     * captioned utterance started. Both hear the same audio as it's spoken, so an utterance that
+     * started with Gemini's transcribed turn ([CAPTION_MATCH]) is the one Gemini has written down.
+     */
+    private var geminiTurnAt: Double? = null
+    private var transcribedTurnAt: Double? = null
+    private var captionTurnAt: Double? = null
     /** When the captioned utterance ended, for taking down a caption Gemini never replaces. */
     private var captionEndedAt: Double? = null
 
@@ -338,16 +349,19 @@ class AssistantCall(
             if (back) cameBack() else listen()
         }
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
-            "ACTIVITY_START" -> { protocol.activityStarted(now()); lastSpeech = now() }
+            "ACTIVITY_START" -> { protocol.activityStarted(now()); lastSpeech = now(); geminiTurnAt = now() }
             "ACTIVITY_END" -> { protocol.activityEnded(now()); lastSpeech = now() }
         }
         val content = event["serverContent"] as? JsonObject ?: JsonObject(emptyMap())
         // Transcripts arrive inside serverContent; the reference also allows them top level.
         for (source in listOf(content, event)) {
             (source["inputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
-                captionStale = true
-                takeDownCaption()
+                transcribedTurnAt = geminiTurnAt ?: now()
+                val later = captionText.takeUnless { captionTranscribed() }
+                if (later == null) captionEndedAt = null
+                captionText = null
                 protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
+                later?.let(::showCaption)
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
                 protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now()
@@ -404,20 +418,33 @@ class AssistantCall(
     private fun caption(caption: Caption) {
         if (!active) return
         when (caption) {
-            Caption.Started -> { captionStale = false; captionEndedAt = null }
-            is Caption.Partial -> if (!captionStale && !standby && caption.text.isNotBlank()) {
-                captionShown = true
+            is Caption.Started -> { captionTurnAt = caption.at ?: now(); captionEndedAt = null }
+            is Caption.Partial -> {
+                if (captionTurnAt == null) captionTurnAt = now()
+                // Guesses at words Gemini has already transcribed are stale.
+                if (captionTranscribed() || standby || caption.text.isBlank()) return
                 captionEndedAt = null
-                onCaption?.invoke(caption.text)
+                showCaption(caption.text)
             }
-            Caption.Ended -> if (captionShown) captionEndedAt = now()
+            Caption.Ended -> if (captionText != null) captionEndedAt = now()
         }
+    }
+
+    private fun showCaption(text: String) {
+        captionText = text
+        onCaption?.invoke(text)
+    }
+
+    private fun captionTranscribed(): Boolean {
+        val caption = captionTurnAt ?: return false
+        val transcribed = transcribedTurnAt ?: return false
+        return caption <= transcribed + CAPTION_MATCH
     }
 
     private fun takeDownCaption() {
         captionEndedAt = null
-        if (!captionShown) return
-        captionShown = false
+        if (captionText == null) return
+        captionText = null
         onCaption?.invoke(null)
     }
 
@@ -530,6 +557,8 @@ class AssistantCall(
     companion object {
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
+        /** Seconds between the two starts of one utterance: they came 0.03 s apart on 2026-10-30, each over its own socket. */
+        const val CAPTION_MATCH = 0.5
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
 
         fun audioFrame(pcm: ByteArray): String = buildJsonObject {
