@@ -73,8 +73,10 @@ class AppGraph(val app: Application) {
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)
-        override suspend fun addTask(text: String): String? = todo.perform {
-            val (defaults, anchor) = addDefaults(TodoListView.Inbox)
+        override suspend fun addTask(text: String, view: String?): String? = todo.perform {
+            // the list a task widget shows, as it shows it (Today once its project is gone)
+            val list = view?.let { com.charles.bento.widget.WidgetConfigs.resolve(it, store.projects.map { p -> p.id }) } ?: TodoListView.Inbox
+            val (defaults, anchor) = addDefaults(list)
             quickAdd(spokenTask(text), defaults, anchor)?.title
         }
     }

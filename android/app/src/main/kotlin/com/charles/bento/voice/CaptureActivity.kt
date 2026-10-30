@@ -72,9 +72,10 @@ class CaptureActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
         val kind = intent.getStringExtra(EXTRA_KIND) ?: KIND_THOUGHT
+        val view = intent.getStringExtra(EXTRA_VIEW)
         setContent {
             val theme by graph.prefs.theme.flow.collectAsStateWithLifecycle()
-            BentoTheme(theme) { CaptureSheet(kind, onClose = ::finish) }
+            BentoTheme(theme) { CaptureSheet(kind, view, onClose = ::finish) }
         }
     }
 
@@ -87,26 +88,29 @@ class CaptureActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_KIND = "kind"
+        /** For a task: the stored view id of the list to add it to (a task widget's list); the Inbox without it. */
+        const val EXTRA_VIEW = "view"
         const val KIND_THOUGHT = "thought"
         const val KIND_TASK = "task"
 
-        fun intent(context: Context, kind: String) = Intent(context, CaptureActivity::class.java)
+        fun intent(context: Context, kind: String, view: String? = null) = Intent(context, CaptureActivity::class.java)
             .putExtra(EXTRA_KIND, kind)
+            .apply { view?.let { putExtra(EXTRA_VIEW, it) } }
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }
 }
 
 @Composable
-private fun CaptureSheet(kind: String, onClose: () -> Unit) {
+private fun CaptureSheet(kind: String, view: String?, onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val graph = context.graph
     val state by graph.dictation.state.collectAsStateWithLifecycle()
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) start(context, kind) else onClose()
+        if (ok) start(context, kind, view) else onClose()
     }
     LaunchedEffect(Unit) {
         if (!Setup.hasMic(context)) mic.launch(Manifest.permission.RECORD_AUDIO)
-        else if (graph.dictation.state.value !is DictationState.Listening) start(context, kind)
+        else if (graph.dictation.state.value !is DictationState.Listening) start(context, kind, view)
     }
     LaunchedEffect(state) {
         when (val s = state) {
@@ -209,9 +213,9 @@ private fun Status(color: Color, text: String, icon: @Composable () -> Unit) {
     }
 }
 
-private fun start(context: Context, kind: String) {
+private fun start(context: Context, kind: String, view: String?) {
     val g = context.graph
-    val target = if (kind == CaptureActivity.KIND_TASK) DictationTarget.Task
+    val target = if (kind == CaptureActivity.KIND_TASK) DictationTarget.Task(view)
                  else DictationTarget.Thought(g.prefs.thoughtNote.value.ifEmpty { null })
     g.dictation.start(target, handsFree = true)
 }
