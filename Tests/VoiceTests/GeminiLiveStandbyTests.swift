@@ -198,6 +198,19 @@ import VoiceCore
         controller.stop()
     }
 
+    @Test func speechCutOffByAnInterruptionDoesntHoldOffStandby() async throws {
+        let sockets = Sockets(), answer = Answer()
+        // 30 s of Gemini's speech queued as Hermes starts, then the user talks over it and the rest is dropped.
+        let audio = #"{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":""# +
+            Data(count: 480_000).base64EncodedString() + #""}}]}}}"#
+        let controller = try await waitingOnHermes(sockets, answer: answer, standbyAfter: 1.5, onAsk: {
+            for _ in 0..<3 { sockets.made[0].push(audio) }
+            sockets.made[0].push(#"{"serverContent":{"interrupted":true}}"#)
+        })
+        #expect(controller.standby)
+        controller.stop()
+    }
+
     @Test func aSendCaughtByStandbyDoesntEndTheCall() async throws {
         let sockets = Sockets(), answer = Answer()
         // The microphone's next send hangs until standby closes the socket under it.

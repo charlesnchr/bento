@@ -509,6 +509,17 @@ class AssistantCallTest {
         assertNull(call.ended().message)
     }
 
+    @Test fun speechCutOffByAnInterruptionDoesntHoldOffStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { FakeTransport(listOf(Frames.setupComplete())) }, result, standbyAfter = 0.5)
+        // 30 s of Gemini's speech queued, then the user talks over it and the rest is dropped.
+        repeat(3) { first.push(Live.audio(ByteArray(480_000))) }
+        first.push(Live.interrupted())
+        withTimeout(3_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
     @Test fun neverMeansNoStandby() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()

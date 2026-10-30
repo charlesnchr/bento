@@ -330,7 +330,10 @@ class AssistantCall(
                 protocol.transcript("assistant", it, now()); onTranscript?.invoke("assistant", it); lastSpeech = now()
             }
         }
-        if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) audio.flush()
+        if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
+            audio.flush()
+            speechUntil = now() // the flushed speech won't play
+        }
         val parts = ((content["modelTurn"] as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
         for (part in parts) {
             val inline = (part as? JsonObject)?.get("inlineData") as? JsonObject ?: continue

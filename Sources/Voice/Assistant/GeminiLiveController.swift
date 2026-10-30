@@ -263,7 +263,10 @@ final class GeminiLiveController {
                 lastSpeech = now
             }
         }
-        if content["interrupted"] as? Bool == true { audio.flush() }
+        if content["interrupted"] as? Bool == true {
+            audio.flush()
+            speechUntil = now // the flushed speech won't play
+        }
         for part in (content["modelTurn"] as? [String: Any])?["parts"] as? [[String: Any]] ?? [] {
             guard let inline = part["inlineData"] as? [String: Any],
                   (inline["mimeType"] as? String)?.hasPrefix("audio/") == true else { continue }
