@@ -110,6 +110,63 @@ data class HermesSession(
     }
 }
 
+/**
+ * The model and reasoning effort this device asks Hermes for. A null [model] or [effort] is
+ * Hermes's own default; a model always names its provider, since two providers can serve a
+ * model of the same name.
+ */
+data class HermesChoice(val provider: String? = null, val model: String? = null, val effort: String? = null) {
+    val picked: Boolean get() = provider != null && model != null
+
+    /**
+     * What a turn in a conversation asks for. A conversation locked to a picked model keeps
+     * that lock in Hermes until a turn names another, so once [locked], the default is sent
+     * as Hermes's default model by name ([options]); with no list to name it from, the turn
+     * can't say it and goes as it is.
+     */
+    fun forConversation(locked: Boolean, options: HermesModelOptions?): HermesChoice {
+        if (picked || !locked) return this
+        val p = options?.provider ?: return this
+        val m = options.model ?: return this
+        return copy(provider = p, model = m)
+    }
+
+    companion object {
+        /** Hermes's effort ladder as Bento offers it; Hermes clamps it to what the model supports. */
+        val EFFORTS = listOf("none", "low", "medium", "high", "xhigh", "max")
+
+        fun effortLabel(effort: String?): String = when (effort) {
+            null -> "Default"
+            "none" -> "Off"
+            "xhigh" -> "Extra high"
+            else -> effort.replaceFirstChar(Char::uppercase)
+        }
+    }
+}
+
+/** One provider in Hermes's model picker inventory, with the models it serves. */
+data class HermesProvider(val slug: String, val name: String, val models: List<String>)
+
+/** `GET /api/model/options`: what Hermes can run, and its default (the provider and model a turn gets when it names none). */
+data class HermesModelOptions(val providers: List<HermesProvider>, val provider: String?, val model: String?) {
+    fun providerName(slug: String?): String? = providers.firstOrNull { it.slug == slug }?.name
+
+    companion object {
+        fun parse(o: JsonObject): HermesModelOptions {
+            val providers = (o["providers"] as? JsonArray).orEmpty().mapNotNull { p ->
+                val obj = p as? JsonObject ?: return@mapNotNull null
+                val slug = obj.string("slug") ?: return@mapNotNull null
+                // Hermes lists providers it has no key for too; those can't run a turn.
+                if (obj.bool("authenticated") == false) return@mapNotNull null
+                val models = (obj["models"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.takeIf { m -> m.isString }?.contentOrNull }
+                    .filter { it.isNotBlank() }
+                if (models.isEmpty()) null else HermesProvider(slug, obj.string("name")?.takeIf { it.isNotBlank() } ?: slug, models)
+            }
+            return HermesModelOptions(providers, o.string("provider"), o.string("model"))
+        }
+    }
+}
+
 /** A tool call an assistant row asked for. */
 data class HermesToolCall(val id: String?, val name: String, val arguments: String?)
 

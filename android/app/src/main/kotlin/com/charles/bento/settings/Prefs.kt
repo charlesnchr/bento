@@ -73,6 +73,15 @@ class Prefs(context: Context) {
     val hermesScroll = string("hermes.scroll", "")
     /** Voice calls: "continuous" (open mic) or "tap" (tap to talk). */
     val hermesTalkMode = string("hermes.talkMode", "continuous")
+    /** The model this phone asks Hermes for: its provider's slug and its name (both empty = Hermes's default). */
+    val hermesModelProvider = string("hermes.modelProvider", "")
+    val hermesModel = string("hermes.model", "")
+    /** Reasoning effort for Hermes (HermesChoice.EFFORTS; empty = Hermes's default). */
+    val hermesEffort = string("hermes.effort", "")
+    /** Conversations a turn from this phone locked to a picked model, comma-separated (HermesChoice.forConversation). */
+    val hermesLocked = string("hermes.locked", "")
+    /** Seconds without speech after which a call disconnects from Gemini while Hermes works (0 = never). */
+    val hermesStandbySeconds = int("hermes.standbySeconds", 20)
 
     // Updates
     val autoUpdateCheck = bool("update.auto", true)

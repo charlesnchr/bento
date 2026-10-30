@@ -4,19 +4,20 @@ import VoiceCore
 extension GeminiLiveController {
     /// A call goes where dictation's Gemini goes (`SettingsStore.geminiLiveRoute`):
     /// the Gemini API with the user's key, or the direct Vertex helper. `recap` is the
-    /// earlier call's transcript when this one resumes it.
-    nonisolated static func routedTransport(recap: String?) throws -> LiveTransport {
+    /// earlier call's transcript when this one resumes it; `result` is Hermes's reply when
+    /// the call comes back from standby to speak it.
+    nonisolated static func routedTransport(recap: String?, result: String? = nil) throws -> LiveTransport {
         switch SettingsStore().geminiLiveRoute {
         case .vertexHelper(let vertex):
             let key = vertex.bifrostKey
             // A quiet stretch of a call must not time the socket out. The helper carries a call
             // over Vertex's connection limit itself.
-            guard let recap else {
+            guard recap != nil || result != nil else {
                 return WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationEndpoint, requestTimeout: 660)
             }
             return try GeminiHelperResumeTransport(
                 socket: WebSocketTransport(apiKey: { key }, endpoint: vertex.conversationResumeEndpoint, requestTimeout: 660),
-                recap: recap)
+                recap: recap ?? "", result: result.map(GeminiLiveProtocol.excerpt))
         case .geminiAPI:
             let resume = try LiveResume.context(recap ?? "")
             guard let setup = GeminiAPILiveTransport.setupFrame(instruction: resume?.instruction ?? "") else {
@@ -25,7 +26,8 @@ extension GeminiLiveController {
             let socket: @Sendable () -> LiveTransport = { WebSocketTransport(apiKey: { APIKeyStore.loadAPIKey() ?? "" }, requestTimeout: 660) }
             return GeminiAPILiveTransport(
                 socket: socket(), setup: setup,
-                recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) }, reconnect: socket)
+                recap: try resume.map { try GeminiAPILiveTransport.recapFrame($0.recap) },
+                result: try result.map { try GeminiAPILiveTransport.resultFrame(try LiveResume.result($0)) }, reconnect: socket)
         case .unavailable(let reason):
             throw ACPClient.Failure(message: reason)
         }
@@ -34,8 +36,8 @@ extension GeminiLiveController {
 
 /// A call on the Gemini API's Live socket. No helper sits in between, so this sends
 /// the setup the helper sends to Vertex (`helper/gemini_live_setup.json`) as soon as
-/// it connects, and a resumed call's recap as the helper does; after that the
-/// controller sees the same events either way.
+/// it connects, and a resumed call's recap (and a call back from standby's result) as
+/// the helper does; after that the controller sees the same events either way.
 ///
 /// Like the helper, it carries a call over Gemini's connection limit: on `goAway` a
 /// `reconnect` socket resumes the session from its latest handle, the old one carrying
@@ -43,7 +45,8 @@ extension GeminiLiveController {
 final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @unchecked Sendable {
     private var socket: LiveTransport
     private let setup: Data
-    private var recap: Data?
+    /// What goes in straight after setupComplete, once: the recap, then the result.
+    private var seed: [Data]
     private let reconnect: (@Sendable () -> LiveTransport)?
     private var handle: String?
     private var rotation: Task<Bool, Never>?
@@ -51,10 +54,10 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
     private var closed = false
     private let lock = NSLock()
 
-    init(socket: LiveTransport, setup: Data, recap: Data? = nil, reconnect: (@Sendable () -> LiveTransport)? = nil) {
+    init(socket: LiveTransport, setup: Data, recap: Data? = nil, result: Data? = nil, reconnect: (@Sendable () -> LiveTransport)? = nil) {
         self.socket = socket
         self.setup = setup
-        self.recap = recap
+        seed = [recap, result].compactMap { $0 }
         self.reconnect = reconnect
     }
 
@@ -77,8 +80,8 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
         }
     }
 
-    /// Gemini takes nothing before setupComplete. The recap goes straight after it, before
-    /// the controller sees it and starts the microphone.
+    /// Gemini takes nothing before setupComplete. The recap and result go straight after it,
+    /// before the controller sees it and starts the microphone.
     func receive() async throws -> Data {
         while true {
             if let goAway = lock.withLock({ rotation == nil ? heldGoAway.take() : nil }) { return goAway }
@@ -90,7 +93,7 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
                 throw error
             }
             guard from === current else { continue }
-            if let recap = takeRecap(after: data) { try await from.send(recap) }
+            for frame in takeSeed(after: data) { try await from.send(frame) }
             let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             if let update = event?["sessionResumptionUpdate"] as? [String: Any], update["resumable"] as? Bool == true,
                let handle = update["newHandle"] as? String, !handle.isEmpty {
@@ -163,12 +166,12 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
         return try? JSONSerialization.data(withJSONObject: frame)
     }
 
-    /// The recap, once, when `data` is setupComplete.
-    private func takeRecap(after data: Data) -> Data? {
+    /// The seed, once, when `data` is setupComplete.
+    private func takeSeed(after data: Data) -> [Data] {
         lock.withLock {
-            guard let recap, ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["setupComplete"] != nil else { return nil }
-            self.recap = nil
-            return recap
+            guard !seed.isEmpty, ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["setupComplete"] != nil else { return [] }
+            defer { seed = [] }
+            return seed
         }
     }
     func close() {
@@ -200,18 +203,31 @@ final class GeminiAPILiveTransport: LiveTransport, LiveSocketReporting, @uncheck
         try JSONSerialization.data(withJSONObject: ["clientContent": [
             "turns": [["role": "user", "parts": [["text": recap]]]], "turnComplete": false]])
     }
+
+    /// Hermes's reply for a call back from standby (`LiveResume.result`) as a user turn.
+    /// turnComplete true: Gemini answers it by speaking.
+    static func resultFrame(_ text: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["clientContent": [
+            "turns": [["role": "user", "parts": [["text": text]]]], "turnComplete": true]])
+    }
 }
 
 /// A resumed call through the helper's /conversation/resume. Its first message carries the
-/// earlier call's transcript, which the helper hands Vertex as the first user turn; a helper
-/// older than the route refuses the upgrade (`GeminiLiveEnding`).
+/// earlier call's transcript, which the helper hands Vertex as the first user turn, and for a
+/// call back from standby Hermes's reply (an excerpt), which the helper words and sends after
+/// it. A helper older than the route refuses the upgrade, and one older than standby the
+/// reply (`GeminiLiveEnding`).
 final class GeminiHelperResumeTransport: LiveTransport, LiveSocketReporting {
     private let socket: LiveTransport
     private let resume: Data
+    let carriesResult: Bool
 
-    init(socket: LiveTransport, recap: String) throws {
+    init(socket: LiveTransport, recap: String, result: String? = nil) throws {
         self.socket = socket
-        resume = try JSONSerialization.data(withJSONObject: ["resume": ["recap": recap]])
+        var payload: [String: Any] = ["recap": recap]
+        if let result { payload["result"] = result }
+        resume = try JSONSerialization.data(withJSONObject: ["resume": payload])
+        carriesResult = result != nil
     }
 
     func connect() async throws {

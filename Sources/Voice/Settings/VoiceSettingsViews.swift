@@ -698,6 +698,17 @@ struct AssistantSettingsView: View {
                         Text("Off gives ⌥F18 back to voice editing and one-shot requests.")
                     }
                 }
+                if provider == .gemini, settings.assistantLiveCall {
+                    Picker(selection: binding({ settings.assistantLiveStandbySeconds }, { settings.setAssistantLiveStandbySeconds($0) })) {
+                        Text("Never").tag(0)
+                        ForEach([10, 20, 30, 60, 120], id: \.self) { seconds in
+                            Text(seconds < 60 ? "After \(seconds) s" : "After \(seconds / 60) min").tag(seconds)
+                        }
+                    } label: {
+                        Text("Pause Gemini while Hermes works")
+                        Text("A call waiting on Hermes with nobody speaking leaves Gemini, which bills by the second, and comes back to speak the answer.")
+                    }
+                }
                 MicrophoneRow()
             } header: {
                 Text("Voice")

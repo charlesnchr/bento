@@ -90,6 +90,16 @@ public struct SettingsStore: Sendable {
         Self.set(provider.rawValue, forKey: "assistantLiveProvider")
     }
 
+    /// Seconds without speech after which a Gemini call waiting on Hermes leaves the
+    /// connection, which Gemini bills by the second, until Hermes answers (0 = never).
+    public var assistantLiveStandbySeconds: Int {
+        max(0, Self.defaults.object(forKey: "assistantLiveStandby") as? Int ?? 20)
+    }
+
+    public func setAssistantLiveStandbySeconds(_ seconds: Int) {
+        Self.set(max(0, seconds), forKey: "assistantLiveStandby")
+    }
+
     /// Where a Gemini Live call goes: the same Google connection as dictation, so
     /// a Mac on the Gemini API never needs the Vertex helper and one on Vertex
     /// never needs a key.

@@ -166,6 +166,21 @@ def resume_context(recap):
             'recap': f"{resume['preamble']}\n<{tag}>\n{recap}\n</{tag}>"}
 
 
+def standby_result(result):
+    """What a call back from standby hears about the request it waited on (live_resume.json): a fixed
+    line and Hermes's reply, fenced, as content to relay rather than instructions. Bento sends the
+    reply already cut to an excerpt, so anything much longer isn't one."""
+    if not isinstance(result, str) or len(result) > 8000:
+        raise ValueError('Invalid result')
+    resume = json.loads(RESUME.read_text())
+    tag = resume['resultTag']
+    # The reply can't close its own fence either.
+    close = re.compile(r'</\s*' + re.escape(tag) + r'\s*>', re.IGNORECASE)
+    while close.search(result):
+        result = close.sub('', result)
+    return f"{resume['result']}\n<{tag}>\n{result.strip()}\n</{tag}>"
+
+
 def read_setup(line):
     """Bento's first line: the recap of the call this one resumes, empty for a new call."""
     if not line.endswith(b'\n'):

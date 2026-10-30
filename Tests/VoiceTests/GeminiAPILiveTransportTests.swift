@@ -103,6 +103,31 @@ import VoiceCore
         #expect(socket.sent.last == Data("audio".utf8))
     }
 
+    @Test func aCallBackFromStandbyHearsTheRecapThenTheReplyAsATurn() async throws {
+        let socket = FakeSocket()
+        let setup = try #require(GeminiAPILiveTransport.setupFrame())
+        let recap = try GeminiAPILiveTransport.recapFrame("transcript"), result = try GeminiAPILiveTransport.resultFrame("reply")
+        let transport = GeminiAPILiveTransport(socket: socket, setup: setup, recap: recap, result: result)
+        try await transport.connect()
+        _ = try await transport.receive()
+        #expect(socket.sent == [setup, recap, result])
+        let frame = try JSONSerialization.jsonObject(with: result) as? [String: Any]
+        let expected: [String: Any] = ["clientContent": ["turns": [["role": "user", "parts": [["text": "reply"]]]], "turnComplete": true]]
+        #expect(NSDictionary(dictionary: frame ?? [:]) == NSDictionary(dictionary: expected))
+        _ = try await transport.receive()
+        #expect(socket.sent == [setup, recap, result], "Once")
+    }
+
+    @Test func theHelperCarriesTheReplyInTheResume() async throws {
+        let socket = FakeSocket()
+        let transport = try GeminiHelperResumeTransport(socket: socket, recap: "User: hi", result: "Booked.")
+        #expect(transport.carriesResult)
+        try await transport.connect()
+        let first = try #require(try JSONSerialization.jsonObject(with: socket.sent[0]) as? [String: Any])
+        #expect(NSDictionary(dictionary: first) == NSDictionary(dictionary: ["resume": ["recap": "User: hi", "result": "Booked."]]))
+        #expect(try GeminiHelperResumeTransport(socket: FakeSocket(), recap: "User: hi").carriesResult == false)
+    }
+
     @Test func connectSendsTheSetupFirst() async throws {
         let socket = FakeSocket()
         let frame = try #require(GeminiAPILiveTransport.setupFrame())

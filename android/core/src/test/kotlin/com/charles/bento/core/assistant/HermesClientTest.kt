@@ -155,6 +155,7 @@ class HermesClientTest {
         val body = HermesJson.parseToJsonElement(request.body!!.utf8()) as JsonObject
         assertEquals("Please use the todo tool", body["message"]!!.jsonPrimitive.content)
         assertEquals("Be brief.", body["instructions"]!!.jsonPrimitive.content)
+        assertEquals(setOf("message", "instructions"), body.keys, "Hermes's defaults: nothing about the model")
 
         assertIs<HermesEvent.RunStarted>(events.first())
         assertEquals("run_40358cf849ec4cb6a613f33c1525e962", (events.first() as HermesEvent.RunStarted).runId)
@@ -166,6 +167,49 @@ class HermesClientTest {
         assertEquals(HermesEvent.Done, events.last())
         val streamed = events.filterIsInstance<HermesEvent.Delta>().joinToString("") { it.text }
         assertTrue(streamed.startsWith("Let me use a tool. \n\nDone: "), streamed)
+    }
+
+    @Test fun aPickedModelGoesWithItsProviderAndALock() = blocking {
+        enqueue(200, fixture("chat-stream-tool.sse"), "text/event-stream")
+        withTimeout(10_000) { client.chat("s", "hi", null, HermesChoice("jules-2", "gpt-6.1-sol", "high")).toList() }
+        val body = HermesJson.parseToJsonElement(server.takeRequest().body!!.utf8()) as JsonObject
+        assertEquals("jules-2", body["provider"]!!.jsonPrimitive.content)
+        assertEquals("gpt-6.1-sol", body["model"]!!.jsonPrimitive.content)
+        assertEquals("true", body["require_model_lock"]!!.jsonPrimitive.content)
+        assertEquals("high", (body["model_options"] as JsonObject)["reasoning_effort"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun anEffortAloneLeavesTheModelToHermes() {
+        val body = HermesClient.chatBody("hi", null, HermesChoice(effort = "low"))
+        assertEquals(setOf("message", "model_options"), body.keys)
+        assertEquals(setOf("message"), HermesClient.chatBody("hi", null, HermesChoice(provider = "jules-2")).keys, "a provider without a model is no pick")
+    }
+
+    @Test fun theModelListIsWhatHermesCanRun() = blocking {
+        enqueue(200, """{"providers":[
+            {"slug":"vertex-anthropic","name":"Vertex · Claude","authenticated":true,"models":["claude-opus-5-5","claude-fable-5-1"]},
+            {"slug":"custom","name":"custom","authenticated":false,"models":["x"]},
+            {"slug":"empty","name":"Empty","authenticated":true,"models":[]},
+            {"slug":"jules-2","authenticated":true,"models":["gpt-6.1-sol", 3, ""]},
+            {"name":"no slug","models":["y"]}],
+            "model":"claude-opus-5-5","provider":"vertex-anthropic"}""")
+        val o = client.modelOptions()
+        assertEquals("/api/model/options", server.takeRequest().url.encodedPath)
+        assertEquals(listOf(HermesProvider("vertex-anthropic", "Vertex · Claude", listOf("claude-opus-5-5", "claude-fable-5-1")),
+                            HermesProvider("jules-2", "jules-2", listOf("gpt-6.1-sol"))), o.providers)
+        assertEquals("vertex-anthropic" to "claude-opus-5-5", o.provider to o.model)
+        assertEquals("Vertex · Claude", o.providerName("vertex-anthropic"))
+    }
+
+    @Test fun aLockedConversationGetsTheDefaultByName() {
+        val options = HermesModelOptions(emptyList(), "vertex-anthropic", "claude-opus-5-5")
+        val default = HermesChoice(effort = "high")
+        assertEquals(default, default.forConversation(locked = false, options), "a conversation never locked keeps Hermes's own default")
+        assertEquals(HermesChoice("vertex-anthropic", "claude-opus-5-5", "high"), default.forConversation(locked = true, options))
+        assertEquals(default, default.forConversation(locked = true, null), "no list, nothing to name")
+        val picked = HermesChoice("jules-2", "gpt-6.1-sol")
+        assertEquals(picked, picked.forConversation(locked = true, options))
+        assertEquals(listOf("Default", "Off", "Low", "Extra high", "Max"), listOf(null, "none", "low", "xhigh", "max").map(HermesChoice::effortLabel))
     }
 
     @Test fun aRefusedTurnFailsTheFlow() = blocking {

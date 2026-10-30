@@ -311,6 +311,12 @@ struct AssistantComposer: View {
             }
             let empty = model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachments.isEmpty
             if model.liveVoice {
+                if model.liveStandby {
+                    // Gemini isn't listening in standby: talking first brings it back.
+                    Button { model.actions?.wakeLive() } label: {
+                        Label("Talk", systemImage: "waveform").font(.system(size: 11.5, weight: .medium))
+                    }.buttonStyle(.bordered).controlSize(.small).help("Reconnect to \(model.liveName) before Hermes finishes")
+                }
                 button("phone.down.fill", "End \(model.liveName) call", tint: .red) { model.actions?.call() }
             } else {
                 if model.busy, !model.recording { // A recording finishes with the mic.

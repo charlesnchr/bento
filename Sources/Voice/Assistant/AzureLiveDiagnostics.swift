@@ -8,6 +8,8 @@ enum AzureLiveDiagnostics {
         case invalidAudio, bridgeFailure, sessionEnded, toolSendFailure
         case delegationReceived, delegationResultSent, approvalShown, approvalAllowed, approvalDenied
         case approvalCancelled, approvalUnavailable, approvalBusy, taskStarted, taskFinished
+        /// A Gemini call left the connection while Hermes worked, and came back.
+        case standby, standbyEnded
     }
     /// One bounded file pair per voice provider.
     enum Log: String { case azure = "azure-live", gemini = "gemini-live" }

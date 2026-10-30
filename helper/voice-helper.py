@@ -85,14 +85,24 @@ def conversation_recap(resume):
     return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': resume['recap']}]}], 'turnComplete': False}}
 
 
+def conversation_result(resume):
+    """Back from standby, Hermes's reply to the request the call waited on, as a turn Gemini answers
+    by speaking (azure_live.standby_result)."""
+    return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': resume['result']}]}], 'turnComplete': True}}
+
+
 def conversation_resume(payload):
-    """A resumed call's first message: the earlier call's transcript, nothing else. Returns how the call
-    is told about it (azure_live.resume_context)."""
-    from azure_live import resume_context
+    """A resumed call's first message: the earlier call's transcript, and for a call back from standby
+    the reply it waited on; nothing else. Returns how the call is told about them
+    (azure_live.resume_context, azure_live.standby_result)."""
+    from azure_live import resume_context, standby_result
     if not isinstance(payload, dict) or set(payload) != {'resume'} or not isinstance(payload['resume'], dict) \
-            or set(payload['resume']) != {'recap'}:
+            or set(payload['resume']) - {'result'} != {'recap'}:
         raise ValueError('Expected the resumed call')
-    return resume_context(payload['resume']['recap'])
+    context = resume_context(payload['resume']['recap'])
+    if 'result' in payload['resume']:
+        context = {**(context or {'instruction': '', 'recap': None}), 'result': standby_result(payload['resume']['result'])}
+    return context
 
 
 def conversation_input(payload):
@@ -487,7 +497,10 @@ class VertexBridge:
                         if not isinstance(event, dict):
                             event = {}
                         if not seeded.is_set() and 'setupComplete' in event:
-                            await upstream.send_json(conversation_recap(context))
+                            if context['recap']:
+                                await upstream.send_json(conversation_recap(context))
+                            if context.get('result'):
+                                await upstream.send_json(conversation_result(context))
                             seeded.set()
                         update = event.get('sessionResumptionUpdate')
                         if isinstance(update, dict) and update.get('resumable') and isinstance(update.get('newHandle'), str) \
