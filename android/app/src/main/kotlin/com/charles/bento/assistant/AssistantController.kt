@@ -521,9 +521,9 @@ class AssistantController(
         val speaker = if (role == "assistant") "Gemini" else null
         messages { list ->
             val last = list.lastOrNull()
-            if (!voiceBoundary && last != null && last.voice && last.role == role && last.speaker == speaker) {
+            if (!voiceBoundary && last != null && last.call && last.voice && last.role == role && last.speaker == speaker) {
                 list.dropLast(1) + last.copy(text = last.text + text)
-            } else list + ChatMessage(UUID.randomUUID().toString(), role, text, speaker = speaker, voice = true)
+            } else list + ChatMessage(UUID.randomUUID().toString(), role, text, speaker = speaker, voice = true, call = true)
         }
         voiceBoundary = false
     }
@@ -628,7 +628,7 @@ class AssistantController(
             val (marked, _) = AssistantTranscript.finish(list.map { if (it.id == row.id) it.copy(status = status) else it },
                                                          TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
             if (turn.answer.isNotBlank() && status != "cancelled") {
-                marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(id))
+                marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(id), call = true)
             } else marked
         }
         voiceBoundary = true
@@ -663,7 +663,7 @@ class AssistantController(
          * never a request or an approval.
          */
         internal fun callContext(messages: List<ChatMessage>): String {
-            val recap = AssistantTranscript.liveRecap(messages.filter { it.voice || it.speaker?.startsWith("Hermes · task ") == true }) ?: return ""
+            val recap = AssistantTranscript.liveRecap(messages.filter { it.call }) ?: return ""
             val close = Regex("</\\s*" + CALL_TAG + "\\s*>", RegexOption.IGNORE_CASE)
             var text = recap
             while (close.containsMatchIn(text)) text = close.replace(text, "")
