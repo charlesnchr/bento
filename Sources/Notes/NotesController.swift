@@ -44,7 +44,10 @@ final class NotesController {
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
         imageSync.endpoint = { [weak sync = self.sync] in sync?.blobEndpoint }
         sync.onConnected = { [weak imageSync = self.imageSync] in imageSync?.connected() }
-        engine.onServerReset = { [weak images = self.images] in images?.markAllPending() }
+        engine.onServerReset = { [weak images = self.images, weak imageSync = self.imageSync] in
+            images?.markAllPending()
+            imageSync?.uploadPending() // also while polling, where nothing reconnects
+        }
         engine.onConflictCopy = { [weak self] copy, _ in
             self?.countCache.removeValue(forKey: copy.id)
             // only tell someone who is looking at notes; the copy tops the list either way

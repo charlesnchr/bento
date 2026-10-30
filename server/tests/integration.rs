@@ -717,6 +717,16 @@ async fn blobs() {
         http_bytes(a, "PUT", &format!("/v1/blobs/{}", sha256_hex(&big)), Some(TOKEN), &big).await;
     assert_eq!(st, 413);
 
+    // which ones the server is missing
+    let unknown = sha256_hex(b"never uploaded");
+    let q = json!({"hashes": [hash, unknown]}).to_string();
+    let (st, v) = http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(&q)).await;
+    assert_eq!((st, v), (200, json!({"missing": [unknown]})));
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", None, Some(&q)).await.0, 401);
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(r#"{"hashes":["x"]}"#)).await.0, 400);
+    let many = json!({"hashes": vec![unknown.clone(); bento_sync::MAX_MISSING_QUERY + 1]}).to_string();
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(&many)).await.0, 400);
+
     // documents keep their own limit
     let doc = format!("{{\"updated_at\":1,\"body\":\"{}\"}}", "x".repeat(bento_sync::MAX_REQUEST_BYTES));
     assert_eq!(http(a, "PUT", "/v1/notes/n", Some(TOKEN), Some(&doc)).await.0, 413);

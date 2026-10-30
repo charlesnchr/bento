@@ -403,6 +403,38 @@ async fn get_blob(State(st): State<AppState>, Path(hash): Path<String>) -> Respo
     }
 }
 
+/// Most hashes one `POST /v1/blobs/missing` may ask about.
+pub const MAX_MISSING_QUERY: usize = 2000;
+
+#[derive(Deserialize)]
+struct MissingQuery {
+    hashes: Vec<String>,
+}
+
+/// Which of the given images the server doesn't have: clients ask on every connect and
+/// upload those again (the server may have been restored from a backup without them).
+async fn missing_blobs(State(st): State<AppState>, body: Bytes) -> Response {
+    let q: MissingQuery = match serde_json::from_slice(&body) {
+        Ok(q) => q,
+        Err(e) => return bad_request(&format!("invalid JSON: {e}")),
+    };
+    if q.hashes.len() > MAX_MISSING_QUERY {
+        return bad_request(&format!("at most {MAX_MISSING_QUERY} hashes"));
+    }
+    if !q.hashes.iter().all(|h| store::valid_blob_hash(h)) {
+        return bad_request("invalid blob hash (64 lowercase hex digits of SHA-256)");
+    }
+    let res = st
+        .with_store(move |s, _| {
+            s.missing_blobs(&q.hashes).map(|m| m.into_iter().map(str::to_string).collect::<Vec<_>>())
+        })
+        .await;
+    match res {
+        Ok(missing) => json_response(StatusCode::OK, json!({ "missing": missing })),
+        Err(e) => error_response(e),
+    }
+}
+
 /// Waits for an upload slot before the request's body is read.
 async fn blob_slot(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let Ok(_slot) = st.0.blob_slots.acquire().await else {
@@ -421,6 +453,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/notes/{id}", axum::routing::put(put_note).delete(delete_note))
         .route("/v1/c/{collection}", get(list_docs))
         .route("/v1/c/{collection}/{id}", axum::routing::put(put_doc).delete(delete_doc))
+        .route("/v1/blobs/missing", axum::routing::post(missing_blobs))
         .route(
             "/v1/blobs/{hash}",
             get(get_blob)

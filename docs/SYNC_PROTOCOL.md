@@ -62,9 +62,10 @@ line of its own:
   `PUT /v1/blobs/<hash>` (raw bytes), retrying (with a backoff while connected, and on
   every reconnect) until the server has it, and keep it pending across restarts. Clients only upload to a server whose `/v1/health` says
   `"blobs": true`. The note itself syncs as usual and doesn't wait for the upload.
-* **Server reset.** When the server's seq goes backwards (restored from a backup, or a new
-  server) and the client resends its notes, it uploads every image in its cache again too
-  (cheap: storing a blob the server has is a no-op).
+* **Server reset.** On every connect a client asks `POST /v1/blobs/missing` which of the
+  images in its cache the server lacks (in batches) and uploads those: a server restored
+  from a backup, or a new one, gets back the images uploaded since. When the server's seq
+  goes backwards the client also marks every cached image for upload straight away.
 * **Showing.** A blob that isn't cached is fetched with `GET /v1/blobs/<hash>`. A 404
   (the sending device hasn't uploaded it yet) shows a placeholder and is retried later:
   when the note is shown again or sync reconnects.
@@ -192,6 +193,7 @@ Wrong/missing token → HTTP 401 (WebSocket upgrade refused with 401).
 | PUT | `/v1/c/<collection>/<id>` | Doc (no `seq`) | `{"doc":Doc,"accepted":bool}` |
 | DELETE | `/v1/c/<collection>/<id>?updated_at=<ms>` | – | same as PUT with `deleted:true, body:""` |
 | PUT | `/v1/blobs/<hash>` | image bytes | `{"hash":…,"type":"image/png","size":<bytes>,"created":bool}`; 400 when `hash` isn't the SHA-256 of the body, 413 over 10 MB, 415 when it isn't an image. Idempotent |
+| POST | `/v1/blobs/missing` | `{"hashes":[…]}` (at most 2000) | `{"missing":[…]}`: those the server doesn't have |
 | GET | `/v1/blobs/<hash>` | – | the bytes, `Content-Type` from them, `Cache-Control: immutable`; 404 when the server doesn't have it (`HEAD` works too) |
 
 `/v1/notes…` is `/v1/c/notes…` with the original response keys (`notes`, `note`). A

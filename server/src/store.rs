@@ -529,6 +529,18 @@ impl Store {
             .optional()?)
     }
 
+    /// The hashes of `hashes` the server doesn't have, in order.
+    pub fn missing_blobs<'a>(&self, hashes: &'a [String]) -> Result<Vec<&'a str>, Error> {
+        let mut st = self.conn.prepare_cached("SELECT 1 FROM blobs WHERE hash = ?1")?;
+        let mut out = Vec::new();
+        for h in hashes {
+            if !st.exists([h])? {
+                out.push(h.as_str());
+            }
+        }
+        Ok(out)
+    }
+
     /// A blob's type and size, without its bytes.
     pub fn blob_info(&self, hash: &str) -> Result<Option<(String, i64)>, Error> {
         Ok(self

@@ -179,13 +179,20 @@ final class NoteImageStore {
         return names.filter { $0.count == 64 && has($0) }
     }
 
-    /// Every image here is to be uploaded again (the server lost what it had: a restore or a new server).
-    func markAllPending() {
-        guard let dir, let u = uploadDir, let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
-        for name in names where name.count == 64 && name.allSatisfy(\.isHexDigit) {
-            fm.createFile(atPath: u.appendingPathComponent(name).path, contents: nil)
-        }
+    /// Every image here.
+    var allHashes: [String] {
+        guard let dir, let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return names.filter { $0.count == 64 && $0.allSatisfy { $0.isHexDigit && !$0.isUppercase } }.sorted()
     }
+
+    /// An image here is to be uploaded (again).
+    func markPending(_ hash: String) {
+        guard has(hash), let u = uploadDir?.appendingPathComponent(hash) else { return }
+        fm.createFile(atPath: u.path, contents: nil)
+    }
+
+    /// Every image here is to be uploaded again (the server lost what it had: a restore or a new server).
+    func markAllPending() { allHashes.forEach(markPending) }
 
     func uploaded(_ hash: String) {
         if let u = uploadDir?.appendingPathComponent(hash) { try? fm.removeItem(at: u) }
@@ -218,14 +225,40 @@ final class NoteImageSync {
     }
 
     /// Sync (re)connected: upload what's pending and ask again for what was missing.
+    /// Asks the server which of our images it lacks (it may have been restored from a backup
+    /// without them), uploads those and the pending ones, and asks again for what was missing.
     func connected() {
         let wasMissing = Array(missing.keys)
         missing.removeAll()
         serverHasBlobs = nil
         retryDelay = 30
-        uploadPending()
+        reconcile { [weak self] in self?.uploadPending() }
         // placeholders on screen ask again (drawing them fetches)
         for h in wasMissing { NotificationCenter.default.post(name: NoteImageStore.didLoad, object: h) }
+    }
+
+    /// Marks pending every image here the server doesn't have (`POST /v1/blobs/missing`, in
+    /// batches), then calls `done`.
+    func reconcile(done: @escaping () -> Void) {
+        guard let ep = endpoint() else { done(); return }
+        withBlobs(ep) { [weak self] in self?.reconcile(ArraySlice(self?.store.allHashes ?? []), ep, done) }
+    }
+
+    private func reconcile(_ hashes: ArraySlice<String>, _ ep: (base: URL, token: String), _ done: @escaping () -> Void) {
+        guard !hashes.isEmpty else { done(); return }
+        let batch = hashes.prefix(1000)
+        var req = URLRequest(url: ep.base.appendingPathComponent("v1/blobs/missing"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(ep.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["hashes": Array(batch)])
+        session.dataTask(with: req) { [weak self] data, resp, _ in
+            guard let self else { return }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+                  let missing = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["missing"] as? [String] else { done(); return }
+            missing.forEach(self.store.markPending)
+            self.reconcile(hashes.dropFirst(batch.count), ep, done)
+        }.resume()
     }
 
     /// Uploads the pending images one at a time (the server serves blob requests one by one).

@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
@@ -147,10 +148,15 @@ class NoteImageStore(val dir: File) {
 
     fun uploaded(hash: String) { File(uploadDir, hash).delete() }
 
+    /** Every image here. */
+    val allHashes: List<String>
+        get() = dir.list()?.filter { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }?.sorted().orEmpty()
+
+    /** An image here is to be uploaded (again). */
+    fun markPending(hash: String) { if (has(hash)) File(uploadDir, hash).createNewFile() }
+
     /** Every image here is to be uploaded again (the server lost what it had: a restore or a new server). */
-    fun markAllPending() {
-        dir.list()?.filter { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }?.forEach { File(uploadDir, it).createNewFile() }
-    }
+    fun markAllPending() = allHashes.forEach(::markPending)
 }
 
 /**
@@ -180,7 +186,11 @@ class NoteImageSync(
     private var retryJob: kotlinx.coroutines.Job? = null
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Sync (re)connected: upload what's pending and ask again for what was missing. */
+    /**
+     * Sync (re)connected: ask the server which of our images it lacks (it may have been
+     * restored from a backup without them) and upload those and the pending ones, and ask
+     * again for what was missing here.
+     */
     fun connected() {
         val wasMissing = missing.keys.toList()
         missing.clear()
@@ -188,7 +198,33 @@ class NoteImageSync(
         wasMissing.forEach { _changed.tryEmit(it) }
         serverHasBlobs = null
         retryDelayMs = 30_000L
-        uploadPending()
+        scope.launch {
+            reconcileNow()
+            uploadPending()
+        }
+    }
+
+    /** Marks pending every image here the server doesn't have (`POST /v1/blobs/missing`). False when it couldn't ask. */
+    suspend fun reconcileNow(): Boolean = withContext(Dispatchers.IO) {
+        val (base, token) = target() ?: return@withContext false
+        if (hasBlobs(base) != true) return@withContext false
+        for (batch in store.allHashes.chunked(1000)) {
+            val body = kotlinx.serialization.json.buildJsonObject {
+                put("hashes", kotlinx.serialization.json.JsonArray(batch.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            }.toString()
+            val ok = runCatching {
+                http.newCall(Request.Builder().url("$base/v1/blobs/missing").header("Authorization", "Bearer $token")
+                                 .post(body.toRequestBody("application/json".toMediaType())).build())
+                    .also { it.timeout().timeout(30, TimeUnit.SECONDS) }.execute().use { r ->
+                        if (!r.isSuccessful) return@use false
+                        json.parseToJsonElement(r.body.string()).jsonObject["missing"]?.jsonArray
+                            ?.forEach { store.markPending(it.jsonPrimitive.content) }
+                        true
+                    }
+            }.getOrDefault(false)
+            if (!ok) return@withContext false
+        }
+        true
     }
 
     /** Uploads what's pending; what fails is tried again later (with a backoff) while paired. */

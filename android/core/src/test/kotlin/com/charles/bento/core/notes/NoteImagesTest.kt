@@ -133,6 +133,26 @@ class NoteImagesTest {
             assertTrue(mac.fetchNow(hash))
             assertContentEquals(bytes, mac.store.data(hash))
 
+            // the server comes back from a backup without the image (same seq: no note changed):
+            // the next connect asks which images it lacks and uploads them again
+            val restored = TestServer(binary, token).also { it.start() }
+            try {
+                val toRestored = { SyncEndpoint("http://127.0.0.1:${restored.port}", token) }
+                val phone2 = NoteImageSync(phone.store, http, toRestored, scope)
+                val mac2 = NoteImageSync(mac.store.let { NoteImageStore(tempDir()) }, http, toRestored, scope)
+                assertEquals(emptyList(), phone2.store.pendingUploads)
+                assertFalse(mac2.fetchNow(hash))
+                assertTrue(phone2.reconcileNow())
+                assertEquals(listOf(hash), phone2.store.pendingUploads)
+                assertTrue(phone2.uploadPendingNow())
+                assertTrue(mac2.fetchNow(hash))
+                // nothing missing: nothing marked
+                assertTrue(phone2.reconcileNow())
+                assertEquals(emptyList(), phone2.store.pendingUploads)
+            } finally {
+                restored.stop()
+            }
+
             // a wrong token keeps it pending
             val other = NoteImageSync(NoteImageStore(tempDir()), http, { SyncEndpoint("http://127.0.0.1:${server.port}", "wrong-token-0123456789") }, scope)
             val h2 = other.store.add(png("other"))!!
