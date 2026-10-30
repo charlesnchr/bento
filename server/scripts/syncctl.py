@@ -388,7 +388,12 @@ def cmd_roundtrip(ctx, args):
     sa, sb = a.hello(0, "syncctl-A"), b.hello(0, "syncctl-B")
     print(f"hello: snapshot A={len(sa['notes'])} notes, B={len(sb['notes'])} notes, seq={sa['seq']}")
     ts = now_ms()
-    note = {"id": nid, "body": "# syncctl roundtrip", "created_at": ts, "updated_at": ts,
+    if ctx.collection == "notes":
+        body, stale_body = "# syncctl roundtrip", "stale"
+    else:  # other collections' bodies are JSON objects; the server refuses anything else
+        body = json.dumps({"type": "synctest", "fields": {"v": "roundtrip"}, "clocks": {}})
+        stale_body = json.dumps({"type": "synctest", "fields": {"v": "stale"}, "clocks": {}})
+    note = {"id": nid, "body": body, "created_at": ts, "updated_at": ts,
             "deleted": False, "device": "syncctl-A", "meta": {}}
     t1 = time.time()
     a.send({"type": "put", "note": note})
@@ -396,11 +401,11 @@ def cmd_roundtrip(ctx, args):
     got = b.expect(lambda m: m.get("type") == "note" and m["note"]["id"] == nid, "note on B")
     assert ack["accepted"] is True and got["note"]["seq"] == ack["seq"], (ack, got)
     print(f"put on A -> ack seq={ack['seq']} on A, note on B in {1000*(time.time()-t1):.0f} ms")
-    stale = dict(note, body="stale", updated_at=ts - 1)
+    stale = dict(note, body=stale_body, updated_at=ts - 1)
     a.send({"type": "put", "note": stale})
     nack = a.expect(lambda m: m.get("type") == "ack" and m.get("id") == nid, "stale ack")
     back = a.expect(lambda m: m.get("type") == "note" and m["note"]["id"] == nid, "stored note")
-    assert nack["accepted"] is False and back["note"]["body"] == "# syncctl roundtrip"
+    assert nack["accepted"] is False and back["note"]["body"] == body
     print("stale put -> accepted:false + stored note returned")
     a.send({"type": "ping"})
     a.expect(lambda m: m.get("type") == "pong", "pong")

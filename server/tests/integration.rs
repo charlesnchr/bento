@@ -484,10 +484,10 @@ async fn collections_are_isolated() {
     recv(&mut mixed).await;
     quiet(&mut old).await;
     for (path, body) in [
-        ("/v1/c/todos/x", doc("notes", "x", "", 1)),
+        ("/v1/c/todos/x", doc("notes", "x", "{}", 1)),
         ("/v1/notes/x", doc("todos", "x", "", 1)),
         ("/v1/c/Todos/x", note("x", "", 1)),
-        ("/v1/c/todos/x", doc("", "x", "", 1)),
+        ("/v1/c/todos/x", doc("", "x", "{}", 1)),
     ] {
         let (st, r) = http(a, "PUT", path, tok, Some(&body.to_string())).await;
         assert_eq!(st, 400, "{path} {body}: {r}");
