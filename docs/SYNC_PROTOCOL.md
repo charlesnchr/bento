@@ -96,8 +96,10 @@ doesn't keep a fixed list.
 
 ## Todo documents (`collection: "todos"`)
 
-The server treats them like any document (opaque `body`, LWW on `updated_at`). The
-Todo client stores one task or project per document; `body` is a JSON object:
+The server treats them like any document (LWW on `updated_at`), except that a live
+`body` must be a JSON object: anything else (including a string holding a raw newline)
+is refused with REST 400 or a WebSocket `error`, since clients would drop it. The Todo
+client stores one task or project per document; `body` is a JSON object:
 
 ```json
 {
