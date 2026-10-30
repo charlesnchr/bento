@@ -82,6 +82,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -422,7 +423,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                     // fold chevrons beside the headings, and the " ⋯" of folded ones, over the text
                     FoldControls(folds, layout, textStart = FoldGutter, textTop = 8.dp, color = MaterialTheme.colorScheme.onSurfaceVariant, onToggle = ::toggleFoldInPlace)
                 }
-                Spacer(Modifier.height(with(LocalDensity.current) { anchor.tail.toDp() }))
+                Spacer(Modifier.height(with(LocalDensity.current) { anchor.tail.toDp() }).onSizeChanged { anchor.laidOut(it.height) })
             }
         }
     }

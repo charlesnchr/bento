@@ -171,9 +171,14 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
         toggles++
     }
 
-    /** Only the blank space still needed to fill the screen below the scroll position. */
+    /** The blank space's height in the last layout (what [ScrollState.maxValue] includes). */
+    private var laidOutTail = 0
+
+    /** The blank space was laid out `height` tall. */
+    fun laidOut(height: Int) { laidOutTail = height }
+
     private fun trim() {
-        tail = minOf(tail, maxOf(0, scroll.value - (scroll.maxValue - tail)))
+        tail = trimmed(tail, laidOutTail, scroll.value, scroll.maxValue)
     }
 
     @Composable
@@ -186,6 +191,15 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
             trim()
         }
         LaunchedEffect(Unit) { snapshotFlow { scroll.value to scroll.maxValue }.collect { if (!holding) trim() } }
+    }
+
+    companion object {
+        /**
+         * Only the blank space still needed to fill the screen below the scroll position `value`:
+         * `maxValue` is the last layout's, with `laidOut` of blank space in it.
+         */
+        fun trimmed(tail: Int, laidOut: Int, value: Int, maxValue: Int): Int =
+            minOf(tail, maxOf(0, value - (maxValue - laidOut)))
     }
 }
 

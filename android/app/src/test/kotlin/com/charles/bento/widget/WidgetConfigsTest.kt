@@ -72,6 +72,17 @@ class WidgetConfigsTest {
         assertEquals(TodoListView.Today, WidgetConfigs.resolve("", projects))
     }
 
+    @Test fun aDictatedTaskGoesIntoTheWidgetsList() {
+        val projects = listOf("p1")
+        assertEquals(TodoListView.Today, WidgetConfigs.addTo("today", projects))
+        assertEquals(TodoListView.Label("errands"), WidgetConfigs.addTo("label:errands", projects))
+        assertEquals(TodoListView.Project("p1"), WidgetConfigs.addTo("project:p1", projects))
+        // as the widget shows it: Today once its project is gone
+        assertEquals(TodoListView.Today, WidgetConfigs.addTo("project:gone", projects))
+        // not from a task widget (the capture widget, a shortcut)
+        assertEquals(TodoListView.Inbox, WidgetConfigs.addTo(null, projects))
+    }
+
     @Test fun updatesGoToEachReceiversOwnWidget() {
         // a notes update must never reach a tasks widget's ids (and the other way round)
         val receivers = Widgets.dataWidgets.map { it.first }
