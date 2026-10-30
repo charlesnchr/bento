@@ -30,6 +30,9 @@ final class BlockDecoration: NSObject {
         case code
         /// A line in a collapsed heading's section: hidden and squeezed to no height.
         case folded
+        /// A line that is one image (`NoteImage`), drawn `width`×`height` points above the
+        /// line's text, which shows only while the selection touches it. 0×0: size unknown yet.
+        case image(hash: String, width: Int, height: Int, revealed: Bool)
     }
 
     let kind: Kind

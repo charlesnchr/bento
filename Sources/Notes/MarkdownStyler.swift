@@ -17,6 +17,10 @@ final class MarkdownStyler {
     private static func linkColors(_ t: NotesTheme) -> (checked: NSColor, underline: NSColor) {
         (t.accent.withAlphaComponent(0.7), t.accent.withAlphaComponent(0.6))
     }
+    /// Size in points of a note image, nil while it isn't here (`NoteImageStore`).
+    var imageSize: (String) -> NSSize? = { _ in nil }
+    /// Widest an image is shown: the text container's width.
+    var imageMaxWidth: CGFloat = 348
     /// Selection used to decide which markers are revealed.
     private(set) var selection = NSRange(location: 0, length: 0)
     private var revealedRegion: NSRange?
@@ -268,6 +272,10 @@ final class MarkdownStyler {
         switch p.kind {
         case .paragraph:
             counters.removeAll()
+            if let hash = NoteImage.hash(inLine: text.substring(with: r)) {
+                let size = imageDisplaySize(hash)
+                return .image(hash: hash, width: size.width, height: size.height, revealed: selectionTouches(r))
+            }
             return .paragraph(empty: r.length == 0 || text.substring(with: r).trimmingCharacters(in: .whitespaces).isEmpty)
         case .heading(let l):
             counters.removeAll()
@@ -304,6 +312,34 @@ final class MarkdownStyler {
         case .code:
             return .code
         }
+    }
+
+    /// An image scaled down to the container's width and at most 420 points high; a
+    /// placeholder's size while it isn't here.
+    private func imageDisplaySize(_ hash: String) -> (width: Int, height: Int) {
+        let maxW = max(40, imageMaxWidth), maxH: CGFloat = 420
+        guard let s = imageSize(hash), s.width > 0, s.height > 0 else { return (Int(min(maxW, 240)), 0) }
+        var w = min(s.width, maxW), h = s.height * w / s.width
+        if h > maxH { w *= maxH / h; h = maxH }
+        return (max(1, Int(w.rounded())), max(1, Int(h.rounded())))
+    }
+
+    /// Height of an image line's picture (a placeholder's when 0).
+    static func imageHeight(_ h: Int) -> CGFloat { h > 0 ? CGFloat(h) : 72 }
+
+    /// Restyles the image lines (all, or those showing `hash`): an image arrived or the
+    /// width changed.
+    func restyleImages(_ s: NSTextStorage, hash: String? = nil) {
+        guard s.length > 0 else { return }
+        var lines: [NSRange] = []
+        s.enumerateAttribute(.notesBlock, in: NSRange(location: 0, length: s.length), options: []) { v, r, _ in
+            guard let d = v as? BlockDecoration, case .image(let h, _, _, _) = d.kind, hash == nil || h == hash else { return }
+            lines.append(r)
+        }
+        guard !lines.isEmpty else { return }
+        s.beginEditing()
+        for r in lines.reversed() where NSMaxRange(r) <= s.length { restyle(s, start: r.location, end: NSMaxRange(r)) }
+        s.endEditing()
     }
 
     private func selectionTouches(_ r: NSRange) -> Bool {
@@ -350,6 +386,10 @@ final class MarkdownStyler {
             before = 0
         case .folded:
             before = 0
+        case .image(_, _, let h, _):
+            font = t.mono(max(6, (t.base * 0.75).rounded()))
+            color = t.marker
+            before += MarkdownStyler.imageHeight(h) + 6
         }
 
         let lineSpacing: CGFloat
@@ -359,7 +399,9 @@ final class MarkdownStyler {
         case .code: lineSpacing = max(0, (t.base * t.size.lineHeight).rounded() - lineHeight(font)) * 0.6
         default: lineSpacing = max(0, (t.base * t.size.lineHeight).rounded() - lineHeight(t.bodyFont))
         }
-        let ps = deco.kind == .folded ? foldedStyle : paragraphStyle(indent: indent, before: before, spacing: lineSpacing, tail: tail)
+        var ps = deco.kind == .folded ? foldedStyle : paragraphStyle(indent: indent, before: before, spacing: lineSpacing, tail: tail)
+        // an image's hidden markdown takes no height below it
+        if case .image(_, _, _, false) = deco.kind { ps = imageStyle(before: before) }
 
         var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: ps, .notesBlock: deco]
         if deco.isCode { attrs[.notesCodeBlock] = true }
@@ -395,6 +437,9 @@ final class MarkdownStyler {
         case .folded:
             // hidden glyphs on a line squeezed to (almost) no height; the newline stays a line break
             if r.length > 0 { out.addAttribute(.notesHidden, value: true, range: NSRange(location: r.location - base, length: r.length)) }
+            return
+        case .image(_, _, _, let revealed):
+            if !revealed, r.length > 0 { out.addAttribute(.notesHidden, value: true, range: NSRange(location: r.location - base, length: r.length)) }
             return
         default:
             break
@@ -509,6 +554,16 @@ final class MarkdownStyler {
         p.maximumLineHeight = 0.01
         return p
     }()
+
+    private func imageStyle(before: CGFloat) -> NSParagraphStyle {
+        let key = "image|\(before)"
+        if let p = styleCache[key] { return p }
+        let p = NSMutableParagraphStyle()
+        p.paragraphSpacingBefore = before
+        p.maximumLineHeight = 0.01
+        styleCache[key] = p
+        return p
+    }
 
     private func paragraphStyle(indent: CGFloat, before: CGFloat, spacing: CGFloat, tail: CGFloat) -> NSParagraphStyle {
         let key = "\(indent)|\(before)|\(spacing)|\(tail)"

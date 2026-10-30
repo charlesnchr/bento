@@ -156,7 +156,7 @@ struct Note: Equatable {
 
 /// Pure helpers deriving titles, plain text and counts from markdown bodies.
 enum NoteText {
-    /// First non-empty line with markdown stripped; "" when the note is empty.
+    /// First non-empty line (not an image) with markdown stripped; "" when the note is empty.
     static func title(of body: String) -> String {
         var result = ""
         body.enumerateLines { line, stop in
@@ -171,9 +171,10 @@ enum NoteText {
         return t.isEmpty ? "Untitled" : t
     }
 
+    /// Lines that never make the title: fences, rules and images.
     private static func isFenceOrRule(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
-        return t.hasPrefix("```") || t.hasPrefix("~~~") || MarkdownParser.isRule(t)
+        return t.hasPrefix("```") || t.hasPrefix("~~~") || MarkdownParser.isRule(t) || NoteImage.hash(inLine: line) != nil
     }
 
     /// One line without block markers and inline syntax.
@@ -198,6 +199,8 @@ enum NoteText {
             case .code:
                 lines.append(line)
             case .rule:
+                break
+            case .paragraph where NoteImage.hash(inLine: line) != nil:
                 break
             default:
                 lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))

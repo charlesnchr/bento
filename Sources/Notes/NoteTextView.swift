@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// The editor: plain-markdown NSTextView (TextKit 1) with markdown input rules,
 /// clickable checkboxes, ⌘-click links and markdown/HTML copy.
@@ -7,6 +8,8 @@ final class NoteTextView: NSTextView {
     var onToggleTask: ((Int, Bool) -> Void)?
     /// Collapse or open the section of the heading whose line starts at the given index.
     var onToggleHeading: ((Int) -> Void)?
+    /// Images pasted or dropped at the selection (the image files' or the images' bytes).
+    var onImages: (([Data]) -> Void)?
     var placeholder = "Start writing…"
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
@@ -205,9 +208,23 @@ final class NoteTextView: NSTextView {
         return true
     }
 
-    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
+    // images and image files can be dropped too (their bytes go to `onImages`)
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string, .fileURL] + NoteTextView.imageTypes }
 
-    override func paste(_ sender: Any?) { pastePlain(from: .general) }
+    /// Drops (the selection is at the drop point by now).
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        if let onImages, let images = NoteTextView.images(from: pboard) {
+            onImages(images)
+            return true
+        }
+        guard type == .string else { return false }
+        return super.readSelection(from: pboard, type: type)
+    }
+
+    override func paste(_ sender: Any?) {
+        if let onImages, let images = NoteTextView.images(from: .general) { onImages(images); return }
+        pastePlain(from: .general)
+    }
     override func pasteAsPlainText(_ sender: Any?) { pastePlain(from: .general) }
     override func pasteAsRichText(_ sender: Any?) { pastePlain(from: .general) }
 
@@ -226,6 +243,28 @@ final class NoteTextView: NSTextView {
         insertText(s, replacementRange: selectedRange())
         breakUndoCoalescing()
         scrollRangeToVisible(selectedRange())
+    }
+
+    /// Image types in the order their bytes are preferred (TIFF, macOS's own, gets converted).
+    static let imageTypes: [NSPasteboard.PasteboardType] = [.png, NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+        NSPasteboard.PasteboardType(UTType.gif.identifier), NSPasteboard.PasteboardType(UTType.webP.identifier),
+        NSPasteboard.PasteboardType(UTType.heic.identifier), .tiff]
+
+    /// The images on a pasteboard: image files (Finder), or image data that is what was
+    /// copied (not a picture of copied text, which comes with the text first). nil: none.
+    static func images(from pb: NSPasteboard) -> [Data]? {
+        let fileOpts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true, .urlReadingContentsConformToTypes: [UTType.image.identifier]]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: fileOpts) as? [URL], !urls.isEmpty {
+            let datas = urls.compactMap { try? Data(contentsOf: $0) }
+            return datas.isEmpty ? nil : datas
+        }
+        var out: [Data] = []
+        for item in pb.pasteboardItems ?? [] {
+            guard let first = item.types.first, item.string(forType: .string) == nil || imageTypes.contains(first),
+                  let type = imageTypes.first(where: item.types.contains), let d = item.data(forType: type) else { continue }
+            out.append(d)
+        }
+        return out.isEmpty ? nil : out
     }
 
     static func plainText(from pb: NSPasteboard) -> String? {

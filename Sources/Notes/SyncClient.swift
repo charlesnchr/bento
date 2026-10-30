@@ -125,6 +125,8 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     private var pingCheck: DispatchWorkItem?
     /// Last successful REST poll (polling fallback): puts go out right after one.
     private var lastPoll: Date?
+    /// The server answered after a (re)connect (images go out then).
+    var onConnected: (() -> Void)?
 
     let device: String = {
         // SCDynamicStore is instant; Host.current() can block on name resolution at launch
@@ -229,6 +231,12 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
         while s.hasSuffix("/") { s.removeLast() }
         if !s.contains("://") { s = "https://" + s }
         return URL(string: s)
+    }
+
+    /// The server and token while syncing runs, for the image blobs.
+    var blobEndpoint: (base: URL, token: String)? {
+        guard running, let base = baseURL, let token, !SyncSettings.isBlocked(serverHost: base.host) else { return nil }
+        return (base, token)
     }
 
     private func loadToken() -> String? {
@@ -337,6 +345,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
             status.lastError = nil
             markSynced()
             flushSoon(delay: 0)
+            onConnected?()
         case "ack":
             guard let id = obj["id"] as? String else { return }
             let accepted = obj["accepted"] as? Bool ?? false
@@ -568,6 +577,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     private func enterPollingFallback() {
         log.info("WebSocket keeps failing; falling back to REST polling")
         status.state = .polling
+        lastPoll = nil
         retryWork?.cancel()
         pollTimer?.invalidate()
         let t = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.poll() }
@@ -616,6 +626,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
                     self.poll() // resync from 0
                     return
                 }
+                if self.lastPoll == nil { self.onConnected?() }
                 self.lastPoll = Date()
                 self.status.lastError = nil
                 self.markSynced()

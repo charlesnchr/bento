@@ -7,6 +7,9 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     var theme = NotesTheme()
     /// Line start of the heading under the mouse: its fold chevron shows while open.
     var hoveredHeading: Int?
+    /// A note image by hash, nil while it isn't here (fetching it); and whether it's coming.
+    var image: (String) -> NSImage? = { _ in nil }
+    var imageLoading: (String) -> Bool = { _ in false }
 
     override init() {
         super.init()
@@ -178,9 +181,34 @@ final class NotesLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let y = ((top + bottom) / 2).rounded() - 1
             t.separator.setFill()
             NSBezierPath(roundedRect: NSRect(x: origin.x, y: origin.y + y, width: containerWidth, height: 2), xRadius: 1, yRadius: 1).fill()
+        case .image(let hash, let w, let h, _):
+            guard let line = firstLine(ofParagraphAt: p.location) else { return }
+            let ps = ts.attribute(.paragraphStyle, at: p.location, effectiveRange: nil) as? NSParagraphStyle
+            let height = MarkdownStyler.imageHeight(h)
+            let top = line.rect.minY + (ps?.paragraphSpacingBefore ?? 0) - height - 6
+            let width = min(CGFloat(w), containerWidth)
+            let box = NSRect(x: origin.x, y: origin.y + top, width: width, height: h > 0 ? height * width / CGFloat(w) : height)
+            drawImage(hash, in: box)
         default:
             break
         }
+    }
+
+    private func drawImage(_ hash: String, in box: NSRect) {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let clip = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+        if let img = image(hash) {
+            clip.addClip()
+            img.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+            return
+        }
+        theme.codeBackground.setFill()
+        clip.fill()
+        let label = imageLoading(hash) ? "Loading image…" : "Image not available"
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: theme.base * 0.85), .foregroundColor: theme.marker]
+        let sz = (label as NSString).size(withAttributes: attrs)
+        (label as NSString).draw(at: NSPoint(x: box.midX - sz.width / 2, y: box.midY - sz.height / 2), withAttributes: attrs)
     }
 
     /// Fold chevrons of the headings in `rect` (view coordinates; `origin`: the text
