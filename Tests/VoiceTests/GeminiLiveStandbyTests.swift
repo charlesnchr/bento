@@ -82,14 +82,14 @@ import VoiceCore
     }
 
     /// A call that asked Hermes something on its first socket and stands by after 0.3 s of silence.
-    private func waitingOnHermes(_ sockets: Sockets, answer: Answer, wrap: ((Socket) -> LiveTransport)? = nil,
+    private func waitingOnHermes(_ sockets: Sockets, answer: Answer, wrap: ((Socket) -> LiveTransport)? = nil, standbyAfter: Double = 0.3,
                                  onAsk: @escaping @MainActor () -> Void = {}) async throws -> GeminiLiveController {
         let controller = GeminiLiveController(makeTransport: { _ in
             let socket = sockets.next()
             sockets.made.append(socket)
             return wrap?(socket) ?? socket
         }, audio: Microphone(), permitted: { true }, tick: .milliseconds(50))
-        controller.standbyAfter = { 0.3 }
+        controller.standbyAfter = { standbyAfter }
         controller.recap = { "User: what's on today?" }
         controller.onTool = { _ in
             await MainActor.run { onAsk() }
@@ -187,7 +187,8 @@ import VoiceCore
 
     @Test func aCancelledRequestFinishingInStandbyBringsTheCallBackSilently() async throws {
         let sockets = Sockets(), answer = Answer()
-        let controller = try await waitingOnHermes(sockets, answer: answer, onAsk: {
+        // The user talks over Gemini and it cancels the call; Hermes works on, and the call stands by later.
+        let controller = try await waitingOnHermes(sockets, answer: answer, standbyAfter: 1.5, onAsk: {
             sockets.made[0].push(#"{"toolCallCancellation":{"ids":["c1"]}}"#)
         })
         await answer.give("Done.")

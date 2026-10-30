@@ -177,7 +177,7 @@ final class GeminiLiveController {
         guard active, standby, !waking else { return }
         let token = generation
         let next: LiveTransport
-        do { next = try makeTransport(recap()) } catch {
+        do { next = try makeTransport(recap().flatMap { $0.isEmpty ? nil : $0 }) } catch {
             failed(Self.reconnectFailed, token: token, code: .bridgeFailure); return
         }
         transport = next
