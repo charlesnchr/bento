@@ -34,7 +34,8 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     @Volatile var loud = false
     /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
     @Volatile var numbered = false
-    private var count = 0
+    /** The next frame's number. */
+    @Volatile var count = 0
     @Volatile var flushes = 0
     @Volatile var stopped = false
     @Volatile var started = false
@@ -1450,6 +1451,39 @@ class AssistantCallTest {
             // An unnumbered loud frame could only be the dictation's.
             pcm.contentEquals(FakeAudio.LOUD)
         }, "none of the dictation's audio goes to Gemini")
+        call.stop()
+    }
+
+    @Test fun dictationAudioStillQueuedWhenTheMicrophoneComesBackNeverReachesGemini() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        // The call's thread stalls once on request (it reads standbyAfter every tick), so frames queue up behind it.
+        val stall = java.util.concurrent.atomic.AtomicBoolean(false)
+        val stalling = CompletableDeferred<Unit>()
+        val call = AssistantCall(first, audio, null, { CompletableDeferred<String>().await() }, limits = fast, reconnect = { second },
+                                 standbyAfter = { if (stall.compareAndSet(true, false)) { stalling.complete(Unit); Thread.sleep(400) }; 0.3 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "What's on my calendar?"); first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        audio.numbered = true
+        audio.loud = true // dictating, and still talking as the dictation ends
+        delay(100)
+        stall.set(true)
+        withTimeout(5_000) { stalling.await() }
+        delay(200)
+        val reclaimedAt = audio.count
+        call.reclaim() // while the dictation's frames wait for the stalled thread
+        // The user goes on talking to the call: that wakes it, with none of the dictation.
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.count { "realtimeInput" in it } >= 10 }
+        val numbers = second.sent.filter { "realtimeInput" in it }.map { frame ->
+            val data = Json.parseToJsonElement(frame).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+            java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
+        }
+        assertTrue(numbers.all { it >= reclaimedAt }, "frames from the dictation (before $reclaimedAt) reached Gemini: ${numbers.take(10)}")
         call.stop()
     }
 

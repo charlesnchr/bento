@@ -127,7 +127,8 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    private val mic = Channel<ByteArray>(24)
+    /** Microphone frames, each with the [lends] count it was captured under. */
+    private val mic = Channel<Pair<Int, ByteArray>>(24)
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     val status: StateFlow<Status> = _status.asStateFlow()
 
@@ -170,6 +171,11 @@ class AssistantCall(
     private val lending = Any()
     /** The microphone is lent out ([lend]): the call stays in standby, unheard and unwatched, until [reclaim]. */
     @Volatile private var lent = false
+    /**
+     * Counts [lend] and [reclaim]: a frame captured under an earlier count was the dictation's,
+     * or from before it, and never reaches Gemini, however far behind the call's thread is.
+     */
+    @Volatile private var lends = 0
     /** A comeback held off while the microphone was lent: it happens on [reclaim]. */
     private var wakeHeld = false
     private var wakeStarted = 0.0
@@ -405,6 +411,7 @@ class AssistantCall(
     fun lend(): Boolean = synchronized(lending) {
         if (!active || !standby || waking || lent) return false
         lent = true
+        lends++
         true
     }
 
@@ -415,10 +422,13 @@ class AssistantCall(
             // The microphone may have gone quiet while shared: the watchdog starts counting afresh.
             lastCaptureAt = now()
             lent = false
+            lends++
         }
         scope.launch {
-            val held = synchronized(lending) { wakeHeld.also { wakeHeld = false } }
-            if (held) comeBack()
+            // What was held, or heard, before the dictation is stale now.
+            held.clear(); heldBytes = 0; voiced = 0.0; voiceWoke = false
+            val wasHeld = synchronized(lending) { wakeHeld.also { wakeHeld = false } }
+            if (wasHeld) comeBack()
         }
     }
 
@@ -427,7 +437,7 @@ class AssistantCall(
         if (!active || !standby || waking) return
         val make = reconnect ?: return
         synchronized(lending) {
-            if (lent) { wakeHeld = true; return }
+            if (lent) { wakeHeld = true; voiceWoke = false; return }
             waking = true
         }
         // Only the words that woke it keep the audio before; otherwise the new session hears from now.
@@ -653,8 +663,9 @@ class AssistantCall(
         listening = true
         lastCaptureAt = now()
         scope.launch {
-            for (pcm in mic) {
+            for ((captured, pcm) in mic) {
                 if (!active) return@launch
+                if (captured != lends) continue
                 if (standby || rejoining) { hold(pcm); continue }
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
@@ -663,7 +674,7 @@ class AssistantCall(
         val ok = audio.start { pcm ->
             lastCaptureAt = now()
             if (mutedNow) return@start
-            if (mic.trySend(pcm).isFailure) scope.launch { fail("Microphone streaming fell behind. The call ended.") }
+            if (mic.trySend(lends to pcm).isFailure) scope.launch { fail("Microphone streaming fell behind. The call ended.") }
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
