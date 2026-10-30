@@ -15,6 +15,8 @@ struct NotesSettings: Codable, Equatable {
     var showFormatBar = false
     /// Footer counter: "words" or "characters" (click the footer to switch).
     var statusText = "words"
+    /// Vim keybindings in the editor (⌥⌘V toggles them).
+    var vimMode = false
     /// Window height follows the note's content.
     var autoResize = false
     /// Escape: "close" hides the window, "unfocus" returns focus to the previous app.
@@ -104,6 +106,15 @@ struct NotesSettingsView: View {
                     Text("Character count").tag("characters")
                 }
                 Toggle("Confirm before deleting a note", isOn: $model.value.confirmDelete)
+            }
+
+            Section {
+                Toggle("Vim keybindings", isOn: $model.value.vimMode)
+            } header: {
+                Text("Vim")
+            } footer: {
+                Text("Normal, insert and visual modes with motions, operators, counts, text objects, registers, undo, . and vim-surround (ys, cs, ds, visual S); Ctrl-D/U/F/B scroll and za/zo/zc open and collapse headings. The mode shows in the editor's corner. ⌥⌘V turns it on or off; Escape in normal mode does what the Escape key setting says.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {

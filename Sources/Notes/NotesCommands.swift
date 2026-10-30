@@ -9,7 +9,7 @@ enum NotesCommand: String, CaseIterable {
     case export, recentlyDeleted, settings, deleteNote, deleteAll, back, forward, close
     case heading1, heading2, heading3, paragraph, bold, italic, underline, strike, inlineCode, link
     case codeBlock, quote, orderedList, bulletList, taskList, toggleTask, moveUp, moveDown
-    case insertImage
+    case insertImage, toggleVim
 
     var title: String {
         switch self {
@@ -55,6 +55,7 @@ enum NotesCommand: String, CaseIterable {
         case .moveUp: return "Move List Item Up"
         case .moveDown: return "Move List Item Down"
         case .insertImage: return "Insert Image…"
+        case .toggleVim: return "Toggle Vim Mode"
         }
     }
 
@@ -101,6 +102,7 @@ enum NotesCommand: String, CaseIterable {
         case .moveUp: return "arrow.up"
         case .moveDown: return "arrow.down"
         case .insertImage: return "photo"
+        case .toggleVim: return "keyboard"
         }
     }
 
@@ -144,6 +146,7 @@ enum NotesCommand: String, CaseIterable {
         case .toggleTask: return "cmd+return"
         case .moveUp: return "ctrl+cmd+up"
         case .moveDown: return "ctrl+cmd+down"
+        case .toggleVim: return "cmd+opt+v"
         case .toggleFloat, .toggleScreenSharing, .recentlyDeleted, .insertImage: return nil
         }
     }

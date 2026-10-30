@@ -18,6 +18,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     private let header = NotesHeaderView()
     private let footer = NotesFooterView()
     private let formatBar = NotesFormatBar()
+    private let vimBadge = VimModeBadge()
+    /// Vim mode (registers and the last change survive switching notes).
+    let vim = VimEngine()
     private let background = ThemedBackgroundView(material: .hudWindow)
     private let tint = TintView()
     private var footerHeight: NSLayoutConstraint!
@@ -101,7 +104,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         background.onChange = { [weak self] _ in self?.tint.needsDisplay = true }
         panel.contentView = background
 
-        for v in [tint, header, scroll, footer, formatBar] as [NSView] {
+        for v in [tint, header, scroll, footer, formatBar, vimBadge] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             background.effect.addSubview(v)
         }
@@ -136,7 +139,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             formatBar.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
             formatBar.topAnchor.constraint(equalTo: footer.topAnchor),
             formatBar.bottomAnchor.constraint(equalTo: footer.bottomAnchor),
+            vimBadge.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -10),
+            vimBadge.bottomAnchor.constraint(equalTo: scroll.bottomAnchor, constant: -6),
         ])
+        vimBadge.isHidden = true
 
         header.onAction = { [weak self] cmd in self?.controller.perform(cmd) }
         header.onDoubleClick = { [weak self] in self?.moveToOriginalPosition(animated: true) }
@@ -188,6 +194,16 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             }
         }
         tv.onToggleHeading = { [weak self] lineStart in self?.toggleHeading(at: lineStart) }
+        tv.vimFoldsProvider = { [weak self] in self?.styler.folds ?? HeadingFolds() }
+        tv.onVimToggleHeading = { [weak self] lineStart in self?.toggleHeading(at: lineStart) ?? false }
+        tv.onVimReveal = { [weak self] loc in
+            guard let self else { return }
+            self.styler.reveal(self.storage, at: loc)
+            self.textView.needsDisplay = true
+        }
+        tv.onVimEscape = { [weak self] in self?.controller.escapePressed() }
+        tv.vimEscapeBlocked = { [weak self] in self?.inlineMenu.isOpen ?? false }
+        vim.onChange = { [weak self] in self?.vimChanged() }
         setUpImages()
     }
 
@@ -297,6 +313,20 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         footer.statusIsWords = s.statusText != "characters"
         if old.statusText != s.statusText || initial { updateCounts() }
         if s.autoResize && (!old.autoResize || themeChanged) { autoResize() }
+        if initial || old.vimMode != s.vimMode {
+            textView.vim = s.vimMode ? vim : nil
+            if s.vimMode { vim.start() }
+            vimChanged()
+        } else if themeChanged {
+            vimChanged()
+        }
+    }
+
+    private func vimChanged() {
+        vimBadge.isHidden = textView.vim == nil
+        vimBadge.accent = styler.theme.accent
+        vimBadge.show(vim.mode, pending: vim.pendingText)
+        textView.vimModeChanged()
     }
 
     private func restyleAll() {
@@ -369,9 +399,16 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         loadingNote = false
         textView.setSelectedRange(sel)
         textView.scrollRangeToVisible(sel)
+        if textView.vim != nil { vim.noteLoaded() }
         header.title = NoteText.title(of: note.body)
         updateCounts()
         if settings.autoResize { autoResize() }
+    }
+
+    /// Before another note is opened (while this one is still the current note, so the edit is
+    /// saved to it): Vim's insert session in progress becomes one undo step here.
+    func leavingNote() {
+        if textView.vim != nil { vim.noteWillChange() }
     }
 
     /// Applies a body that changed elsewhere (sync) like Google Docs: only the changed
@@ -447,6 +484,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
 
     // dev harness state dump
     var debugFooter: String { footer.status }
+    var debugVimBadge: String? { vimBadge.isHidden ? nil : vimBadge.text }
     var debugHeader: String { header.title }
 
     var selectedRange: NSRange { textView.selectedRange() }
@@ -478,7 +516,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         controller.editorChanged(storage.string)
         scheduleCounts()
         if settings.autoResize { autoResize() }
-        detectInlineTrigger()
+        if !textView.vimCapturesKeys { detectInlineTrigger() }
         updateInlineMenu()
     }
 
@@ -582,6 +620,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         styler.selectionChanged(storage, to: sel)
         controller.selectionChanged(sel)
         if inline != nil { updateInlineMenu() }
+        textView.vimSelectionDidChange()
     }
 
     func textView(_ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange) -> NSRange {

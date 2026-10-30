@@ -9,7 +9,7 @@ import BentoCore
 ///     open | hide | toggle | new | wait <ms> | cmd <NotesCommand> | key newline|tab|backtab|backspace|delete|escape
 ///     type <text with \n \t>     set <text with \n>     select <loc> <len>     caret end|start
 ///     checkbox <line>            chevron <line>         palette <query>        palette-enter          palette-down
-///     external <text with \n>   capture <text>
+///     external <text with \n>   capture <text>          vim <keys, e.g. ciwfoo<Esc>>
 ///     dump                       (writes $BENTO_HOME/dump.json)
 ///     window-png <path>          settings-png <path> [dark]
 enum NotesDebug {
@@ -157,6 +157,7 @@ enum NotesDebug {
         case "restore": c.debugMutate(arg) { $0.trashedAt = nil }
         case "purge": c.debugMutate(arg) { $0.deleted = true; $0.body = "" }
         case "pin": c.debugMutate(arg) { $0.pinned.toggle() }
+        case "vim": w?.textView.vimFeed(arg)
         case "undo": w?.textView.undoManager?.undo()
         case "redo": w?.textView.undoManager?.redo()
         case "paste-file":
@@ -233,6 +234,7 @@ enum NotesDebug {
             d["frame"] = NSStringFromRect(w.panel.frame)
             d["noteID"] = w.noteID ?? ""
             d["paletteOpen"] = w.palette.isOpen
+            d["vim"] = w.debugVimBadge ?? ""
             d["pid"] = Int(getpid())
             d["frontmostPID"] = Int(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)
             // hidden ranges and decorations per line
