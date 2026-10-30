@@ -185,6 +185,18 @@ import VoiceCore
         controller.stop()
     }
 
+    @Test func aCancelledRequestFinishingInStandbyBringsTheCallBackSilently() async throws {
+        let sockets = Sockets(), answer = Answer()
+        let controller = try await waitingOnHermes(sockets, answer: answer, onAsk: {
+            sockets.made[0].push(#"{"toolCallCancellation":{"ids":["c1"]}}"#)
+        })
+        await answer.give("Done.")
+        await eventually("back on Gemini") { sockets.made.count == 2 && !controller.standby }
+        await eventually("listening") { !sockets.made[1].sent("realtimeInput").isEmpty }
+        #expect(sockets.made[1].sent("hermesResult").isEmpty, "Gemini cancelled that request")
+        controller.stop()
+    }
+
     @Test func aSendCaughtByStandbyDoesntEndTheCall() async throws {
         let sockets = Sockets(), answer = Answer()
         // The microphone's next send hangs until standby closes the socket under it.

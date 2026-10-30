@@ -364,8 +364,9 @@ final class GeminiLiveController {
             self.hermesWorking = false
             guard self.active, self.generation == token, !Task.isCancelled else { return }
             if self.cancelledCalls.contains(delegation.id) {
-                // Gemini dropped the call; the reply stays in the chat.
+                // Gemini dropped the call; the reply stays in the chat. A call in standby still comes back.
                 finish(); self.onStatus?("Hermes finished. Gemini cancelled that request, so it hasn't heard the result.")
+                self.comeBack()
                 return
             }
             if self.parked {

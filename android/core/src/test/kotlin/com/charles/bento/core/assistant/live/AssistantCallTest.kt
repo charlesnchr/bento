@@ -458,6 +458,20 @@ class AssistantCallTest {
         assertEquals(1, second.closeCount)
     }
 
+    @Test fun aCancelledRequestFinishingInStandbyBringsTheCallBackSilently() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = waitingOnHermes(first, { second }, result)
+        first.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        result.complete("Done.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals(1, second.turns().size, "only the recap: Gemini cancelled that request")
+        call.stop()
+    }
+
     @Test fun speechKeepsTheCallOnGemini() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()

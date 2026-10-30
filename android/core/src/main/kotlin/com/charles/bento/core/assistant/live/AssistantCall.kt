@@ -419,7 +419,12 @@ class AssistantCall(
             }
             hermesWorking = false
             if (!active) return@launch
-            if (d.id in cancelledCalls) { finish(); return@launch } // Gemini dropped the call; the reply stays in the chat.
+            if (d.id in cancelledCalls) {
+                // Gemini dropped the call; the reply stays in the chat. A call in standby still comes back.
+                finish()
+                comeBack()
+                return@launch
+            }
             if (parked) { deliver(result); finish(); return@launch }
             respond(d.id, result, executed = true)
             finish()
