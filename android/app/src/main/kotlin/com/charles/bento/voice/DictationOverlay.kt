@@ -2,6 +2,7 @@ package com.charles.bento.voice
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.WindowManager
@@ -72,7 +73,8 @@ import kotlin.math.roundToInt
 /**
  * The dictation bubble and the transcript pill, as accessibility overlays (no "draw over
  * other apps" permission needed). The bubble sits beside the keyboard while a text field
- * is focused; the pill appears above the keyboard while listening and after inserting.
+ * is focused; the pill appears while listening and after inserting, above the keyboard
+ * or wherever it stays clear of the field being filled.
  */
 class DictationOverlay(
     private val context: Context,
@@ -95,7 +97,7 @@ class DictationOverlay(
         val dictating = state !is DictationState.Idle
         if (showBubbleFor != null && !dictating) showBubble(showBubbleFor) else hideBubble()
         pillState.value = state
-        if (dictating && dictation.intoOtherApp) showPill(current) else hidePill()
+        if (dictating && dictation.intoOtherApp) showPill(current, state) else hidePill()
     }
 
     fun hapticStart() {
@@ -199,26 +201,77 @@ class DictationOverlay(
 
     // MARK: Pill
 
-    private fun showPill(f: BentoAccessibilityService.FocusedField?) {
-        val h = context.resources.displayMetrics.heightPixels
-        val bottomOffset = f?.keyboardTop?.let { (h - it) + px(8) } ?: px(140)
+    private fun showPill(f: BentoAccessibilityService.FocusedField?, state: DictationState) {
+        // the level changes the state ~50 times a second: place it again only when the field or the stage changes
+        val moved = (f != null && f !== pillField) || state::class != pillStage
+        if (f != null) pillField = f
+        pillStage = state::class
         pill?.let { p ->
-            if (p.params.y != bottomOffset) {
-                p.params.y = bottomOffset
-                runCatching { wm.updateViewLayout(p.view, p.params) }
-            }
+            if (moved) placePill(p)
+            // a field that grew with the inserted text (a chat's message box) lays out a little later
+            if (moved && state is DictationState.Done) p.view.postDelayed({ pill?.takeIf { it === p }?.let(::placePill) }, 300)
             return
         }
-        val params = baseParams(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+        val params = baseParams(Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             width = WindowManager.LayoutParams.MATCH_PARENT
-            y = bottomOffset
+            // y is a screen coordinate (the field's bounds, the keyboard's top): no status bar or cutout offset
+            fitInsetsTypes = 0
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
-        pill = window(params) { Pill(pillState, dictation, prefs) }
+        val p = window(params) { Pill(pillState, dictation, prefs) }
+        pill = p
+        placePill(p)
+        // its height changes with the state (listening, done with Undo and Edit): place it again
+        p.view.addOnLayoutChangeListener { v, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) v.post { pill?.takeIf { it.view === v }?.let(::placePill) }
+        }
+    }
+
+    /** The field the pill is for: kept while dictating, when focus can drop for a moment. */
+    private var pillField: BentoAccessibilityService.FocusedField? = null
+    private var pillStage: kotlin.reflect.KClass<out DictationState>? = null
+
+    /** Clear of the field being filled: above the keyboard, else above the field, else over the keyboard. */
+    private fun placePill(p: Window) {
+        val f = pillField
+        // the display, not the app's window: a resized app ends at the keyboard
+        val screenH = runCatching { wm.currentWindowMetrics.bounds.height() }.getOrNull() ?: context.resources.displayMetrics.heightPixels
+        val height = p.view.height.takeIf { it > 0 } ?: px(76)
+        val bounds = f?.node?.let { n -> Rect().also { r -> if (n.refresh()) n.getBoundsInScreen(r) } }?.takeUnless { it.isEmpty }
+        val y = pillTop(height, keyboardTop = f?.keyboardTop ?: (screenH - px(140)), keyboardBottom = f?.keyboardBottom ?: screenH,
+                        fieldTop = bounds?.top, fieldBottom = bounds?.bottom, minTop = px(32), screenBottom = screenH, gap = px(8))
+        if (p.params.y != y) {
+            p.params.y = y
+            runCatching { wm.updateViewLayout(p.view, p.params) }
+        }
     }
 
     private fun hidePill() {
         remove(pill)
         pill = null
+        pillField = null
+        pillStage = null
+    }
+
+    companion object {
+        /**
+         * The pill's top edge (screen pixels) so it never covers the field being filled:
+         * just above the keyboard, which is below the field unless the field sits on the
+         * keyboard (a chat's message box); then just above the field, or below both the field
+         * and the keyboard (a floating keyboard over a tall field); and when neither fits, over
+         * the top of the keyboard, where the field is hidden anyway.
+         */
+        fun pillTop(height: Int, keyboardTop: Int, keyboardBottom: Int, fieldTop: Int?, fieldBottom: Int?, minTop: Int, screenBottom: Int, gap: Int): Int {
+            val aboveKeyboard = keyboardTop - gap - height
+            if (fieldTop == null || fieldBottom == null) return aboveKeyboard.coerceAtLeast(minTop)
+            val overlaps = fieldTop < aboveKeyboard + height + gap && fieldBottom > aboveKeyboard - gap
+            if (!overlaps && aboveKeyboard >= minTop) return aboveKeyboard
+            val aboveField = fieldTop - gap - height
+            if (aboveField >= minTop) return aboveField
+            val belowField = maxOf(fieldBottom, keyboardBottom) + gap
+            if (belowField + height <= screenBottom) return belowField
+            return (keyboardTop + gap).coerceAtMost(screenBottom - height).coerceAtLeast(minTop)
+        }
     }
 }
 

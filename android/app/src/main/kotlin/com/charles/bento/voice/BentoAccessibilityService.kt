@@ -44,7 +44,7 @@ class BentoAccessibilityService : AccessibilityService() {
     private var hiddenIn: String? = null
 
     data class FocusedField(val node: AccessibilityNodeInfo, val pkg: String, val appLabel: String?, val hint: String?,
-                            val singleLine: Boolean, val keyboardTop: Int?, val screen: Rect)
+                            val singleLine: Boolean, val keyboardTop: Int?, val screen: Rect, val keyboardBottom: Int? = null)
 
     override fun onServiceConnected() {
         instance = this
@@ -91,9 +91,10 @@ class BentoAccessibilityService : AccessibilityService() {
         if (hiddenIn != null && hiddenIn != pkg) hiddenIn = null
         if (usingBentoKeyboard()) return null // the Bento keyboard has its own mic
         if (ime == null) { trace("no keyboard window (${windows.size} windows)"); return null }
-        val top = ime?.let { Rect().also(it::getBoundsInScreen).top }
+        val keyboard = ime?.let { Rect().also(it::getBoundsInScreen) }
+        val top = keyboard?.top
         val screen = Rect().also { r -> windows.firstOrNull { it.isActive }?.getBoundsInScreen(r) }
-        return FocusedField(node, pkg, appLabel(pkg), node.hintText?.toString(), node.isMultiLine.not(), top, screen)
+        return FocusedField(node, pkg, appLabel(pkg), node.hintText?.toString(), node.isMultiLine.not(), top, screen, keyboard?.bottom)
     }
 
     /** The focused editable node anywhere in the apps' windows (bounded walk). */

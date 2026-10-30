@@ -25,7 +25,8 @@ import kotlinx.coroutines.launch
  * the final, cleaned text.
  */
 interface VoicePipeline {
-    fun open(request: VoiceRequest, onPartial: (String) -> Unit): VoiceSession
+    /** `onNotice`: something to tell the user while listening ("One minute left — 10-minute limit"). */
+    fun open(request: VoiceRequest, onPartial: (String) -> Unit, onNotice: (String) -> Unit): VoiceSession
 
     /** Rewrites `text` as the spoken `instruction` says ("make that shorter"). */
     suspend fun edit(instruction: String, text: String, request: VoiceRequest): String
@@ -137,7 +138,10 @@ class DictationController(
                 fail("Couldn't start listening right now")
                 return@launch
             }
-            val s = runCatching { pipeline().open(request) { text -> scope.launch { updatePartial(text) } } }
+            val s = runCatching {
+                pipeline().open(request, onPartial = { text -> scope.launch { updatePartial(text) } },
+                                onNotice = { notice -> scope.launch { _state.update { st -> if (st is DictationState.Listening) st.copy(notice = notice) else st } } })
+            }
                 .getOrElse { fail(it.message ?: "Couldn't start transcription"); return@launch }
             session = s
             val c = AudioCapture(

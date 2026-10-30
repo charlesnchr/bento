@@ -212,7 +212,8 @@ class GeminiTranscriptionService(
         )
         return try {
             val response = clientFor(config).cleanup(prompt, config.effectiveCleanupModel, config.endpoint, config.cleanupDeadline)
-            val cleaned = ValidationGate.stripArtifacts(response)
+            val cleaned = ValidationGate.stripEchoedLabel(ValidationGate.stripArtifacts(response), raw,
+                                                          config.context.fieldHint.takeIf { config.toneMatching })
             val verdict = ValidationGate.validate(raw, cleaned)
             if (!verdict.accepted) {
                 val trips = state.recordGateTrip()

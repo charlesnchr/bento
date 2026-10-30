@@ -41,6 +41,27 @@ object ValidationGate {
         return s
     }
 
+    /**
+     * Android: the field's hint rides in the cleanup prompt ("Field: Message") and the model
+     * sometimes puts it in front of the text ("Message: See you at 3"). Dropped only when the
+     * text has those words more often than the speaker said them ("um message Anna…" keeps its
+     * own) and a colon or dash sets them off (a bare "Message me later" may be a misheard word the
+     * cleanup corrected); one extra word passes [validate].
+     */
+    fun stripEchoedLabel(cleaned: String, raw: String, label: String?): String {
+        val words = label?.let(::labelWords)?.takeIf { it.isNotEmpty() } ?: return cleaned
+        fun count(text: String) = labelWords(text).windowed(words.size).count { it == words }
+        if (count(cleaned) <= count(raw)) return cleaned
+        val match = Regex("^\\s*" + words.joinToString("[\\s\\p{Punct}]+") { Regex.escape(it) } + "\\s*[:\\-–—]\\s*",
+                          RegexOption.IGNORE_CASE).find(cleaned) ?: return cleaned
+        val rest = cleaned.substring(match.range.last + 1).trimStart()
+        if (rest.isEmpty()) return cleaned
+        return if (rest.length > 1 && rest[1].isUpperCase()) rest else rest.replaceFirstChar { it.uppercase() } // "iPhone" stays
+    }
+
+    private fun labelWords(text: String): List<String> =
+        text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+
     fun validate(raw: String, cleaned: String): Verdict {
         val rawWords = contentWords(raw)
         val cleanWords = contentWords(cleaned)

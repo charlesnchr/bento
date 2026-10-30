@@ -85,10 +85,13 @@ class GeminiVoice(
     override fun unavailableReason(): String? =
         if (secrets.geminiKey == null) "Dictation needs a Gemini API key: pair with your Mac or add one in Settings" else null
 
-    override fun open(request: VoiceRequest, onPartial: (String) -> Unit): VoiceSession {
+    override fun open(request: VoiceRequest, onPartial: (String) -> Unit, onNotice: (String) -> Unit): VoiceSession {
         val key = secrets.geminiKey ?: error(unavailableReason()!!)
         val s = engine.start(baseConfig(key, request)) ?: error("A dictation is already running")
-        val partials = scope.launch { s.partialTranscript.collect { onPartial(it) } }
+        val partials = scope.launch {
+            launch { s.notice.collect { it?.let(onNotice) } }
+            s.partialTranscript.collect { onPartial(it) }
+        }
         return object : VoiceSession {
             override fun feed(frame: ShortArray): Boolean = s.feed(frame)
 

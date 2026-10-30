@@ -43,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.charles.bento.graph
@@ -114,6 +116,14 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
             else -> {}
         }
     }
+    // the screen timing out stopped the sheet and with it the thought: it stays on while listening
+    // (the power button still ends it, like leaving the sheet)
+    val view = LocalView.current
+    val listening = state is DictationState.Listening
+    DisposableEffect(listening) {
+        view.keepScreenOn = listening
+        onDispose { view.keepScreenOn = false }
+    }
     val levels = remember { mutableStateListOf<Float>().apply { repeat(44) { add(0f) } } }
     LaunchedEffect(state) { (state as? DictationState.Listening)?.let { levels.removeAt(0); levels.add(it.level) } }
 
@@ -151,7 +161,9 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
                                 Waveform(levels, MaterialTheme.colorScheme.primary)
                             } else LiveTranscript(s.partial, Modifier.heightIn(min = 64.dp), maxHeight = cap, style = transcript)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Tap anywhere when you're done", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                // a minute before the 10-minute limit, which stops and files what was said
+                                Text(s.notice ?: "Tap anywhere when you're done",
+                                     color = if (s.notice != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                      style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                                 Box(
                                     Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { graph.dictation.stop() },

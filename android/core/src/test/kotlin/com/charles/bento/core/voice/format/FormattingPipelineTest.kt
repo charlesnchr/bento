@@ -112,6 +112,23 @@ class ValidationGateTest {
         assertEquals("Hello.", ValidationGate.stripArtifacts("Transcript: Hello."))
     }
 
+    @Test fun dropsAnEchoedFieldHint() {
+        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message: See you at 3.", "see you at 3", "Message"))
+        assertEquals("iPhone at 3.", ValidationGate.stripEchoedLabel("Message: iPhone at 3.", "iphone at 3", "Message"))
+        // not set off by a colon or dash: it may be the speaker's word, cleaned up ("massage me later")
+        assertEquals("Message me later.", ValidationGate.stripEchoedLabel("Message me later.", "massage me later", "Message"))
+        assertEquals("Tell Anna to message me.", ValidationGate.stripEchoedLabel("Message: Tell Anna to message me.", "tell anna to message me", "Message"))
+        assertEquals("Hi Anna,", ValidationGate.stripEchoedLabel("Add a subject - Hi Anna,", "hi anna", "Add a subject"))
+        // the speaker said it, or the model didn't echo it
+        assertEquals("Message received, thanks.", ValidationGate.stripEchoedLabel("Message received, thanks.", "message received thanks", "Message"))
+        assertEquals("Message Anna that I'll be late.", ValidationGate.stripEchoedLabel("Message Anna that I'll be late.", "um message anna that i'll be late", "Message"))
+        assertEquals("Message me when you land.", ValidationGate.stripEchoedLabel("Message me when you land.", "um message me when you land", "Message"))
+        assertEquals("Messages are late.", ValidationGate.stripEchoedLabel("Messages are late.", "messages are late", "Message"))
+        assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("See you at 3.", "see you at 3", "Message"))
+        assertEquals("Message", ValidationGate.stripEchoedLabel("Message", "uh", "Message"))
+        assertEquals("Message: hi", ValidationGate.stripEchoedLabel("Message: hi", "hi", null))
+    }
+
     @Test fun stripsWrappingQuotes() = assertEquals("Hello there.", ValidationGate.stripArtifacts("\"Hello there.\""))
 
     @Test fun leavesInternalQuotesAlone() =
