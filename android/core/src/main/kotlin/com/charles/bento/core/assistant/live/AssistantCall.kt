@@ -352,6 +352,7 @@ class AssistantCall(
         if (deliveries.isEmpty()) return
         val results = deliveries.toList()
         deliveries.clear()
+        lastSpeech = now()
         send(CallSetup.resultFrame(results), resend = true)
     }
 
@@ -483,6 +484,8 @@ class AssistantCall(
         while (tasks.size > MAX_TASKS) tasks.entries.firstOrNull { it.value.state != RUNNING }?.let { tasks.remove(it.key) } ?: break
         respond(task.callId, "Started task ${task.id}. Hermes is working on it; its result follows as another response to this call.",
                 executed = true, task = task.id, status = "started", scheduling = "SILENT", willContinue = true)
+        // Cancelled while Gemini was being told it started: Hermes never gets it, and the call gets its last response now.
+        if (task.state != RUNNING) { closeCancelled(task); return }
         settled()
         task.job = scope.launch {
             val result = runCatching { onTool(request.copy(taskId = task.id)) }.getOrElse {
@@ -492,9 +495,8 @@ class AssistantCall(
             if (!active || task.state != RUNNING) return@launch
             finished(task, FINISHED, result)
             when {
-                // Gemini dropped the call; the reply stays in the chat and in check_task.
-                task.callId in cancelledCalls -> Unit
-                task.session != session || standby || waking -> deliver(task, result)
+                // Gemini dropped the call (the user talked over it, say), but the task ran on: its result goes in as a turn.
+                task.callId in cancelledCalls || task.session != session || standby || waking -> deliver(task, result)
                 else -> respond(task.callId, result, executed = true, task = task.id)
             }
             afterTask()
@@ -526,14 +528,20 @@ class AssistantCall(
         val task = tasks[taskId] ?: return "Not executed: there is no task $taskId. Call list_tasks for this call's tasks."
         if (task.state != RUNNING) return "Not executed: task $taskId is already ${task.state}. Nothing was cancelled."
         val message = "Cancelled task $taskId. Hermes stopped; what it already did was not undone."
-        task.job?.cancel()
+        val job = task.job
+        job?.cancel()
         finished(task, CANCELLED, message)
-        // The call stays open until it gets a last response; Gemini already knows from cancel_task or hears it at its next turn.
-        if (task.callId !in cancelledCalls && task.session == session && !standby && !waking) {
-            respond(task.callId, message, executed = true, task = taskId, status = "cancelled", scheduling = "SILENT")
-        }
+        // Still being told it started: [start] closes the call after that.
+        if (job != null) closeCancelled(task)
         afterTask()
         return message
+    }
+
+    /** The call stays open until it gets a last response; Gemini already knows from cancel_task or hears it at its next turn. */
+    private suspend fun closeCancelled(task: Task) {
+        if (task.callId !in cancelledCalls && task.session == session && !standby && !waking) {
+            respond(task.callId, task.result.orEmpty(), executed = true, task = task.id, status = "cancelled", scheduling = "SILENT")
+        }
     }
 
     /** list_tasks, check_task and cancel_task: answered at once from the call's own tasks, never handed to Hermes. */
@@ -588,6 +596,8 @@ class AssistantCall(
         willContinue: Boolean = false,
     ) {
         if (!active) return
+        // Gemini speaks what it's told at its next pause: standby's quiet spell starts again, so the socket stays for it.
+        if (scheduling == "WHEN_IDLE") lastSpeech = now()
         send(CallProtocol.response(id, name, message, executed, task, status, scheduling, willContinue), resend = true)
     }
 

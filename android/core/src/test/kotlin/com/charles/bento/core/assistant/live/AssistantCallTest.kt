@@ -85,6 +85,10 @@ class AssistantCallTest {
         withTimeout(timeout) { while (!check(sent)) delay(20) }
     }
 
+    private fun FakeTransport.turns(): List<JsonObject> = sent.filter { "clientContent" in it }.map { Json.parseToJsonElement(it).jsonObject["clientContent"]!!.jsonObject }
+
+    private fun JsonObject.turnText() = this["turns"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
+
     private suspend fun AssistantCall.ended(): AssistantCall.Status.Ended =
         withTimeout(5_000) { status.first { it is AssistantCall.Status.Ended } as AssistantCall.Status.Ended }
 
@@ -335,7 +339,7 @@ class AssistantCallTest {
         assertEquals(setOf("1", "2"), cancelled.toSet())
     }
 
-    @Test fun aCancelledCallIsNotAnswered() = blocking {
+    @Test fun aResultWhoseCallGeminiCancelledGoesInAsATurn() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val gate = CompletableDeferred<String>()
         val call = AssistantCall(transport, FakeAudio(), null, { gate.await() }, limits = fast)
@@ -346,11 +350,48 @@ class AssistantCallTest {
         transport.push(Live.activity("ACTIVITY_END"))
         transport.push(Live.call("c1"))
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        // The user talks over Gemini, which drops the call; Hermes works on.
         transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
         delay(100)
         gate.complete("Sent.")
+        transport.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(CallSetup.resultText(listOf("1" to "Sent.")), transport.turns().last().turnText())
+        assertTrue(transport.finals().isEmpty(), "no response to a call Gemini dropped")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
-        assertTrue(transport.finals().isEmpty(), "only the started answer")
+        call.stop()
+    }
+
+    @Test fun aCallCancelledBeforeHermesStartsNeverRuns() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        var ran = false
+        val call = AssistantCall(transport, FakeAudio(), null, { ran = true; "" }, limits = fast.copy(settleQuiet = 0.5))
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Email Sam")
+        transport.push(Live.call("c1"))
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        delay(1_000)
+        assertFalse(ran)
+        assertTrue(transport.responses().isEmpty())
+        call.stop()
+    }
+
+    @Test fun aTaskCancelledWhileGeminiHearsItStartedNeverRuns() = blocking {
+        val inner = FakeTransport(listOf(Frames.setupComplete()))
+        val transport = SlowStarts(inner)
+        var ran = false
+        val call = AssistantCall(transport, FakeAudio(), null, { ran = true; "" }, limits = fast)
+        call.start()
+        inner.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(inner, "Email Sam")
+        inner.push(Live.call("c1"))
+        withTimeout(5_000) { while (!transport.holding) delay(10) }
+        inner.push(Live.call("x1", name = CallProtocol.CANCEL_TASK, args = mapOf("task_id" to "1")))
+        inner.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        delay(200)
+        assertFalse(ran, "Hermes never got the cancelled task")
+        assertEquals(listOf("started", "cancelled"), inner.responses().filter { it.id() == "c1" }.map { it.status() }, "its call is closed after it opened")
+        assertEquals("ok", inner.responses().single { it.id() == "x1" }.status())
         call.stop()
     }
 
@@ -520,7 +561,6 @@ class AssistantCallTest {
         return call
     }
 
-    private fun FakeTransport.turns(): List<JsonObject> = sent.filter { "clientContent" in it }.map { Json.parseToJsonElement(it).jsonObject["clientContent"]!!.jsonObject }
 
     @Test fun silenceWhileHermesWorksLeavesGeminiAndItsAnswerBringsTheCallBack() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
@@ -606,9 +646,9 @@ class AssistantCallTest {
 
     /** Two requests Hermes is working on, asked on [first] as tasks 1 and 2, with standby after 0.3 s. */
     private suspend fun twoTasks(first: FakeTransport, next: () -> FakeTransport, results: Map<String, CompletableDeferred<String>>,
-                                 limits: AssistantCall.Limits = fast): AssistantCall {
+                                 limits: AssistantCall.Limits = fast, standbyAfter: () -> Double = { 0.3 }): AssistantCall {
         val call = AssistantCall(first, FakeAudio(), null, { c -> results.getValue(c.taskId).await() }, limits = limits, reconnect = next,
-                                 standbyAfter = { 0.3 }, recap = { CallSetup.resume("User: book a table, then find a taxi") })
+                                 standbyAfter = standbyAfter, recap = { CallSetup.resume("User: book a table, then find a taxi") })
         call.start()
         first.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(first, "Book a table"); first.push(Live.call("c1"))
@@ -617,8 +657,6 @@ class AssistantCallTest {
         first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
         return call
     }
-
-    private fun JsonObject.turnText() = this["turns"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
 
     @Test fun withSeveralTasksTheCallStandsByUntilEachResult() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
@@ -668,8 +706,10 @@ class AssistantCallTest {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
-        val call = twoTasks(first, { second }, results, limits = fast)
+        var after = 0.3
+        val call = twoTasks(first, { second }, results, limits = fast, standbyAfter = { after })
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after = 0.0 // back on Gemini it stays, however slow the test runs
         call.wake()
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
@@ -690,8 +730,10 @@ class AssistantCallTest {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
-        val call = twoTasks(first, { second }, results, limits = fast.copy(settleQuiet = 0.5))
+        var after = 0.3
+        val call = twoTasks(first, { second }, results, limits = fast.copy(settleQuiet = 0.5), standbyAfter = { after })
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after = 0.0
         call.wake()
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
         results.getValue("1").complete("Booked.")
@@ -732,7 +774,7 @@ class AssistantCallTest {
         assertEquals(1, second.closeCount)
     }
 
-    @Test fun aCancelledRequestFinishingInStandbyBringsTheCallBackSilently() = blocking {
+    @Test fun aCancelledCallFinishingInStandbyBringsTheCallBackWithItsResult() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
@@ -741,8 +783,29 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         result.complete("Done.")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
-        second.awaitSent { s -> s.any { "realtimeInput" in it } }
-        assertEquals(1, second.turns().size, "only the recap: Gemini cancelled that request")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(CallSetup.resultText(listOf("1" to "Done.")), second.turns().last().turnText())
+        call.stop()
+    }
+
+    @Test fun aResultJustBeforeStandbyKeepsTheCallForGeminiToSpeakIt() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
+        val call = AssistantCall(first, FakeAudio(), null, { c -> results.getValue(c.taskId).await() }, limits = fast,
+                                 reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.8 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "Book a table"); first.push(Live.call("c1"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        delay(600) // most of the quiet spell
+        results.getValue("1").complete("Booked.")
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        delay(500) // past where the first quiet spell would have ended
+        assertEquals(0, first.closeCount, "Gemini still has task 1's result to speak")
+        assertEquals(AssistantCall.Status.Working, call.status.value)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         call.stop()
     }
 
@@ -1006,6 +1069,16 @@ private class HeldSends(val inner: FakeTransport) : LiveTransport by inner {
             while (inner.closeCount == 0) delay(5)
             throw IOException("closed")
         }
+        inner.send(frame)
+    }
+}
+
+/** [inner], except that a "started" answer takes 300 ms to send, with [holding] true meanwhile. */
+private class SlowStarts(val inner: FakeTransport) : LiveTransport by inner {
+    @Volatile var holding = false
+
+    override suspend fun send(frame: String) {
+        if ("\"started\"" in frame) { holding = true; delay(300); holding = false }
         inner.send(frame)
     }
 }

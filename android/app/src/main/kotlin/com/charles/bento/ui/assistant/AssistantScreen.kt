@@ -172,7 +172,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
                 state.messages.isEmpty() && !state.loading -> EmptyChat()
                 // A task's session opens in the chat once the call is over; during it, the task's sheet shows it.
                 else -> Messages(state.sessionId, state.messages, state.working, graph.prefs.hermesScroll, onAnswer = assistant::answer,
-                                 onOpen = { m -> m.link?.let { link -> state.call?.tasks?.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.open(link) } })
+                                 onOpen = { m -> m.link?.let { link -> state.call?.tasks?.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
@@ -189,6 +189,11 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
     if (showHistory) HistorySheet(assistant, state.sessionId, onDismiss = { showHistory = false })
     val task = state.call?.tasks?.firstOrNull { it.id == shownTask }
     if (task != null) TaskSheet(task, onAnswer = assistant::answer, onCancel = { assistant.cancelTask(task.id) }, onDismiss = { shownTask = null })
+    val peek by assistant.peek.collectAsStateWithLifecycle()
+    peek?.let { p ->
+        PeekSheet(p, canOpen = state.call == null && !state.working, onOpen = { assistant.closePeek(); assistant.open(p.sessionId) },
+                  onDismiss = assistant::closePeek)
+    }
 }
 
 @Composable
@@ -584,6 +589,34 @@ private fun TaskLane(task: TaskUi, onOpen: () -> Unit, onCancel: () -> Unit) {
             if (task.active) {
                 IconButton(onClick = onCancel, modifier = Modifier.testTag("assistant-cancel-task-${task.id}")) {
                     Icon(Icons.Rounded.Close, "Cancel task ${task.id}", Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+}
+
+/** A finished call task's Hermes session, read-only, so the conversation on screen (and its call transcript) stays. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeekSheet(p: com.charles.bento.assistant.PeekUi, canOpen: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Hermes task", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                // Opening it replaces the conversation on screen, whose call transcript Hermes doesn't have.
+                if (canOpen) TextButton(onClick = onOpen) { Text("Continue it") }
+            }
+            if (p.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+            p.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(24.dp)) }
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 560.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                       verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(p.messages, key = { it.id }) { m ->
+                    when (m.role) {
+                        "user" -> UserRow(m)
+                        "assistant" -> AssistantRow(m)
+                        "tool" -> ToolRow(m)
+                        else -> Text(m.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
