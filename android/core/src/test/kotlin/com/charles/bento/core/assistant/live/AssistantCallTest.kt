@@ -479,6 +479,36 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aCancelledCallIsToldItWasCancelledEvenAfterAFollowUpFinished() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val asked = CopyOnWriteArrayList<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c.task); if (c.followUp) "Changed to four." else CompletableDeferred<String>().await() },
+                                 limits = fast)
+        val held = CompletableDeferred<Unit>()
+        val holding = CompletableDeferred<Unit>()
+        transport.beforeSend = { frame -> if ("toolResponse" in frame && "\"c1\"" in frame && "\"started\"" in frame) { holding.complete(Unit); held.await() } }
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { holding.await() }
+        call.cancelTask("1")
+        delay(100)
+        // The follow-up runs and finishes while Gemini is still being told the first request started.
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        transport.awaitSent { s -> s.count { it.contains("\"c2\"") && "toolResponse" in it } >= 2 }
+        held.complete(Unit)
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
+        delay(200)
+        assertEquals(listOf("For four people"), asked)
+        val finals = transport.finals().associate { it.id() to (it.status() to it.message()) }
+        assertEquals("cancelled", finals.getValue("c1").first)
+        assertTrue(finals.getValue("c1").second.startsWith("Cancelled task 1."), finals.getValue("c1").second)
+        assertEquals("ok" to CallProtocol.taskResult("1", "Changed to four."), finals.getValue("c2"))
+        call.stop()
+    }
+
     @Test fun aQueuedFollowUpWaitsForGeminiToHearItStartedBeforeItRuns() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val first = CompletableDeferred<String>()

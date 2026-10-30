@@ -210,6 +210,8 @@ class AssistantCall(
         var started = false
         /** The call has had its last response. */
         var closed = false
+        /** What its call is told when it was cancelled: its own, since a later follow-up has a result of its own. */
+        var cancelled: String? = null
     }
 
     /** A sub-agent: one Hermes session, its first request and the follow-ups it was given since. */
@@ -866,6 +868,7 @@ class AssistantCall(
         finished(task, CANCELLED, message)
         val runs = listOf(task.current) + task.queued
         task.queued.clear()
+        for (run in runs) run.cancelled = message
         // A run still being told it started: [acknowledge] closes its call after that.
         for (run in runs) if (run.acknowledged) closeCancelled(task, run)
         afterTask()
@@ -877,7 +880,7 @@ class AssistantCall(
         if (run.closed) return
         run.closed = true
         if (run.callId !in cancelledCalls && run.session == session && !standby && !waking) {
-            respond(run.callId, task.result.orEmpty(), executed = true, task = task.id, status = "cancelled", scheduling = "SILENT")
+            respond(run.callId, run.cancelled ?: "Cancelled task ${task.id}.", executed = true, task = task.id, status = "cancelled", scheduling = "SILENT")
         }
     }
 
