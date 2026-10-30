@@ -11,16 +11,32 @@ final class NoteTextView: NSTextView {
     /// Images pasted or dropped at the selection.
     var onImages: (([ImageSource]) -> Void)?
     var placeholder = "Start writing…"
+    /// Vim keybindings, while they're on (`notes.vimMode`); see NotesVim.swift.
+    var vim: VimEngine? {
+        didSet {
+            guard vim !== oldValue else { return }
+            oldValue?.host = nil
+            vim?.host = self
+            vimModeChanged()
+        }
+    }
+    var vimFoldsProvider: (() -> HeadingFolds)?
+    var onVimToggleHeading: ((Int) -> Bool)?
+    var onVimReveal: ((Int) -> Void)?
+    var onVimEscape: (() -> Void)?
+    /// Escape belongs to something else (the inline menu) rather than leaving insert mode.
+    var vimEscapeBlocked: (() -> Bool)?
     var notesLayoutManager: NotesLayoutManager? { layoutManager as? NotesLayoutManager }
 
     // MARK: Editing helpers
 
-    /// Applies an EditResult as one undoable change.
-    func apply(_ r: EditResult) {
-        guard let ts = textStorage else { return }
+    /// Applies an EditResult as one undoable change. False when it was refused.
+    @discardableResult
+    func apply(_ r: EditResult) -> Bool {
+        guard let ts = textStorage else { return false }
         guard !r.edits.isEmpty else {
             setSelectedRange(r.selection)
-            return
+            return true
         }
         let sorted = r.edits.sorted { $0.range.location < $1.range.location }
         // An out-of-bounds or overlapping edit would raise inside NSTextStorage: refuse it.
@@ -28,13 +44,13 @@ final class NoteTextView: NSTextView {
         for e in sorted {
             guard e.range.location != NSNotFound, e.range.location >= prevEnd, NSMaxRange(e.range) <= ts.length else {
                 NSSound.beep()
-                return
+                return false
             }
             prevEnd = NSMaxRange(e.range)
         }
         if hasMarkedText() { unmarkText() }
         breakUndoCoalescing()
-        guard shouldChangeText(inRanges: sorted.map { NSValue(range: $0.range) }, replacementStrings: sorted.map(\.replacement)) else { return }
+        guard shouldChangeText(inRanges: sorted.map { NSValue(range: $0.range) }, replacementStrings: sorted.map(\.replacement)) else { return false }
         ts.beginEditing()
         for e in sorted.reversed() { ts.replaceCharacters(in: e.range, with: e.replacement) }
         ts.endEditing()
@@ -42,6 +58,21 @@ final class NoteTextView: NSTextView {
         breakUndoCoalescing()
         setSelectedRange(NSRange(location: min(r.selection.location, ts.length), length: min(r.selection.length, max(0, ts.length - r.selection.location))))
         scrollRangeToVisible(selectedRange())
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if let vim, vimKeyDown(event, vim) { return }
+        super.keyDown(with: event)
+    }
+
+    override var shouldDrawInsertionPoint: Bool { vimCapturesKeys ? false : super.shouldDrawInsertionPoint }
+
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        let block = vim == nil ? nil : vimCursorRect()
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        guard vim != nil else { return }
+        for r in [block, vimCursorRect()].compactMap({ $0 }) { setNeedsDisplay(r.insetBy(dx: -2, dy: -2)) }
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
@@ -56,6 +87,7 @@ final class NoteTextView: NSTextView {
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         notesLayoutManager?.drawHeadingChevrons(in: rect, origin: textContainerOrigin)
+        drawVimCursor(in: rect)
     }
 
     // MARK: Mouse

@@ -80,6 +80,11 @@ struct HeadingFolds: Equatable {
         return nil
     }
 
+    /// The hidden lines overlapping `r` (merged blocks), sorted.
+    func hiddenRanges(in r: NSRange) -> [NSRange] {
+        blocks.filter { NSIntersectionRange($0.body, r).length > 0 }.map(\.body)
+    }
+
     /// Positions known to be headings (collapsed or opened) in `r`.
     func headings(in r: NSRange) -> [Int] {
         var out: [Int] = []

@@ -231,6 +231,9 @@ final class NotesController {
         case .forward: navigate(back: false)
         case .close: hideWindow()
         case .insertImage: w.chooseImages()
+        case .toggleVim:
+            updateSettings { $0.vimMode.toggle() }
+            HUD.show(settings.vimMode ? "Vim Mode On" : "Vim Mode Off", symbol: "keyboard")
         default:
             if cmd.isFormatting { w.runFormatting(cmd) }
         }
@@ -283,6 +286,7 @@ final class NotesController {
 
     func open(_ id: String, recordHistory: Bool = true, selection: NSRange? = nil) {
         guard let note = store.note(id), !note.deleted else { return }
+        if windowController?.noteID == currentID { windowController?.leavingNote() }
         flushPendingSave()
         let w = window
         if let cur = currentID, cur != id {
@@ -827,6 +831,7 @@ final class NotesController {
                 self.item(.toggleAutoResize, title: s.autoResize ? "Disable Window Auto-sizing" : "Enable Window Auto-sizing"),
                 self.item(.toggleFloat, title: "Float on Top", checked: s.floatOnTop),
                 self.item(.toggleScreenSharing, title: s.hideWhileScreenSharing ? "Show While Screen Sharing" : "Hide While Screen Sharing"),
+                self.item(.toggleVim, title: s.vimMode ? "Disable Vim Mode" : "Enable Vim Mode"),
                 export, self.item(.recentlyDeleted), self.item(.settings),
             ]
             let danger = [self.item(.deleteNote, destructive: true), self.item(.deleteAll, destructive: true)]

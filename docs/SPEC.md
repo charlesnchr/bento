@@ -209,6 +209,37 @@ note set in Settings → Notes (`notes.captureNoteID`; unset or deleted: a new "
 don't depend on each other: `main.swift` connects `DictationModule.noteCapture` to
 `NotesModule.capture`; without Notes the transcript goes to the clipboard.
 
+## Vim mode
+
+`notes.vimMode` (Settings → Notes → Vim, ⌥⌘V, or the actions panel) puts Vim keybindings on the
+editor (`VimEngine`, pure logic over the text view as `VimHost`). The mode shows in the editor's
+corner with the keys typed so far ("NORMAL  2d", "NORMAL  /find"); normal and visual mode draw a
+block on the character under the cursor.
+- Modes: normal, insert (`i a I A o O`, `c` operators, `s S C`), visual and visual-line (`v V`,
+  `o` swaps the ends, `gv` reselects; a mouse selection or ⌘A is visual mode).
+- Motions with counts: `h j k l` and the arrows, `w b e ge W B E gE`, `0 ^ $ g_ |`, `gg G`
+  (`5G`), `{ } %` (`50%`), `f F t T ; ,`, `/ ?` (literal, smartcase, wrapping) with `n N * #`,
+  `H M L`, `+ - _`, Return.
+- Operators `d c y > < g~ gu gU` with a motion, a text object or doubled (`dd`, `g~~`); `x X D C S Y
+  J gJ r ~ p P`, `u` and Ctrl-R, `.` (the last change, with what was typed in it). Text objects
+  `iw aw iW aW ip ap`, quotes `i" a" i' a'` and `` i` a` ``, brackets `i( a( ib i[ i{ iB i< a>`.
+- Registers: unnamed, `a`–`z` (`A`–`Z` append), `0` last yank, `1`–`9` deletes, `-` small deletes,
+  `_` black hole, `+` and `*` the system clipboard.
+- vim-surround: `ys{motion}{char}`, `yss`, `ds{char}`, `cs{old}{new}`, visual `S{char}`; an opening
+  bracket adds spaces inside (`ysiw(` → `( word )`), other punctuation wraps as is (`ysiw*` →
+  `*word*`); `ds*` takes the nearest marks on the line.
+- Ctrl-D/U half a page and Ctrl-F/B a page (the caret moves with the view, to the first non-blank),
+  Ctrl-E/Y a line, `zz zt zb`; `za zo zc` open and collapse the heading the caret is in.
+- Escape (or Ctrl-[, Ctrl-C) leaves insert or visual mode and cancels pending keys; in normal mode
+  with nothing pending it does what Escape does without Vim (`notes.escapeKey`). ⌘ shortcuts keep
+  working in every mode.
+Markdown stays in charge where it's hidden: block markers ("## ", "- [ ] ") count as blank, `0`
+and `h` stop at the content, `cc` keeps the marker, `J` drops the joined line's marker and `o`
+continues a list. A collapsed section is one line, like a closed fold: `j k w b` skip its hidden
+lines, line operators (`dd`, `yy`, `p` after it, `V`) take the section with them, case changes
+skip hidden text, `J` on a collapsed heading beeps, and a search match inside one opens it. Typing
+in insert mode goes through the editor as usual (input rules, list continuation, the "/" menu).
+
 ## Sync
 
 See `docs/SYNC_PROTOCOL.md`. Self-hosted `bento-sync` (`server/`); no server by default, set
