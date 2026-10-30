@@ -251,7 +251,7 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
 
     /** A tap on a heading's chevron or " ⋯": the heading stays where it is on screen. */
     fun toggleFoldInPlace(lineStart: Int) {
-        anchor.toggling(layout?.size?.height ?: 0)
+        anchor.toggling()
         toggleFold(lineStart)
     }
 

@@ -165,12 +165,14 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
         if (holding) 0f else base.calculateScrollDistance(offset, size, containerSize)
 
     /**
-     * A fold is about to toggle in text laid out `textHeight` tall (as far as a fold can shorten
-     * it), on top of the blank space an earlier fold still needs.
+     * A fold of a heading on screen is about to toggle. The text down to that heading stays, so
+     * however much the fold shortens the note, a screen's height of blank space keeps the scroll
+     * position; two, as its tap target can reach past the heading (one as tall as a long note
+     * could be too tall to lay out). The trim after the fold takes back what isn't needed.
      */
-    fun toggling(textHeight: Int) {
+    fun toggling() {
         holding = true
-        tail += textHeight
+        tail = maxOf(tail, 2 * scroll.viewportSize)
         toggles++
     }
 
