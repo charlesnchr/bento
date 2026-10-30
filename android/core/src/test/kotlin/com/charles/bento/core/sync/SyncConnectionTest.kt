@@ -37,6 +37,9 @@ import kotlin.test.assertTrue
  */
 class SyncConnectionTest {
     private val token = "test-token-0123456789"
+    /** Todo bodies: the server takes only JSON objects outside notes. */
+    private val task = """{"title":"a task"}"""
+    private val restTask = """{"title":"via REST"}"""
     private lateinit var server: TestServer
     private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -93,8 +96,8 @@ class SyncConnectionTest {
         val ct2 = connection(todos2)
         onEngine { cn.start(); ct.start(); ct2.start() }
         waitFor("connected") { cn.status.value.isLive && ct.status.value.isLive && ct2.status.value.isLive }
-        onEngine { notes.edit("x-note", "a note"); cn.localChange(); todos.edit("x-task", "a task"); ct.localChange() }
-        waitFor("todo arrived") { todos2.body("x-task") == "a task" }
+        onEngine { notes.edit("x-note", "a note"); cn.localChange(); todos.edit("x-task", task); ct.localChange() }
+        waitFor("todo arrived") { todos2.body("x-task") == task }
         waitFor("note acked") { !notes.isDirty("x-note") }
         delay(300)
         assertEquals(null, onEngine { todos2.body("x-note") })
@@ -148,11 +151,11 @@ class SyncConnectionTest {
         val b = TestSync("todos", "B")
         val ca = connection(a)
         val cb = connection(b)
-        onEngine { a.edit("t1", "via REST") }
+        onEngine { a.edit("t1", restTask) }
         assertTrue(onEngine { runBlocking { ca.syncOnce() } })
         assertFalse(onEngine { a.isDirty("t1") })
         assertTrue(onEngine { runBlocking { cb.syncOnce() } })
-        assertEquals("via REST", onEngine { b.body("t1") })
+        assertEquals(restTask, onEngine { b.body("t1") })
     }
 
     @Test
