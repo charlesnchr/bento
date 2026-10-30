@@ -22,7 +22,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * A microphone foreground service for as long as Bento listens (a dictation into another
  * app, a captured thought, a meeting, a voice call with Hermes). Android only lets an app
  * record while it is in the foreground or runs one of these, so it starts before the
- * microphone opens and stops right after.
+ * microphone opens and stops right after. A dictation while a call is in standby shares it:
+ * the service stops when the last of them leaves.
  */
 class VoiceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -58,9 +59,16 @@ class VoiceService : Service() {
         const val NOTIFICATION_ID = 41
         const val CHANNEL_LISTENING = "listening"
         private var ready: CompletableDeferred<Boolean>? = null
+        /** The kinds in the service now (main thread); the call's notification shows while it's one of them. */
+        private val holders = LinkedHashSet<String>()
 
-        /** Starts the service and waits until it's in the foreground (false: not allowed right now). */
+        /** Starts the service and waits until it's in the foreground (false: not allowed right now). Main thread. */
         suspend fun enter(context: Context, kind: String): Boolean {
+            if (holders.isNotEmpty()) {
+                // already in the foreground for another (a call in standby, during a dictation): its notification stays
+                holders.add(kind)
+                return true
+            }
             ensureChannels(context)
             val d = CompletableDeferred<Boolean>()
             ready = d
@@ -68,11 +76,23 @@ class VoiceService : Service() {
                 ContextCompat.startForegroundService(context, Intent(context, VoiceService::class.java).putExtra(EXTRA_KIND, kind))
             }.isSuccess
             if (!ok) return false
-            return withTimeoutOrNull(3_000) { d.await() } ?: false
+            val started = withTimeoutOrNull(3_000) { d.await() } ?: false
+            if (started) holders.add(kind)
+            return started
         }
 
-        fun exit(context: Context) {
-            runCatching { context.startService(Intent(context, VoiceService::class.java).setAction(ACTION_STOP)) }
+        /** [kind] is done: the service stops when nothing else is in it, else shows what's left. Main thread. */
+        fun exit(context: Context, kind: String) {
+            holders.remove(kind)
+            // also when kind never got in: an enter cancelled midway may still have started the service
+            val left = holders.lastOrNull() ?: run {
+                runCatching { context.startService(Intent(context, VoiceService::class.java).setAction(ACTION_STOP)) }
+                return
+            }
+            if (kind == KIND_ASSISTANT) {
+                // the call ended during a dictation: its notification (and End call) goes
+                runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context, left)) }
+            }
         }
 
         fun ensureChannels(context: Context) {
