@@ -98,6 +98,8 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
     /** "Update now": follows the release from here and installs it in [scope], which outlives the screen. */
     fun start(release: Release, scope: CoroutineScope) {
         following.value = release.version
+        // at once, so a check in flight can't put the offer back (see check)
+        _state.value = State.Downloading(release, 0f)
         scope.launch { install(release) }
     }
 
@@ -123,17 +125,19 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         // the daily check mustn't replace a download in progress
         if (state.value.let { it is State.Downloading || it is State.Installing }) return@withContext null
         _state.value = State.Checking
+        // Each outcome lands only if nothing (an install started meanwhile) replaced Checking.
         val release = runCatching { latest() }.getOrElse {
-            _state.value = State.Failed(it.message ?: "Couldn't reach GitHub")
+            _state.compareAndSet(State.Checking, State.Failed(it.message ?: "Couldn't reach GitHub"))
             return@withContext null
         }
         checkedAt = System.currentTimeMillis()
-        _state.value = if (release != null && newer(release.version, BuildConfig.VERSION_NAME.removeSuffix("-debug"))) {
+        val outcome = if (release != null && newer(release.version, BuildConfig.VERSION_NAME.removeSuffix("-debug"))) {
             State.Available(release)
         } else {
             State.UpToDate
         }
-        (state.value as? State.Available)?.release
+        if (!_state.compareAndSet(State.Checking, outcome)) return@withContext null
+        (outcome as? State.Available)?.release
     }
 
     private fun latest(): Release? {
@@ -184,6 +188,7 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         }
         try {
             val apk = File(context.cacheDir, "update-${release.version}.apk")
+            _state.value = State.Downloading(release, 0f)
             download(release, apk)
             _state.value = State.Installing(release)
             val installer = context.packageManager.packageInstaller

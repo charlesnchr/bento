@@ -78,7 +78,8 @@ for one it hasn't seen before it may offer to scan it or send it to Google, the 
 from a browser or file manager especially. No app code removes that. A Play-distributed build
 is known to Play Protect from the start. Android developer verification, rolling out country by
 country from September 2026, registers the developer and package rather than exempting an APK
-from scanning, but certified phones in those countries will need it to install Bento at all.
+from scanning. Once it reaches a country, certified phones there will only install an
+unregistered Bento through Android's advanced install flow or `adb`.
 
 ## Setting up a phone
 

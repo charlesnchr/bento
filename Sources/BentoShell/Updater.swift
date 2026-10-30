@@ -184,6 +184,7 @@ final class Updater: ObservableObject {
 
     /// The "Update now?" window while it's up; its buttons' targets (controls hold them weakly).
     private var offerAlert: NSAlert?
+    private var offerVersion: String?
     private var offerTargets: [ButtonAction] = []
     /// The version an automatic offer is waiting to show.
     private var pendingOffer: String?
@@ -197,9 +198,13 @@ final class Updater: ObservableObject {
     /// bar menu and Settings.
     func offerInstall(_ version: String, whenQuiet: Bool) {
         guard case .available(version) = state else { return }
-        if let window = offerAlert?.window {
-            AppActivation.show(window)
-            return
+        if let alert = offerAlert {
+            // Still up: an automatic check leaves it where it is; an older version's makes way.
+            if offerVersion == version {
+                if !whenQuiet { AppActivation.show(alert.window) }
+                return
+            }
+            closeOffer()
         }
         if whenQuiet, Self.isBusy() {
             guard pendingOffer != version else { return }
@@ -219,7 +224,7 @@ final class Updater: ObservableObject {
             alert.addButton(withTitle: "Later")
             alert.addButton(withTitle: "Release Notes")
             actions = [(true, { [weak self] in self?.install() }),
-                       (true, { Self.returnToPreviousApp() }),
+                       (false, { [weak self] in self?.closeOffer(returningFocus: true) }),
                        (false, { NSWorkspace.shared.open(Self.releaseURL(version)) })]
         } else {
             alert.informativeText = "You have \(currentVersion). This copy is a local build, so it can't update itself: get \(version) from the release page, or `brew install \(Self.formula)`."
@@ -227,7 +232,7 @@ final class Updater: ObservableObject {
             alert.addButton(withTitle: "Later")
             // A local build's install() opens the release page.
             actions = [(true, { [weak self] in self?.install() }),
-                       (true, { Self.returnToPreviousApp() })]
+                       (false, { [weak self] in self?.closeOffer(returningFocus: true) })]
         }
         alert.buttons[0].keyEquivalent = ""
         alert.buttons[1].keyEquivalent = "\r"
@@ -244,6 +249,7 @@ final class Updater: ObservableObject {
         // A panel hides when its app deactivates; this one waits on screen for an answer.
         alert.window.hidesOnDeactivate = false
         offerAlert = alert
+        offerVersion = version
         AppActivation.show(alert.window)
     }
 
@@ -255,14 +261,15 @@ final class Updater: ObservableObject {
         }
     }
 
-    private func closeOffer() {
-        offerAlert?.window.orderOut(nil)
+    /// `returningFocus` (Later) hands focus back to the app that had it, without another of
+    /// Bento's windows surfacing on the way.
+    private func closeOffer(returningFocus: Bool = false) {
+        if let window = offerAlert?.window {
+            if returningFocus { AppActivation.orderOut(window, activating: AppActivation.previousApp) } else { window.orderOut(nil) }
+        }
         offerAlert = nil
+        offerVersion = nil
         offerTargets = []
-    }
-
-    private static func returnToPreviousApp() {
-        if let previous = AppActivation.previousApp, !previous.isTerminated { previous.activate() }
     }
 
     /// Something an update offer shouldn't interrupt: typing in the last 10 seconds, or a
@@ -271,30 +278,41 @@ final class Updater: ObservableObject {
         CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 10 || microphoneInUse()
     }
 
-    /// Whether any input device is running, not only the default one (a call can pick a headset).
+    /// Whether some process is recording: what drives the orange microphone indicator (macOS
+    /// 14.2+), else any input device running, which also counts a headset that's only playing.
     private static func microphoneInUse() -> Bool {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
-                                                 mScope: kAudioObjectPropertyScopeGlobal,
-                                                 mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return false }
-        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return false }
-        return devices.contains { device in
+        if #available(macOS 14.2, *) {
+            if let objects = propertyArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList) {
+                return objects.contains { uint32(property: kAudioProcessPropertyIsRunningInput, of: $0) == 1 }
+            }
+        }
+        return (propertyArray(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices) ?? []).contains { device in
             // Input-capable: it has streams in the input scope.
             var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
                                                      mScope: kAudioObjectPropertyScopeInput,
                                                      mElement: kAudioObjectPropertyElementMain)
-            var streamsSize: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamsSize) == noErr, streamsSize > 0 else { return false }
-            var running = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-                                                     mScope: kAudioObjectPropertyScopeGlobal,
-                                                     mElement: kAudioObjectPropertyElementMain)
-            var value: UInt32 = 0
-            var valueSize = UInt32(MemoryLayout<UInt32>.size)
-            return AudioObjectGetPropertyData(device, &running, 0, nil, &valueSize, &value) == noErr && value != 0
+            var size: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &size) == noErr, size > 0 else { return false }
+            return uint32(property: kAudioDevicePropertyDeviceIsRunningSomewhere, of: device) == 1
         }
+    }
+
+    private static func propertyArray(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> [AudioObjectID]? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return nil }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &ids) == noErr else { return nil }
+        return ids
+    }
+
+    private static func uint32(property selector: AudioObjectPropertySelector, of object: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr ? value : nil
     }
 
     /// Version of the app at the Homebrew install path, read fresh (Bundle caches).
