@@ -122,12 +122,11 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
     }
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
-        // the daily check mustn't replace a download in progress
-        if (state.value.let { it is State.Downloading || it is State.Installing }) return@withContext null
-        _state.value = State.Checking
+        // never over a download in progress or another check
+        if (!beginCheck(_state)) return@withContext null
         // Each outcome lands only if nothing (an install started meanwhile) replaced Checking.
         val release = runCatching { latest() }.getOrElse {
-            _state.compareAndSet(State.Checking, State.Failed(it.message ?: "Couldn't reach GitHub"))
+            finishCheck(_state, State.Failed(it.message ?: "Couldn't reach GitHub"))
             return@withContext null
         }
         checkedAt = System.currentTimeMillis()
@@ -136,7 +135,7 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         } else {
             State.UpToDate
         }
-        if (!_state.compareAndSet(State.Checking, outcome)) return@withContext null
+        if (!finishCheck(_state, outcome)) return@withContext null
         (outcome as? State.Available)?.release
     }
 
@@ -281,6 +280,18 @@ class Updater(private val context: Context, private val http: OkHttpClient, priv
         fun newer(candidate: String, current: String) = compareVersions(candidate, current) > 0
 
         fun offered(version: String, skipped: String, postponed: Set<String>) = version != skipped && version !in postponed
+
+        /** Moves to Checking unless a check, download or install is under way; atomic against [start]. */
+        internal fun beginCheck(state: MutableStateFlow<State>): Boolean {
+            while (true) {
+                val before = state.value
+                if (before is State.Checking || before is State.Downloading || before is State.Installing) return false
+                if (state.compareAndSet(before, State.Checking)) return true
+            }
+        }
+
+        /** A check's outcome, unless something (an install) replaced Checking meanwhile. */
+        internal fun finishCheck(state: MutableStateFlow<State>, outcome: State) = state.compareAndSet(State.Checking, outcome)
 
         /** After an update Bento installed: "Bento x.y.z is installed", since it closed without a word. */
         fun notifyUpdated(context: Context, version: String) {

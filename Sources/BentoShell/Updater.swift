@@ -174,6 +174,8 @@ final class Updater: ObservableObject {
             return
         }
         state = .available(latest)
+        // An offer still up for an older version (a check from Settings found a newer one).
+        if let shown = offerVersion, shown != latest { closeOffer() }
         let offered = UserDefaults.standard.string(forKey: Self.notifiedKey) == latest
         if origin == .url || (origin == .automatic && !offered) {
             offerInstall(latest, whenQuiet: origin == .automatic)
@@ -264,8 +266,14 @@ final class Updater: ObservableObject {
     /// `returningFocus` (Later) hands focus back to the app that had it, without another of
     /// Bento's windows surfacing on the way.
     private func closeOffer(returningFocus: Bool = false) {
-        if let window = offerAlert?.window {
-            if returningFocus { AppActivation.orderOut(window, activating: AppActivation.previousApp) } else { window.orderOut(nil) }
+        if let alert = offerAlert {
+            if returningFocus {
+                AppActivation.orderOut(alert.window, activating: AppActivation.previousApp)
+                // orderOut may hide it only once Bento resigns, holding it weakly: keep it until then.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { withExtendedLifetime(alert) {} }
+            } else {
+                alert.window.orderOut(nil)
+            }
         }
         offerAlert = nil
         offerVersion = nil
