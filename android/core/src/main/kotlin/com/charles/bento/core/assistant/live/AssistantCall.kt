@@ -212,8 +212,6 @@ class AssistantCall(
         var closed = false
         /** What its call is told when it was cancelled: its own, since a later follow-up has a result of its own. */
         var cancelled: String? = null
-        /** How the task had ended before this follow-up brought it back, for if it never runs. */
-        var after: String? = null
     }
 
     /** A sub-agent: one Hermes session, its first request and the follow-ups it was given since. */
@@ -227,6 +225,8 @@ class AssistantCall(
         var state = RUNNING
         var progress: String? = null
         var result: String? = null
+        /** How it had ended before a follow-up brought it back, until one goes to Hermes: what it returns to if none does. */
+        var revivedFrom: String? = null
         val latest get() = (queued.lastOrNull() ?: current).request.task
         fun has(turn: Int?) = turn != null && state == RUNNING && (current.turn == turn || queued.any { it.turn == turn })
         fun holds(run: Run) = state == RUNNING && (current === run || run in queued)
@@ -764,7 +764,7 @@ class AssistantCall(
             runIfStill(task, run)
             return
         }
-        run.after = task.state
+        task.revivedFrom = task.state
         task.state = RUNNING
         task.current = run
         task.progress = null
@@ -809,7 +809,7 @@ class AssistantCall(
         if (task.current !== run || run.started || advance(task)) return
         when {
             // A follow-up that never ran leaves the task as its last request did.
-            run.followUp && task.result != null -> finished(task, run.after ?: FINISHED, task.result!!)
+            run.followUp && task.result != null -> finished(task, task.revivedFrom ?: FINISHED, task.result!!)
             else -> finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started.")
         }
     }
@@ -817,6 +817,7 @@ class AssistantCall(
     /** Hands [run] to Hermes in [task]'s session; when it's done, the task's next follow-up runs. */
     private fun run(task: Task, run: Run) {
         run.started = true
+        task.revivedFrom = null
         task.state = RUNNING
         task.current = run
         task.progress = null

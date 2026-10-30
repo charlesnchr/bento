@@ -537,6 +537,45 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun followUpsGeminiDropsOneAfterAnotherLeaveACancelledTaskCancelled() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        var runs = 0
+        val call = AssistantCall(transport, FakeAudio(), null, { runs++; CompletableDeferred<String>().await() }, limits = fast)
+        val gates = mapOf("c2" to CompletableDeferred<Unit>(), "c3" to CompletableDeferred())
+        val reached = CopyOnWriteArrayList<String>()
+        transport.beforeSend = { frame ->
+            if ("toolResponse" in frame && "\"started\"" in frame) gates.entries.firstOrNull { "\"${it.key}\"" in frame }?.let { reached.add(it.key); it.value.await() }
+        }
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        call.cancelTask("1")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // Two follow-ups, both held while Gemini hears they started; Gemini drops each in turn.
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        withTimeout(5_000) { while ("c2" !in reached) delay(20) }
+        Live.turn(transport, "At eight")
+        transport.push(Live.call("c3", args = mapOf("task_id" to "1")))
+        withTimeout(5_000) { while ("c3" !in reached) delay(20) }
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c2"))))
+        delay(200)
+        gates.getValue("c2").complete(Unit)
+        delay(200)
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c3"))))
+        delay(200)
+        gates.getValue("c3").complete(Unit)
+        delay(200)
+        transport.push(Live.call("k1", name = CallProtocol.CHECK_TASK, args = mapOf("task_id" to "1")))
+        transport.awaitSent { s -> s.any { "\"k1\"" in it } }
+        val check = transport.responses().single { it.id() == "k1" }.message()
+        assertTrue(check.startsWith("Task 1 (Book a table; latest follow-up: At eight) is cancelled.") || check.startsWith("Task 1 (Book a table) is cancelled."), check)
+        assertEquals(1, runs, "neither follow-up ran")
+        call.stop()
+    }
+
     @Test fun aQueuedFollowUpWaitsForGeminiToHearItStartedBeforeItRuns() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val first = CompletableDeferred<String>()
