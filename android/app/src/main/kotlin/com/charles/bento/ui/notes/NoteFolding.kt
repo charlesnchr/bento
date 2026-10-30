@@ -167,8 +167,8 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
     /**
      * A fold of a heading on screen is about to toggle. The text down to that heading stays, so
      * however much the fold shortens the note, a screen's height of blank space keeps the scroll
-     * position; two, as its tap target can reach past the heading (one as tall as a long note
-     * could be too tall to lay out). The trim after the fold takes back what isn't needed.
+     * position; two, as its tap target can reach past the heading (sized to the note instead, it
+     * could be taller than a layout can hold). The trim after the fold takes back what isn't needed.
      */
     fun toggling() {
         holding = true
