@@ -50,6 +50,20 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     override fun stop() { stopped = true }
 }
 
+/** A captioner that records what the call gives it; the test speaks for it with [say]. */
+private class FakeCaptions : CallCaptions {
+    @Volatile var fed = 0
+    @Volatile var pauses = 0
+    @Volatile var stopped = false
+    @Volatile private var onCaption: ((Caption) -> Unit)? = null
+
+    override fun start(onCaption: (Caption) -> Unit) { this.onCaption = onCaption }
+    override fun feed(pcm: ByteArray) { fed++ }
+    override fun pause() { pauses++ }
+    override fun stop() { stopped = true }
+    fun say(caption: Caption) = onCaption!!(caption)
+}
+
 private object Live {
     fun activity(type: String) = json("voiceActivity" to mapOf("type" to type))
     fun heard(text: String) = json("serverContent" to mapOf("inputTranscription" to mapOf("text" to text)))
@@ -553,6 +567,112 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         call.wake()
         assertEquals(AssistantCall.RECONNECT_FAILED, call.ended().message)
+    }
+
+    /** A call with [captions], listening and feeding them, and the captions it shows (null: taken down). */
+    private suspend fun captioned(transport: FakeTransport, captions: FakeCaptions, onTool: suspend (HermesCall) -> String = { "" },
+                                  muted: Boolean = false): Pair<AssistantCall, MutableList<String?>> {
+        val call = AssistantCall(transport, FakeAudio(), null, onTool, limits = fast.copy(captionLinger = 0.2), captions = captions)
+        val shown = CopyOnWriteArrayList<String?>()
+        call.onCaption = { shown.add(it) }
+        call.muted = muted
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        return call to shown
+    }
+
+    private suspend fun <T> List<T>.awaitSize(n: Int) = withTimeout(5_000) { while (size < n) delay(10) }
+
+    @Test fun captionsShowTheUserSpeakingUntilGeminisTranscriptReplacesThem() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val asked = CompletableDeferred<HermesCall>()
+        val (call, shown) = captioned(transport, captions, onTool = { asked.complete(it); "Sunny." })
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        withTimeout(5_000) { while (captions.fed == 0) delay(10) }
+        captions.say(Caption.Started)
+        captions.say(Caption.Partial("What's the"))
+        captions.say(Caption.Partial("What's the weather in Londo"))
+        shown.awaitSize(2)
+        transport.push(Live.activity("ACTIVITY_START"))
+        transport.push(Live.heard("What's the weather in London?"))
+        transport.push(Live.activity("ACTIVITY_END"))
+        heard.awaitSize(1)
+        assertEquals(listOf("What's the", "What's the weather in Londo", null), shown.toList(), "Gemini's transcript takes the caption down")
+        // The captioner's late guesses at the same words are stale; its next utterance shows again.
+        captions.say(Caption.Partial("What's the weather in London?"))
+        captions.say(Caption.Ended)
+        captions.say(Caption.Started)
+        captions.say(Caption.Partial("Thanks"))
+        shown.awaitSize(4)
+        assertEquals("Thanks", shown.last())
+        transport.push(Live.call("c1"))
+        assertEquals("What's the weather in London?", withTimeout(5_000) { asked.await() }.task, "Hermes gets Gemini's words, never a caption")
+        call.stop()
+        call.ended()
+        assertTrue(captions.stopped)
+    }
+
+    @Test fun aCaptionGeminiNeverReplacesIsTakenDownAfterTheUtterance() = blocking {
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(FakeTransport(listOf(Frames.setupComplete())), captions)
+        captions.say(Caption.Started)
+        captions.say(Caption.Partial("Hmm"))
+        shown.awaitSize(1)
+        delay(400)
+        assertEquals(listOf("Hmm"), shown.toList(), "it stays while the utterance goes on")
+        captions.say(Caption.Ended)
+        shown.awaitSize(2)
+        assertEquals(listOf("Hmm", null), shown.toList())
+        call.stop()
+    }
+
+    @Test fun mutedTheCaptionerHearsNothingAndMutingEndsItsUtterance() = blocking {
+        val captions = FakeCaptions()
+        val (call, _) = captioned(FakeTransport(listOf(Frames.setupComplete())), captions, muted = true)
+        delay(200)
+        assertEquals(0, captions.fed, "tap to talk: nothing is heard before the tap")
+        call.muted = false
+        withTimeout(5_000) { while (captions.fed == 0) delay(10) }
+        call.muted = true
+        withTimeout(5_000) { while (captions.pauses == 0) delay(10) }
+        delay(100)
+        val fed = captions.fed
+        delay(200)
+        assertEquals(fed, captions.fed)
+        call.stop()
+    }
+
+    @Test fun standbyTakesTheCaptionDownAndStopsFeedingIt() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val result = CompletableDeferred<String>()
+        val call = AssistantCall(first, FakeAudio(), null, { result.await() }, limits = fast, reconnect = { FakeTransport(listOf(Frames.setupComplete())) },
+                                 standbyAfter = { 0.3 }, captions = captions)
+        val shown = CopyOnWriteArrayList<String?>()
+        call.onCaption = { shown.add(it) }
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.push(Live.activity("ACTIVITY_START"))
+        first.push(Live.heard("What's on my calendar?"))
+        first.push(Live.activity("ACTIVITY_END"))
+        first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        captions.say(Caption.Started)
+        captions.say(Caption.Partial("And also"))
+        shown.awaitSize(1)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        shown.awaitSize(2)
+        assertNull(shown.last())
+        assertTrue(captions.pauses > 0)
+        delay(100)
+        val fed = captions.fed
+        captions.say(Caption.Partial("And also check"))
+        delay(200)
+        assertEquals(fed, captions.fed, "in standby Gemini hears nothing, so neither does the captioner")
+        assertEquals(2, shown.size, "and nothing is shown that Gemini can't hear")
+        call.stop()
     }
 
     @Test fun endings() {

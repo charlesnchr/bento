@@ -56,6 +56,10 @@ interface CallAudio {
  * keeps running unheard. When Hermes finishes, or on [wake], a new session starts with the
  * conversation so far ([recap]); a result that outlived its session goes in as a new turn
  * for Gemini to speak ([CallSetup.resultFrame]), since the old session's call is gone with it.
+ *
+ * Gemini Live sends the user's words only once they stop speaking, so with [captions] the
+ * microphone audio Gemini hears also goes to a transcriber whose growing guess is shown
+ * meanwhile ([onCaption]). Display only: Gemini's transcript replaces it and is all Hermes gets.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AssistantCall(
@@ -72,6 +76,8 @@ class AssistantCall(
     private val standbyAfter: () -> Double = { 0.0 },
     /** The conversation so far, for the session a call starts when it comes back from standby. */
     private val recap: () -> CallSetup.Resume? = { null },
+    /** Captions of the user's speech while Gemini hasn't transcribed it yet ([LiveCaptions]). */
+    private val captions: CallCaptions? = null,
 ) {
     data class Limits(
         val connect: Double = 25.0,
@@ -79,6 +85,8 @@ class AssistantCall(
         val tickMillis: Long = 1000,
         val settleQuiet: Double = 0.8,
         val settleMax: Double = 5.0,
+        /** Seconds a caption stays after its utterance ended, if Gemini sends no transcript to replace it. */
+        val captionLinger: Double = 4.0,
     )
 
     sealed interface Status {
@@ -102,6 +110,9 @@ class AssistantCall(
 
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
     var onTranscript: ((String, String) -> Unit)? = null
+
+    /** What the user is saying, before Gemini transcribes it; null takes it down. Display only. Called on the call's thread. */
+    var onCaption: ((String?) -> Unit)? = null
 
     private var socket = transport
     private var active = false
@@ -130,6 +141,11 @@ class AssistantCall(
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
+    private var captionShown = false
+    /** Gemini transcribed the utterance being captioned: the rest of the captioner's guesses at it are stale. */
+    private var captionStale = false
+    /** When the captioned utterance ended, for taking down a caption Gemini never replaces. */
+    private var captionEndedAt: Double? = null
 
     private fun now() = clock()
 
@@ -142,6 +158,7 @@ class AssistantCall(
                 if (!active || !listening) return@launch
                 if (value && !streamEnded) {
                     streamEnded = true
+                    captions?.pause()
                     send(STREAM_END)
                 } else if (!value) streamEnded = false
             }
@@ -154,6 +171,7 @@ class AssistantCall(
             started = now()
             lastSpeech = started
             _status.value = Status.Connecting
+            captions?.start { caption -> scope.launch { caption(caption) } }
             launch { receiveLoop() }
             launch { watchdog() }
         }
@@ -226,6 +244,7 @@ class AssistantCall(
             delay(limits.tickMillis)
             if (!active) return
             val t = now()
+            captionEndedAt?.let { if (t - it >= limits.captionLinger) takeDownCaption() }
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 listening && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
@@ -250,6 +269,8 @@ class AssistantCall(
         resumeHandle = null
         _status.value = Status.Standby
         socket.close()
+        captions?.pause()
+        takeDownCaption()
     }
 
     /** Brings a call in standby back now, to talk before Hermes finishes. */
@@ -324,6 +345,8 @@ class AssistantCall(
         // Transcripts arrive inside serverContent; the reference also allows them top level.
         for (source in listOf(content, event)) {
             (source["inputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
+                captionStale = true
+                takeDownCaption()
                 protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
@@ -366,6 +389,7 @@ class AssistantCall(
                 if (!active) return@launch
                 if (standby) continue
                 send(audioFrame(pcm))
+                captions?.feed(pcm)
             }
         }
         val ok = audio.start { pcm ->
@@ -375,6 +399,26 @@ class AssistantCall(
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = Status.Listening
+    }
+
+    private fun caption(caption: Caption) {
+        if (!active) return
+        when (caption) {
+            Caption.Started -> { captionStale = false; captionEndedAt = null }
+            is Caption.Partial -> if (!captionStale && !standby && caption.text.isNotBlank()) {
+                captionShown = true
+                captionEndedAt = null
+                onCaption?.invoke(caption.text)
+            }
+            Caption.Ended -> if (captionShown) captionEndedAt = now()
+        }
+    }
+
+    private fun takeDownCaption() {
+        captionEndedAt = null
+        if (!captionShown) return
+        captionShown = false
+        onCaption?.invoke(null)
     }
 
     private fun delegate(call: JsonObject) {
@@ -475,6 +519,7 @@ class AssistantCall(
             if (!active) return@launch
             active = false
             audio.stop()
+            captions?.stop()
             mic.close()
             socket.close()
             _status.value = Status.Ended(message)

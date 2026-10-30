@@ -15,6 +15,7 @@ import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
 import com.charles.bento.core.assistant.live.HermesCall
+import com.charles.bento.core.assistant.live.LiveCaptions
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import com.charles.bento.settings.Prefs
@@ -46,6 +47,8 @@ data class AssistantUi(
     val working: Boolean = false,
     val error: String? = null,
     val call: CallUi? = null,
+    /** In a call, what the user is saying before Gemini transcribes it: shown, never sent anywhere. */
+    val caption: String? = null,
 )
 
 data class CallUi(
@@ -415,9 +418,11 @@ class AssistantController(
             }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
                 standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
                 // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
-                recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() })
+                recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() },
+                captions = LiveCaptions({ OkHttpLiveTransport({ key }) }))
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
+            c.onCaption = { text -> scope.launch { if (call === c) set { it.copy(caption = text) } } }
             call = c
             voiceBoundary = true
             c.start()
@@ -442,7 +447,7 @@ class AssistantController(
                         // A request the call abandoned ends with it: nothing on screen keeps spinning.
                         val all = TurnState(ids = _state.value.messages.map { it.id }.toSet(), status = "cancelled")
                         val (list, _) = AssistantTranscript.finish(_state.value.messages, all)
-                        set { it.copy(messages = list, call = null, error = status.message) }
+                        set { it.copy(messages = list, call = null, caption = null, error = status.message) }
                         callJob?.cancel()
                         callJob = null
                     }
@@ -459,7 +464,7 @@ class AssistantController(
         if (c != null) c.stop() else {
             callJob?.cancel(); callJob = null
             VoiceService.exit(context)
-            set { it.copy(call = null) }
+            set { it.copy(call = null, caption = null) }
         }
     }
 

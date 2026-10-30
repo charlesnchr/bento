@@ -124,6 +124,9 @@ Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the 
 with the Mac's call setup (`helper/gemini_live_setup.json`, phone wording) and its one
 tool, `ask_hermes`: when the model calls it, Bento sends Hermes the user's own transcribed
 words for that turn, shows Hermes's reply in the chat and returns it for Gemini to speak.
+Gemini Live transcribes the user only once they stop speaking, so the audio it hears also
+goes to `gemini-3.5-transcribe-live`, whose running guess shows in a faint bubble while
+they talk. Gemini Live's transcript replaces the bubble and is the only one Hermes gets.
 A call continues the conversation on screen (Gemini gets a recap, `helper/live_resume.json`),
 runs in a microphone foreground service, uses the voice-call microphone with echo
 cancellation and plays through a headset or the loudspeaker. Open mic or tap to talk is a
