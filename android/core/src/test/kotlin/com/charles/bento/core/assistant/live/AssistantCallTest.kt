@@ -34,13 +34,15 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     @Volatile var flushes = 0
     @Volatile var stopped = false
     @Volatile var started = false
+    /** The microphone delivers nothing meanwhile, as one silenced by another recording might. */
+    @Volatile var quiet = false
     private var thread: Thread? = null
 
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
         if (!opens) return false
         started = true
         if (delivers) thread = Thread {
-            while (!stopped) { onPcm(ByteArray(640)); Thread.sleep(20) }
+            while (!stopped) { if (!quiet) onPcm(ByteArray(640)); Thread.sleep(20) }
         }.apply { isDaemon = true; start() }
         return true
     }
@@ -581,8 +583,9 @@ class AssistantCallTest {
 
     /** A request Hermes is still working on, asked on [first], with standby after 0.3 s. */
     private suspend fun waitingOnHermes(first: FakeTransport, next: () -> FakeTransport, result: CompletableDeferred<String>,
-                                        standbyAfter: Double = 0.3): AssistantCall {
-        val call = AssistantCall(first, FakeAudio(), null, { result.await() }, limits = fast, reconnect = next,
+                                        standbyAfter: Double = 0.3, audio: FakeAudio = FakeAudio(),
+                                        limits: AssistantCall.Limits = fast): AssistantCall {
+        val call = AssistantCall(first, audio, null, { result.await() }, limits = limits, reconnect = next,
                                  standbyAfter = { standbyAfter }, recap = { CallSetup.resume("User: what's on my calendar?") })
         call.start()
         first.awaitSent { s -> s.any { "realtimeInput" in it } }
@@ -675,6 +678,86 @@ class AssistantCallTest {
         result.complete("Done.")
         third.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         call.stop()
+    }
+
+    @Test fun aMicrophoneLentInStandbyHoldsTheComebackUntilItsReclaimed() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; second }, result)
+        assertFalse(call.lend(), "a call on Gemini keeps the microphone")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        assertFalse(call.lend(), "lent once at a time")
+        result.complete("Done.")
+        call.wake()
+        delay(400)
+        assertEquals(AssistantCall.Status.Standby, call.status.value, "neither the answer nor wake brings it back while lent")
+        assertEquals(0, made)
+        call.reclaim()
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(1, made)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        assertFalse(call.lend())
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aMicrophoneLentAndReclaimedWithNothingFinishedLeavesTheCallInStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; second }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        call.reclaim()
+        delay(300)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        assertEquals(0, made)
+        // Lent again, and the answer comes after it's back: the call returns as it always does.
+        assertTrue(call.lend())
+        call.reclaim()
+        result.complete("Done.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun aCallEndedWhileLentEndsCleanlyAndReclaimingDoesNothing() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        var made = 0
+        val call = waitingOnHermes(first, { made++; FakeTransport(listOf(Frames.setupComplete())) }, result)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        call.stop()
+        assertNull(call.ended().message)
+        call.reclaim()
+        result.complete("Done.")
+        delay(200)
+        assertEquals(0, made)
+        assertFalse(call.lend())
+    }
+
+    @Test fun aLentMicrophoneGoingQuietDoesntEndTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { second }, result, audio = audio, limits = fast.copy(capture = 0.3))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        assertTrue(call.lend())
+        audio.quiet = true
+        delay(800)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        audio.quiet = false
+        call.reclaim()
+        result.complete("Done.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+        assertNull(call.ended().message)
     }
 
     /** Two requests Hermes is working on, asked on [first] as tasks 1 and 2, with standby after 0.3 s. */

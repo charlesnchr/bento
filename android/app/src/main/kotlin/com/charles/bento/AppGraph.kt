@@ -94,7 +94,16 @@ class AppGraph(val app: Application) {
     }
     val meetingSource: com.charles.bento.ui.voice.MeetingSource get() = meetings
 
-    val dictation: DictationController = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() }, { meetings.isBusy || assistant.callActive })
+    val dictation: DictationController = DictationController(app, prefs, main, { voicePipeline }, { dictationSinks }, { voiceModes() },
+        claimMicrophone = {
+            when {
+                meetings.isBusy -> "A meeting is recording. Stop it to dictate"
+                // a call in standby lends its microphone; one listening or speaking keeps it
+                !assistant.lendMicrophone() -> "The voice call with Hermes is listening. Dictate once it pauses, or end it"
+                else -> null
+            }
+        },
+        releaseMicrophone = { assistant.reclaimMicrophone() })
 
     fun start() {
         sync.start()

@@ -61,6 +61,8 @@ interface CallAudio {
  * microphone keeps running unheard. When any task finishes, or on [wake], a new session starts
  * with the conversation so far ([recap]); results that outlived their session go in as a new
  * turn for Gemini to speak ([CallSetup.resultFrame]), since the old session's calls are gone with it.
+ * In standby the microphone can be lent to a dictation ([lend]); the call stays in standby until
+ * it's back ([reclaim]), and only then comes back for a task that finished meanwhile.
  *
  * Gemini Live sends the user's words only once they stop speaking, so with [captions] the
  * microphone audio Gemini hears also goes to a transcriber whose growing guess is shown
@@ -149,8 +151,14 @@ class AssistantCall(
     private var session = 0
     /** How the current session was set up: the call's [resume], or after standby the conversation then. */
     private var setupResume = resume
+    // Written on the call's thread under [lending], so [lend] on another thread sees a consistent pair.
     private var standby = false
     private var waking = false
+    private val lending = Any()
+    /** The microphone is lent out ([lend]): the call stays in standby, unheard and unwatched, until [reclaim]. */
+    @Volatile private var lent = false
+    /** A comeback held off while the microphone was lent: it happens on [reclaim]. */
+    private var wakeHeld = false
     private var wakeStarted = 0.0
     /** Results of calls an earlier session made, as (task, reply): they go to Gemini as a turn. */
     private val deliveries = ArrayList<Pair<String, String>>()
@@ -291,7 +299,7 @@ class AssistantCall(
             captionEndedAt?.let { if (t - it >= limits.captionLinger) takeDownCaption() }
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
-                listening && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
+                listening && !lent && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
             }
@@ -332,7 +340,7 @@ class AssistantCall(
 
     /** Leaves Gemini while Hermes works: the socket closes, and the microphone runs on unheard. */
     private fun standBy() {
-        standby = true
+        synchronized(lending) { standby = true }
         goingAway = false
         resumeHandle = null
         _status.value = Status.Standby
@@ -346,11 +354,39 @@ class AssistantCall(
         scope.launch { comeBack() }
     }
 
+    /**
+     * Lends the microphone to a dictation while the call is in standby: the call stays there, its
+     * audio unheard as in any standby, and a task finishing or [wake] brings it back only after
+     * [reclaim]. False unless the call is in standby and not already coming back. Any thread.
+     */
+    fun lend(): Boolean = synchronized(lending) {
+        if (!active || !standby || waking || lent) return false
+        lent = true
+        true
+    }
+
+    /** Takes back the microphone [lend] lent; a comeback held off meanwhile happens now. Any thread. */
+    fun reclaim() {
+        synchronized(lending) {
+            if (!lent) return
+            // The microphone may have gone quiet while shared: the watchdog starts counting afresh.
+            lastCaptureAt = now()
+            lent = false
+        }
+        scope.launch {
+            val held = synchronized(lending) { wakeHeld.also { wakeHeld = false } }
+            if (held) comeBack()
+        }
+    }
+
     /** A new session with the conversation so far; the read loop finishes it at setupComplete ([cameBack]). */
     private fun comeBack() {
         if (!active || !standby || waking) return
         val make = reconnect ?: return
-        waking = true
+        synchronized(lending) {
+            if (lent) { wakeHeld = true; return }
+            waking = true
+        }
         session++
         wakeStarted = now()
         _status.value = Status.Waking
@@ -437,7 +473,7 @@ class AssistantCall(
         }
         if (event["setupComplete"] != null) {
             val back = waking
-            if (back) { waking = false; standby = false }
+            if (back) synchronized(lending) { waking = false; standby = false }
             setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
             if (back) cameBack() else listen()
         }
