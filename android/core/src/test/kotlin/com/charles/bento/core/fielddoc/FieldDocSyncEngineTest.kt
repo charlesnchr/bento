@@ -166,11 +166,13 @@ class FieldDocSyncEngineTest {
     @Test fun documentsTheServerLacksAreSentAgain() {
         val repo = InMemoryFieldDocRepository()
         val e = FieldDocSyncEngine(repo)
-        e.applySnapshot(listOf(task("a").apply { seq = 10 }, task("b").apply { seq = 11 }), setOf("a", "b"))
-        // restored from a backup: a is gone; b is there but its body can't be read here
+        val c = FieldDoc(id = "c", type = "", createdAt = 1000, updatedAt = 2000, deleted = true, seq = 12)
+        e.applySnapshot(listOf(task("a").apply { seq = 10 }, task("b").apply { seq = 11 }, c), setOf("a", "b", "c"))
+        // restored from a backup: a is gone; b is there but its body can't be read here;
+        // the tombstone c was purged and stays gone
         e.applySnapshot(emptyList(), setOf("b"))
         assertTrue(repo.doc("a")!!.dirty && repo.doc("a")!!.seq == null)
-        assertFalse(repo.doc("b")!!.dirty)
+        assertFalse(repo.doc("b")!!.dirty || repo.doc("c")!!.dirty)
         assertEquals(listOf("a"), e.docsToSend().map { it.id })
     }
 

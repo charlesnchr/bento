@@ -152,7 +152,7 @@ class SyncHub(
 
     /**
      * Whether every server answered, and whether a round trip ran (todos and voice fetch
-     * their full set each time, so what's shown is refreshed after every one).
+     * their full set each time, so widgets refresh after every one, answered or not).
      */
     data class Once(val ok: Boolean, val changed: Boolean)
 

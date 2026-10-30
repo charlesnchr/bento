@@ -103,11 +103,12 @@ public final class FieldSyncEngine {
     }
 
     /// The server's full set (reply to hello / REST poll): every document is merged into
-    /// ours, and ours that the server doesn't have (restored from a backup, a new server) are
-    /// sent again. `ids` names every document the server sent, including any `docs` lacks
-    /// because its body couldn't be read: those are the server's, never overwritten from here.
+    /// ours, and live ones of ours that the server doesn't have (restored from a backup, a new
+    /// server) are sent again; tombstones aren't, so purging one on the server sticks. `ids`
+    /// names every document the server sent, including any `docs` lacks because its body
+    /// couldn't be read: those are the server's, never overwritten from here.
     public func applySnapshot(_ docs: [FieldDoc], ids: Set<String>) {
-        for var d in repo.allDocs where !d.dirty && !ids.contains(d.id) {
+        for var d in repo.allDocs where !d.dirty && !d.deleted && !ids.contains(d.id) {
             d.dirty = true
             d.seq = nil
             repo.save(d, remote: false)

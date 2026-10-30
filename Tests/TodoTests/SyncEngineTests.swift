@@ -158,11 +158,13 @@ private func task(_ id: String = "t1", title: String = "Task", at t: Int64 = 100
         let repo = MemoryRepo(), e = TodoSyncEngine(repo: repo)
         var a = task("a"); a.seq = 10
         var b = task("b"); b.seq = 11
-        e.applySnapshot([a, b], ids: ["a", "b"])
-        // restored from a backup: a is gone; b is there but its body can't be read here
+        var c = TodoDoc(id: "c", type: "", createdAt: 1000, updatedAt: 2000); c.deleted = true; c.seq = 12
+        e.applySnapshot([a, b, c], ids: ["a", "b", "c"])
+        // restored from a backup: a is gone; b is there but its body can't be read here;
+        // the tombstone c was purged and stays gone
         e.applySnapshot([], ids: ["b"])
         #expect(repo.docs["a"]!.dirty && repo.docs["a"]!.seq == nil)
-        #expect(!repo.docs["b"]!.dirty)
+        #expect(!repo.docs["b"]!.dirty && !repo.docs["c"]!.dirty)
         #expect(e.docsToSend().map(\.id) == ["a"])
     }
 

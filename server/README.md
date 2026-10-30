@@ -149,9 +149,11 @@ ssh hetzner 'set -e; systemctl stop bento-sync
 After a restore `seq` may go backwards. Clients whose `last_seq` is above the
 restored seq should do a full resync (`hello` with `since: 0`). The server doesn't
 detect this itself. (Todo and voice clients always fetch the full set and resend
-what the server lacks.)
+the live documents the server lacks.)
 
-Remove specific documents of any collection (e.g. test data) without touching seq:
+Remove specific documents of any collection (e.g. test data) without touching seq.
+Todo and voice clients send back any live document the server lacks, so delete one
+first (`syncctl.py --collection todos delete ID`) and purge the tombstone:
 
 ```sh
 ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \

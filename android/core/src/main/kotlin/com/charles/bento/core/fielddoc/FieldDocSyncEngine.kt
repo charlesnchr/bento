@@ -106,13 +106,14 @@ class FieldDocSyncEngine(val repo: FieldDocRepository) {
 
     /**
      * The server's full set (reply to hello / REST poll): every document is merged into ours,
-     * and ours that the server doesn't have (restored from a backup, a new server) are sent
-     * again. [ids] names every document the server sent, including any [docs] lacks because
-     * its body couldn't be read: those are the server's, never overwritten from here.
+     * and live ones of ours that the server doesn't have (restored from a backup, a new server)
+     * are sent again; tombstones aren't, so purging one on the server sticks. [ids] names every
+     * document the server sent, including any [docs] lacks because its body couldn't be read:
+     * those are the server's, never overwritten from here.
      */
     fun applySnapshot(docs: List<FieldDoc>, ids: Set<String>) {
         for (d in repo.allDocs) {
-            if (!d.dirty && d.id !in ids) repo.save(d.copy(dirty = true, seq = null), remote = false)
+            if (!d.dirty && !d.deleted && d.id !in ids) repo.save(d.copy(dirty = true, seq = null), remote = false)
         }
         for (d in docs.sortedBy { it.seq ?: 0 }) applyRemote(d)
     }
