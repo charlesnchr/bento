@@ -1,6 +1,9 @@
 package com.charles.bento.ui.notes
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
@@ -10,11 +13,17 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -133,6 +142,51 @@ fun chevronTargets(lines: List<Pair<Float, Float>>, slack: Float): List<Pair<Flo
     val prev = lines.getOrNull(i - 1)?.second?.takeIf { it <= y0 }
     val next = lines.getOrNull(i + 1)?.first?.takeIf { it >= y1 }
     maxOf(y0 - slack, prev?.let { (it + y0) / 2 } ?: Float.NEGATIVE_INFINITY) to minOf(y1 + slack, next?.let { (y1 + it) / 2 } ?: Float.POSITIVE_INFINITY)
+}
+
+/**
+ * Keeps a tapped heading where it is on screen while its section folds or opens. The text
+ * field scrolls its caret into view whenever its shown text changes, which a fold does, so for
+ * the frames a fold takes the editor's scroll ignores those requests ([base] answers the rest);
+ * and so a fold near the end doesn't pull the text down as the note gets shorter under the
+ * scroll position, blank space below the text ([tail]) makes up the difference until the user
+ * scrolls back up.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoViewSpec) : BringIntoViewSpec {
+    private var holding = false
+    private var toggles by mutableIntStateOf(0)
+
+    /** Blank space below the text, in pixels. */
+    var tail by mutableIntStateOf(0)
+        private set
+
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+        if (holding) 0f else base.calculateScrollDistance(offset, size, containerSize)
+
+    /** A fold is about to toggle in text laid out `textHeight` tall (as far as a fold can shorten it). */
+    fun toggling(textHeight: Int) {
+        holding = true
+        tail = maxOf(tail, textHeight)
+        toggles++
+    }
+
+    /** Only the blank space still needed to fill the screen below the scroll position. */
+    private fun trim() {
+        tail = minOf(tail, maxOf(0, scroll.value - (scroll.maxValue - tail)))
+    }
+
+    @Composable
+    fun Effects() {
+        LaunchedEffect(toggles) {
+            if (toggles == 0) return@LaunchedEffect
+            // the fold's layout, then the caret request the field launches from it
+            repeat(2) { withFrameNanos {} }
+            holding = false
+            trim()
+        }
+        LaunchedEffect(Unit) { snapshotFlow { scroll.value to scroll.maxValue }.collect { if (!holding) trim() } }
+    }
 }
 
 /** Left of the text: room for the fold chevrons. */

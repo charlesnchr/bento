@@ -8,12 +8,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -57,6 +61,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,6 +86,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -122,7 +128,7 @@ import kotlinx.coroutines.Dispatchers
 private fun TextFieldValue.sel() = TextRange(selection.min, selection.max - selection.min)
 private fun TextRange.ui() = UiRange(location, end)
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun NoteEditorScreen(routeId: String, nav: NavController) {
     val context = LocalContext.current
@@ -167,6 +173,10 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     )
     val visual = remember(colors, folds) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val scroll = rememberScrollState()
+    val baseSpec = LocalBringIntoViewSpec.current
+    val anchor = remember(id, baseSpec) { FoldAnchor(scroll, baseSpec) }
+    anchor.Effects()
     val imageHashes = remember(value.text) { NoteImage.hashes(value.text) }
     var viewing by remember { mutableStateOf<String?>(null) }
 
@@ -236,6 +246,12 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         folds = folds.toggled(lineStart)
         val f = folds.folds.firstOrNull { it.lineStart == lineStart } ?: return
         if (value.selection.max > f.start && value.selection.min <= f.end) value = value.copy(selection = UiRange(f.start))
+    }
+
+    /** A tap on a heading's chevron or " ⋯": the heading stays where it is on screen. */
+    fun toggleFoldInPlace(lineStart: Int) {
+        anchor.toggling(layout?.size?.height ?: 0)
+        toggleFold(lineStart)
     }
 
     LaunchedEffect(id) {
@@ -354,56 +370,59 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
-                   .dragAndDropTarget(shouldStartDragAndDrop = { e -> e.mimeTypes().any { it.startsWith("image/") } }, target = dropTarget)) {
-            if (imageHashes.isNotEmpty()) {
-                NoteImageStrip(imageHashes, notesModule.images, onOpen = { viewing = it }, Modifier.padding(start = FoldGutter, end = 20.dp, top = 8.dp))
-            }
-            Box {
-                BasicTextField(
-                    value = value,
-                    onValueChange = { new ->
-                        if (new.text == value.text) {
-                            // a tap or caret move: never into a folded section's hidden text
-                            val sel = folds.caret(new.sel(), value.sel())
-                            handleChange(value, if (sel == new.sel()) new else new.copy(selection = sel.ui()), { v, r -> set(v, r) }, { applyResult(it) })
-                            return@BasicTextField
-                        }
-                        // Enter, Backspace and Delete next to a folded section have their own edits, which
-                        // keep it folded and leave its hidden text alone (or are refused)
-                        val r = folds.keyboard(value.sel(), new.text, new.sel())
-                        when {
-                            r == null -> handleChange(value, new, { v, rec -> set(v, rec) }, { applyResult(it) })
-                            r.edits.isEmpty() -> haptics.performHapticFeedback(HapticFeedbackType.Reject)
-                            else -> applyResult(r, user = false)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(start = FoldGutter, end = 20.dp, top = 8.dp, bottom = 8.dp).focusRequester(focus)
-                        .onPreviewKeyEvent { e ->
-                            // → at a folded heading's end steps over the fold
-                            if (e.type != KeyEventType.KeyDown || e.key != Key.DirectionRight || !value.selection.collapsed) return@onPreviewKeyEvent false
-                            val at = value.selection.start
-                            val sel = folds.caret(TextRange(at + 1, 0), TextRange(at, 0))
-                            if (sel.location == at + 1) return@onPreviewKeyEvent false
-                            value = value.copy(selection = sel.ui())
-                            true
+        CompositionLocalProvider(LocalBringIntoViewSpec provides anchor) {
+            Column(Modifier.fillMaxSize().padding(padding).verticalScroll(scroll)
+                       .dragAndDropTarget(shouldStartDragAndDrop = { e -> e.mimeTypes().any { it.startsWith("image/") } }, target = dropTarget)) {
+                if (imageHashes.isNotEmpty()) {
+                    NoteImageStrip(imageHashes, notesModule.images, onOpen = { viewing = it }, Modifier.padding(start = FoldGutter, end = 20.dp, top = 8.dp))
+                }
+                Box {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = { new ->
+                            if (new.text == value.text) {
+                                // a tap or caret move: never into a folded section's hidden text
+                                val sel = folds.caret(new.sel(), value.sel())
+                                handleChange(value, if (sel == new.sel()) new else new.copy(selection = sel.ui()), { v, r -> set(v, r) }, { applyResult(it) })
+                                return@BasicTextField
+                            }
+                            // Enter, Backspace and Delete next to a folded section have their own edits, which
+                            // keep it folded and leave its hidden text alone (or are refused)
+                            val r = folds.keyboard(value.sel(), new.text, new.sel())
+                            when {
+                                r == null -> handleChange(value, new, { v, rec -> set(v, rec) }, { applyResult(it) })
+                                r.edits.isEmpty() -> haptics.performHapticFeedback(HapticFeedbackType.Reject)
+                                else -> applyResult(r, user = false)
+                            }
                         },
-                    readOnly = note == null, // not on this phone (yet): typing would have nowhere to go
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    visualTransformation = visual,
-                    onTextLayout = { layout = it },
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    decorationBox = { inner ->
-                        Box {
-                            if (value.text.isEmpty()) Text("Start typing…", style = MaterialTheme.typography.bodyLarge,
-                                                           color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                            inner()
-                        }
-                    },
-                )
-                // fold chevrons beside the headings, and the " ⋯" of folded ones, over the text
-                FoldControls(folds, layout, textStart = FoldGutter, textTop = 8.dp, color = MaterialTheme.colorScheme.onSurfaceVariant, onToggle = ::toggleFold)
+                        modifier = Modifier.fillMaxWidth().padding(start = FoldGutter, end = 20.dp, top = 8.dp, bottom = 8.dp).focusRequester(focus)
+                            .onPreviewKeyEvent { e ->
+                                // → at a folded heading's end steps over the fold
+                                if (e.type != KeyEventType.KeyDown || e.key != Key.DirectionRight || !value.selection.collapsed) return@onPreviewKeyEvent false
+                                val at = value.selection.start
+                                val sel = folds.caret(TextRange(at + 1, 0), TextRange(at, 0))
+                                if (sel.location == at + 1) return@onPreviewKeyEvent false
+                                value = value.copy(selection = sel.ui())
+                                true
+                            },
+                        readOnly = note == null, // not on this phone (yet): typing would have nowhere to go
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        visualTransformation = visual,
+                        onTextLayout = { layout = it },
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        decorationBox = { inner ->
+                            Box {
+                                if (value.text.isEmpty()) Text("Start typing…", style = MaterialTheme.typography.bodyLarge,
+                                                               color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                                inner()
+                            }
+                        },
+                    )
+                    // fold chevrons beside the headings, and the " ⋯" of folded ones, over the text
+                    FoldControls(folds, layout, textStart = FoldGutter, textTop = 8.dp, color = MaterialTheme.colorScheme.onSurfaceVariant, onToggle = ::toggleFoldInPlace)
+                }
+                Spacer(Modifier.height(with(LocalDensity.current) { anchor.tail.toDp() }))
             }
         }
     }
