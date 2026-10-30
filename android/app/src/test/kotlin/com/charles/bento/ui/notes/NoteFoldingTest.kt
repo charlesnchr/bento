@@ -55,6 +55,8 @@ class NoteFoldingTest {
         assertEquals(500, FoldAnchor.trimmed(laidOut = 1000, value = 900, maxValue = 1400))
         // at most what was laid out
         assertEquals(1000, FoldAnchor.trimmed(laidOut = 1000, value = 1400, maxValue = 1400))
+        // the note fits on the screen with room to spare: nothing to keep in place
+        assertEquals(0, FoldAnchor.trimmed(laidOut = 500, value = 0, maxValue = 0))
     }
 
     @Test fun aStaleFoldStateStillGivesAValidMapping() {

@@ -201,10 +201,10 @@ class FoldAnchor(private val scroll: ScrollState, private val base: BringIntoVie
          * Only the blank space still needed to fill the screen below the scroll position `value`:
          * `maxValue` is the last layout's, with `laidOut` of blank space in it. Never more than
          * that (the scroll can't pass `maxValue`), but it can be all of it again: a fling going
-         * on down before a trim is laid out keeps what it scrolls into.
+         * on down before a trim is laid out keeps what it scrolls into. None when nothing scrolls.
          */
         fun trimmed(laidOut: Int, value: Int, maxValue: Int): Int =
-            maxOf(0, value - (maxValue - laidOut))
+            if (maxValue == 0) 0 else maxOf(0, value - (maxValue - laidOut))
     }
 }
 
