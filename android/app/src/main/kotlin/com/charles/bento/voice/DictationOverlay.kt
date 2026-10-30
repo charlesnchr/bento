@@ -238,8 +238,8 @@ class DictationOverlay(
         val screenH = runCatching { wm.currentWindowMetrics.bounds.height() }.getOrNull() ?: context.resources.displayMetrics.heightPixels
         val height = p.view.height.takeIf { it > 0 } ?: px(76)
         val bounds = f?.node?.let { n -> Rect().also { r -> if (n.refresh()) n.getBoundsInScreen(r) } }?.takeUnless { it.isEmpty }
-        val y = pillTop(height, keyboardTop = f?.keyboardTop ?: (screenH - px(140)), fieldTop = bounds?.top, fieldBottom = bounds?.bottom,
-                        minTop = px(32), screenBottom = screenH, gap = px(8))
+        val y = pillTop(height, keyboardTop = f?.keyboardTop ?: (screenH - px(140)), keyboardBottom = f?.keyboardBottom ?: screenH,
+                        fieldTop = bounds?.top, fieldBottom = bounds?.bottom, minTop = px(32), screenBottom = screenH, gap = px(8))
         if (p.params.y != y) {
             p.params.y = y
             runCatching { wm.updateViewLayout(p.view, p.params) }
@@ -257,17 +257,18 @@ class DictationOverlay(
         /**
          * The pill's top edge (screen pixels) so it never covers the field being filled:
          * just above the keyboard, which is below the field unless the field sits on the
-         * keyboard (a chat's message box); then just above the field, or below it (a floating
-         * keyboard over a tall field); and when neither fits, over the top of the keyboard.
+         * keyboard (a chat's message box); then just above the field, or below both the field
+         * and the keyboard (a floating keyboard over a tall field); and when neither fits, over
+         * the top of the keyboard, where the field is hidden anyway.
          */
-        fun pillTop(height: Int, keyboardTop: Int, fieldTop: Int?, fieldBottom: Int?, minTop: Int, screenBottom: Int, gap: Int): Int {
+        fun pillTop(height: Int, keyboardTop: Int, keyboardBottom: Int, fieldTop: Int?, fieldBottom: Int?, minTop: Int, screenBottom: Int, gap: Int): Int {
             val aboveKeyboard = keyboardTop - gap - height
             if (fieldTop == null || fieldBottom == null) return aboveKeyboard.coerceAtLeast(minTop)
             val overlaps = fieldTop < aboveKeyboard + height + gap && fieldBottom > aboveKeyboard - gap
             if (!overlaps && aboveKeyboard >= minTop) return aboveKeyboard
             val aboveField = fieldTop - gap - height
             if (aboveField >= minTop) return aboveField
-            val belowField = fieldBottom + gap
+            val belowField = maxOf(fieldBottom, keyboardBottom) + gap
             if (belowField + height <= screenBottom) return belowField
             return (keyboardTop + gap).coerceAtMost(screenBottom - height).coerceAtLeast(minTop)
         }

@@ -16,16 +16,16 @@ class DictationPlacementTest {
     }
 
     @Test fun realTextIsKept() {
-        // typed text, even when it matches the hint, has the cursor after it
+        // typed text, even when it matches the hint, has the cursor after it (or is selected: the far end is passed)
         assertFalse(TextInserter.isPlaceholder("Message", 7, listOf("Message")))
         assertFalse(TextInserter.isPlaceholder("Hello", 0, listOf("Message")))
         assertFalse(TextInserter.isPlaceholder("Message", 0, emptyList()))
         assertFalse(TextInserter.isPlaceholder("", 0, listOf("")))
     }
 
-    private fun top(fieldTop: Int?, fieldBottom: Int?, keyboardTop: Int = 1_500) =
-        DictationOverlay.pillTop(height = 150, keyboardTop = keyboardTop, fieldTop = fieldTop, fieldBottom = fieldBottom,
-                                 minTop = 80, screenBottom = 2_400, gap = 20)
+    private fun top(fieldTop: Int?, fieldBottom: Int?, keyboardTop: Int = 1_500, keyboardBottom: Int = 2_400) =
+        DictationOverlay.pillTop(height = 150, keyboardTop = keyboardTop, keyboardBottom = keyboardBottom, fieldTop = fieldTop,
+                                 fieldBottom = fieldBottom, minTop = 80, screenBottom = 2_400, gap = 20)
 
     @Test fun pillSitsAboveTheKeyboardWhenTheFieldIsHigherUp() {
         // a search box at the top of the screen
@@ -44,13 +44,17 @@ class DictationPlacementTest {
     @Test fun pillMovesOverTheKeyboardWhenTheFieldFillsTheScreen() {
         // a note editor from the top bar to the keyboard: no room above or below it
         val y = top(150, 1_490)
-        assertEquals(1_510, y)
+        assertEquals(1_520, y)
         assertTrue(y >= 1_490)
     }
 
     @Test fun pillGoesBelowATallFieldWithRoomUnderIt() {
-        // a floating keyboard over a tall editor that ends lower down
-        assertEquals(1_720, top(100, 1_700))
+        // a floating keyboard (1500–1650) over a tall editor that ends lower down
+        assertEquals(1_720, top(100, 1_700, keyboardBottom = 1_650))
+        // the floating keyboard reaches past the field: below both
+        assertEquals(1_820, top(100, 1_700, keyboardBottom = 1_800))
+        // a docked keyboard over a field that runs behind it: along the keyboard's top, not over the keys
+        assertEquals(1_520, top(150, 2_000))
     }
 
     @Test fun pillStaysOnScreen() {

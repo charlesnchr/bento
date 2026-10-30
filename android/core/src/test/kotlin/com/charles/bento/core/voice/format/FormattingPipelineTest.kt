@@ -115,6 +115,7 @@ class ValidationGateTest {
     @Test fun dropsAnEchoedFieldHint() {
         assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message: See you at 3.", "see you at 3", "Message"))
         assertEquals("See you at 3.", ValidationGate.stripEchoedLabel("Message see you at 3.", "see you at 3", "Message"))
+        assertEquals("Tell Anna to message me.", ValidationGate.stripEchoedLabel("Message: Tell Anna to message me.", "tell anna to message me", "Message"))
         assertEquals("Hi Anna,", ValidationGate.stripEchoedLabel("Add a subject - Hi Anna,", "hi anna", "Add a subject"))
         // the speaker said it, or the model didn't echo it
         assertEquals("Message received, thanks.", ValidationGate.stripEchoedLabel("Message received, thanks.", "message received thanks", "Message"))

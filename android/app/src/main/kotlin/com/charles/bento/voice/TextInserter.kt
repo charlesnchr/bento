@@ -20,8 +20,7 @@ import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
 class TextInserter(private val context: Context, private val node: AccessibilityNodeInfo) {
     private var before: Snapshot? = null
 
-    /** `pasted`: what went in at selStart of a field read as its placeholder (Undo takes out just that). */
-    private data class Snapshot(val text: String, val selStart: Int, val selEnd: Int, val pasted: String? = null)
+    private data class Snapshot(val text: String, val selStart: Int, val selEnd: Int)
 
     /** What's before the cursor, for the cleanup model's context and spacing. */
     fun textBeforeCursor(max: Int = 400): String? {
@@ -35,20 +34,18 @@ class TextInserter(private val context: Context, private val node: Accessibility
     suspend fun insert(dictated: String): Boolean {
         if (dictated.isEmpty()) return true
         node.refresh()
-        val text = currentText() ?: ""
+        var text = currentText() ?: ""
+        val shown = node.text?.toString().orEmpty()
+        if (text.isEmpty() && shown.isNotEmpty() && !node.isShowingHintText && holdsText(shown)) {
+            log("typed text that matches the placeholder (${node.className})")
+            text = shown
+        }
         var start = node.textSelectionStart
         var end = node.textSelectionEnd
         if (start !in 0..text.length || end !in 0..text.length) { start = text.length; end = text.length }
         if (start > end) start = end.also { end = start }
         val insertion = spaced(dictated, text.substring(0, start), text.substring(end))
-        // Read as its placeholder: paste at the cursor rather than set the text, so if it was text typed
-        // to match the hint after all, it stays (setting the text would replace it)
-        val asPlaceholder = text.isEmpty() && !node.text.isNullOrEmpty() && !node.isShowingHintText
-        before = Snapshot(text, start, end, pasted = insertion.takeIf { asPlaceholder })
-        if (asPlaceholder && paste(insertion)) {
-            log("pasted into a field showing its placeholder (${node.className})")
-            return true
-        }
+        before = Snapshot(text, start, end)
 
         val canSet = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }
         if (canSet) {
@@ -69,20 +66,31 @@ class TextInserter(private val context: Context, private val node: Accessibility
         return pasted
     }
 
+    /**
+     * A field read as its placeholder may hold text typed to match the hint after all: typed text
+     * takes a cursor at its end, a placeholder (nothing behind it) doesn't. Asks without touching
+     * the text or the clipboard, then puts the cursor back.
+     */
+    private suspend fun holdsText(shown: String): Boolean {
+        val start = node.textSelectionStart
+        val end = node.textSelectionEnd
+        if (!setSelection(shown.length, shown.length)) return false
+        kotlinx.coroutines.delay(100) // Compose applies it on the next frame
+        node.refresh()
+        val holds = node.textSelectionStart == shown.length
+        if (holds && start >= 0 && end >= 0) setSelection(start, end)
+        node.refresh()
+        return holds
+    }
+
     /** Puts the field back as it was before the last insertion. */
     fun undo(): Boolean {
         val s = before ?: return false
-        before = null
         node.refresh()
-        val restored = if (s.pasted == null) s.text else {
-            // what's there now, without the insertion: the field may have held more than it showed
-            val now = node.text?.toString()?.takeUnless { node.isShowingHintText } ?: return false
-            if (!now.startsWith(s.pasted, s.selStart)) return false
-            now.removeRange(s.selStart, s.selStart + s.pasted.length)
-        }
-        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, restored) }
+        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, s.text) }
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (ok) setSelection(s.selStart, if (s.pasted == null) s.selEnd else s.selStart)
+        if (ok) setSelection(s.selStart, s.selEnd)
+        before = null
         return ok
     }
 
@@ -104,18 +112,18 @@ class TextInserter(private val context: Context, private val node: Accessibility
     private fun currentText(): String? {
         if (node.isShowingHintText) return ""
         val text = node.text?.toString() ?: return null
-        val selection = node.textSelectionStart
+        val selection = maxOf(node.textSelectionStart, node.textSelectionEnd)
         if (text.isBlank() || selection > 0) return text // the cheap checks first: labeledBy is a lookup in the other app
         val labels = listOfNotNull(node.hintText, node.contentDescription, runCatching { node.labeledBy?.text }.getOrNull())
         return if (isPlaceholder(text, selection, labels)) "" else text
     }
 
-    private fun setSelection(start: Int, end: Int) {
+    private fun setSelection(start: Int, end: Int): Boolean {
         val args = Bundle().apply {
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, start)
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end)
         }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
     }
 
     /** False only when the field still holds exactly what it held before (the action did nothing). */
@@ -149,11 +157,12 @@ class TextInserter(private val context: Context, private val node: Accessibility
          * so (WhatsApp, some web and custom views): the text is the hint, the description or
          * the label's text, and the cursor sits at the start, where it is in an empty field.
          * Kept, it was inserted before every dictation and sent as text before the cursor.
-         * Typed text that matches the hint with the cursor moved to its start reads the same,
-         * so such a field gets a paste at the cursor, which leaves either kind as it was.
+         * `selection`: the far end of the selection (selected text is real). Typed text that
+         * matches the hint with the cursor moved to its start reads the same: insert asks
+         * the field ([holdsText]) before taking it as empty.
          */
-        fun isPlaceholder(text: String, selectionStart: Int, labels: List<CharSequence>): Boolean {
-            if (text.isBlank() || selectionStart > 0) return false
+        fun isPlaceholder(text: String, selection: Int, labels: List<CharSequence>): Boolean {
+            if (text.isBlank() || selection > 0) return false
             return labels.any { it.toString().trim() == text.trim() }
         }
 
