@@ -479,6 +479,58 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aQueuedFollowUpWaitsForGeminiToHearItStartedBeforeItRuns() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val first = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c.task); if (c.followUp) "Changed to four." else first.await() }, limits = fast)
+        val held = CompletableDeferred<Unit>()
+        val holding = CompletableDeferred<Unit>()
+        transport.beforeSend = { frame -> if ("toolResponse" in frame && "\"c2\"" in frame && "\"started\"" in frame) { holding.complete(Unit); held.await() } }
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        withTimeout(5_000) { holding.await() }
+        // The request before finishes while Gemini is still being told the follow-up started.
+        first.complete("Booked for two.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        delay(300)
+        assertEquals(listOf("Book a table"), asked, "Hermes doesn't get the follow-up before Gemini hears it started")
+        held.complete(Unit)
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
+        delay(200)
+        assertEquals(listOf("c1:started", "c1:ok", "c2:started", "c2:ok"), transport.responses().map { it.id() + ":" + it.status() })
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun aQueuedFollowUpGeminiDroppedNeverRuns() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val first = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c.task); if (c.followUp) "Changed." else first.await() }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c2"))))
+        delay(200)
+        first.complete("Booked for two.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        assertEquals(listOf("Book a table"), asked)
+        assertEquals(listOf("c1"), transport.finals().map { it.id() })
+        call.stop()
+    }
+
     @Test fun aFollowUpToATaskThatDoesntExistStartsANewOne() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val asked = CompletableDeferred<HermesCall>()

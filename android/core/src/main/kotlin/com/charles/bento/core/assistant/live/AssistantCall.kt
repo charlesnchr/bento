@@ -756,6 +756,8 @@ class AssistantCall(
             task.queued.addLast(run)
             acknowledge(task, run, "Task ${task.id} is still working on its earlier request; Hermes takes this follow-up next, in the same " +
                 "session. Its result follows as another response to this call.")
+            // The request before may have finished meanwhile, leaving this one waiting for Gemini to hear it started.
+            runIfStill(task, run)
             return
         }
         task.state = RUNNING
@@ -766,9 +768,23 @@ class AssistantCall(
         runIfStill(task, run)
     }
 
-    /** After Gemini heard [run] started: Hermes gets it unless it was cancelled, dropped or handed over meanwhile. */
+    /** After Gemini heard [run] started: Hermes gets it unless it was cancelled, dropped or handed over meanwhile, or it's still waiting its turn. */
     private fun runIfStill(task: Task, run: Run) {
-        if (task.state == RUNNING && task.current === run && !run.started && !run.closed) run(task, run)
+        if (task.state == RUNNING && task.current === run && run.acknowledged && !run.started && !run.closed) run(task, run)
+    }
+
+    /**
+     * [task] moves on to its next follow-up Gemini hasn't dropped. Hermes gets it at once if
+     * Gemini has heard it started, else once it has ([runIfStill]), so its result can't come
+     * first. False when there's none.
+     */
+    private fun advance(task: Task): Boolean {
+        while (task.queued.firstOrNull()?.let { it.callId in cancelledCalls } == true) task.queued.removeFirst()
+        val next = task.queued.removeFirstOrNull() ?: return false
+        task.current = next
+        task.progress = null
+        runIfStill(task, next)
+        return true
     }
 
     /** Tells Gemini at once that [run] is under way; the call stays open for the result. */
@@ -785,10 +801,8 @@ class AssistantCall(
     /** [run] never goes to Hermes: the task moves on to its next follow-up, or ends with what it had. */
     private fun skip(task: Task, run: Run) {
         if (task.queued.remove(run)) return
-        if (task.current !== run || run.started) return
-        val next = task.queued.removeFirstOrNull()
+        if (task.current !== run || run.started || advance(task)) return
         when {
-            next != null -> run(task, next)
             // A follow-up that never ran leaves the task as its last request did.
             run.followUp && task.result != null -> finished(task, FINISHED, task.result!!)
             else -> finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started.")
@@ -816,10 +830,7 @@ class AssistantCall(
                 else -> respond(run.callId, CallProtocol.taskResult(task.id, result), executed = true, task = task.id)
             }
             if (!active || task.state != RUNNING || task.current !== run) return@launch
-            // Follow-ups whose calls Gemini dropped before Hermes got them never run.
-            while (task.queued.firstOrNull()?.let { it.callId in cancelledCalls } == true) task.queued.removeFirst()
-            val next = task.queued.removeFirstOrNull()
-            if (next != null) { run(task, next); settled() } else { finished(task, FINISHED, result); afterTask() }
+            if (advance(task)) settled() else { finished(task, FINISHED, result); afterTask() }
         }
     }
 
@@ -975,7 +986,7 @@ class AssistantCall(
         const val RUNNING = "running"
         const val FINISHED = "finished"
         const val CANCELLED = "cancelled"
-        /** The most tasks a session coming back from standby is told about, latest first. */
+        /** The most tasks a session coming back from standby is told about: the latest, oldest first. */
         const val TASKS_IN_RECAP = 10
         /** Finished tasks beyond this many are forgotten, oldest first. */
         const val MAX_TASKS = 32
