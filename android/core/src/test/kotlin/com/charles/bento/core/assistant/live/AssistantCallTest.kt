@@ -32,6 +32,9 @@ import kotlin.test.assertTrue
 private class FakeAudio(private val delivers: Boolean = true, private val opens: Boolean = true) : CallAudio {
     val played = CopyOnWriteArrayList<ByteArray>()
     @Volatile var loud = false
+    /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
+    @Volatile var numbered = false
+    private var count = 0
     @Volatile var flushes = 0
     @Volatile var stopped = false
     @Volatile var started = false
@@ -41,7 +44,12 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
         if (!opens) return false
         started = true
         if (delivers) thread = Thread {
-            while (!stopped) { onPcm(if (loud) LOUD else ByteArray(640)); Thread.sleep(20) }
+            while (!stopped) {
+                val frame = if (loud) LOUD.copyOf() else ByteArray(640)
+                if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
+                onPcm(frame)
+                Thread.sleep(20)
+            }
         }.apply { isDaemon = true; start() }
         return true
     }
@@ -423,6 +431,51 @@ class AssistantCallTest {
         assertTrue(finals.getValue("x1").single().message().contains("Its 1 follow-up waiting never ran."))
         assertEquals(1, runs)
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        call.stop()
+    }
+
+    @Test fun aFollowUpAfterACancelRunsOnceWhateverTheSocketHoldsUp() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val asked = CopyOnWriteArrayList<String>()
+        val followUpDone = CompletableDeferred<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c.task); if (c.followUp) followUpDone.await() else CompletableDeferred<String>().await() },
+                                 limits = fast)
+        // Gemini's "started" answers and the follow-up's result wait until the test lets each through.
+        val gates = mapOf("c1:started" to CompletableDeferred<Unit>(), "c2:started" to CompletableDeferred(), "c2:result" to CompletableDeferred())
+        val reached = CopyOnWriteArrayList<String>()
+        transport.beforeSend = { frame ->
+            if ("toolResponse" in frame) {
+                val r = Json.parseToJsonElement(frame).jsonObject["toolResponse"]!!.jsonObject["functionResponses"]!!.jsonArray.single().jsonObject
+                val key = r.id() + ":" + (if (r.status() == "started") "started" else "result")
+                gates[key]?.let { reached.add(key); it.await() }
+            }
+        }
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { while ("c1:started" !in reached) delay(20) }
+        // Cancelled while Gemini hears it started, then followed up while that's still held.
+        call.cancelTask("1")
+        delay(100)
+        Live.turn(transport, "For four people")
+        transport.push(Live.call("c2", args = mapOf("task_id" to "1")))
+        withTimeout(5_000) { while ("c2:started" !in reached) delay(20) }
+        // The follow-up's result is ready whenever Hermes gets it; it must not get it before Gemini hears it started,
+        // nor again once its result is on its way.
+        followUpDone.complete("Changed to four.")
+        gates.getValue("c1:started").complete(Unit)
+        delay(300)
+        gates.getValue("c2:started").complete(Unit)
+        withTimeout(5_000) { while ("c2:result" !in reached) delay(20) }
+        delay(300)
+        gates.getValue("c2:result").complete(Unit)
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
+        delay(300)
+        assertEquals(listOf("For four people"), asked, "the cancelled request never ran and the follow-up ran once")
+        val finals = transport.finals().groupBy { it.id() }
+        assertEquals(listOf("cancelled"), finals.getValue("c1").map { it.status() })
+        assertEquals(listOf(CallProtocol.taskResult("1", "Changed to four.")), finals.getValue("c2").map { it.message() })
         call.stop()
     }
 
@@ -1091,6 +1144,48 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aSessionBackFromStandbyHearsTheTasksNumbers() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val call = waitingOnHermes(first, { second }, CompletableDeferred())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.wake()
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        val recap = second.turns().first().turnText()
+        assertTrue(recap.contains("<earlier_conversation>"), recap)
+        // Outside the transcript's fence, so a follow-up said now can still name task 1.
+        assertTrue(recap.endsWith("${CallSetup.TASKS_PREAMBLE}\n<call_tasks>\nTask 1 (running): \"What's on my calendar?\"\n</call_tasks>"), recap)
+        call.stop()
+    }
+
+    @Test fun wordsSaidWhileTheHeldAudioGoesOutAreAllSentInOrder() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        // A socket a little slower than the microphone at first, so frames come in while the held ones go out.
+        second.beforeSend = { if ("realtimeInput" in it) delay(10) }
+        val audio = FakeAudio().apply { numbered = true }
+        var standbyAfter = 0.3
+        val call = AssistantCall(first, audio, null, { CompletableDeferred<String>().await() }, limits = fast.copy(holdMax = 3.0),
+                                 reconnect = { second }, standbyAfter = { standbyAfter })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "What's on my calendar?"); first.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        delay(1_500) // a full pre-roll
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
+        standbyAfter = 0.0 // this Gemini never hears the speech, so it would stand by again
+        delay(400)
+        second.push(Frames.setupComplete())
+        second.awaitSent(timeout = 10_000) { s -> s.count { "realtimeInput" in it } >= 200 }
+        val numbers = second.sent.filter { "realtimeInput" in it }.take(200).map { frame ->
+            val data = Json.parseToJsonElement(frame).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+            java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
+        }
+        assertEquals((numbers.first() until numbers.first() + 200).toList(), numbers, "no frame dropped or reordered")
+        call.stop()
+    }
+
     @Test fun aWakeLevelOfZeroNeverWakesOnSpeech() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         var made = 0
@@ -1515,7 +1610,9 @@ class CallSetupTest {
         for (key in listOf("generationConfig", "inputAudioTranscription", "outputAudioTranscription", "contextWindowCompression", "sessionResumption")) {
             assertEquals(mac[key], phone[key], key)
         }
-        assertTrue(CallSetup.INSTRUCTION.startsWith(macInstruction.substringBefore(" Call it once per request")),
+        // The Mac's opening, up to its one-task wording, but for the clause the phone's task_id makes untrue.
+        assertTrue(CallSetup.INSTRUCTION.startsWith(macInstruction.substringBefore(" Call it once per request")
+                                                        .replace(CallSetup.MAC_WORDS_RULE, CallSetup.PHONE_WORDS_RULE)),
                    "the opening, up to the Mac's one-task wording, is the Mac's")
     }
 
@@ -1550,6 +1647,10 @@ class CallSetupTest {
     }
 
     @Test fun thePhonesInstructionKeepsTheMacsSafetyRules() {
+        // The Mac's rule on what Hermes gets, with the clause the phone's task_id makes untrue swapped.
+        assertTrue(CallSetup.MAC_WORDS_RULE in macInstruction)
+        assertTrue(CallSetup.PHONE_WORDS_RULE in CallSetup.INSTRUCTION)
+        assertEquals(CallSetup.MAC_WORDS_RULE.substringBefore(";"), CallSetup.PHONE_WORDS_RULE.substringBefore(";"))
         for (rule in CallSetup.SHARED_RULES) {
             assertTrue(rule in macInstruction, "the Mac says: $rule")
             assertTrue(rule in CallSetup.INSTRUCTION, "the phone says: $rule")

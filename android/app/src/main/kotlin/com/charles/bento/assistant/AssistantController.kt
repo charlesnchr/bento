@@ -575,7 +575,8 @@ class AssistantController(
             }
             turn = turn.copy(sessionId = sid)
             val choice = choiceFor(sid)
-            val message = voiceMessage(request, LocalDate.now().toString())
+            // A task whose session is gone starts over in a new one, with nothing to follow up there.
+            val message = voiceMessage(request.copy(followUp = request.followUp && sid == known?.sessionId), LocalDate.now().toString())
             // A follow-up just after the task was cancelled can find Hermes still stopping the run before: it hasn't started.
             val until = System.nanoTime() + BUSY_WAIT_NANOS
             while (true) {

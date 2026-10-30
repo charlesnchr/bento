@@ -100,11 +100,13 @@ class AssistantCall(
         /** Seconds a caption stays after its utterance ended, if Gemini sends no transcript to replace it. */
         val captionLinger: Double = 4.0,
         /** In standby, microphone frames this loud (RMS, as a fraction of full scale) count as speech; 0 never wakes. */
-        val wakeLevel: Double = 0.03,
+        val wakeLevel: Double = 0.05,
         /** Seconds of speech in standby that bring the call back. */
-        val wakeSpeech: Double = 0.3,
+        val wakeSpeech: Double = 0.5,
         /** Seconds of audio before the wake kept for Gemini, so the first words aren't lost. */
         val wakePreRoll: Double = 1.5,
+        /** The most audio held for a session coming back from standby, in seconds. */
+        val holdMax: Double = 15.0,
     )
 
     sealed interface Status {
@@ -204,6 +206,8 @@ class AssistantCall(
     private class Run(val callId: String, val request: HermesCall, val session: Int, val turn: Int?, val followUp: Boolean) {
         /** Gemini has heard it started, so the call waits for a last response. */
         var acknowledged = false
+        /** Handed to Hermes: it never goes again. */
+        var started = false
         /** The call has had its last response. */
         var closed = false
     }
@@ -390,7 +394,9 @@ class AssistantCall(
         session++
         wakeStarted = now()
         _status.value = Status.Waking
-        setupResume = runCatching { recap() }.getOrNull()
+        // The old session's calls are gone with it: the new one hears the tasks' numbers, so a follow-up can still name its task.
+        setupResume = CallSetup.withTasks(runCatching { recap() }.getOrNull(),
+                                          tasks.values.toList().takeLast(TASKS_IN_RECAP).map { Triple(it.id, it.state, it.request) })
         val next = make()
         socket = next
         scope.launch {
@@ -413,6 +419,7 @@ class AssistantCall(
         newSession()
         while (held.isNotEmpty()) {
             val pcm = held.removeFirst()
+            heldBytes -= pcm.size
             send(audioFrame(pcm))
             captions?.feed(pcm)
         }
@@ -432,7 +439,7 @@ class AssistantCall(
         held.addLast(pcm)
         heldBytes += pcm.size
         // 16 kHz 16-bit mono: 32,000 bytes a second.
-        val keep = if (waking || rejoining) HOLD_MAX else limits.wakePreRoll
+        val keep = if (waking || rejoining) limits.holdMax else limits.wakePreRoll
         while (heldBytes > keep * 32_000 && held.size > 1) heldBytes -= held.removeFirst().size
         if (waking || rejoining || limits.wakeLevel <= 0) return
         val seconds = pcm.size / 32_000.0
@@ -733,8 +740,9 @@ class AssistantCall(
         tasks[task.id] = task
         while (tasks.size > MAX_TASKS) tasks.entries.firstOrNull { it.value.state != RUNNING }?.let { tasks.remove(it.key) } ?: break
         val prefix = unknown?.let { "There is no task $it, so this started a new task. " }.orEmpty()
-        acknowledge(task, task.current, prefix + "Started task ${task.id}. Hermes is working on it; its result follows as another response to this call.")
-        if (task.state == RUNNING && task.job == null) run(task, task.current)
+        val first = task.current
+        acknowledge(task, first, prefix + "Started task ${task.id}. Hermes is working on it; its result follows as another response to this call.")
+        runIfStill(task, first)
     }
 
     /**
@@ -755,7 +763,12 @@ class AssistantCall(
         task.progress = null
         acknowledge(task, run, "Continuing task ${task.id}: Hermes is working on this follow-up in the task's own session, with what it " +
             "did before. Its result follows as another response to this call.")
-        if (task.state == RUNNING && task.current === run && task.job == null) run(task, run)
+        runIfStill(task, run)
+    }
+
+    /** After Gemini heard [run] started: Hermes gets it unless it was cancelled, dropped or handed over meanwhile. */
+    private fun runIfStill(task: Task, run: Run) {
+        if (task.state == RUNNING && task.current === run && !run.started && !run.closed) run(task, run)
     }
 
     /** Tells Gemini at once that [run] is under way; the call stays open for the result. */
@@ -772,7 +785,7 @@ class AssistantCall(
     /** [run] never goes to Hermes: the task moves on to its next follow-up, or ends with what it had. */
     private fun skip(task: Task, run: Run) {
         if (task.queued.remove(run)) return
-        if (task.current !== run || task.job != null) return
+        if (task.current !== run || run.started) return
         val next = task.queued.removeFirstOrNull()
         when {
             next != null -> run(task, next)
@@ -784,6 +797,7 @@ class AssistantCall(
 
     /** Hands [run] to Hermes in [task]'s session; when it's done, the task's next follow-up runs. */
     private fun run(task: Task, run: Run) {
+        run.started = true
         task.state = RUNNING
         task.current = run
         task.progress = null
@@ -961,8 +975,8 @@ class AssistantCall(
         const val RUNNING = "running"
         const val FINISHED = "finished"
         const val CANCELLED = "cancelled"
-        /** The most audio held for a session coming back from standby, in seconds. */
-        const val HOLD_MAX = 15.0
+        /** The most tasks a session coming back from standby is told about, latest first. */
+        const val TASKS_IN_RECAP = 10
         /** Finished tasks beyond this many are forgotten, oldest first. */
         const val MAX_TASKS = 32
         const val PROGRESS_LIMIT = 300
