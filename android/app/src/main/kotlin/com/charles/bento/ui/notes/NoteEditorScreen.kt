@@ -3,6 +3,11 @@ package com.charles.bento.ui.notes
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +66,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
@@ -89,12 +98,14 @@ import com.charles.bento.core.notes.HeadingFolds
 import com.charles.bento.core.notes.InlineFormat
 import com.charles.bento.core.notes.MarkdownCommands
 import com.charles.bento.core.notes.MarkdownParser
+import com.charles.bento.core.notes.NoteImage
 import com.charles.bento.core.notes.NoteText
 import com.charles.bento.core.notes.RelativeDate
 import com.charles.bento.core.notes.TextEdit
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.graph
 import com.charles.bento.notes.EditMerge
+import com.charles.bento.notes.NoteImageImport
 import com.charles.bento.ui.LiveTranscript
 import com.charles.bento.ui.NoteRoute
 import com.charles.bento.ui.Routes
@@ -105,6 +116,8 @@ import com.charles.bento.voice.FieldContext
 import com.charles.bento.voice.TextInserter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 
 private fun TextFieldValue.sel() = TextRange(selection.min, selection.max - selection.min)
 private fun TextRange.ui() = UiRange(location, end)
@@ -154,6 +167,8 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
     )
     val visual = remember(colors, folds) { FoldingVisual(MarkdownVisual(colors), folds, colors.marker) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val imageHashes = remember(value.text) { NoteImage.hashes(value.text) }
+    var viewing by remember { mutableStateOf<String?>(null) }
 
     fun post(text: String) {
         notesModule.edited(id, synced, text)
@@ -187,6 +202,27 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
         r ?: return
         val text = r.apply(value.text)
         set(TextFieldValue(text, r.selection.ui()), edits = r.edits, user = user)
+    }
+
+    /** Images picked, pasted or dropped: stored, then each on its own line at the caret. */
+    fun insertImages(uris: List<Uri>) {
+        scope.launch {
+            val hashes = withContext(Dispatchers.IO) { notesModule.addImages(uris.mapNotNull { NoteImageImport.read(context, it) }) }
+            if (hashes.isEmpty()) haptics.performHapticFeedback(HapticFeedbackType.Reject)
+            else applyResult(NoteImage.insertion(value.text, value.sel(), hashes))
+        }
+    }
+    val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { if (it.isNotEmpty()) insertImages(it) }
+    val dropTarget = remember {
+        object : DragAndDropTarget {
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                val e = event.toAndroidDragEvent()
+                context.activity()?.requestDragAndDropPermissions(e)
+                val uris = (0 until (e.clipData?.itemCount ?: 0)).mapNotNull { e.clipData.getItemAt(it).uri }
+                if (uris.isNotEmpty()) insertImages(uris)
+                return uris.isNotEmpty()
+            }
+        }
     }
 
     /** Folds or opens a heading's section; a selection in a section that folds goes to its heading's end. */
@@ -290,6 +326,8 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 onLink = { applyResult(MarkdownCommands.insertLink(value.text, value.sel(), null)) },
                 onIndent = { out -> applyResult(MarkdownCommands.indent(value.text, value.sel(), out)) },
                 onFold = { folds.sectionAt(value.selection.start)?.let { toggleFold(it.lineStart) } },
+                onPickImages = { pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onPasteImages = ::insertImages,
                 onMic = {
                     if (dictation is DictationState.Listening) graph.dictation.stop()
                     else DictationTarget.Editor({ spoken ->
@@ -310,7 +348,11 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
+                   .dragAndDropTarget(shouldStartDragAndDrop = { e -> e.mimeTypes().any { it.startsWith("image/") } }, target = dropTarget)) {
+            if (imageHashes.isNotEmpty()) {
+                NoteImageStrip(imageHashes, notesModule.images, onOpen = { viewing = it }, Modifier.padding(start = FoldGutter, end = 20.dp, top = 8.dp))
+            }
             Box {
                 BasicTextField(
                     value = value,
@@ -358,6 +400,13 @@ fun NoteEditorScreen(routeId: String, nav: NavController) {
                 FoldControls(folds, layout, textStart = FoldGutter, textTop = 8.dp, color = MaterialTheme.colorScheme.onSurfaceVariant, onToggle = ::toggleFold)
             }
         }
+    }
+
+    viewing?.let { hash ->
+        NoteImageViewer(hash, notesModule.images, onDismiss = { viewing = null }, onRemove = {
+            viewing = null
+            NoteImage.removal(value.text, hash)?.let { applyResult(it) }
+        })
     }
 
     if (info && note != null) {
@@ -459,7 +508,7 @@ private fun Toolbar(
     listening: Boolean, canUndo: Boolean, canRedo: Boolean,
     onUndo: () -> Unit, onRedo: () -> Unit, onTask: () -> Unit, onBullet: () -> Unit, onHeading: () -> Unit,
     onInline: (InlineFormat) -> Unit, onLink: () -> Unit, onIndent: (Boolean) -> Unit, onFold: () -> Unit,
-    onMic: () -> Unit, onHideKeyboard: () -> Unit, status: String?,
+    onPickImages: () -> Unit, onPasteImages: (List<Uri>) -> Unit, onMic: () -> Unit, onHideKeyboard: () -> Unit, status: String?,
 ) {
     Surface(tonalElevation = 2.dp, modifier = Modifier.imePadding()) {
         Column(Modifier.navigationBarsPadding()) {
@@ -472,6 +521,7 @@ private fun Toolbar(
                     ToolButton(Icons.Rounded.CheckBox, "Checklist", onClick = onTask)
                     ToolButton(Icons.AutoMirrored.Rounded.FormatListBulleted, "Bulleted list", onClick = onBullet)
                     ToolButton(Icons.Rounded.Title, "Heading", onClick = onHeading)
+                    ImageToolButton(onPickImages, onPasteImages)
                     ToolButton(Icons.Rounded.FormatBold, "Bold") { onInline(InlineFormat.Bold) }
                     ToolButton(Icons.Rounded.FormatItalic, "Italic") { onInline(InlineFormat.Italic) }
                     ToolButton(Icons.Rounded.FormatStrikethrough, "Strikethrough") { onInline(InlineFormat.Strike) }

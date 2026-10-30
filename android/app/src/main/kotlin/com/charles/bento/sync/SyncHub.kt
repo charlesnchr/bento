@@ -64,6 +64,9 @@ class SyncHub(
         else SyncEndpoint(prefs.server.value, secrets.syncToken)
     }
 
+    /** The server and token while paired and syncing (for image blobs). */
+    fun endpointNow(): SyncEndpoint? = endpoint()
+
     /** Adds a collection (call before [start]). */
     fun register(sync: CollectionSync): SyncConnection {
         sync.device = prefs.deviceName.value

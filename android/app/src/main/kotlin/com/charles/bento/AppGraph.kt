@@ -52,7 +52,7 @@ class AppGraph(val app: Application) {
     val sync = SyncHub(app, prefs, secrets, http, engine)
     val updater = Updater(app, http, prefs)
 
-    val notes = com.charles.bento.notes.NotesModule(app, prefs, sync, engineDispatcher, engine)
+    val notes = com.charles.bento.notes.NotesModule(app, prefs, sync, http, engineDispatcher, engine)
     val todo = com.charles.bento.todo.TodoModule(app, prefs, sync, engineDispatcher)
     val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
 

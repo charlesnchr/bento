@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.sp
 import com.charles.bento.core.notes.BlockKind
 import com.charles.bento.core.notes.InlineKind
 import com.charles.bento.core.notes.MarkdownParser
+import com.charles.bento.core.notes.NoteImage
 import com.charles.bento.core.notes.TextRange
 import com.charles.bento.ui.theme.SansCode
 
@@ -30,7 +31,7 @@ data class MarkdownColors(
 /**
  * Raycast-notes styling with the syntax kept visible but quiet (offsets stay 1:1, so the
  * caret and remote merges work on the real text): headings sized, emphasis applied, code
- * in Google Sans Code, links tinted, done tasks struck through, markers dimmed.
+ * in Google Sans Code, links tinted, done tasks struck through, markers and image lines dimmed.
  */
 class MarkdownVisual(private val colors: MarkdownColors, private val baseSize: TextUnit = 16.sp) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText = TransformedText(style(text.text), OffsetMapping.Identity)
@@ -68,7 +69,11 @@ class MarkdownVisual(private val colors: MarkdownColors, private val baseSize: T
                 BlockKind.Rule -> span(whole, SpanStyle(color = colors.marker))
                 is BlockKind.Fence -> span(whole, SpanStyle(color = colors.marker, fontFamily = SansCode, fontSize = baseSize * 0.9f))
                 BlockKind.Code -> span(whole, SpanStyle(fontFamily = SansCode, background = colors.codeBackground, fontSize = baseSize * 0.9f))
-                BlockKind.Paragraph -> {}
+                BlockKind.Paragraph -> if (NoteImage.hash(s.substring(start, start + pl.range.length)) != null) {
+                    // an image (shown above the text): its line stays small and quiet
+                    span(whole, SpanStyle(color = colors.marker, fontFamily = SansCode, fontSize = baseSize * 0.65f))
+                    continue
+                }
             }
             if (line.kind is BlockKind.Code || line.kind is BlockKind.Fence) continue
             // inline styles within the line's content

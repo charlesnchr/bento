@@ -2,11 +2,14 @@ package com.charles.bento.notes
 
 import android.content.Context
 import com.charles.bento.core.notes.Note
+import com.charles.bento.core.notes.NoteImageStore
+import com.charles.bento.core.notes.NoteImageSync
 import com.charles.bento.core.notes.NoteQueries
 import com.charles.bento.core.notes.NoteText
 import com.charles.bento.core.notes.NotesCollectionSync
 import com.charles.bento.core.notes.SyncEngine
 import com.charles.bento.core.notes.ThoughtCapture
+import com.charles.bento.core.sync.SyncState
 import com.charles.bento.data.NoteStore
 import com.charles.bento.settings.Prefs
 import com.charles.bento.sync.SyncHub
@@ -18,8 +21,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
 
 /**
  * The Notes module: notes in `notes.db`, synced as the `notes` collection with the Mac's
@@ -32,6 +38,7 @@ class NotesModule(
     private val context: Context,
     private val prefs: Prefs,
     private val hub: SyncHub,
+    http: OkHttpClient,
     private val engineDispatcher: CoroutineDispatcher,
     private val engineScope: CoroutineScope,
 ) {
@@ -39,6 +46,10 @@ class NotesModule(
     val sync = NotesCollectionSync(store, prefs.deviceName.value)
     private val engine: SyncEngine get() = sync.engine
     val connection = hub.register(sync)
+
+    /** The notes' images: a local cache, uploaded to and fetched from the server (docs/SYNC_PROTOCOL.md, Images). */
+    val images = NoteImageSync(NoteImageStore(java.io.File(context.filesDir, "note-images")), http, hub::endpointNow, engineScope,
+                               log = { android.util.Log.i("BentoImages", it) })
 
     /** Every note incl. tombstones, as of the last change. */
     val notes: StateFlow<List<Note>> = store.notes
@@ -75,7 +86,16 @@ class NotesModule(
         }
         engine.onConflictCopy = { copy, original -> _conflicts.tryEmit(copy to original) }
         engineScope.launch { purgeOldTrash() }
+        // connected (or polling): images made while offline go up, missing ones are asked for again
+        engineScope.launch {
+            connection.status.map { it.state == SyncState.Connected || it.state == SyncState.Polling }.distinctUntilChanged()
+                .collect { if (it) images.connected() }
+        }
     }
+
+    /** Stores images (bytes the server takes) for a note and starts uploading them; their hashes. */
+    fun addImages(images: List<ByteArray>): List<String> =
+        images.mapNotNull { this.images.store.add(it) }.also { if (it.isNotEmpty()) this.images.uploadPending() }
 
     suspend fun <T> onEngine(block: () -> T): T = withContext(engineDispatcher) { block() }
 

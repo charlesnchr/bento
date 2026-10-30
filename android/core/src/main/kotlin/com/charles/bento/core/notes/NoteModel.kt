@@ -187,7 +187,7 @@ data class Note(
 
 /** Pure helpers deriving titles, plain text and counts from markdown bodies. */
 object NoteText {
-    /** First non-empty line with markdown stripped; "" when the note is empty. */
+    /** First non-empty line (not an image) with markdown stripped; "" when the note is empty. */
     fun title(body: String): String {
         SwiftText.enumerateLines(body) { line, _ ->
             val t = SwiftText.trimWhitespaces(plainLine(line))
@@ -198,9 +198,10 @@ object NoteText {
 
     fun displayTitle(body: String): String = title(body).ifEmpty { "Untitled" }
 
+    /** Lines that never make the title: fences, rules and images. */
     private fun isFenceOrRule(line: String): Boolean {
         val t = SwiftText.trimWhitespaces(line)
-        return swiftHasPrefix(t, "```") || swiftHasPrefix(t, "~~~") || MarkdownParser.isRule(t)
+        return swiftHasPrefix(t, "```") || swiftHasPrefix(t, "~~~") || MarkdownParser.isRule(t) || NoteImage.hash(line) != null
     }
 
     /** One line without block markers and inline syntax. */
@@ -222,7 +223,7 @@ object NoteText {
                 is BlockKind.Fence -> inCode = k.opening
                 BlockKind.Code -> lines.add(line)
                 BlockKind.Rule -> {}
-                else -> lines.add(MarkdownParser.stripInline(line.substring(p.contentRange.location, p.contentRange.end)))
+                else -> if (NoteImage.hash(line) == null) lines.add(MarkdownParser.stripInline(line.substring(p.contentRange.location, p.contentRange.end)))
             }
         }
         return lines.joinToString("\n")
