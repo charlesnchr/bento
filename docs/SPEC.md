@@ -94,7 +94,7 @@ documents are in `Voice/voice-sync.sqlite`.
 - Field-document sync (FieldDoc.swift, FieldSyncEngine.swift, FieldDocStore.swift,
   FieldSyncClient.swift) — the per-field-clock documents of `docs/SYNC_PROTOCOL.md` for any
   collection but `notes`: `FieldDoc` + `FieldDocWire(collection:)`, `FieldSyncEngine` (merges,
-  acks, tombstones), `FieldDocStore` (SQLite, `last_seq`), `FieldSyncClient` (WebSocket/REST
+  acks, tombstones, reconciling the full set every connection), `FieldDocStore` (SQLite), `FieldSyncClient` (WebSocket/REST
   transport, configured with a `FieldSyncProfile` and `SyncServerSettings`) and its
   `FieldSyncStatus`. Todo (`todos`) and the voice modules (`voice`) use them; Notes has its own.
 - `PhonePairing` / `PairPhoneButton` — the Android pairing sheet (QR code and `bento://pair`

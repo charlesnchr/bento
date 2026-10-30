@@ -1,6 +1,10 @@
 package com.charles.bento.core.fielddoc
 
 import com.charles.bento.core.todo.newTask
+import com.charles.bento.core.todo.notes
+import com.charles.bento.core.todo.project
+import com.charles.bento.core.todo.setNotes
+import com.charles.bento.core.todo.setProject
 import com.charles.bento.core.todo.setTitle
 import com.charles.bento.core.todo.title
 import com.charles.bento.core.todo.todoCollectionSync
@@ -37,7 +41,7 @@ class FieldDocCollectionSyncTest {
         assertTrue(sync.hasInflight)
         assertEquals(emptyList(), sync.outgoing())
         sync.ack(t.id, 7, accepted = true, ordered = true)
-        assertEquals(7, sync.lastSeq)
+        assertEquals(7, repo.doc(t.id)!!.seq)
         assertEquals(0, sync.pendingCount)
     }
 
@@ -60,20 +64,41 @@ class FieldDocCollectionSyncTest {
         assertEquals(1, sync.outgoing().size)
     }
 
-    @Test fun orderedDeliveryMovesTheCursorAndRestWinnersDoNot() {
+    @Test fun everyPassFetchesTheFullSet() {
         val repo = InMemoryFieldDocRepository()
         val sync = todoCollectionSync(repo)
         val a = FieldDoc.newTask("a", order = 1.0, now = 5)
         assertFalse(sync.applySnapshot(listOf(wireDoc(sync, a, 10)), 10))
-        assertEquals(10, sync.lastSeq)
         val stored = a.copy().apply { setTitle("theirs", 50) }
         sync.applyRemote(wireDoc(sync, stored, 15), ordered = false)
         assertEquals("theirs", repo.doc(a.id)!!.title)
-        assertEquals(10, sync.lastSeq)
-        sync.applyRemote(wireDoc(sync, stored.copy().apply { setTitle("again", 60) }, 16))
-        assertEquals(16, sync.lastSeq)
-        assertTrue(sync.applySnapshot(emptyList(), 3)) // server restored from a backup
-        assertEquals(0, sync.lastSeq)
+        assertEquals(0, sync.lastSeq) // hello and polls always ask for everything
+        assertFalse(sync.applySnapshot(emptyList(), 3)) // server restored from a backup: a goes out again
+        assertEquals(listOf(a.id), sync.outgoing().map { it.id })
+    }
+
+    /**
+     * The Mac showed a subset of a project's tasks: tasks written with raw newlines in their
+     * JSON body couldn't be read there, and the cursor moved past them for good. One pass
+     * brings every task, however many and whatever their seqs.
+     */
+    @Test fun onePassBringsEveryTaskTheServerHas() {
+        val repo = InMemoryFieldDocRepository()
+        val sync = todoCollectionSync(repo)
+        sync.applySnapshot(listOf(wireDoc(sync, FieldDoc.newTask("seen", order = 1.0, now = 5).apply { id = "seen" }, 5000)), 5000)
+        val list = (0 until 1200).map { i ->
+            val d = FieldDoc.newTask("Task $i", order = i.toDouble(), now = 1000L + i).apply { id = "t$i"; setProject("P1", 1000L + i) }
+            if (i % 3 == 0) d.setNotes("line one\nline two", 1000L + i)
+            val o = wireDoc(sync, d, 2000L - i) // newest first, seqs well below any cursor the Mac had
+            // what syncctl wrote: a description whose newline isn't escaped
+            if (i % 3 == 0) JsonObject(o + ("body" to JsonPrimitive(d.body.replace("\\n", "\n")))) else o
+        }
+        assertTrue(list[0]["body"]!!.jsonPrimitive.content.contains('\n'))
+        sync.applySnapshot(list + wireDoc(sync, repo.doc("seen")!!, 5000), 5000)
+        assertEquals(1200, repo.allDocs.count { it.project == "P1" })
+        assertEquals(1201, repo.allDocs.size)
+        assertEquals("line one\nline two", repo.doc("t0")!!.notes)
+        assertEquals(0, sync.pendingCount)
     }
 
     @Test fun collectionsDontAcceptEachOthersDocuments() {

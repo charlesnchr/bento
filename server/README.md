@@ -66,7 +66,8 @@ scripts/syncctl.py --collection todos list     # any command on another collecti
 
 `--collection` (default `notes`) applies to list/put/delete/ws-put/watch/roundtrip:
 REST goes to `/v1/c/<collection>` (`/v1/notes` for `notes`), WebSocket `hello` sends
-`collections: [<collection>]`.
+`collections: [<collection>]`. `\n` in `--body` becomes a line break only for `notes`;
+other collections' bodies are JSON and are sent as given.
 
 `roundtrip` leaves a `synctest-…` tombstone; remove test rows with `bento-sync purge` (below).
 
@@ -147,9 +148,13 @@ ssh hetzner 'set -e; systemctl stop bento-sync
 
 After a restore `seq` may go backwards. Clients whose `last_seq` is above the
 restored seq should do a full resync (`hello` with `since: 0`). The server doesn't
-detect this itself.
+detect this itself. (Todo and voice clients always fetch the full set and resend
+the live documents the server lacks.)
 
-Remove specific documents of any collection (e.g. test data) without touching seq:
+Remove specific documents of any collection (e.g. test data) without touching seq.
+Todo and voice clients send back any live document the server lacks, so delete one
+first (`syncctl.py --collection todos delete ID`), wait until every device has synced
+the deletion (one still offline would send its live copy back), then purge the tombstone:
 
 ```sh
 ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \

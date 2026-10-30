@@ -4,13 +4,15 @@ import Foundation
 public protocol FieldDocRepository: AnyObject {
     func doc(_ id: String) -> FieldDoc?
     func save(_ doc: FieldDoc, remote: Bool)
-    var lastSeq: Int64 { get set }
     var allDocs: [FieldDoc] { get }
 }
 
 /// The client side of the sync protocol for field documents (transport independent):
 /// Todo's `todos` collection and the voice modules' `voice`.
 ///
+/// - Every connection (and every poll) fetches the server's full set and reconciles it
+///   with ours (`applySnapshot`); there is no cursor, so a document missed once (unreadable,
+///   lost in a crash) arrives with the next pass instead of never.
 /// - `dirty` documents have local changes the server hasn't acknowledged.
 /// - `inflight` remembers which versions (updated_at) of a document were sent, oldest
 ///   first. Acks arrive in send order on a connection, so each ack pops the version it
@@ -35,12 +37,8 @@ public final class FieldSyncEngine {
 
     // MARK: Incoming
 
-    /// `advanceCursor`: the transport delivered every earlier change before this one
-    /// (WebSocket, polls), so last_seq may move to its seq. Not for a REST put's stored
-    /// winner, whose seq can be ahead of changes this client hasn't seen.
     @discardableResult
-    public func applyRemote(_ r: FieldDoc, advanceCursor: Bool = true) -> RemoteResult {
-        if advanceCursor, let s = r.seq, s > repo.lastSeq { repo.lastSeq = s }
+    public func applyRemote(_ r: FieldDoc) -> RemoteResult {
         guard let local = repo.doc(r.id) else {
             var d = r
             d.dirty = false
@@ -104,37 +102,27 @@ public final class FieldSyncEngine {
         return d
     }
 
-    /// Applies a snapshot (reply to hello / REST poll). Returns true when the server's seq
-    /// went backwards (backup restore) and a full resync is needed.
-    @discardableResult
-    public func applySnapshot(_ docs: [FieldDoc], seq: Int64) -> Bool {
-        if seq < repo.lastSeq {
-            // Everything the server lost must be resent.
-            for var d in repo.allDocs where (d.seq ?? 0) > seq || d.seq == nil {
-                d.dirty = true
-                d.seq = nil
-                repo.save(d, remote: false)
-            }
-            repo.lastSeq = 0
-            return true
+    /// The server's full set (reply to hello / REST poll): every document is merged into
+    /// ours, and live ones of ours that the server doesn't have (restored from a backup, a new
+    /// server) are sent again; tombstones aren't, so purging one on the server sticks. `ids`
+    /// names every document the server sent, including any `docs` lacks because its body
+    /// couldn't be read: those are the server's, never overwritten from here.
+    public func applySnapshot(_ docs: [FieldDoc], ids: Set<String>) {
+        for var d in repo.allDocs where !d.dirty && !d.deleted && !ids.contains(d.id) {
+            d.dirty = true
+            d.seq = nil
+            repo.save(d, remote: false)
         }
         for d in docs.sorted(by: { ($0.seq ?? 0) < ($1.seq ?? 0) }) { applyRemote(d) }
-        if seq > repo.lastSeq { repo.lastSeq = seq }
-        return false
     }
 
     /// An ack for a put. `version` is the updated_at that was sent when the transport
     /// knows it (REST); WebSocket acks arrive in send order and pop the oldest version.
-    /// `ordered`: the server sent every earlier change of our collections before this ack
-    /// (WebSocket), so last_seq may jump to it over other collections' seqs.
-    public func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil, ordered: Bool = false) {
+    public func ack(id: String, seq: Int64?, accepted: Bool, version: Int64? = nil) {
         let sent = popInflight(id, version: version)
         guard accepted else { return } // the stored winner follows as a `note` message
         guard var d = repo.doc(id) else { return }
-        if let seq {
-            if seq == repo.lastSeq + 1 || (ordered && seq > repo.lastSeq) { repo.lastSeq = seq }
-            d.seq = max(d.seq ?? 0, seq)
-        }
+        if let seq { d.seq = max(d.seq ?? 0, seq) }
         if let sent, d.updatedAt == sent { d.dirty = false }
         repo.save(d, remote: false)
     }

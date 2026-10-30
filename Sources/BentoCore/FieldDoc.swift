@@ -159,14 +159,33 @@ public struct FieldDoc: Equatable {
 
     /// Fills type/fields/clocks/extra from a body; false when it isn't a field document body.
     public mutating func load(body: String) -> Bool {
-        guard let data = body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let t = obj["type"] as? String else { return false }
+        guard let obj = FieldDoc.parseObject(body), let t = obj["type"] as? String else { return false }
         type = t
         fields = (obj["fields"] as? [String: Any] ?? [:]).mapValues { SyncValue(any: $0) }
         clocks = (obj["clocks"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber).flatMap { FieldDoc.int64($0.doubleValue) } }
         extra = obj.filter { !["type", "fields", "clocks"].contains($0.key) }.mapValues { SyncValue(any: $0) }
         return true
+    }
+
+    /// A body as a JSON object. Control characters left raw inside strings (other writers
+    /// produce them) are read as if escaped, as the Android app's parser does: a body one
+    /// client can read, every client can.
+    static func parseObject(_ body: String) -> [String: Any]? {
+        func parse(_ s: String) -> [String: Any]? {
+            (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any]
+        }
+        if let obj = parse(body) { return obj }
+        var out = String.UnicodeScalarView()
+        var inString = false, escaped = false
+        for u in body.unicodeScalars {
+            if inString, !escaped, u.value < 0x20 {
+                out.append(contentsOf: String(format: "\\u%04x", u.value).unicodeScalars)
+                continue
+            }
+            if escaped { escaped = false } else if u == "\\" { escaped = inString } else if u == "\"" { inString.toggle() }
+            out.append(u)
+        }
+        return parse(String(out))
     }
 }
 
@@ -206,5 +225,11 @@ public struct FieldDocWire {
         d.device = o["device"] as? String ?? ""
         if let m = o["meta"] as? [String: Any] { d.meta = m.mapValues { SyncValue(any: $0) } }
         return d
+    }
+
+    /// A snapshot's document list: the documents that could be read, and the ids of all of them.
+    public func decodeSnapshot(_ list: Any?) -> (docs: [FieldDoc], ids: Set<String>) {
+        let raw = list as? [Any] ?? []
+        return (raw.compactMap(decode), Set(raw.compactMap { ($0 as? [String: Any])?["id"] as? String }))
     }
 }

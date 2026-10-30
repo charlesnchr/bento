@@ -150,17 +150,19 @@ class SyncHub(
     // the periodic, widget and catch-up workers are separate unique works: one round trip at a time
     private val once = Mutex()
 
-    /** Whether every server answered, and whether anything arrived from one. */
+    /**
+     * Whether every server answered, and whether a round trip ran (todos and voice fetch
+     * their full set each time, so widgets refresh after every one, answered or not).
+     */
     data class Once(val ok: Boolean, val changed: Boolean)
 
     /** One REST round trip per collection (background). */
     suspend fun syncOnce(): Once = once.withLock {
         withContext(engine.coroutineContext[kotlin.coroutines.ContinuationInterceptor]!!) {
             if (live || endpoint() == null) return@withContext Once(ok = true, changed = false) // live, or not paired: nothing to do
-            val before = entries.map { it.first.lastSeq }
             val ok = entries.map { it.second.syncOnce() }.all { it }
             val imagesOk = uploadImages()
-            Once(ok && imagesOk, changed = entries.map { it.first.lastSeq } != before)
+            Once(ok && imagesOk, changed = true)
         }
     }
 }

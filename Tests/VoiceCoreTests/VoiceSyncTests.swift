@@ -6,7 +6,6 @@ import Testing
 /// The voice store in memory, as the sync engine sees it.
 final class MemoryDocs: FieldDocRepository {
     var docs: [String: FieldDoc] = [:]
-    var lastSeq: Int64 = 0
     func doc(_ id: String) -> FieldDoc? { docs[id] }
     func save(_ doc: FieldDoc, remote: Bool) { docs[doc.id] = doc }
     var allDocs: [FieldDoc] { Array(docs.values) }
@@ -71,7 +70,7 @@ final class VoiceDevice {
     /// Connects: the hello snapshot, then what arrived is applied locally.
     func connect(_ server: FakeVoiceServer) {
         bridge.reconcile()
-        engine.applySnapshot(Array(server.docs.values), seq: server.seq)
+        engine.applySnapshot(Array(server.docs.values), ids: Set(server.docs.keys))
         bridge.reconcile()
     }
 }
@@ -228,7 +227,7 @@ extension SharedStateTests {
             var settings = FieldDoc(id: "voice-settings", type: "settings", createdAt: 1, updatedAt: 5_000)
             settings.set("cleanupEnabled", .bool(false), at: 5_000)
             settings.seq = 2
-            mac.engine.applySnapshot([remote, settings], seq: 2)
+            mac.engine.applySnapshot([remote, settings], ids: [remote.id, settings.id])
 
             #expect(!mac.bridge.reconcile())
             #expect(mac.repo.dirty.isEmpty)

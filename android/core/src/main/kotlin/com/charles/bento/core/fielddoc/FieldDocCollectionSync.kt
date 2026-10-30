@@ -6,9 +6,9 @@ import kotlinx.serialization.json.JsonObject
 
 /**
  * [CollectionSync] for a field-doc collection (`todos`, `voice`): what the generic transport
- * drives. Mirrors how the Mac's TodoSyncClient uses its engine: WebSocket acks come with
- * `ordered = true`, a REST put's stored winner with `ordered = false` (doesn't move the
- * cursor), and every new connection clears refused puts so they get another try.
+ * drives. Mirrors how the Mac's FieldSyncClient uses its engine: hello and polls always ask
+ * for the full set (`lastSeq` is 0), which the engine reconciles, and every new connection
+ * clears refused puts so they get another try.
  */
 class FieldDocCollectionSync(
     override val collection: String,
@@ -21,21 +21,25 @@ class FieldDocCollectionSync(
 
     val wire = FieldDocWire(collection)
 
-    override val lastSeq: Long get() = engine.repo.lastSeq
+    /** No cursor: every hello and poll fetches the full set. */
+    override val lastSeq: Long get() = 0
 
     override var device: String
         get() = engine.device
         set(value) { engine.device = value }
 
-    override fun applySnapshot(docs: List<JsonObject>, seq: Long): Boolean =
-        engine.applySnapshot(docs.mapNotNull(wire::decode), seq)
+    /** Never asks for a resync: the snapshot is already the full set. */
+    override fun applySnapshot(docs: List<JsonObject>, seq: Long): Boolean {
+        engine.applySnapshot(docs.mapNotNull(wire::decode), docs.mapNotNull { wire.id(it) }.toSet())
+        return false
+    }
 
     override fun applyRemote(doc: JsonObject, ordered: Boolean) {
-        wire.decode(doc)?.let { engine.applyRemote(it, advanceCursor = ordered) }
+        wire.decode(doc)?.let { engine.applyRemote(it) }
     }
 
     override fun ack(id: String, seq: Long?, accepted: Boolean, version: Long?, ordered: Boolean) =
-        engine.ack(id, seq, accepted, version, ordered)
+        engine.ack(id, seq, accepted, version)
 
     override fun putFailed(id: String, version: Long?) = engine.putFailed(id, version)
 

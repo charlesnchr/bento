@@ -291,7 +291,10 @@ def read_body(args):
     if args.file:
         with open(args.file) as f:
             return f.read()
-    return (args.body or "").replace("\\n", "\n")
+    body = args.body or ""
+    # `\n` in a note typed on the command line means a line break. Other collections' bodies
+    # are JSON, whose `\n` escapes must stay escaped: unescaped, clients can't read the body.
+    return body.replace("\\n", "\n") if args.collection == "notes" else body
 
 
 def note_from_args(args, nid):

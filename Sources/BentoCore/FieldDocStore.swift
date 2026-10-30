@@ -129,11 +129,6 @@ open class FieldDocStore: FieldDocRepository {
 
     public var allDocs: [FieldDoc] { Array(cache.values) }
 
-    public var lastSeq: Int64 {
-        get { Int64(kv("last_seq") ?? "0") ?? 0 }
-        set { setKV("last_seq", String(newValue)) }
-    }
-
     // MARK: KV (local state: last view, collapsed groups…)
 
     public func kv(_ key: String) -> String? { kvCache[key] }

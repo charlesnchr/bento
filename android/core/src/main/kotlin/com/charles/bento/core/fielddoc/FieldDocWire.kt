@@ -46,6 +46,9 @@ class FieldDocWire(val collection: String) {
         return d
     }
 
+    /** A wire document's id, whether or not the rest of it can be read. */
+    fun id(e: JsonObject): String? = e.string("id")
+
     private fun JsonObject.string(k: String): String? = (this[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
 

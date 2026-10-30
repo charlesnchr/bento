@@ -66,7 +66,7 @@ class EngineXcheckTest {
         val sb = StringBuilder()
         for ((i, r) in devices.withIndex()) {
             val e = engines[i]
-            sb.append("D$i last=${r.lastSeq} pending=${e.pendingCount} blocked=${e.blockedCount}\n")
+            sb.append("D$i pending=${e.pendingCount} blocked=${e.blockedCount}\n")
             for (d in r.allDocs.sortedBy { it.id }) sb.append(docLine(d))
             sb.append("inflight=" + e.inflight.keys.sorted().joinToString(";") { "$it:" + e.inflight.getValue(it).joinToString(",") } + "\n")
             sb.append("failed=" + e.failed.keys.sorted().joinToString(";") { "$it:${e.failed.getValue(it)}" } + "\n")
@@ -104,9 +104,9 @@ class EngineXcheckTest {
                     return
                 }
                 val (stored, accepted) = server.put(doc, "d$dev")
-                if (mode == 1) e.ack(doc.id, if (accepted) stored.seq else null, accepted, ordered = true)
+                if (mode == 1) e.ack(doc.id, if (accepted) stored.seq else null, accepted)
                 else e.ack(doc.id, if (accepted) stored.seq else null, accepted, version = doc.updatedAt)
-                if (!accepted) e.applyRemote(stored, advanceCursor = mode != 2)
+                if (!accepted) e.applyRemote(stored)
                 if (accepted) engines.forEachIndexed { j, o -> if (j != dev) o.applyRemote(stored) }
             }
 
@@ -114,10 +114,7 @@ class EngineXcheckTest {
                 queued.removeAll { it.first == dev }
                 engines[dev].reset()
                 engines[dev].clearFailed()
-                val since = devices[dev].lastSeq
-                if (engines[dev].applySnapshot(server.docs.values.filter { (it.seq ?: 0) > since }, server.seq)) {
-                    engines[dev].applySnapshot(server.docs.values.filter { (it.seq ?: 0) > 0 }, server.seq)
-                }
+                engines[dev].applySnapshot(server.docs.values.toList(), server.docs.keys.toSet())
             }
 
             for ((step, ev) in trace.obj["events"]!!.arr.withIndex()) {

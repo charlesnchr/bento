@@ -18,7 +18,10 @@ interface CollectionSync {
     /** Whether hello must name the collection and the server must report `collections`. */
     val needsCollections: Boolean get() = collection != "notes"
 
-    /** Highest server seq applied (held below deferred versions by the notes engine). */
+    /**
+     * Where hello and polls start: the highest server seq applied for notes (held below
+     * deferred versions), 0 for field-doc collections, which fetch the full set every time.
+     */
     val lastSeq: Long
 
     /** This device's name, carried by puts. */
