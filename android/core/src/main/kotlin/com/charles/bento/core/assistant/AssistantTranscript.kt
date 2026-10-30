@@ -20,12 +20,16 @@ data class ChatMessage(
     val thinking: String = "",
     val toolName: String? = null,
     val toolDetail: String? = null,
-    /** "running", "completed" or "failed" for tool rows; for approvals "pending" or the choice. */
+    /** "running", "completed", "failed" or "cancelled" for tool rows; for approvals "pending" or the choice. */
     val status: String? = null,
     val choices: List<String> = emptyList(),
     val runId: String? = null,
     val streaming: Boolean = false,
     val failed: Boolean = false,
+    /** The Hermes session a row opens: a call task's own conversation. */
+    val link: String? = null,
+    /** Said in a call on this phone, or a call task's reply: Hermes didn't store it in this conversation. */
+    val call: Boolean = false,
 )
 
 /** What one turn has put in the chat so far, so later events land in the right rows. */

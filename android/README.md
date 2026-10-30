@@ -121,13 +121,23 @@ scripts/hermes-phone-link    # on the Hermes machine: a QR code (with qrencode) 
 ```
 
 Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the paired key,
-with the Mac's call setup (`helper/gemini_live_setup.json`, phone wording) and its one
-tool, `ask_hermes`: when the model calls it, Bento sends Hermes the user's own transcribed
-words for that turn, shows Hermes's reply in the chat and returns it for Gemini to speak.
+with the Mac's call setup (`helper/gemini_live_setup.json`, phone wording; the tests hold the
+phone's instruction to the Mac's safety rules). Gemini supervises Hermes: each `ask_hermes`
+call starts a task in a Hermes session of its own, with the user's own transcribed words for
+that turn, and several run at once. The call is non-blocking, so Bento answers "started task
+N" at once and the conversation goes on; Hermes's reply comes back to the same call when it
+finishes, scheduled for the next pause, and joins the chat. `list_tasks`, `check_task` and
+`cancel_task` let Gemini say what's running, report one task's progress or result, and cancel
+one; Bento answers them itself. The call bar shows a lane per task with its status, its latest
+step, a button that opens its Hermes conversation and one that cancels it. Each task's
+session joins the conversation list; the call's transcript and the tasks' replies stay in the
+chat on screen, are what a typed follow-up there hears as reference, and aren't stored by
+Hermes. After the call a task's row opens its session in a sheet, leaving the chat as it is.
 A call continues the conversation on screen (Gemini gets a recap, `helper/live_resume.json`),
 runs in a microphone foreground service, uses the voice-call microphone with echo
 cancellation and plays through a headset or the loudspeaker. Open mic or tap to talk is a
-setting; speaking over Gemini interrupts it, Stop (in the call bar while Hermes works)
-stops Hermes's request and the call goes on, End call (also in the notification) stops
-everything, and so does a phone call. Hermes's approval prompts offer Allow once, Allow for
+setting; speaking over Gemini interrupts it but cancels no task, End call (also in the
+notification) ends the call and every task, and so does a phone call. When only Hermes is
+left to wait for, the call leaves Gemini after a quiet spell and comes back with the first
+result; results whose session has gone go in as a turn. Hermes's approval prompts offer Allow once, Allow for
 this request (Hermes scopes a streamed turn's approvals to its run) and Deny.
