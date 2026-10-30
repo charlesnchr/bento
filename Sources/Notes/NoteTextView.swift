@@ -348,6 +348,17 @@ final class NoteTextView: NSTextView {
         return changed ? lines.joined(separator: "\n") : text
     }
 
+    // MARK: Layout
+
+    /// The editor is always as wide as the scroll view shows, so lines wrap inside the
+    /// window. Autoresizing alone keeps whatever difference the two started with (macOS 15
+    /// doesn't correct it), and lines then run past the right edge.
+    override func setFrameSize(_ newSize: NSSize) {
+        var size = newSize
+        if !isHorizontallyResizable, let clip = superview as? NSClipView { size.width = clip.bounds.width }
+        super.setFrameSize(size)
+    }
+
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
