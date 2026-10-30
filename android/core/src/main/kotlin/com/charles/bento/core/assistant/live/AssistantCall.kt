@@ -155,8 +155,9 @@ class AssistantCall(
      */
     private val geminiTurns = ArrayDeque<GeminiTurn>()
     private var transcribedUntil: Double? = null
-    /** When the captioner's current utterance started, and how many of its words Gemini has transcribed. */
+    /** When the captioner's current utterance started, its latest guess, and how many of its words Gemini has transcribed. */
     private var captionTurnAt: Double? = null
+    private var captionGuess = ""
     private var captionWordsTranscribed = 0
     /** When the captioned utterance ended, for taking down a caption Gemini never replaces. */
     private var captionEndedAt: Double? = null
@@ -361,7 +362,15 @@ class AssistantCall(
                 protocol.activityEnded(now()); lastSpeech = now()
                 geminiTurns.lastOrNull()?.takeIf { it.ended == null }?.let { turn ->
                     turn.ended = now()
-                    if (turn.transcribed) transcribedUntil = maxOf(transcribedUntil ?: 0.0, now())
+                    // A transcript lent to an earlier turn while this one went on, and none of its own: it was this one's.
+                    if (!turn.transcribed && turn.lent) {
+                        turn.transcribed = true
+                        transcribedUntil = maxOf(transcribedUntil ?: 0.0, now())
+                        if (captionTranscribed()) {
+                            captionWordsTranscribed = words(captionGuess).size
+                            if (captionShownFrom?.let { it <= transcribedUntil!! } == true) takeDownCaption()
+                        }
+                    } else if (turn.transcribed) transcribedUntil = maxOf(transcribedUntil ?: 0.0, now())
                 }
             }
         }
@@ -370,7 +379,8 @@ class AssistantCall(
         for (source in listOf(content, event)) {
             (source["inputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
                 transcribedUntil = maxOf(transcribedUntil ?: 0.0, transcribedTurnEnd())
-                if (captionTranscribed()) captionWordsTranscribed += words(it).size
+                // The captioner's words so far are the ones covered (the transcript may span earlier utterances of its).
+                if (captionTranscribed()) captionWordsTranscribed = words(captionGuess).size
                 // The controller takes the caption down with these words; one of later words comes back.
                 val later = captionText.takeIf { captionShownFrom?.let { from -> from > transcribedUntil!! } == true }
                 if (later == null) captionEndedAt = null
@@ -433,9 +443,10 @@ class AssistantCall(
     private fun caption(caption: Caption) {
         if (!active) return
         when (caption) {
-            is Caption.Started -> { captionTurnAt = caption.at ?: now(); captionWordsTranscribed = 0; captionEndedAt = null }
+            is Caption.Started -> { captionTurnAt = caption.at ?: now(); captionGuess = ""; captionWordsTranscribed = 0; captionEndedAt = null }
             is Caption.Partial -> {
                 val from = captionTurnAt ?: now().also { captionTurnAt = it }
+                captionGuess = caption.text
                 if (standby) return
                 // Guesses at words Gemini has transcribed are stale. Once Gemini hears a new turn
                 // and the captioner hasn't split there, what follows those words is the new turn's.
@@ -465,15 +476,18 @@ class AssistantCall(
      * The turn a user transcript belongs to, marked transcribed, and when it ended (now if it
      * hasn't). Gemini sends a turn's words with its ACTIVITY_END, so they're the latest turn's,
      * unless an earlier one ended just now without words: then they trail it ([LATE_TRANSCRIPT]).
-     * A turn that ends without words (a cough) is soon past claiming any.
+     * A turn that ends without words (a cough) is soon past claiming any, and words it claims
+     * from a short reply go back to the reply when that ends without words of its own.
      */
     private fun transcribedTurnEnd(): Double {
         val t = now()
         val latest = geminiTurns.lastOrNull() ?: return t
-        val owner = geminiTurns.firstOrNull { turn ->
+        // The latest turn's own words come after Gemini has heard its closing silence ([TURN_SILENCE]).
+        val owner = geminiTurns.takeIf { t - latest.started < TURN_SILENCE }?.firstOrNull { turn ->
             turn !== latest && !turn.transcribed && turn.ended?.let { t - it <= LATE_TRANSCRIPT } == true
         } ?: latest
         owner.transcribed = true
+        if (owner !== latest) latest.lent = true
         return owner.ended ?: t
     }
 
@@ -601,6 +615,8 @@ class AssistantCall(
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
         /** Seconds after its ACTIVITY_END a turn's transcript can still come (they came 0.01 s apart on 2026-10-30). */
         const val LATE_TRANSCRIPT = 1.5
+        /** Silence Gemini Live waits for before it ends a turn (about 0.8 s on 2026-10-30). */
+        const val TURN_SILENCE = 0.8
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
 
         fun audioFrame(pcm: ByteArray): String = buildJsonObject {
@@ -628,5 +644,7 @@ class AssistantCall(
     private class GeminiTurn(val started: Double) {
         var ended: Double? = null
         var transcribed = false
+        /** A transcript that came during it went to an earlier turn. */
+        var lent = false
     }
 }

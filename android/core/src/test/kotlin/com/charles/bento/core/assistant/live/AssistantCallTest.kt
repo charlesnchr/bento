@@ -752,6 +752,80 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun bothPausesDisagreeingStillCaptionTheNewWordsOnly() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Book a table"))
+        captions.say(Caption.Ended)
+        delay(700)
+        // The captioner split there; Gemini didn't.
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("for two"))
+        shown.awaitSize(3)
+        transport.push(Live.heard("Book a table for two."))
+        transport.push(Live.activity("ACTIVITY_END"))
+        heard.awaitSize(1)
+        // Gemini splits the next pause; the captioner doesn't.
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        captions.say(Caption.Partial("for two please near the station"))
+        shown.awaitSize(4)
+        assertEquals("please near the station", shown.last())
+        call.stop()
+    }
+
+    @Test fun aShortReplyAfterACoughGetsItsWordsBackWhenItEnds() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        transport.push(Live.activity("ACTIVITY_START"))
+        transport.push(Live.activity("ACTIVITY_END"))
+        delay(200)
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Yes"))
+        shown.awaitSize(1)
+        delay(300)
+        // Within the cough's late-transcript window, so it's lent to the cough for now.
+        transport.push(Live.heard("Yes."))
+        heard.awaitSize(1)
+        transport.push(Live.activity("ACTIVITY_END"))
+        shown.awaitSize(3)
+        captions.say(Caption.Partial("Yes."))
+        delay(200)
+        assertEquals(listOf("Yes", "Yes", null), shown.toList(), "the reply ended without words of its own: the transcript was its")
+        call.stop()
+    }
+
+    @Test fun aCaptionComesBackOnlyIfItsOwnUtteranceIsLater() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val (call, shown) = captioned(transport, captions)
+        val heard = CopyOnWriteArrayList<String>()
+        call.onTranscript = { role, text -> if (role == "user") heard.add(text) }
+        transport.push(Live.activity("ACTIVITY_START"))
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("Book it"))
+        shown.awaitSize(1)
+        transport.push(Live.activity("ACTIVITY_END"))
+        delay(300)
+        // The captioner starts another utterance before Gemini's transcript of the first one comes.
+        captions.say(Caption.Started())
+        delay(100)
+        transport.push(Live.heard("Book it."))
+        heard.awaitSize(1)
+        delay(200)
+        assertEquals(listOf("Book it"), shown.toList(), "the caption on screen was the transcribed utterance's: it stays down")
+        call.stop()
+    }
+
     @Test fun aCaptionGeminiNeverReplacesIsTakenDownAfterTheUtterance() = blocking {
         val captions = FakeCaptions()
         val (call, shown) = captioned(FakeTransport(listOf(Frames.setupComplete())), captions)
