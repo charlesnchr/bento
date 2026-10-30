@@ -31,6 +31,7 @@ import java.io.File
 import java.io.IOException
 import java.time.Instant
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /** What the app's inserter did with the text (the Mac's insertion outcomes). */
 enum class InsertionOutcome {
@@ -122,9 +123,9 @@ class DictationSession internal constructor(
         const val TRAILING_RELATIVE_CAP = 0.30f
         const val EMPTY_TRANSCRIPT_SNR_THRESHOLD = 8.0
         const val DISCARD_SNR_THRESHOLD = 6.0
-        /** Soft warning at 9:00, stop and transcribe at 10:00 of audio. */
-        const val RECORDING_WARN_SECONDS = 540.0
+        /** Stop and transcribe at 10:00 of audio (a config may allow more), with a soft warning a minute before. */
         const val RECORDING_CAP_SECONDS = 600.0
+        const val RECORDING_WARN_BEFORE_CAP = 60.0
         /** Cancelled recordings at least this long stay recoverable in History. */
         const val CANCEL_KEEP_THRESHOLD = 10.0
         /** No audio for this long during trailing capture means the app stopped the mic. */
@@ -288,11 +289,11 @@ class DictationSession internal constructor(
                 if (meterActive) levelFlow.value = level
             }
             val seconds = AudioFormat.seconds(framesWritten)
-            if (seconds >= RECORDING_WARN_SECONDS && !capWarned) { capWarned = true; warn = true }
-            if (seconds >= RECORDING_CAP_SECONDS && !capReached) { capReached = true; cap = true }
+            if (seconds >= config.recordingCapSeconds - RECORDING_WARN_BEFORE_CAP && !capWarned) { capWarned = true; warn = true }
+            if (seconds >= config.recordingCapSeconds && !capReached) { capReached = true; cap = true }
         }
         if (started) engineStarted()
-        if (warn) synchronized(lock) { if (stateFlow.value is DictationState.Recording) noticeFlow.value = "One minute left — 10-minute limit" }
+        if (warn) synchronized(lock) { if (stateFlow.value is DictationState.Recording) noticeFlow.value = "One minute left — ${(config.recordingCapSeconds / 60).roundToInt()}-minute limit" }
         if (cap) {
             VoiceLog.i(TAG, "recording cap reached — finalizing")
             requestStop()

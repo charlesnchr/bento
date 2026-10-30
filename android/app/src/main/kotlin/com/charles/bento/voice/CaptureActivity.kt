@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.service.quicksettings.TileService
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -43,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.charles.bento.graph
@@ -78,6 +81,9 @@ class CaptureActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // the screen going off (the power button; the timeout is held off while listening) isn't
+        // leaving: keep listening, and the sheet is back when the screen comes on
+        if (getSystemService(PowerManager::class.java)?.isInteractive == false) return
         // leaving the sheet keeps what was said: finish it rather than drop it
         if (graph.dictation.state.value is DictationState.Listening) graph.dictation.stop()
         if (!isChangingConfigurations) finish()
@@ -113,6 +119,13 @@ private fun CaptureSheet(kind: String, onClose: () -> Unit) {
             DictationState.Idle -> { delay(300); if (graph.dictation.state.value == DictationState.Idle) onClose() }
             else -> {}
         }
+    }
+    // a long thought outlasts the screen timeout: the screen stays on while listening
+    val view = LocalView.current
+    val listening = state is DictationState.Listening
+    DisposableEffect(listening) {
+        view.keepScreenOn = listening
+        onDispose { view.keepScreenOn = false }
     }
     val levels = remember { mutableStateListOf<Float>().apply { repeat(44) { add(0f) } } }
     LaunchedEffect(state) { (state as? DictationState.Listening)?.let { levels.removeAt(0); levels.add(it.level) } }

@@ -89,7 +89,9 @@ class TextInserter(private val context: Context, private val node: Accessibility
 
     private fun currentText(): String? {
         if (node.isShowingHintText) return ""
-        return node.text?.toString()
+        val text = node.text?.toString() ?: return null
+        val labels = listOfNotNull(node.hintText, node.contentDescription, runCatching { node.labeledBy?.text }.getOrNull())
+        return if (isPlaceholder(text, node.textSelectionStart, labels)) "" else text
     }
 
     private fun setSelection(start: Int, end: Int) {
@@ -126,6 +128,17 @@ class TextInserter(private val context: Context, private val node: Accessibility
     private fun log(m: String) = android.util.Log.i("BentoInsert", m)
 
     companion object {
+        /**
+         * An empty field reporting its placeholder ("Message") as its text without saying
+         * so (WhatsApp, some web and custom views): the text is the hint, the description or
+         * the label's text, and the cursor sits at the start, where it is in an empty field.
+         * Kept, it was inserted before every dictation and sent as text before the cursor.
+         */
+        fun isPlaceholder(text: String, selectionStart: Int, labels: List<CharSequence>): Boolean {
+            if (text.isBlank() || selectionStart > 0) return false
+            return labels.any { it.toString().trim() == text.trim() }
+        }
+
         /**
          * A space before the text when it follows a word, and none after an opening
          * bracket or at a line start; a space after when a word follows directly.

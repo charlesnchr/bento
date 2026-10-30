@@ -405,6 +405,18 @@ class DictationSessionTest {
         assertEquals(600.0, s.metaForTesting.audioDurationSeconds)
     }
 
+    @Test fun configuredRecordingCapAllowsLongerRecordings() = blocking {
+        val s = start(config.copy(recordingCapSeconds = 1_200.0))
+        val minute = tone(60.0, amplitude = 2_000.0)
+        repeat(18) { assertTrue(s.feed(minute)) }
+        assertNull(s.notice.value)
+        assertTrue(s.feed(minute))
+        assertEquals("One minute left — 20-minute limit", s.notice.value)
+        s.feed(minute)
+        assertIs<DictationOutcome.Transcribed>(s.finishWithin())
+        assertEquals(1_200.0, s.metaForTesting.audioDurationSeconds)
+    }
+
     // MARK: Live
 
     @Test fun cleanLiveResultIsUsedWithoutUpload() = blocking {

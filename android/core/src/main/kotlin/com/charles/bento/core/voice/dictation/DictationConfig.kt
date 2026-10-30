@@ -51,6 +51,12 @@ data class DictationConfig(
     val experimentalNoiseHandling: Boolean = false,
     /** Hard cap on the cleanup call; a miss inserts the transcript without cleanup. */
     val cleanupDeadline: Double = TimeoutPolicy.CLEANUP_DEADLINE,
+    /**
+     * Seconds of audio after which the recording stops and is transcribed: the Mac's 10
+     * minutes. The whole recording goes inline in one request (100 MB at most), so not
+     * much past 30 minutes.
+     */
+    val recordingCapSeconds: Double = DictationSession.RECORDING_CAP_SECONDS,
 ) {
     /** How a dictation gets formatted: two independent flags, as on the Mac. */
     data class FormattingPolicy(val nativeSmart: Boolean, val cleanupPass: Boolean) {

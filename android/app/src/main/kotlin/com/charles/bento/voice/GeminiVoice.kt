@@ -10,6 +10,7 @@ import com.charles.bento.core.voice.dictation.DictationConfig
 import com.charles.bento.core.voice.dictation.DictationEngine
 import com.charles.bento.core.voice.dictation.DictationFailure
 import com.charles.bento.core.voice.dictation.DictationOutcome
+import com.charles.bento.core.voice.dictation.DictationSession
 import com.charles.bento.core.voice.dictation.SilenceReason
 import com.charles.bento.core.voice.dictation.VoiceEvent
 import com.charles.bento.core.voice.history.RetryQueue
@@ -157,7 +158,14 @@ class GeminiVoice(
             customInstructions = settings.effectiveInstructions,
             modePrompt = listOfNotNull(mode?.prompt?.takeIf { it.isNotBlank() }, purposePrompt).joinToString("\n").ifBlank { null },
             context = AppContext(ctx.appPackage, ctx.appLabel, ctx.hint, ctx.textBefore),
+            // a captured thought can run long: half an hour still fits in one upload
+            recordingCapSeconds = if (request.purpose == VoiceRequest.Purpose.Thought) THOUGHT_CAP_SECONDS
+                                  else DictationSession.RECORDING_CAP_SECONDS,
         )
+    }
+
+    private companion object {
+        const val THOUGHT_CAP_SECONDS = 30 * 60.0
     }
 
     private fun failureMessage(f: DictationOutcome.Failed): String = f.message?.takeIf { it.isNotBlank() } ?: when (f.failure) {
