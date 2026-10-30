@@ -85,6 +85,8 @@ class AssistantController(
     val history: StateFlow<HistoryUi> = _history.asStateFlow()
     private val _models = MutableStateFlow(ModelsUi())
     val models: StateFlow<ModelsUi> = _models.asStateFlow()
+    /** Bumped when the server changes: a model list asked of the old one is dropped when it arrives. */
+    private var modelsServer = 0
 
     private var turnJob: Job? = null
     private var runId: String? = null
@@ -132,6 +134,7 @@ class AssistantController(
         prefs.hermesModelProvider.value = ""
         prefs.hermesModel.value = ""
         prefs.hermesLocked.value = ""
+        modelsServer++
         _models.value = ModelsUi()
         loadedSession = null
         _history.value = HistoryUi()
@@ -230,12 +233,14 @@ class AssistantController(
         val m = _models.value
         if (!configured || m.loading || (m.options != null && !force)) return
         _models.update { it.copy(loading = true, error = null) }
+        val server = modelsServer
         scope.launch {
-            _models.value = try {
+            val loaded = try {
                 ModelsUi(client.modelOptions())
             } catch (e: HermesError) {
                 ModelsUi(_models.value.options, error = e.message)
             }
+            if (server == modelsServer) _models.value = loaded
         }
     }
 
@@ -250,7 +255,8 @@ class AssistantController(
         val c = choice
         val isLocked = sid in locked()
         if (!c.picked && isLocked && _models.value.options == null) {
-            runCatching { client.modelOptions() }.getOrNull()?.let { o -> _models.update { it.copy(options = o) } }
+            val server = modelsServer
+            runCatching { client.modelOptions() }.getOrNull()?.let { o -> if (server == modelsServer) _models.update { it.copy(options = o) } }
         }
         val sent = c.forConversation(isLocked, _models.value.options)
         if (sent.picked && !isLocked) prefs.hermesLocked.value = (listOf(sid) + locked()).take(200).joinToString(",")

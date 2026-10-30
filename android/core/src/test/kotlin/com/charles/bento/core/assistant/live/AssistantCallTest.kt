@@ -5,6 +5,7 @@ import com.charles.bento.core.voice.Frames
 import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.json
 import com.charles.bento.core.voice.live.LiveSocketEnding
+import com.charles.bento.core.voice.live.LiveTransport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -428,6 +429,26 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aSendCaughtByStandbyDoesntEndTheCall() = blocking {
+        val first = HeldSends(FakeTransport(listOf(Frames.setupComplete())))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        // The microphone's next send hangs until standby closes the socket under it.
+        val call = AssistantCall(first, FakeAudio(), null, { first.holding = true; result.await() }, limits = fast,
+                                 reconnect = { second }, standbyAfter = { 0.3 }, recap = { CallSetup.resume("User: hi") })
+        call.start()
+        first.inner.awaitSent { s -> s.any { "realtimeInput" in it } }
+        first.inner.push(Live.activity("ACTIVITY_START")); first.inner.push(Live.heard("Book it")); first.inner.push(Live.activity("ACTIVITY_END"))
+        first.inner.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        delay(200)
+        assertEquals(AssistantCall.Status.Standby, call.status.value)
+        result.complete("Booked.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
     @Test fun neverMeansNoStandby() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
@@ -580,5 +601,18 @@ class CallProtocolTest {
         val marker = " [Bento cut Hermes's reply here at 64000 characters.]"
         assertEquals("x".repeat(64_000) + marker, CallProtocol.fullResult("x".repeat(70_000)))
         assertEquals("x".repeat(63_999) + marker, CallProtocol.fullResult("x".repeat(63_999) + "😀".repeat(10)))
+    }
+}
+
+/** [inner], except that once [holding], a send waits for the socket to close and then fails. */
+private class HeldSends(val inner: FakeTransport) : LiveTransport by inner {
+    @Volatile var holding = false
+
+    override suspend fun send(frame: String) {
+        if (holding) {
+            while (inner.closeCount == 0) delay(5)
+            throw IOException("closed")
+        }
+        inner.send(frame)
     }
 }

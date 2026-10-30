@@ -11,12 +11,15 @@ import VoiceCore
 /// Gemini bills a connection by the second, so a call waiting on Hermes in silence for
 /// `standbyAfter` seconds leaves it: the socket closes and the microphone runs on unheard.
 /// When Hermes finishes, or on `wake()`, a new connection resumes the call with the
-/// conversation so far (`recap`); a result that outlived its session goes in as a turn for
-/// Gemini to speak (`LiveResume.result`), since the old session's call is gone with it.
+/// conversation so far (`recap`). A result that outlived its session goes in on the call's
+/// connection as a turn for Gemini to speak (`resultMessage`), since the old session's
+/// call is gone with it; one that arrives while a connection is being set up waits for it.
 @MainActor
 final class GeminiLiveController {
-    private let audio = AzureLiveAudio(inputRate: 16000, maxQueuedSeconds: 120, realTimeOutput: false)
-    private let makeTransport: (_ recap: String?, _ result: String?) throws -> LiveTransport
+    private let audio: LiveCallAudio
+    private let permitted: () -> Bool
+    private let tick: Duration
+    private let makeTransport: (_ recap: String?) throws -> LiveTransport
     private var transport: LiveTransport?
     /// The connection the reader serves; one closed for standby or replaced ends quietly.
     private var link = UUID()
@@ -40,6 +43,10 @@ final class GeminiLiveController {
     private var wakeStarted = 0.0
     /// The running request outlived the session its call came from: its result goes back as a turn.
     private var parked = false
+    /// A parked result waiting for the connection being set up.
+    private var delivery: String?
+    /// A result went to the helper as `hermesResult`, which a helper older than standby refuses.
+    private var resultSent = false
     /// When someone last spoke, and when Gemini's speech already received finishes playing.
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
@@ -56,8 +63,13 @@ final class GeminiLiveController {
     /// The conversation so far, for the connection a call comes back from standby on.
     var recap: () -> String? = { nil }
 
-    init(makeTransport: @escaping (_ recap: String?, _ result: String?) throws -> LiveTransport = GeminiLiveController.routedTransport) {
+    /// The defaults are the real call; tests pass a fake socket and audio, and a shorter tick.
+    init(makeTransport: @escaping (_ recap: String?) throws -> LiveTransport = GeminiLiveController.routedTransport,
+         audio: LiveCallAudio? = nil, permitted: (() -> Bool)? = nil, tick: Duration = .seconds(1)) {
         self.makeTransport = makeTransport
+        self.audio = audio ?? AzureLiveAudio(inputRate: 16000, maxQueuedSeconds: 120, realTimeOutput: false)
+        self.permitted = permitted ?? { !SecureInput.isActive && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
+        self.tick = tick
     }
 
     private var now: Double { ProcessInfo.processInfo.systemUptime }
@@ -67,15 +79,16 @@ final class GeminiLiveController {
 
     func start(recap: String?) throws {
         guard !active else { return }
-        guard !SecureInput.isActive, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+        guard permitted() else {
             throw ACPClient.Failure(message: "Allow microphone access and leave secure input before starting Gemini voice.")
         }
         let recap = recap?.isEmpty == false ? recap : nil
-        let transport = try makeTransport(recap, nil)
+        let transport = try makeTransport(recap)
         self.transport = transport
         active = true; generation = UUID(); protocolState = GeminiLiveProtocol(); started = now
         lastCaptureAt = nil; runningTurn = nil; cancelledCalls = []; goingAway = false
-        hermesWorking = false; standby = false; waking = false; parked = false; lastSpeech = started; speechUntil = 0
+        hermesWorking = false; standby = false; waking = false; parked = false; delivery = nil; resultSent = false
+        lastSpeech = started; speechUntil = 0
         inputChunks = 0; outputChunks = 0; outputBytes = 0
         AzureLiveDiagnostics.record(.connecting, log: .gemini)
         let token = generation
@@ -83,7 +96,7 @@ final class GeminiLiveController {
         read(transport, token: token)
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: self?.tick ?? .seconds(1))
                 guard let self, self.active, self.generation == token, !Task.isCancelled else { return }
                 if SecureInput.isActive { self.failed("Secure input is active. Voice stopped.", token: token, code: .secureInput); return }
                 if self.sender == nil, self.now - self.started >= 25 {
@@ -144,30 +157,52 @@ final class GeminiLiveController {
     }
 
     /// Brings a call in standby back now, to talk before Hermes finishes.
-    func wake() { comeBack(with: nil) }
+    func wake() { comeBack() }
 
-    /// A new connection with the conversation so far and any result waiting; the reader
-    /// finishes it at setupComplete (`cameBack`).
-    private func comeBack(with result: String?) {
-        guard active, standby || result != nil, !waking else { return }
+    /// A new connection with the conversation so far; the reader finishes it at setupComplete (`cameBack`).
+    private func comeBack() {
+        guard active, standby, !waking else { return }
         let token = generation
         let next: LiveTransport
-        do { next = try makeTransport(recap(), result) } catch {
+        do { next = try makeTransport(recap()) } catch {
             failed(Self.reconnectFailed, token: token, code: .bridgeFailure); return
         }
-        transport?.close()
         transport = next
-        standby = true; waking = true; wakeStarted = now
+        waking = true; wakeStarted = now
         onStandby?(false)
         onStatus?("Reconnecting to Gemini 3.8 Live...")
         read(next, token: token)
     }
 
-    private func cameBack() {
+    private func cameBack(token: UUID) {
         standby = false; waking = false
         lastSpeech = now; speechUntil = 0
         AzureLiveDiagnostics.record(.standbyEnded, log: .gemini)
         onStatus?(hermesWorking ? "Hermes is working..." : Self.listening)
+        if let result = delivery {
+            delivery = nil
+            Task { await deliver(result, token: token) }
+        }
+    }
+
+    /// A parked request's result: spoken on the call's connection now, or once one is set up.
+    private func deliver(_ result: String, token: UUID) async {
+        guard active, generation == token else { return }
+        if standby {
+            delivery = result
+            if !waking { comeBack() }
+            return
+        }
+        guard let transport else { return }
+        do {
+            let geminiAPI = transport is GeminiAPILiveTransport
+            if !geminiAPI { resultSent = true }
+            try await transport.send(try Self.resultMessage(result, geminiAPI: geminiAPI))
+            AzureLiveDiagnostics.record(.delegationResultSent, log: .gemini)
+        } catch {
+            guard self.transport === transport, !standby else { return } // left for standby meanwhile: delivery waits for the next
+            failed("Hermes's answer could not reach Gemini. It's in the chat.", token: token, code: .toolSendFailure)
+        }
     }
 
     private func receive(_ data: Data, token: UUID) {
@@ -177,8 +212,8 @@ final class GeminiLiveController {
         if event["goAway"] != nil { goingAway = true }
         if let error = event["error"] as? [String: Any] {
             let code = error["code"] as? String
-            // A helper older than standby refuses the resume that carries Hermes's reply.
-            let outdated = waking && code == "invalid_message" && (transport as? GeminiHelperResumeTransport)?.carriesResult == true
+            // A helper older than standby refuses Hermes's reply.
+            let outdated = resultSent && code == "invalid_message"
             let message = code == "busy" ? "Another Gemini voice call is already running."
                 : goingAway && code == "upstream_closed" ? "Gemini ended the call at its time limit. Start again to continue."
                 : outdated ? "Gemini voice couldn't come back with Hermes's answer: the voice helper is out of date. Run scripts/voice-helper.sh update. The answer is in the chat."
@@ -188,7 +223,7 @@ final class GeminiLiveController {
             return
         }
         if event["setupComplete"] != nil {
-            if waking { cameBack() } else { listen(token: token) }
+            if waking { cameBack(token: token) } else { listen(token: token) }
         }
         switch (event["voiceActivity"] as? [String: Any])?["type"] as? String {
         case "ACTIVITY_START": protocolState.activityStarted(at: now); lastSpeech = now
@@ -219,7 +254,7 @@ final class GeminiLiveController {
                 failed("Invalid Gemini voice audio. Start a new session.", token: token, code: .invalidAudio); return
             }
             outputChunks += 1; outputBytes += pcm.count
-            audio.play(pcm)
+            audio.play(pcm, startMS: nil, endMS: nil)
             // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
             speechUntil = max(speechUntil, now) + Double(pcm.count) / 48000
         }
@@ -249,7 +284,11 @@ final class GeminiLiveController {
                     let event: [String: Any] = ["realtimeInput": ["audio": ["mimeType": "audio/pcm;rate=16000",
                                                                             "data": pcm.base64EncodedString()]]]
                     try await transport.send(try JSONSerialization.data(withJSONObject: event))
-                } catch { self.failed("Gemini audio could not be sent.", token: token, code: .sendFailure); return }
+                } catch {
+                    // A connection left for standby (or replaced) fails its last sends; the call goes on.
+                    guard self.transport === transport, !self.standby else { continue }
+                    self.failed("Gemini audio could not be sent.", token: token, code: .sendFailure); return
+                }
             }
         }
         do {
@@ -306,11 +345,10 @@ final class GeminiLiveController {
             self.hermesWorking = false
             guard self.active, self.generation == token, !Task.isCancelled else { return }
             if self.parked {
-                // The call it answers went with its session: a new connection carries the reply.
-                // One being set up for Talk is replaced, so the reply can go in with its setup.
-                self.waking = false
-                self.comeBack(with: result)
-                finish(); return
+                // The call it answers went with its session: the reply goes in as a turn.
+                finish()
+                await self.deliver(result, token: token)
+                return
             }
             if self.cancelledCalls.contains(delegation.id) {
                 // Gemini dropped the call; the reply stays in the chat.
@@ -340,7 +378,10 @@ final class GeminiLiveController {
             let event = GeminiLiveProtocol.response(id: id, name: name, message: message, executed: executed)
             try await transport.send(try JSONSerialization.data(withJSONObject: event))
             if executed { AzureLiveDiagnostics.record(.delegationResultSent, log: .gemini) }
-        } catch { failed("Tool result could not reach Gemini. Completed actions were not undone.", token: token, code: .toolSendFailure) }
+        } catch {
+            guard self.transport === transport, !standby else { return }
+            failed("Tool result could not reach Gemini. Completed actions were not undone.", token: token, code: .toolSendFailure)
+        }
     }
 
     private func failed(_ message: String, token: UUID, code: AzureLiveDiagnostics.Code = .audioFailure,

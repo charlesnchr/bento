@@ -454,6 +454,7 @@ class AssistantCall(
             to.send(frame)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
+            if (standby) return // the connection left for standby fails its last sends; the call goes on
             if (!rotating && to === socket) { fail("Lost the connection to Gemini. Completed actions were not undone."); return }
             if (!resend) return // waiting would back the microphone up
             while (rotating && active) delay(50)

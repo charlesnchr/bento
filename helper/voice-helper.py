@@ -85,30 +85,26 @@ def conversation_recap(resume):
     return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': resume['recap']}]}], 'turnComplete': False}}
 
 
-def conversation_result(resume):
-    """Back from standby, Hermes's reply to the request the call waited on, as a turn Gemini answers
-    by speaking (azure_live.standby_result)."""
-    return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': resume['result']}]}], 'turnComplete': True}}
-
-
 def conversation_resume(payload):
-    """A resumed call's first message: the earlier call's transcript, and for a call back from standby
-    the reply it waited on; nothing else. Returns how the call is told about them
-    (azure_live.resume_context, azure_live.standby_result)."""
-    from azure_live import resume_context, standby_result
+    """A resumed call's first message: the earlier call's transcript, nothing else. Returns how the call
+    is told about it (azure_live.resume_context)."""
+    from azure_live import resume_context
     if not isinstance(payload, dict) or set(payload) != {'resume'} or not isinstance(payload['resume'], dict) \
-            or set(payload['resume']) - {'result'} != {'recap'}:
+            or set(payload['resume']) != {'recap'}:
         raise ValueError('Expected the resumed call')
-    context = resume_context(payload['resume']['recap'])
-    if 'result' in payload['resume']:
-        context = {**(context or {'instruction': '', 'recap': None}), 'result': standby_result(payload['resume']['result'])}
-    return context
+    return resume_context(payload['resume']['recap'])
 
 
 def conversation_input(payload):
-    """Microphone audio and function results only; nothing else reaches the call."""
+    """Microphone audio, function results and, for a call back from standby, the reply to the request it
+    waited on; nothing else reaches the call. The reply carries only Hermes's text: the helper words it
+    (azure_live.standby_result) and sends it as a turn Gemini answers by speaking."""
     if not isinstance(payload, dict) or len(payload) != 1:
         raise ValueError('Expected one client message')
+    if 'hermesResult' in payload:
+        from azure_live import standby_result
+        text = standby_result(payload['hermesResult'])
+        return {'clientContent': {'turns': [{'role': 'user', 'parts': [{'text': text}]}], 'turnComplete': True}}
     if 'realtimeInput' in payload:
         realtime = payload['realtimeInput']
         if not isinstance(realtime, dict) or not realtime or set(realtime) - {'audio', 'audioStreamEnd'}:
@@ -497,10 +493,7 @@ class VertexBridge:
                         if not isinstance(event, dict):
                             event = {}
                         if not seeded.is_set() and 'setupComplete' in event:
-                            if context['recap']:
-                                await upstream.send_json(conversation_recap(context))
-                            if context.get('result'):
-                                await upstream.send_json(conversation_result(context))
+                            await upstream.send_json(conversation_recap(context))
                             seeded.set()
                         update = event.get('sessionResumptionUpdate')
                         if isinstance(update, dict) and update.get('resumable') and isinstance(update.get('newHandle'), str) \
