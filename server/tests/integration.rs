@@ -137,7 +137,7 @@ async fn rest_and_websocket_sync() {
 
     // Health needs no auth.
     let (st, h) = http(a, "GET", "/v1/health", None, None).await;
-    assert_eq!((st, h.clone()), (200, json!({"ok": true, "seq": 0, "collections": true})));
+    assert_eq!((st, h.clone()), (200, json!({"ok": true, "seq": 0, "collections": true, "blobs": true})));
 
     // Auth failures.
     assert_eq!(http(a, "GET", "/v1/notes", None, None).await.0, 401);
@@ -346,8 +346,16 @@ async fn rejected_put_winner_after_earlier_broadcasts() {
         .map(|i| {
             tokio::spawn(async move {
                 let x = format!("x{i}");
-                http(a, "PUT", &format!("/v1/notes/{x}"), Some(TOKEN), Some(&note(&x, "other", 1).to_string())).await;
-                http(a, "PUT", "/v1/notes/w", Some(TOKEN), Some(&note("w", "rest", 1001 + i).to_string())).await;
+                http(
+                    a,
+                    "PUT",
+                    &format!("/v1/notes/{x}"),
+                    Some(TOKEN),
+                    Some(&note(&x, "other", 1).to_string()),
+                )
+                .await;
+                http(a, "PUT", "/v1/notes/w", Some(TOKEN), Some(&note("w", "rest", 1001 + i).to_string()))
+                    .await;
             })
         })
         .collect();
@@ -623,6 +631,122 @@ async fn ordering_with_collections() {
         last = seq;
     }
     assert_eq!(last, 60);
+    let dir = srv.stop().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// HTTP with a binary body: returns (status, lowercased head, body bytes).
+async fn http_bytes(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: &[u8],
+) -> (u16, String, Vec<u8>) {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: test\r\n{auth}Content-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).await.unwrap();
+    // the server may answer (413) before reading a large body
+    let _ = s.write_all(body).await;
+    let mut buf = Vec::new();
+    let _ = s.read_to_end(&mut buf).await;
+    let split = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
+    let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head, buf[split + 4..].to_vec())
+}
+
+#[tokio::test]
+async fn blobs() {
+    use bento_sync::store::{sha256_hex, MAX_BLOB_BYTES};
+    let srv = Server::start("blobs").await;
+    let a = srv.addr;
+    let (_, health) = http(a, "GET", "/v1/health", None, None).await;
+    assert_eq!(health["blobs"], true);
+
+    let png: Vec<u8> = [&b"\x89PNG\r\n\x1a\n"[..], &[7u8; 5000]].concat();
+    let hash = sha256_hex(&png);
+    let path = format!("/v1/blobs/{hash}");
+
+    // auth required for both
+    assert_eq!(http_bytes(a, "PUT", &path, None, &png).await.0, 401);
+    assert_eq!(http_bytes(a, "GET", &path, None, b"").await.0, 401);
+    assert_eq!(http_bytes(a, "GET", &path, Some(TOKEN), b"").await.0, 404);
+    assert_eq!(http_bytes(a, "HEAD", &path, Some(TOKEN), b"").await.0, 404);
+
+    let (st, _, body) = http_bytes(a, "PUT", &path, Some(TOKEN), &png).await;
+    assert_eq!(st, 200);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v, json!({"hash": hash, "type": "image/png", "size": png.len(), "created": true}));
+    let (st, _, body) = http_bytes(a, "PUT", &path, Some(TOKEN), &png).await;
+    assert_eq!(st, 200);
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["created"], false);
+
+    let (st, head, body) = http_bytes(a, "GET", &path, Some(TOKEN), b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(body, png);
+    assert!(head.contains("content-type: image/png"), "{head}");
+    assert!(head.contains("immutable"), "{head}");
+    assert!(head.contains("x-content-type-options: nosniff"), "{head}");
+    let (st, _, body) = http_bytes(a, "HEAD", &path, Some(TOKEN), b"").await;
+    assert_eq!((st, body.len()), (200, 0));
+
+    // wrong hash, bad hash, not an image
+    let other = format!("/v1/blobs/{}", sha256_hex(b"x"));
+    assert_eq!(http_bytes(a, "PUT", &other, Some(TOKEN), &png).await.0, 400);
+    assert_eq!(http_bytes(a, "PUT", "/v1/blobs/nothex", Some(TOKEN), &png).await.0, 400);
+    assert_eq!(http_bytes(a, "GET", "/v1/blobs/nothex", Some(TOKEN), b"").await.0, 400);
+    let html = b"<html>hi</html>";
+    assert_eq!(
+        http_bytes(a, "PUT", &format!("/v1/blobs/{}", sha256_hex(html)), Some(TOKEN), html).await.0,
+        415
+    );
+
+    // the largest image is accepted (above the documents' request limit), one byte more is not
+    let mut big = png.clone();
+    big.resize(MAX_BLOB_BYTES, 1);
+    let (st, _, _) =
+        http_bytes(a, "PUT", &format!("/v1/blobs/{}", sha256_hex(&big)), Some(TOKEN), &big).await;
+    assert_eq!(st, 200);
+    big.push(1);
+    let (st, _, _) =
+        http_bytes(a, "PUT", &format!("/v1/blobs/{}", sha256_hex(&big)), Some(TOKEN), &big).await;
+    assert_eq!(st, 413);
+
+    // which ones the server is missing
+    let unknown = sha256_hex(b"never uploaded");
+    let q = json!({"hashes": [hash, unknown]}).to_string();
+    let (st, v) = http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(&q)).await;
+    assert_eq!((st, v), (200, json!({"missing": [unknown]})));
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", None, Some(&q)).await.0, 401);
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(r#"{"hashes":["x"]}"#)).await.0, 400);
+    let many = json!({"hashes": vec![unknown.clone(); bento_sync::MAX_MISSING_QUERY + 1]}).to_string();
+    assert_eq!(http(a, "POST", "/v1/blobs/missing", Some(TOKEN), Some(&many)).await.0, 400);
+
+    // a big one comes in several chunks, whole, with its length
+    let mut photo = png.clone();
+    photo.extend((0..700_000u32).map(|i| (i % 251) as u8));
+    let photo_path = format!("/v1/blobs/{}", sha256_hex(&photo));
+    assert_eq!(http_bytes(a, "PUT", &photo_path, Some(TOKEN), &photo).await.0, 200);
+    let (st, head, body) = http_bytes(a, "GET", &photo_path, Some(TOKEN), b"").await;
+    assert_eq!(st, 200);
+    assert!(head.contains(&format!("content-length: {}", photo.len())), "{head}");
+    assert_eq!(body, photo);
+
+    // documents keep their own limit
+    let doc = format!("{{\"updated_at\":1,\"body\":\"{}\"}}", "x".repeat(bento_sync::MAX_REQUEST_BYTES));
+    assert_eq!(http(a, "PUT", "/v1/notes/n", Some(TOKEN), Some(&doc)).await.0, 413);
+
+    // a blob survives a restart; storing one bumps no seq
+    let dir = srv.stop().await;
+    let srv = Server::start_in(dir).await;
+    let (st, _, body) = http_bytes(srv.addr, "GET", &path, Some(TOKEN), b"").await;
+    assert_eq!((st, body), (200, png));
+    assert_eq!(http(srv.addr, "GET", "/v1/health", None, None).await.1["seq"], 0);
     let dir = srv.stop().await;
     let _ = std::fs::remove_dir_all(dir);
 }

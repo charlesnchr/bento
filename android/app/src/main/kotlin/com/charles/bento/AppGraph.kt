@@ -27,6 +27,8 @@ class AppGraph(val app: Application) {
         if (prefs.resetPending.value) {
             // paired with another server: this phone's documents and sync state described the old one
             listOf("notes.db", "todos.db", "voice.db").forEach(app::deleteDatabase)
+            // the notes' images too: pending uploads belong to the old server's notes
+            java.io.File(app.filesDir, com.charles.bento.notes.NotesModule.IMAGES_DIR).deleteRecursively()
             prefs.thoughtNote.value = ""
             prefs.resetPending.value = false
             prefs.flush()
@@ -52,8 +54,14 @@ class AppGraph(val app: Application) {
     val sync = SyncHub(app, prefs, secrets, http, engine)
     val updater = Updater(app, http, prefs)
 
-    val notes = com.charles.bento.notes.NotesModule(app, prefs, sync, engineDispatcher, engine)
+    val notes = com.charles.bento.notes.NotesModule(app, prefs, sync, http, engineDispatcher, engine)
     val todo = com.charles.bento.todo.TodoModule(app, prefs, sync, engineDispatcher)
+
+    init {
+        // images still to upload count as unsent changes: background sync sends them
+        sync.pendingImages = { notes.images.store.pendingUploads.isNotEmpty() }
+        sync.uploadImages = { notes.images.syncNow() }
+    }
     val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
 
     /** Files text as a new Bento note; returns its id. */

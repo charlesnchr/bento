@@ -19,7 +19,9 @@ pub const MAX_DEVICE_BYTES: usize = 128;
 pub const MAX_COLLECTION_BYTES: usize = 32;
 /// The collection of everything that predates collections and of every request that names none.
 pub const DEFAULT_COLLECTION: &str = "notes";
-const SCHEMA_VERSION: i64 = 2;
+/// Largest image blob (bytes).
+pub const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
+const SCHEMA_VERSION: i64 = 3;
 
 /// A note as stored and sent by the server.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -82,6 +84,8 @@ pub enum Error {
     TooLarge(String),
     /// The id already exists in a different collection.
     Conflict(String),
+    /// A blob that isn't an image.
+    Unsupported(String),
     Internal(String),
     Db(rusqlite::Error),
 }
@@ -89,9 +93,11 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::BadRequest(m) | Error::TooLarge(m) | Error::Conflict(m) | Error::Internal(m) => {
-                f.write_str(m)
-            }
+            Error::BadRequest(m)
+            | Error::TooLarge(m)
+            | Error::Conflict(m)
+            | Error::Unsupported(m)
+            | Error::Internal(m) => f.write_str(m),
             Error::Db(e) => write!(f, "database error: {e}"),
         }
     }
@@ -213,6 +219,13 @@ CREATE TABLE IF NOT EXISTS meta (
 ) STRICT;
 INSERT OR IGNORE INTO meta (key, value) VALUES ('global_seq', 0);
 INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', 1);
+CREATE TABLE IF NOT EXISTS blobs (
+    hash        TEXT PRIMARY KEY NOT NULL,
+    type        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    data        BLOB NOT NULL,
+    created_at  INTEGER NOT NULL
+) STRICT;
 ";
 
 const NOTE_COLS: &str = "id, body, created_at, updated_at, deleted, seq, device, meta, collection";
@@ -280,6 +293,7 @@ impl Store {
             tx.execute_batch("ALTER TABLE notes ADD COLUMN collection TEXT NOT NULL DEFAULT 'notes'")?;
         }
         tx.execute_batch("CREATE INDEX IF NOT EXISTS notes_collection_seq ON notes (collection, seq)")?;
+        // v2 -> v3: the `blobs` table (images), created by SCHEMA above.
         tx.execute(
             "UPDATE meta SET value = ?1 WHERE key = 'schema_version' AND value < ?1",
             [SCHEMA_VERSION],
@@ -403,6 +417,180 @@ impl Store {
             dest.to_str().ok_or_else(|| Error::BadRequest("backup path must be valid UTF-8".into()))?;
         self.conn.execute("VACUUM INTO ?1", [dest])?;
         Ok(())
+    }
+}
+
+/// An image stored by its content: `hash` is the lowercase hex SHA-256 of `data`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blob {
+    pub hash: String,
+    /// MIME type, from the bytes (see `image_type`).
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// 64 lowercase hex digits.
+pub fn valid_blob_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The image format of `data` from its first bytes: PNG, JPEG, GIF, WebP or HEIC/HEIF.
+/// Anything else isn't stored, so the server only ever serves images.
+pub fn image_type(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if data.len() >= 12 && &data[4..8] == b"ftyp" {
+        match &data[8..12] {
+            b"heic" | b"heix" | b"heim" | b"heis" => Some("image/heic"),
+            b"mif1" | b"msf1" => Some("image/heif"),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// `bento-image:<hash>` references in a note body (see docs/SYNC_PROTOCOL.md, Images).
+pub fn image_refs(body: &str) -> impl Iterator<Item = &str> {
+    body.match_indices(IMAGE_SCHEME).filter_map(move |(i, m)| {
+        let h = body.get(i + m.len()..i + m.len() + 64)?;
+        valid_blob_hash(h).then_some(h)
+    })
+}
+
+pub const IMAGE_SCHEME: &str = "bento-image:";
+
+/// Validates an upload: the hash's form, the size, that it's an image, and that `hash` is
+/// its SHA-256. Returns its MIME type.
+pub fn check_blob(hash: &str, data: &[u8]) -> Result<&'static str, Error> {
+    if !valid_blob_hash(hash) {
+        return Err(Error::BadRequest("invalid blob hash (64 lowercase hex digits of SHA-256)".into()));
+    }
+    if data.len() > MAX_BLOB_BYTES {
+        return Err(Error::TooLarge(format!("blob exceeds {MAX_BLOB_BYTES} bytes")));
+    }
+    let mime = image_type(data)
+        .ok_or_else(|| Error::Unsupported("not an image (PNG, JPEG, GIF, WebP or HEIC)".into()))?;
+    if sha256_hex(data) != hash {
+        return Err(Error::BadRequest("blob hash does not match its SHA-256".into()));
+    }
+    Ok(mime)
+}
+
+impl Store {
+    /// Stores an image under the SHA-256 of its bytes, which must equal `hash`. Storing
+    /// one that exists only moves its `created_at` (the last upload, which `gc_blobs`'s grace
+    /// period counts from) to `now`. Returns its type and whether it was new.
+    pub fn put_blob(&mut self, hash: &str, data: &[u8], now: i64) -> Result<(&'static str, bool), Error> {
+        let mime = check_blob(hash, data)?;
+        self.put_checked_blob(hash, mime, data, now)
+    }
+
+    /// `put_blob` for bytes `check_blob` passed (the server hashes outside the store lock).
+    pub fn put_checked_blob(
+        &mut self,
+        hash: &str,
+        mime: &'static str,
+        data: &[u8],
+        now: i64,
+    ) -> Result<(&'static str, bool), Error> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let refreshed = tx.execute(
+            "UPDATE blobs SET created_at = max(created_at, ?2) WHERE hash = ?1",
+            params![hash, now],
+        )?;
+        if refreshed == 0 {
+            tx.execute(
+                "INSERT INTO blobs (hash, type, size, data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![hash, mime, data.len() as i64, data, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok((mime, refreshed == 0))
+    }
+
+    pub fn get_blob(&self, hash: &str) -> Result<Option<Blob>, Error> {
+        Ok(self
+            .conn
+            .query_row("SELECT hash, type, data FROM blobs WHERE hash = ?1", [hash], |r| {
+                Ok(Blob { hash: r.get(0)?, mime: r.get(1)?, data: r.get(2)? })
+            })
+            .optional()?)
+    }
+
+    /// The hashes of `hashes` the server doesn't have, in order.
+    pub fn missing_blobs<'a>(&self, hashes: &'a [String]) -> Result<Vec<&'a str>, Error> {
+        let mut st = self.conn.prepare_cached("SELECT 1 FROM blobs WHERE hash = ?1")?;
+        let mut out = Vec::new();
+        for h in hashes {
+            if !st.exists([h])? {
+                out.push(h.as_str());
+            }
+        }
+        Ok(out)
+    }
+
+    /// A blob's type and size, without its bytes.
+    pub fn blob_info(&self, hash: &str) -> Result<Option<(String, i64)>, Error> {
+        Ok(self
+            .conn
+            .query_row("SELECT type, size FROM blobs WHERE hash = ?1", [hash], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?)
+    }
+
+    /// Up to `len` bytes of a blob from `offset`, read incrementally (the whole image is
+    /// never loaded); None when it's gone (deleted meanwhile).
+    pub fn read_blob(&self, hash: &str, offset: usize, len: usize) -> Result<Option<Vec<u8>>, Error> {
+        let Some(rowid) = self
+            .conn
+            .query_row("SELECT rowid FROM blobs WHERE hash = ?1", [hash], |r| r.get::<_, i64>(0))
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let blob = self.conn.blob_open(rusqlite::MAIN_DB, "blobs", "data", rowid, true)?;
+        let end = blob.len().min(offset.saturating_add(len));
+        let mut buf = vec![0u8; end.saturating_sub(offset)];
+        blob.read_at_exact(&mut buf, offset)?;
+        Ok(Some(buf))
+    }
+
+    /// Deletes blobs stored before `before` (ms) that no document's body refers to (admin;
+    /// trashed notes keep their text, so their images stay). Returns (count, bytes).
+    pub fn gc_blobs(&mut self, before: i64) -> Result<(usize, i64), Error> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut used = std::collections::HashSet::new();
+        {
+            let mut st = tx.prepare("SELECT body FROM notes WHERE deleted = 0 AND instr(body, ?1) > 0")?;
+            let mut rows = st.query([IMAGE_SCHEME])?;
+            while let Some(r) = rows.next()? {
+                let body: String = r.get(0)?;
+                used.extend(image_refs(&body).map(str::to_string));
+            }
+        }
+        let old: Vec<(String, i64)> = {
+            let mut st = tx.prepare("SELECT hash, size FROM blobs WHERE created_at < ?1")?;
+            let rows = st.query_map([before], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let (mut n, mut bytes) = (0, 0);
+        for (hash, size) in old.into_iter().filter(|(h, _)| !used.contains(h)) {
+            n += tx.execute("DELETE FROM blobs WHERE hash = ?1", [&hash])?;
+            bytes += size;
+        }
+        tx.commit()?;
+        Ok((n, bytes))
     }
 }
 
@@ -634,7 +822,7 @@ mod tests {
         v1.execute_batch(V1_SCHEMA).unwrap();
 
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), 3);
         assert_eq!(s.latest_seq().unwrap(), 2);
         let (notes, seq) = s.changes_since(0, &["notes"]).unwrap();
         assert_eq!(seq, 2);
@@ -667,7 +855,7 @@ mod tests {
 
         // Idempotent: reopening changes nothing.
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), 3);
         assert_eq!(s.latest_seq().unwrap(), 4);
         assert_eq!(s.changes_since(0, &["notes", "todos"]).unwrap().0.len(), 4);
         drop(s);
@@ -675,9 +863,9 @@ mod tests {
     }
 
     #[test]
-    fn fresh_db_is_v2() {
+    fn fresh_db_is_v3() {
         let s = Store::open_in_memory().unwrap();
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), 3);
     }
 
     #[test]
@@ -736,5 +924,114 @@ mod tests {
         assert!(ids(&mut s, 0, &["nope"]).is_empty());
         assert!(ids(&mut s, 0, &[]).is_empty());
         assert_eq!(s.changes_since(0, &["todos"]).unwrap().0[0].collection, "todos");
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR rest";
+
+    #[test]
+    fn image_types() {
+        assert_eq!(image_type(PNG), Some("image/png"));
+        assert_eq!(image_type(&[0xFF, 0xD8, 0xFF, 0xE0, 0]), Some("image/jpeg"));
+        assert_eq!(image_type(b"GIF89a..."), Some("image/gif"));
+        assert_eq!(image_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_type(b"\0\0\0\x18ftypheic\0\0"), Some("image/heic"));
+        assert_eq!(image_type(b"\0\0\0\x18ftypmif1\0\0"), Some("image/heif"));
+        assert_eq!(image_type(b"\0\0\0\x18ftypisom\0\0"), None);
+        assert_eq!(image_type(b"<html>"), None);
+        assert_eq!(image_type(b""), None);
+    }
+
+    #[test]
+    fn blobs_are_content_addressed() {
+        let mut s = Store::open_in_memory().unwrap();
+        let h = sha256_hex(PNG);
+        assert_eq!(h.len(), 64);
+        assert!(s.get_blob(&h).unwrap().is_none());
+        assert_eq!(s.put_blob(&h, PNG, 10).unwrap(), ("image/png", true));
+        assert_eq!(s.put_blob(&h, PNG, 20).unwrap(), ("image/png", false), "storing it again isn't new");
+        let b = s.get_blob(&h).unwrap().unwrap();
+        assert_eq!((b.hash.as_str(), b.mime.as_str(), b.data.as_slice()), (h.as_str(), "image/png", PNG));
+        // blobs don't touch the documents' seq
+        assert_eq!(s.latest_seq().unwrap(), 0);
+
+        let wrong = sha256_hex(b"other");
+        assert!(matches!(s.put_blob(&wrong, PNG, 1), Err(Error::BadRequest(_))));
+        assert!(matches!(s.put_blob(&h.to_uppercase(), PNG, 1), Err(Error::BadRequest(_))));
+        assert!(matches!(s.put_blob("abc", PNG, 1), Err(Error::BadRequest(_))));
+        let html = b"<html></html>";
+        assert!(matches!(s.put_blob(&sha256_hex(html), html, 1), Err(Error::Unsupported(_))));
+        let mut big = PNG.to_vec();
+        big.resize(MAX_BLOB_BYTES + 1, 0);
+        assert!(matches!(s.put_blob(&sha256_hex(&big), &big, 1), Err(Error::TooLarge(_))));
+    }
+
+    #[test]
+    fn blobs_read_in_chunks() {
+        let mut s = Store::open_in_memory().unwrap();
+        let data: Vec<u8> = PNG.iter().copied().chain((0..1000u32).map(|i| i as u8)).collect();
+        let h = sha256_hex(&data);
+        s.put_blob(&h, &data, 1).unwrap();
+        assert_eq!(s.blob_info(&h).unwrap(), Some(("image/png".to_string(), data.len() as i64)));
+        let mut out = Vec::new();
+        while out.len() < data.len() {
+            out.extend(s.read_blob(&h, out.len(), 300).unwrap().unwrap());
+        }
+        assert_eq!(out, data);
+        assert_eq!(s.read_blob(&h, data.len(), 300).unwrap(), Some(vec![]));
+        let missing = sha256_hex(b"none");
+        assert_eq!(s.blob_info(&missing).unwrap(), None);
+        assert_eq!(s.read_blob(&missing, 0, 10).unwrap(), None);
+    }
+
+    #[test]
+    fn image_refs_in_bodies() {
+        let a = "a".repeat(64);
+        let b = "0123456789abcdef".repeat(4);
+        let body = format!(
+            "# T\n![](bento-image:{a})\ntext ![cat](bento-image:{b}) bento-image:short\nbento-image:{}",
+            "A".repeat(64)
+        );
+        assert_eq!(image_refs(&body).collect::<Vec<_>>(), [a.as_str(), b.as_str()]);
+        assert_eq!(image_refs("bento-image:").count(), 0);
+        assert_eq!(image_refs("é bento-image:ab").count(), 0);
+    }
+
+    #[test]
+    fn gc_keeps_referenced_and_recent_blobs() {
+        let mut s = Store::open_in_memory().unwrap();
+        let png = |tag: &str| [PNG, tag.as_bytes()].concat();
+        let (used, trashed, gone, recent, deleted) =
+            (png("used"), png("trashed"), png("gone"), png("recent"), png("deleted"));
+        for (data, at) in [(&used, 1), (&trashed, 1), (&gone, 1), (&recent, 100), (&deleted, 1)] {
+            s.put_blob(&sha256_hex(data), data, at).unwrap();
+        }
+        s.put(change("n1", &format!("x\n![](bento-image:{})", sha256_hex(&used)), 5)).unwrap();
+        let mut t = change("n2", &format!("![](bento-image:{})", sha256_hex(&trashed)), 5);
+        t.meta = json!({"trashedAt": 5});
+        s.put(t).unwrap();
+        s.put(change("n3", &format!("![](bento-image:{})", sha256_hex(&deleted)), 5)).unwrap();
+        let mut del = change("n3", "", 6);
+        del.deleted = true;
+        s.put(del).unwrap();
+        // a todo mentioning one counts too
+        s.put(doc("todos", "t1", &format!("{{\"x\":\"bento-image:{}\"}}", sha256_hex(&used)), 5)).unwrap();
+
+        let (n, bytes) = s.gc_blobs(50).unwrap();
+        assert_eq!((n, bytes), (2, (gone.len() + deleted.len()) as i64));
+        let kept = |s: &Store, d: &[u8]| s.get_blob(&sha256_hex(d)).unwrap().is_some();
+        assert!(kept(&s, &used) && kept(&s, &trashed) && kept(&s, &recent));
+        assert!(!kept(&s, &gone) && !kept(&s, &deleted));
+        assert_eq!(s.gc_blobs(50).unwrap(), (0, 0));
+
+        // uploading an old unused one again restarts its grace period
+        let old = png("old");
+        s.put_blob(&sha256_hex(&old), &old, 1).unwrap();
+        s.put_blob(&sha256_hex(&old), &old, 100).unwrap();
+        assert_eq!(s.gc_blobs(50).unwrap().0, 0);
+        assert!(kept(&s, &old));
+        // an earlier clock doesn't move it back
+        s.put_blob(&sha256_hex(&old), &old, 2).unwrap();
+        assert_eq!(s.gc_blobs(50).unwrap().0, 0);
+        assert_eq!(s.gc_blobs(101).unwrap().0, 2, "old and recent");
     }
 }

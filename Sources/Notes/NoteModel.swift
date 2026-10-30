@@ -156,7 +156,7 @@ struct Note: Equatable {
 
 /// Pure helpers deriving titles, plain text and counts from markdown bodies.
 enum NoteText {
-    /// First non-empty line with markdown stripped; "" when the note is empty.
+    /// First non-empty line (not an image) with markdown stripped; "" when the note is empty.
     static func title(of body: String) -> String {
         var result = ""
         body.enumerateLines { line, stop in
@@ -171,9 +171,10 @@ enum NoteText {
         return t.isEmpty ? "Untitled" : t
     }
 
+    /// Lines that never make the title: fences, rules and images.
     private static func isFenceOrRule(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
-        return t.hasPrefix("```") || t.hasPrefix("~~~") || MarkdownParser.isRule(t)
+        return t.hasPrefix("```") || t.hasPrefix("~~~") || MarkdownParser.isRule(t) || NoteImage.hash(inLine: line) != nil
     }
 
     /// One line without block markers and inline syntax.
@@ -198,6 +199,8 @@ enum NoteText {
             case .code:
                 lines.append(line)
             case .rule:
+                break
+            case .paragraph where NoteImage.hash(inLine: line) != nil:
                 break
             default:
                 lines.append(MarkdownParser.stripInline((line as NSString).substring(with: p.contentRange)))
@@ -231,7 +234,7 @@ enum NoteText {
     }
 
     /// Body of a conflicted copy: the title line gets " (conflicted copy, <device>)".
-    /// nil when the body has no visible text (nothing worth keeping).
+    /// nil when the body has no visible text or images (nothing worth keeping).
     static func conflictCopyBody(_ body: String, device: String) -> String? {
         // same line `title(of:)` picks, so the copy is recognisable in the notes list
         var lines = body.components(separatedBy: "\n")
@@ -240,6 +243,10 @@ enum NoteText {
             let suffix = device.isEmpty ? " (conflicted copy)" : " (conflicted copy, \(device))"
             lines[i] = line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) + suffix
             return lines.joined(separator: "\n")
+        }
+        // only images: they're worth keeping too, under a title line of their own
+        if NoteImage.hasImageLine(body) {
+            return "Untitled" + (device.isEmpty ? " (conflicted copy)" : " (conflicted copy, \(device))") + "\n" + body
         }
         return nil
     }

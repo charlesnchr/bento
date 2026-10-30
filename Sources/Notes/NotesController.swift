@@ -9,6 +9,8 @@ final class NotesController {
     let store: NoteStore
     let engine: SyncEngine
     let sync: SyncClient
+    let images = NoteImageStore()
+    let imageSync: NoteImageSync
     private let config: ConfigStore
     private(set) var settings: NotesSettings
     private var windowController: NotesWindowController?
@@ -31,6 +33,7 @@ final class NotesController {
         self.config = config
         engine = SyncEngine(repo: store)
         sync = SyncClient(engine: engine)
+        imageSync = NoteImageSync(store: images)
         settings = config.section("notes", default: NotesSettings())
         backStack = store.kvJSON("nav.back", as: [String].self) ?? []
         forwardStack = store.kvJSON("nav.forward", as: [String].self) ?? []
@@ -39,6 +42,14 @@ final class NotesController {
             if id == self?.currentID { self?.flushPendingSave() }
         }
         engine.onRemoteChange = { [weak self] note, _ in self?.remoteChanged(note) }
+        imageSync.endpoint = { [weak sync = self.sync] in sync?.blobEndpoint }
+        imageSync.referenced = { [weak store = self.store] in
+            Set((store?.allNotes(includeTombstones: false) ?? []).flatMap { NoteImage.hashes(in: $0.body) })
+        }
+        sync.onConnected = { [weak imageSync = self.imageSync] in imageSync?.connected() }
+        // the server lost what we sent (a restore, a new server): it gets back the images it lacks,
+        // also while polling, where nothing reconnects
+        engine.onServerReset = { [weak imageSync = self.imageSync] in imageSync?.connected() }
         engine.onConflictCopy = { [weak self] copy, _ in
             self?.countCache.removeValue(forKey: copy.id)
             // only tell someone who is looking at notes; the copy tops the list either way
@@ -219,6 +230,7 @@ final class NotesController {
         case .back: navigate(back: true)
         case .forward: navigate(back: false)
         case .close: hideWindow()
+        case .insertImage: w.chooseImages()
         default:
             if cmd.isFormatting { w.runFormatting(cmd) }
         }
@@ -807,7 +819,7 @@ final class NotesController {
             let primary = [
                 self.item(.newNote), self.item(.browse),
                 self.item(.togglePin, title: pinned ? "Unpin Note" : "Pin Note"),
-                self.item(.duplicate), copy, format,
+                self.item(.duplicate), copy, format, self.item(.insertImage),
             ]
             let secondary = [
                 self.item(.toggleFormatBar, title: s.showFormatBar ? "Hide Format Bar" : "Show Format Bar"),

@@ -12,9 +12,9 @@ Bento has no server by default (set `notes.sync.server` / `todo.sync.server`).
 ```
 server/
   src/store.rs        SQLite schema + migrations, validation, LWW + seq logic (unit tests)
-  src/lib.rs          axum router, auth, REST handlers (/v1/notes, /v1/c/<collection>), serve()/graceful shutdown
+  src/lib.rs          axum router, auth, REST handlers (/v1/notes, /v1/c/<collection>, /v1/blobs), serve()/graceful shutdown
   src/ws.rs           /v1/sync WebSocket connection loop (per-connection collection filter)
-  src/main.rs         CLI: serve | backup | purge
+  src/main.rs         CLI: serve | backup | purge | gc-blobs
   tests/integration.rs  real server on an ephemeral port: REST + WebSocket clients, collections
   scripts/syncctl.py  stdlib-only CLI client (REST + WebSocket, TLS, proxies)
   deploy/             systemd units, nginx site templates (@DOMAIN@), remote install script
@@ -156,6 +156,18 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   /opt/bento-sync/bento-sync purge synctest-abc123 …'
 ```
 
+Delete images that no document refers to any more (last uploaded over 30 days ago, so an
+upload whose note hasn't arrived yet is safe; trashed notes keep theirs). Not run
+automatically: images are small next to the disk. A reference that comes back after the
+image was deleted (an undo, a long-offline device's copy) is healed by any device that
+still has the image cached: clients upload the referenced images the server lacks on every
+connect. Until one does, it shows "Image not available".
+
+```sh
+ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/notes.db \
+  /opt/bento-sync/bento-sync gc-blobs --days 30'
+```
+
 ## Behaviour details (within the protocol)
 
 * **Ordering.** Changes are broadcast while the DB lock is held, so each WebSocket
@@ -196,8 +208,17 @@ ssh hetzner 'runuser -u bento-sync -- env BENTO_SYNC_DB=/var/lib/bento-sync/note
   95 s is dropped. If a connection falls >256 events behind, it gets an `error` and
   close code 1013 and should reconnect with `hello`. On shutdown, sockets get close
   code 1001.
-* **REST errors** are JSON `{"error": "..."}` with 400/401/404/409/413/500.
-* **Schema.** `meta.schema_version` is 2 (collections). Opening a v1 DB (server
+* **Blobs** (images) live in the `blobs` table of the same DB, so backups include them.
+  `PUT /v1/blobs/<sha256>` checks the hash and that the bytes are PNG, JPEG, GIF, WebP
+  or HEIC/HEIF (415 otherwise; the stored type comes from the bytes, not the request),
+  up to 10 MiB (413; that route's request cap). Uploads are stored one at a time
+  (a 10 MiB upload peaks near 50 MB RSS). Downloads are streamed from SQLite in 256 KiB
+  chunks as the client reads (16 slow readers of 10 MB images: ~36 MB RSS), and nginx
+  buffers them too (`location /v1/blobs/`). Storing one again refreshes its upload time. Blobs
+  have no seq and aren't broadcast: the note that refers to one is.
+* **REST errors** are JSON `{"error": "..."}` with 400/401/404/409/413/415/500.
+* **Schema.** `meta.schema_version` is 3 (v3 adds the `blobs` table, created on
+  open; older binaries ignore it). v2 was collections. Opening a v1 DB (server
   start, `backup`, `purge`) adds `notes.collection TEXT NOT NULL DEFAULT 'notes'`
   (existing rows become `notes`) and the `(collection, seq)` index, in one
   `BEGIN IMMEDIATE` transaction, so it's idempotent and safe while another process

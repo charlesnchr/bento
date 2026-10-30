@@ -64,6 +64,13 @@ class SyncHub(
         else SyncEndpoint(prefs.server.value, secrets.syncToken)
     }
 
+    /** Whether notes' images are still to upload, and uploading them (false: try again later). Set by the app. */
+    var pendingImages: () -> Boolean = { false }
+    var uploadImages: suspend () -> Boolean = { true }
+
+    /** The server and token while paired and syncing (for image blobs). */
+    fun endpointNow(): SyncEndpoint? = endpoint()
+
     /** Adds a collection (call before [start]). */
     fun register(sync: CollectionSync): SyncConnection {
         sync.device = prefs.deviceName.value
@@ -120,7 +127,7 @@ class SyncHub(
                     if (!live) {
                         connections.forEach { it.stop() }
                         // anything still pending goes out in the background
-                        if (entries.any { it.first.pendingCount > 0 }) SyncWorker.runSoon(context)
+                        if (entries.any { it.first.pendingCount > 0 } || pendingImages()) SyncWorker.runSoon(context)
                     }
                 }
             }
@@ -152,7 +159,8 @@ class SyncHub(
             if (live || endpoint() == null) return@withContext Once(ok = true, changed = false) // live, or not paired: nothing to do
             val before = entries.map { it.first.lastSeq }
             val ok = entries.map { it.second.syncOnce() }.all { it }
-            Once(ok, changed = entries.map { it.first.lastSeq } != before)
+            val imagesOk = uploadImages()
+            Once(ok && imagesOk, changed = entries.map { it.first.lastSeq } != before)
         }
     }
 }

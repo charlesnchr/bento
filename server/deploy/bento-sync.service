@@ -47,8 +47,8 @@ SystemCallFilter=~@privileged
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# Resources
-MemoryMax=64M
+# Resources (image uploads are stored one at a time, ~50 MB peak; downloads stream in chunks)
+MemoryMax=128M
 TasksMax=32
 LimitNOFILE=4096
 

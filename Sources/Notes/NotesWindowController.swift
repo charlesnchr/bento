@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 import BentoCore
 
 /// The floating notes window: header (title + ⌘ / browse / + buttons), the editor,
@@ -187,6 +188,68 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             }
         }
         tv.onToggleHeading = { [weak self] lineStart in self?.toggleHeading(at: lineStart) }
+        setUpImages()
+    }
+
+    // MARK: Images
+
+    private func setUpImages() {
+        let images = controller.images, imageSync = controller.imageSync
+        styler.imageSize = { images.size($0) }
+        layoutManager.image = { imageSync.image($0) }
+        layoutManager.imageLoading = { imageSync.isLoading($0) }
+        textView.onImages = { [weak self] in self?.insertImages($0) }
+        NotificationCenter.default.publisher(for: NoteImageStore.didLoad)
+            .sink { [weak self] n in
+                guard let self, let hash = n.object as? String else { return }
+                self.styler.restyleImages(self.storage, hash: hash)
+                self.textView.needsDisplay = true
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The text container's width, which images are scaled down to.
+    private var imageWidth: CGFloat { max(40, textView.bounds.width - textView.textContainerInset.width * 2) }
+
+    private func updateImageWidth() {
+        guard abs(styler.imageMaxWidth - imageWidth) >= 1 else { return }
+        styler.imageMaxWidth = imageWidth
+        styler.restyleImages(storage)
+    }
+
+    /// Inserts images (pasted, dropped or chosen) at the selection, each on its own line.
+    /// Reading, converting, hashing and storing them happen off the main thread.
+    /// They go where the selection was when they came, or, if the text changed meanwhile,
+    /// after the current selection (never over it).
+    func insertImages(_ sources: [ImageSource]) {
+        let id = noteID, images = controller.images
+        let before = textView.string, selection = textView.selectedRange()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let hashes = sources.compactMap { $0.data.flatMap(images.add) }
+            DispatchQueue.main.async {
+                guard let self, self.noteID == id else { return }
+                guard !hashes.isEmpty else { NSSound.beep(); return }
+                let text = self.textView.string as NSString
+                let at = text as String == before ? selection
+                    : NSRange(location: min(NSMaxRange(self.textView.selectedRange()), text.length), length: 0)
+                self.panel.makeFirstResponder(self.textView)
+                self.textView.apply(NoteImage.insertion(text, selection: at, hashes: hashes))
+                self.controller.imageSync.uploadPending()
+            }
+        }
+    }
+
+    /// Insert Image…: pick image files.
+    func chooseImages() {
+        let open = NSOpenPanel()
+        open.allowedContentTypes = [.image]
+        open.allowsMultipleSelection = true
+        open.canChooseDirectories = false
+        open.message = "Choose images to insert into the note"
+        open.beginSheetModal(for: panel) { [weak self] r in
+            guard r == .OK else { return }
+            self?.insertImages(open.urls.map(ImageSource.file))
+        }
     }
 
     /// Collapses or opens a heading's section. A selection in a section that collapses
@@ -292,6 +355,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
         var sel = selection.map { NSRange(location: min($0.location, len), length: min($0.length, max(0, len - min($0.location, len)))) }
             ?? NSRange(location: len, length: 0)
         styler.setFolds(savedFolds(for: note))
+        styler.imageMaxWidth = imageWidth
         styler.selectionChanged(storage, to: sel)
         // captured thoughts not known to be open start collapsed
         styler.styleAll(storage, adopt: true)
@@ -486,6 +550,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
             let loc = empty ? line.range.location : line.end
             tv.apply(EditResult(edits: [TextEdit(range: NSRange(location: loc, length: 0), replacement: rep)],
                                 selection: NSRange(location: loc + (rep as NSString).length, length: 0)))
+        })
+        items.append(InlineMenu.Item(title: "Image", symbol: NotesCommand.insertImage.symbol, shortcut: nil) { [weak self] in
+            self?.applyInline(replacement: "")
+            self?.chooseImages()
         })
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return items }
@@ -805,6 +873,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate, NSTextViewDelegat
     func windowDidMove(_ notification: Notification) { scheduleFrameSave() }
     func windowDidResize(_ notification: Notification) {
         scheduleFrameSave()
+        updateImageWidth()
         if settings.autoResize, panel.inLiveResize, !autoResizing {
             controller.setAutoResize(false)
         }
