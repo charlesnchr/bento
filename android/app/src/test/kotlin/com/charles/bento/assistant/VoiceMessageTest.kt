@@ -19,4 +19,11 @@ class VoiceMessageTest {
         assertTrue(row.voice)
         assertEquals("What's on my calendar tomorrow?", row.text)
     }
+
+    @Test fun aFollowUpSaysSoAndStillShowsAsTheWords() {
+        val message = AssistantController.voiceMessage(HermesCall("c2", "Make it 8pm instead.", "", followUp = true), "2026-10-30")
+        assertTrue(message.contains("It follows up your earlier work in this conversation"))
+        assertEquals("Make it 8pm instead.", AssistantTranscript.displayRequest(message))
+        assertTrue("follows up" !in AssistantController.voiceMessage(HermesCall("c1", "Book a table.", ""), "2026-10-30"))
+    }
 }

@@ -44,10 +44,12 @@ interface CallAudio {
  * results and plays the reply; `ask_hermes` carries no arguments, so Hermes only ever gets
  * the user's own transcribed words ([CallProtocol]).
  *
- * Gemini supervises several Hermes tasks at once. Each `ask_hermes` call starts its own task,
- * numbered for the call; the call is non-blocking, so Bento answers "started" at once and the
- * result later as a second response (scheduled WHEN_IDLE, so it waits for a pause). Gemini
- * follows them with `list_tasks`, `check_task` and `cancel_task`, which Bento answers itself.
+ * Gemini supervises several Hermes tasks at once, like sub-agents. A new request starts its own
+ * task, numbered for the call; a follow-up names its task (`task_id`) and continues that task's
+ * Hermes session, after the request it's working on if it's still running. The call is
+ * non-blocking, so Bento answers "started" at once and the result later as a second response
+ * (scheduled WHEN_IDLE, so it waits for a pause). Gemini follows the tasks with `list_tasks`,
+ * `check_task` and `cancel_task`, which Bento answers itself.
  *
  * State is confined to one thread. Interrupting Gemini's speech flushes playback but
  * never cancels Hermes; [cancelTask] stops one task, and [stop] ends the call and every task.
@@ -58,9 +60,11 @@ interface CallAudio {
  *
  * Gemini bills a connection by the second, so a call with only Hermes left to wait for, in
  * silence for [standbyAfter] seconds, leaves it ([Status.Standby]): the socket closes and the
- * microphone keeps running unheard. When any task finishes, or on [wake], a new session starts
- * with the conversation so far ([recap]); results that outlived their session go in as a new
- * turn for Gemini to speak ([CallSetup.resultFrame]), since the old session's calls are gone with it.
+ * microphone keeps running unheard. When any task finishes, the user starts talking (the
+ * microphone's level, [Limits.wakeLevel]) or on [wake], a new session starts with the
+ * conversation so far ([recap]); the words that woke it and any said while it connects go in
+ * once it's set up. Results that outlived their session go in as a new turn for Gemini to speak
+ * ([CallSetup.resultFrame]), since the old session's calls are gone with it.
  *
  * Gemini Live sends the user's words only once they stop speaking, so with [captions] the
  * microphone audio Gemini hears also goes to a transcriber whose growing guess is shown
@@ -95,6 +99,12 @@ class AssistantCall(
         val deliverMax: Double = 30.0,
         /** Seconds a caption stays after its utterance ended, if Gemini sends no transcript to replace it. */
         val captionLinger: Double = 4.0,
+        /** In standby, microphone frames this loud (RMS, as a fraction of full scale) count as speech; 0 never wakes. */
+        val wakeLevel: Double = 0.03,
+        /** Seconds of speech in standby that bring the call back. */
+        val wakeSpeech: Double = 0.3,
+        /** Seconds of audio before the wake kept for Gemini, so the first words aren't lost. */
+        val wakePreRoll: Double = 1.5,
     )
 
     sealed interface Status {
@@ -152,6 +162,13 @@ class AssistantCall(
     private var standby = false
     private var waking = false
     private var wakeStarted = 0.0
+    /** In standby, the latest audio and how much of it was speech; coming back, everything since, for the new session. */
+    private val held = ArrayDeque<ByteArray>()
+    private var heldBytes = 0
+    private var voiced = 0.0
+    private var voiceWoke = false
+    /** Back from standby, until the held audio has gone to the new session. */
+    private var rejoining = false
     /** Results of calls an earlier session made, as (task, reply): they go to Gemini as a turn. */
     private val deliveries = ArrayList<Pair<String, String>>()
     private var delivering = false
@@ -183,11 +200,28 @@ class AssistantCall(
 
     private fun now() = clock()
 
-    private class Task(val id: String, val callId: String, val request: String, val session: Int, val turn: Int?) {
+    /** One request a task works on: the `ask_hermes` call it answers, in the session that made it. */
+    private class Run(val callId: String, val request: HermesCall, val session: Int, val turn: Int?, val followUp: Boolean) {
+        /** Gemini has heard it started, so the call waits for a last response. */
+        var acknowledged = false
+        /** The call has had its last response. */
+        var closed = false
+    }
+
+    /** A sub-agent: one Hermes session, its first request and the follow-ups it was given since. */
+    private class Task(val id: String, first: Run) {
+        val request = first.request.task
+        var current = first
+        /** Follow-ups said while it ran: Hermes takes them next, in the same session. */
+        val queued = ArrayDeque<Run>()
+        var runs = 1
         var job: Job? = null
         var state = RUNNING
         var progress: String? = null
         var result: String? = null
+        val latest get() = (queued.lastOrNull() ?: current).request.task
+        fun has(turn: Int?) = turn != null && state == RUNNING && (current.turn == turn || queued.any { it.turn == turn })
+        fun holds(run: Run) = state == RUNNING && (current === run || run in queued)
     }
 
     private val running get() = tasks.values.count { it.state == RUNNING }
@@ -351,6 +385,8 @@ class AssistantCall(
         if (!active || !standby || waking) return
         val make = reconnect ?: return
         waking = true
+        // Only the words that woke it keep the audio before; otherwise the new session hears from now.
+        if (!voiceWoke) { held.clear(); heldBytes = 0 }
         session++
         wakeStarted = now()
         _status.value = Status.Waking
@@ -370,13 +406,54 @@ class AssistantCall(
         }
     }
 
-    /** Back from standby: results that were waiting go in for Gemini to speak. */
+    /** Back from standby: what the user said meanwhile goes in, then results that were waiting for Gemini to speak. */
     private suspend fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
         newSession()
+        while (held.isNotEmpty()) {
+            val pcm = held.removeFirst()
+            send(audioFrame(pcm))
+            captions?.feed(pcm)
+        }
+        heldBytes = 0
+        voiced = 0.0
+        voiceWoke = false
+        rejoining = false
         sendDeliveries()
         settled()
+    }
+
+    /**
+     * Microphone audio while the call is off Gemini. In standby it keeps the last moment and
+     * listens for speech, which brings the call back; coming back it keeps it all for the new session.
+     */
+    private fun hold(pcm: ByteArray) {
+        held.addLast(pcm)
+        heldBytes += pcm.size
+        // 16 kHz 16-bit mono: 32,000 bytes a second.
+        val keep = if (waking || rejoining) HOLD_MAX else limits.wakePreRoll
+        while (heldBytes > keep * 32_000 && held.size > 1) heldBytes -= held.removeFirst().size
+        if (waking || rejoining || limits.wakeLevel <= 0) return
+        val seconds = pcm.size / 32_000.0
+        voiced = if (level(pcm) >= limits.wakeLevel) voiced + seconds else maxOf(0.0, voiced - seconds / 2)
+        if (voiced >= limits.wakeSpeech) {
+            voiceWoke = true
+            comeBack()
+        }
+    }
+
+    /** RMS of PCM16 little-endian audio, as a fraction of full scale. */
+    private fun level(pcm: ByteArray): Double {
+        if (pcm.size < 2) return 0.0
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val sample = ((pcm[i + 1].toInt() shl 8) or (pcm[i].toInt() and 0xff)).toShort().toDouble()
+            sum += sample * sample
+            i += 2
+        }
+        return kotlin.math.sqrt(sum / (pcm.size / 2)) / 32768.0
     }
 
     /** Listening or Working, by whether Hermes has a task running; standby and waking say so themselves. */
@@ -437,7 +514,7 @@ class AssistantCall(
         }
         if (event["setupComplete"] != null) {
             val back = waking
-            if (back) { waking = false; standby = false }
+            if (back) { waking = false; standby = false; rejoining = true }
             setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
             if (back) cameBack() else listen()
         }
@@ -528,7 +605,7 @@ class AssistantCall(
         scope.launch {
             for (pcm in mic) {
                 if (!active) return@launch
-                if (standby) continue
+                if (standby || rejoining) { hold(pcm); continue }
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
@@ -617,6 +694,8 @@ class AssistantCall(
             }
             return
         }
+        // The task a follow-up continues: a number, never words for Hermes.
+        val named = taskId(call)
         settling++
         scope.launch {
             var settled = false
@@ -625,7 +704,7 @@ class AssistantCall(
                 if (!settle(d)) return@launch
                 settledNow()
                 // A repeat of a running task's turn is left to that task; nothing new starts.
-                tasks.values.firstOrNull { d.turn != null && it.turn == d.turn && it.state == RUNNING }?.let { same ->
+                tasks.values.firstOrNull { it.has(d.turn) }?.let { same ->
                     protocol.discardRequest(d)
                     respond(d.id, "Not executed: Hermes is already working on this request as task ${same.id}. Wait for its result. No automatic retry.", executed = false, task = same.id)
                     return@launch
@@ -637,37 +716,96 @@ class AssistantCall(
                     respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", executed = false)
                     return@launch
                 }
-                start(Task((nextTask++).toString(), d.id, request.task, session, d.turn), request)
+                val task = named?.let { tasks[it] }
+                val run = Run(d.id, request, session, d.turn, followUp = task != null)
+                if (task != null) followUp(task, run) else start(Task((nextTask++).toString(), run), unknown = named)
             } finally {
                 settledNow()
             }
         }
     }
 
+    private fun taskId(call: JsonObject): String? =
+        ((call["args"] as? JsonObject)?.get("task_id") as? JsonPrimitive)?.contentOrNull?.filter { it.isDigit() }?.take(6)?.ifEmpty { null }
+
     /** Starts [task] in Hermes: Gemini hears its number at once, and its result when Hermes finishes. */
-    private suspend fun start(task: Task, request: HermesCall) {
+    private suspend fun start(task: Task, unknown: String?) {
         tasks[task.id] = task
         while (tasks.size > MAX_TASKS) tasks.entries.firstOrNull { it.value.state != RUNNING }?.let { tasks.remove(it.key) } ?: break
-        respond(task.callId, "Started task ${task.id}. Hermes is working on it; its result follows as another response to this call.",
-                executed = true, task = task.id, status = "started", scheduling = "SILENT", willContinue = true)
+        val prefix = unknown?.let { "There is no task $it, so this started a new task. " }.orEmpty()
+        acknowledge(task, task.current, prefix + "Started task ${task.id}. Hermes is working on it; its result follows as another response to this call.")
+        if (task.state == RUNNING && task.job == null) run(task, task.current)
+    }
+
+    /**
+     * A follow-up to [task]: it goes into the task's own Hermes session, so Hermes has what it
+     * did so far. A task still working takes it once the request before is done; Hermes runs one
+     * request at a time in a session.
+     */
+    private suspend fun followUp(task: Task, run: Run) {
+        task.runs++
+        if (task.state == RUNNING) {
+            task.queued.addLast(run)
+            acknowledge(task, run, "Task ${task.id} is still working on its earlier request; Hermes takes this follow-up next, in the same " +
+                "session. Its result follows as another response to this call.")
+            return
+        }
+        task.state = RUNNING
+        task.current = run
+        task.progress = null
+        acknowledge(task, run, "Continuing task ${task.id}: Hermes is working on this follow-up in the task's own session, with what it " +
+            "did before. Its result follows as another response to this call.")
+        if (task.state == RUNNING && task.current === run && task.job == null) run(task, run)
+    }
+
+    /** Tells Gemini at once that [run] is under way; the call stays open for the result. */
+    private suspend fun acknowledge(task: Task, run: Run, message: String) {
+        respond(run.callId, message, executed = true, task = task.id, status = "started", scheduling = "SILENT", willContinue = true)
+        run.acknowledged = true
         // Cancelled while Gemini was being told it started: Hermes never gets it, and the call gets its last response now.
-        if (task.state != RUNNING) { closeCancelled(task); return }
+        if (!task.holds(run)) { closeCancelled(task, run); return }
         // Gemini dropped the call meanwhile: as with one dropped before, nothing runs, and the dropped call needs no answer.
-        if (task.callId in cancelledCalls) { finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started."); settled(); return }
+        if (run.callId in cancelledCalls) skip(task, run)
         settled()
+    }
+
+    /** [run] never goes to Hermes: the task moves on to its next follow-up, or ends with what it had. */
+    private fun skip(task: Task, run: Run) {
+        if (task.queued.remove(run)) return
+        if (task.current !== run || task.job != null) return
+        val next = task.queued.removeFirstOrNull()
+        when {
+            next != null -> run(task, next)
+            // A follow-up that never ran leaves the task as its last request did.
+            run.followUp && task.result != null -> finished(task, FINISHED, task.result!!)
+            else -> finished(task, CANCELLED, "Not executed: Gemini cancelled the call before Hermes started.")
+        }
+    }
+
+    /** Hands [run] to Hermes in [task]'s session; when it's done, the task's next follow-up runs. */
+    private fun run(task: Task, run: Run) {
+        task.state = RUNNING
+        task.current = run
+        task.progress = null
         task.job = scope.launch {
-            val result = runCatching { onTool(request.copy(taskId = task.id)) }.getOrElse {
+            val result = runCatching { onTool(run.request.copy(taskId = task.id, followUp = run.followUp)) }.getOrElse {
                 if (it is kotlinx.coroutines.CancellationException) throw it
                 "Task failed. No automatic retry. Completed actions were not undone. " + (it.message ?: "")
             }
-            if (!active || task.state != RUNNING) return@launch
-            finished(task, FINISHED, result)
+            if (!active || task.state != RUNNING || task.current !== run) return@launch
+            task.result = result
+            task.job = null
+            run.closed = true
             when {
                 // Gemini dropped the call (the user talked over it, say), but the task ran on: its result goes in as a turn.
-                task.callId in cancelledCalls || task.session != session || standby || waking -> deliver(task, result)
-                else -> respond(task.callId, CallProtocol.taskResult(task.id, result), executed = true, task = task.id)
+                run.callId in cancelledCalls || run.session != session || standby || waking -> deliver(task, result)
+                else -> respond(run.callId, CallProtocol.taskResult(task.id, result), executed = true, task = task.id)
             }
-            afterTask()
+            if (!active || task.state != RUNNING || task.current !== run) return@launch
+            // Follow-ups whose calls Gemini dropped before Hermes got them never run.
+            while (task.queued.firstOrNull()?.let { it.callId in cancelledCalls } == true) task.queued.removeFirst()
+            val next = task.queued.removeFirstOrNull()
+            if (next != null) { run(task, next); settled() } else { finished(task, FINISHED, result); afterTask() }
         }
     }
 
@@ -695,20 +833,26 @@ class AssistantCall(
     private suspend fun cancelNow(taskId: String): String {
         val task = tasks[taskId] ?: return "Not executed: there is no task $taskId. Call list_tasks for this call's tasks."
         if (task.state != RUNNING) return "Not executed: task $taskId is already ${task.state}. Nothing was cancelled."
-        val message = "Cancelled task $taskId. Hermes stopped; what it already did was not undone."
+        val queued = task.queued.size
+        val message = "Cancelled task $taskId. Hermes stopped; what it already did was not undone." +
+            (if (queued > 0) " Its $queued follow-up${if (queued > 1) "s" else ""} waiting never ran." else "")
         val job = task.job
         job?.cancel()
         finished(task, CANCELLED, message)
-        // Still being told it started: [start] closes the call after that.
-        if (job != null) closeCancelled(task)
+        val runs = listOf(task.current) + task.queued
+        task.queued.clear()
+        // A run still being told it started: [acknowledge] closes its call after that.
+        for (run in runs) if (run.acknowledged) closeCancelled(task, run)
         afterTask()
         return message
     }
 
     /** The call stays open until it gets a last response; Gemini already knows from cancel_task or hears it at its next turn. */
-    private suspend fun closeCancelled(task: Task) {
-        if (task.callId !in cancelledCalls && task.session == session && !standby && !waking) {
-            respond(task.callId, task.result.orEmpty(), executed = true, task = task.id, status = "cancelled", scheduling = "SILENT")
+    private suspend fun closeCancelled(task: Task, run: Run) {
+        if (run.closed) return
+        run.closed = true
+        if (run.callId !in cancelledCalls && run.session == session && !standby && !waking) {
+            respond(run.callId, task.result.orEmpty(), executed = true, task = task.id, status = "cancelled", scheduling = "SILENT")
         }
     }
 
@@ -718,8 +862,7 @@ class AssistantCall(
         val id = call.str("id")?.takeIf { it.isNotEmpty() && it.length < 200 } ?: return
         if (id in answered || answered.size >= 1024) return
         answered.add(id)
-        val args = call["args"] as? JsonObject
-        val taskId = (args?.get("task_id") as? JsonPrimitive)?.contentOrNull?.filter { it.isDigit() }?.take(6)
+        val taskId = taskId(call)
         scope.launch {
             val task = taskId?.let { tasks[it] }
             val message: String = when (name) {
@@ -736,7 +879,9 @@ class AssistantCall(
         }
     }
 
-    private fun describe(task: Task): String = "Task ${task.id} (${quote(task.request)}): ${task.state}" +
+    private fun describe(task: Task): String = "Task ${task.id} (${quote(task.request)}" +
+        (if (task.runs > 1) "; latest follow-up: ${quote(task.latest)}" else "") + "): ${task.state}" +
+        (if (task.queued.isNotEmpty()) ", ${task.queued.size} follow-up${if (task.queued.size > 1) "s" else ""} waiting" else "") +
         (task.progress?.takeIf { task.state == RUNNING }?.let { ". Latest: $it" } ?: "") + "."
 
     private fun quote(request: String) = request.replace(Regex("\\s+"), " ").trim().let { if (it.length > 120) it.take(120) + "…" else it }
@@ -816,6 +961,8 @@ class AssistantCall(
         const val RUNNING = "running"
         const val FINISHED = "finished"
         const val CANCELLED = "cancelled"
+        /** The most audio held for a session coming back from standby, in seconds. */
+        const val HOLD_MAX = 15.0
         /** Finished tasks beyond this many are forgotten, oldest first. */
         const val MAX_TASKS = 32
         const val PROGRESS_LIMIT = 300

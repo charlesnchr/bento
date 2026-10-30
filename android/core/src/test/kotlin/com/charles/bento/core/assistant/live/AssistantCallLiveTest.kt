@@ -107,6 +107,57 @@ class AssistantCallLiveTest {
         }
     }
 
+    /**
+     * A follow-up names the task it continues and a separate request doesn't: Gemini routes
+     * them itself, from the instruction and the tool's `task_id`.
+     */
+    @Test fun aFollowUpNamesItsTaskAndANewRequestDoesnt() = blocking {
+        val transport = OkHttpLiveTransport({ key!! })
+        /** The next ask_hermes call, answered "started" as Bento would, and its task_id if any; turns end before the next request. */
+        suspend fun ask(text: String, task: String, result: String = ""): String? {
+            transport.send("""{"realtimeInput":{"text":${Json.encodeToString(String.serializer(), text)}}}""")
+            return withTimeout(30_000) {
+                while (true) {
+                    val o = Json.parseToJsonElement(transport.receive()).jsonObject
+                    val call = o["toolCall"]?.jsonObject?.get("functionCalls")?.jsonArray?.first()?.jsonObject ?: continue
+                    assertEquals(CallProtocol.TOOL, call["name"]!!.jsonPrimitive.content)
+                    val id = call["id"]!!.jsonPrimitive.content
+                    val named = call["args"]?.jsonObject?.get("task_id")?.jsonPrimitive?.content?.filter { it.isDigit() }?.ifEmpty { null }
+                    val message = if (named == null) "Started task $task. Hermes is working on it; its result follows as another response to this call."
+                    else "Continuing task $named: Hermes is working on this follow-up in the task's own session, with what it did before."
+                    transport.send(CallProtocol.response(id, message = message, executed = true, task = named ?: task, status = "started",
+                                                         scheduling = "SILENT", willContinue = true))
+                    withTimeoutOrNull(20_000) {
+                        while (Json.parseToJsonElement(transport.receive()).jsonObject["serverContent"]?.jsonObject?.get("turnComplete") == null) Unit
+                    }
+                    if (named == null) {
+                        transport.send(CallProtocol.response(id, message = CallProtocol.taskResult(task, result),
+                                                             executed = true, task = task))
+                        withTimeoutOrNull(20_000) {
+                            while (Json.parseToJsonElement(transport.receive()).jsonObject["serverContent"]?.jsonObject?.get("turnComplete") == null) Unit
+                        }
+                    }
+                    return@withTimeout named
+                }
+                @Suppress("UNREACHABLE_CODE") error("unreachable")
+            }
+        }
+        try {
+            transport.connect()
+            transport.send(CallSetup.setupFrame())
+            withTimeout(20_000) {
+                do { val frame = Json.parseToJsonElement(transport.receive()).jsonObject } while (frame["setupComplete"] == null)
+            }
+            assertEquals(null, ask("Please ask Hermes to book a table for two at Dishoom tonight.", "1",
+                                   "Booked a table for two at Dishoom Covent Garden at 7pm tonight."), "a new request starts a task")
+            assertEquals("1", ask("Actually, can you change that booking to four people?", "2"), "the follow-up continues task 1")
+            assertEquals(null, ask("Something else: ask Hermes what the weather will be in Copenhagen tomorrow.", "2",
+                                   "Copenhagen tomorrow: 9 degrees and light rain."), "a separate request starts its own task")
+        } finally {
+            transport.close()
+        }
+    }
+
     /** What a call does when Gemini rotates its connection: a new socket picks the session up from its handle. */
     @Test fun aNewSocketResumesTheSessionFromItsHandle() = blocking {
         // Gemini may hand a memory question to Hermes; as a call would, it gets an answer (here: answer it yourself).
