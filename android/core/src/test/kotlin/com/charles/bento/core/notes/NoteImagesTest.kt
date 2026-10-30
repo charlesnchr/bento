@@ -167,6 +167,12 @@ class NoteImagesTest {
             val unpaired = NoteImageSync(NoteImageStore(tempDir()), http, { null }, scope)
             unpaired.store.add(png("x"))
             assertTrue(unpaired.uploadPendingNow(), "nowhere to send it: nothing to retry")
+            assertTrue(unpaired.reconcileNow())
+            assertTrue(unpaired.syncNow())
+            // a server that doesn't answer: background sync tries again later
+            val down = NoteImageSync(phone.store, http, { SyncEndpoint("http://127.0.0.1:1", token) }, scope, referenced = { setOf(hash) })
+            assertFalse(down.reconcileNow())
+            assertFalse(down.syncNow())
             assertEquals(1, unpaired.store.pendingUploads.size)
             assertFalse(unpaired.fetchNow(hash))
         } finally {

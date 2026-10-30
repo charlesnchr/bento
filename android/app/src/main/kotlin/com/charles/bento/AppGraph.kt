@@ -60,7 +60,7 @@ class AppGraph(val app: Application) {
     init {
         // images still to upload count as unsent changes: background sync sends them
         sync.pendingImages = { notes.images.store.pendingUploads.isNotEmpty() }
-        sync.uploadImages = { notes.images.uploadPendingNow() }
+        sync.uploadImages = { notes.images.syncNow() }
     }
     val voiceSync = com.charles.bento.voice.VoiceSyncModule(app, prefs, sync, engineDispatcher)
 

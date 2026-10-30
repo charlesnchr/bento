@@ -183,6 +183,8 @@ class NoteImageSync(
     /** Uploads that failed are tried again after this long (doubling to 10 minutes) while paired. */
     @Volatile private var retryDelayMs = 30_000L
     private var retryJob: kotlinx.coroutines.Job? = null
+    /** Asking which images the server lacks hasn't succeeded since the last connect. */
+    @Volatile private var needsReconcile = false
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
@@ -197,20 +199,32 @@ class NoteImageSync(
         wasMissing.forEach { _changed.tryEmit(it) }
         serverHasBlobs = null
         retryDelayMs = 30_000L
-        scope.launch {
-            reconcileNow()
-            uploadPending()
-        }
+        needsReconcile = true
+        uploadPending()
+    }
+
+    /**
+     * One round for background sync: ask which images the server lacks, then upload what's
+     * pending. False when something should be tried again.
+     */
+    suspend fun syncNow(): Boolean {
+        val asked = reconcileNow()
+        return uploadPendingNow() && asked
     }
 
     /**
      * Marks pending every image here that a note refers to and the server doesn't have
      * (`POST /v1/blobs/missing`). Images no note refers to any more are left out, so the
-     * server's `gc-blobs` can delete them. False when it couldn't ask.
+     * server's `gc-blobs` can delete them. False when it couldn't ask (try again); true
+     * when it did, or there's no one to ask (not paired, or a server without images).
      */
     suspend fun reconcileNow(): Boolean = withContext(Dispatchers.IO) {
-        val (base, token) = target() ?: return@withContext false
-        if (hasBlobs(base) != true) return@withContext false
+        val (base, token) = target() ?: return@withContext true
+        when (hasBlobs(base)) {
+            null -> return@withContext false
+            false -> { needsReconcile = false; return@withContext true }
+            true -> {}
+        }
         val refs = referenced()
         for (batch in store.allHashes.filter { it in refs }.chunked(1000)) {
             val body = kotlinx.serialization.json.buildJsonObject {
@@ -228,13 +242,18 @@ class NoteImageSync(
             }.getOrDefault(false)
             if (!ok) return@withContext false
         }
+        needsReconcile = false
         true
     }
 
-    /** Uploads what's pending; what fails is tried again later (with a backoff) while paired. */
+    /**
+     * Uploads what's pending (asking first which images the server lacks, when that hasn't
+     * worked since the last connect); what fails is tried again later (with a backoff) while paired.
+     */
     fun uploadPending() {
         scope.launch {
-            if (uploadPendingNow()) { retryDelayMs = 30_000L; return@launch }
+            val asked = !needsReconcile || reconcileNow()
+            if (uploadPendingNow() && asked) { retryDelayMs = 30_000L; return@launch }
             if (target() == null) return@launch
             synchronized(this@NoteImageSync) {
                 if (retryJob?.isActive == true) return@launch

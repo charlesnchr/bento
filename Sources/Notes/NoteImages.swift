@@ -214,6 +214,8 @@ final class NoteImageSync {
     /// Uploads that failed are tried again after this long (doubling to 10 minutes).
     private var retryDelay: TimeInterval = 30
     private var retryWork: DispatchWorkItem?
+    /// Asking which images the server lacks hasn't succeeded since the last connect.
+    private var needsReconcile = false
 
     init(store: NoteImageStore) {
         self.store = store
@@ -231,6 +233,7 @@ final class NoteImageSync {
         missing.removeAll()
         serverHasBlobs = nil
         retryDelay = 30
+        needsReconcile = true
         reconcile { [weak self] in self?.uploadPending() }
         // placeholders on screen ask again (drawing them fetches)
         for h in wasMissing { NotificationCenter.default.post(name: NoteImageStore.didLoad, object: h) }
@@ -238,7 +241,8 @@ final class NoteImageSync {
 
     /// Marks pending every image here that a note refers to and the server doesn't have
     /// (`POST /v1/blobs/missing`, in batches), then calls `done`. Images no note refers to
-    /// any more are left out, so the server's `gc-blobs` can delete them.
+    /// any more are left out, so the server's `gc-blobs` can delete them. When asking fails
+    /// it's tried again with the uploads' backoff.
     func reconcile(done: @escaping () -> Void) {
         guard let ep = endpoint() else { done(); return }
         withBlobs(ep) { [weak self] in
@@ -249,7 +253,7 @@ final class NoteImageSync {
     }
 
     private func reconcile(_ hashes: ArraySlice<String>, _ ep: (base: URL, token: String), _ done: @escaping () -> Void) {
-        guard !hashes.isEmpty else { done(); return }
+        guard !hashes.isEmpty else { needsReconcile = false; done(); return }
         let batch = hashes.prefix(1000)
         var req = URLRequest(url: ep.base.appendingPathComponent("v1/blobs/missing"))
         req.httpMethod = "POST"
@@ -259,7 +263,11 @@ final class NoteImageSync {
         session.dataTask(with: req) { [weak self] data, resp, _ in
             guard let self else { return }
             guard (resp as? HTTPURLResponse)?.statusCode == 200, let data,
-                  let missing = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["missing"] as? [String] else { done(); return }
+                  let missing = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["missing"] as? [String] else {
+                self.retryLater()
+                done()
+                return
+            }
             missing.forEach(self.store.markPending)
             self.reconcile(hashes.dropFirst(batch.count), ep, done)
         }.resume()
@@ -276,8 +284,9 @@ final class NoteImageSync {
     private func retryLater() {
         guard retryWork == nil, endpoint() != nil else { return }
         let w = DispatchWorkItem { [weak self] in
-            self?.retryWork = nil
-            self?.uploadPending()
+            guard let self else { return }
+            self.retryWork = nil
+            if self.needsReconcile { self.reconcile { [weak self] in self?.uploadPending() } } else { self.uploadPending() }
         }
         retryWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: w)
