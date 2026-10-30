@@ -30,6 +30,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -508,7 +509,7 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works, so it can't hear you. It comes back with the first answer.",
+                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works. Start talking to bring it back; it also comes back with the first answer.",
                                                    connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
@@ -566,16 +567,17 @@ class AssistantController(
 
     /**
      * Gemini's `ask_hermes`: the user's words go to Hermes as a task in a session of its own, so
-     * several run at once. The chat shows a row for the task, any approval it asks for and its
-     * reply; the call's task list shows its progress. Returns the reply for Gemini to speak.
+     * several run at once, and a follow-up goes into its task's session, so Hermes has what it did.
+     * The call bar shows the task and its progress; the chat gets only what needs the user (an
+     * approval) and Hermes's reply. Returns the reply for Gemini to speak.
      */
     private suspend fun runVoiceTask(request: HermesCall): String {
         val id = request.taskId
-        val row = ChatMessage(UUID.randomUUID().toString(), "tool", "", toolName = "Hermes task $id", toolDetail = request.task, status = "running")
-        messages { it + row }
+        val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true)
+        val known = _state.value.call?.tasks?.firstOrNull { it.id == id }
+        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, messages = listOf(ask)))) }
+        else task(id) { it.copy(status = "running", progress = null, messages = it.messages + ask) }
         voiceBoundary = true
-        set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, messages = listOf(
-            ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true))))) }
         var turn = TurnState()
         var run: String? = null
         fun shown() = _state.value.call?.tasks?.firstOrNull { it.id == id }?.messages.orEmpty()
@@ -585,34 +587,46 @@ class AssistantController(
             show(id, list, t)
         }
         try {
-            val sid = try {
-                client.createSession().id
+            val sid = known?.sessionId?.takeIf { request.followUp } ?: try {
+                client.createSession().id.also { sid ->
+                    remember(sid)
+                    task(id) { it.copy(sessionId = sid) }
+                }
             } catch (e: HermesError) {
                 apply(HermesEvent.Failed(e.message.orEmpty()))
-                return finished(id, row, turn.copy(status = "failed"))
+                return finished(id, turn.copy(status = "failed"))
             }
-            remember(sid)
             turn = turn.copy(sessionId = sid)
-            task(id) { it.copy(sessionId = sid) }
-            messages { list -> list.map { if (it.id == row.id) it.copy(link = sid) else it } }
             val choice = choiceFor(sid)
-            client.chat(sid, voiceMessage(request, LocalDate.now().toString()), null, choice).collect { event ->
-                if (event is HermesEvent.RunStarted) {
-                    run = event.runId
-                    if (choice.picked) markLocked(sid)
+            // A task whose session is gone starts over in a new one, with nothing to follow up there.
+            val message = voiceMessage(request.copy(followUp = request.followUp && sid == known?.sessionId), LocalDate.now().toString())
+            // A follow-up just after the task was cancelled can find Hermes still stopping the run before: it hasn't started.
+            val until = System.nanoTime() + BUSY_WAIT_NANOS
+            while (true) {
+                try {
+                    client.chat(sid, message, null, choice).collect { event ->
+                        if (event is HermesEvent.RunStarted) {
+                            run = event.runId
+                            if (choice.picked) markLocked(sid)
+                        }
+                        apply(event)
+                    }
+                    break
+                } catch (e: HermesError) {
+                    if (e.status != 409 || run != null || turn.ids.isNotEmpty() || System.nanoTime() > until) throw e
+                    delay(1_000)
                 }
-                apply(event)
             }
             if (!turn.finished) AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(id, list, t) }
             val newId = turn.sessionId
             if (newId != null && newId != sid) {
-                // Hermes compressed the task's conversation into a new session: its link follows.
+                // Hermes compressed the task's conversation into a new session: the task and its link follow.
                 remember(newId); forget(sid); followLock(sid, newId)
                 task(id) { it.copy(sessionId = newId) }
-                messages { list -> list.map { if (it.id == row.id) it.copy(link = newId) else it } }
+                messages { list -> list.map { if (it.link == sid) it.copy(link = newId) else it } }
             }
         } catch (e: HermesError) {
-            if (e.code == "session_not_found") turn.sessionId?.let(::forget)
+            if (e.code == "session_not_found") turn.sessionId?.let { sid -> forget(sid); task(id) { it.copy(sessionId = null) } }
             apply(HermesEvent.Failed(e.message.orEmpty()))
             AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(id, list, t) }
         } catch (e: CancellationException) {
@@ -620,11 +634,11 @@ class AssistantController(
             withContext(NonCancellable) {
                 run?.let { r -> scope.launch { runCatching { client.stop(r) } } }
                 apply(HermesEvent.Finished("cancelled", null, null))
-                finished(id, row, turn)
+                finished(id, turn)
             }
             throw e
         }
-        return finished(id, row, turn)
+        return finished(id, turn)
     }
 
     /** The task's conversation after an event: its progress for Gemini and the screen, and approvals in the chat. */
@@ -646,23 +660,28 @@ class AssistantController(
         if (approvals.isNotEmpty()) messages { it + approvals }
     }
 
-    /** Marks the task done and its chat row; the reply joins the chat. Returns what Gemini hears. */
-    private fun finished(id: String, row: ChatMessage, turn: TurnState): String {
+    /** Marks the task's request done; the reply (or why it failed) joins the chat, linked to the task's session. Returns what Gemini hears. */
+    private fun finished(id: String, turn: TurnState): String {
         val status = when (turn.status) {
             "completed" -> "completed"
             "cancelled" -> "cancelled"
             null -> if (turn.answer.isNotBlank()) "completed" else "failed"
             else -> "failed"
         }
-        val failure = _state.value.call?.tasks?.firstOrNull { it.id == id }?.messages?.lastOrNull { it.failed }?.text
+        val task = _state.value.call?.tasks?.firstOrNull { it.id == id }
+        val failure = task?.messages?.lastOrNull { it.failed && it.id in turn.ids }?.text
         task(id) { it.copy(status = status, progress = null) }
         messages { list ->
-            // Approvals nobody answered lapse with the task.
-            val (marked, _) = AssistantTranscript.finish(list.map { if (it.id == row.id) it.copy(status = status) else it },
-                                                         TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
-            if (turn.answer.isNotBlank() && status != "cancelled") {
-                marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(id), call = true)
-            } else marked
+            // Approvals nobody answered lapse with the request.
+            val (marked, _) = AssistantTranscript.finish(list, TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
+            val link = turn.sessionId ?: task?.sessionId
+            when {
+                status == "cancelled" -> marked
+                turn.answer.isNotBlank() -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(id), link = link, call = true)
+                status == "failed" -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", "Task $id failed. " + failure.orEmpty(),
+                                                           speaker = taskSpeaker(id), failed = true, link = link, call = true)
+                else -> marked
+            }
         }
         voiceBoundary = true
         return when {
@@ -678,6 +697,7 @@ class AssistantController(
         internal fun voiceMessage(request: HermesCall, today: String): String =
             "User's transcribed request from Bento's Gemini Live voice session on Android:\n" + request.task +
                 "\nInterpret this spoken request and write your own precise tool queries; do not mechanically pass filler words to tools. " +
+                (if (request.followUp) "It follows up your earlier work in this conversation: continue from it. " else "") +
                 "Perform only this request. The transcript may be imperfect; clarify ambiguity instead of guessing actions. " +
                 "Do not broaden scope or retry denied actions. " +
                 "Today's date is $today. For current/latest information search the current year and verify dates, not old model knowledge. " +
@@ -689,6 +709,9 @@ class AssistantController(
         internal fun taskSpeaker(id: String) = "Hermes · task $id"
 
         const val CALL_TAG = "voice_call"
+
+        /** How long a follow-up waits for Hermes to finish stopping the task's cancelled run. */
+        private const val BUSY_WAIT_NANOS = 10_000_000_000L
 
         /**
          * A call's transcript and its tasks' replies live in their own Hermes sessions or nowhere,

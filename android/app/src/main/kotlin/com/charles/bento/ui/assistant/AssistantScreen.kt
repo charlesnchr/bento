@@ -26,7 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -180,7 +180,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         // A running call always keeps its bar (and its End button), whatever happens to the setup.
         val c = state.call
         if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onEnd = { assistant.endCall() },
-                               onOpenTask = { shownTask = it }, onCancelTask = assistant::cancelTask)
+                               onOpenTask = { shownTask = it })
         else if (configured) {
             ModelPicker(assistant)
             Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
@@ -273,7 +273,7 @@ private fun Messages(
         items(messages, key = { it.id }) { m ->
             when (m.role) {
                 "user" -> UserRow(m)
-                "assistant" -> if (m.voice) VoiceRow(m) else AssistantRow(m)
+                "assistant" -> if (m.voice) VoiceRow(m) else AssistantRow(m, onOpen = if (m.link != null) ({ onOpen(m) }) else null)
                 "tool" -> ToolRow(m, onOpen = { onOpen(m) })
                 "approval" -> ApprovalRow(m, onAnswer)
                 else -> Text(m.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -311,12 +311,21 @@ private fun UserRow(m: ChatMessage, caption: Boolean = false) {
     }
 }
 
+/** [onOpen] opens the Hermes session a call task's reply came from. */
 @Composable
-private fun AssistantRow(m: ChatMessage) {
+private fun AssistantRow(m: ChatMessage, onOpen: (() -> Unit)? = null) {
     var thinking by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().animateContentSize()) {
-        // A call task's reply says which task it answers.
-        m.speaker?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        // A call task's reply says which task it answers, and opens the task.
+        m.speaker?.let { speaker ->
+            Row(Modifier.then(if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier), verticalAlignment = Alignment.CenterVertically) {
+                Text(speaker, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (onOpen != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open its Hermes session", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         if (m.thinking.isNotBlank()) {
             Text(if (thinking) "Hide thinking" else "Thinking", style = MaterialTheme.typography.labelMedium,
                  color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.clickable { thinking = !thinking }.padding(vertical = 4.dp))
@@ -523,14 +532,15 @@ private fun MenuChoice(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onOpenTask: (String) -> Unit, onCancelTask: (String) -> Unit) {
+private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onOpenTask: (String) -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (c.tasks.isNotEmpty()) {
-                // One lane per task, newest at the bottom; a long call scrolls rather than pushing the controls off screen.
-                Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState(), reverseScrolling = true)
-                           .testTag("assistant-call-tasks"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (task in c.tasks) TaskLane(task, onOpen = { onOpenTask(task.id) }, onCancel = { onCancelTask(task.id) })
+                // The call's tasks on one line, newest last, so the conversation keeps the screen; a chip opens its task.
+                val strip = rememberScrollState()
+                LaunchedEffect(c.tasks.size) { strip.animateScrollTo(strip.maxValue) }
+                Row(Modifier.fillMaxWidth().horizontalScroll(strip).testTag("assistant-call-tasks"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (task in c.tasks) TaskChip(task, onOpen = { onOpenTask(task.id) })
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -558,7 +568,7 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                         Icon(if (c.muted) Icons.Rounded.MicOff else Icons.Rounded.Mic, if (c.muted) "Unmute" else "Mute")
                     }
                 }
-                // Ends the call and every task still running; each task's lane cancels it alone.
+                // Ends the call and every task still running; each task's sheet cancels it alone.
                 FilledIconButton(onClick = onEnd, modifier = Modifier.size(56.dp).testTag("assistant-end-call"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) {
                     Icon(Icons.Rounded.CallEnd, "End call", tint = MaterialTheme.colorScheme.onError)
@@ -568,33 +578,16 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
     }
 }
 
-/** A call task: its number, what was said, its latest step, and buttons to open its session or cancel it. */
+/** A call task in one line: its status, number and what was said. Its sheet has the rest. */
 @Composable
-private fun TaskLane(task: TaskUi, onOpen: () -> Unit, onCancel: () -> Unit) {
-    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).testTag("assistant-task-${task.id}")) {
-        Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun TaskChip(task: TaskUi, onOpen: () -> Unit) {
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.clickable(onClick = onOpen).testTag("assistant-task-${task.id}")) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusIcon(task.status)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Task ${task.id} · ${task.request}", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val line = when (task.status) {
-                    "running", "waiting" -> task.progress ?: "Hermes is working…"
-                    "completed" -> "Done"
-                    "cancelled" -> "Cancelled"
-                    else -> "Failed"
-                }
-                Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            IconButton(onClick = onOpen, enabled = task.messages.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open task ${task.id}'s Hermes session", Modifier.size(20.dp))
-            }
-            if (task.active) {
-                IconButton(onClick = onCancel, modifier = Modifier.testTag("assistant-cancel-task-${task.id}")) {
-                    Icon(Icons.Rounded.Close, "Cancel task ${task.id}", Modifier.size(20.dp))
-                }
-            }
+            Spacer(Modifier.width(6.dp))
+            Text("${task.id} · ${task.request}", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                 modifier = Modifier.widthIn(max = 180.dp))
         }
     }
 }
@@ -637,8 +630,16 @@ private fun TaskSheet(task: TaskUi, onAnswer: (String, String) -> Unit, onCancel
                 StatusIcon(task.status)
                 Spacer(Modifier.width(10.dp))
                 Text("Task ${task.id}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                if (task.active) OutlinedButton(onClick = onCancel) { Text("Cancel task") }
+                if (task.active) OutlinedButton(onClick = onCancel, modifier = Modifier.testTag("assistant-cancel-task-${task.id}")) { Text("Cancel task") }
             }
+            val line = when (task.status) {
+                "running", "waiting" -> task.progress ?: "Hermes is working…"
+                "completed" -> "Done"
+                "cancelled" -> "Cancelled"
+                else -> "Failed"
+            }
+            Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 24.dp))
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 560.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                        verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(task.messages, key = { it.id }) { m ->

@@ -65,6 +65,8 @@ class FakeTransport(script: List<String>) : LiveTransport {
     var replyToStreamEnd: List<String> = emptyList()
     @Volatile var closeCount = 0
         private set
+    /** Runs before each send, outside the lock: a slow or held-up socket. */
+    @Volatile var beforeSend: (suspend (String) -> Unit)? = null
 
     val sent: List<String> get() = synchronized(lock) { sentFrames.toList() }
 
@@ -75,6 +77,7 @@ class FakeTransport(script: List<String>) : LiveTransport {
     }
 
     override suspend fun send(frame: String) {
+        beforeSend?.invoke(frame)
         synchronized(lock) {
             val limit = sendErrorAfter
             if (limit != null && sentFrames.size >= limit) throw IOException("network connection lost")
