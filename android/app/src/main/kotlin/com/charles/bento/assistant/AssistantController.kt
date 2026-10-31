@@ -1,6 +1,7 @@
 package com.charles.bento.assistant
 
 import android.content.Context
+import android.os.SystemClock
 import com.charles.bento.core.assistant.AssistantTranscript
 import com.charles.bento.core.assistant.ChatMessage
 import com.charles.bento.core.assistant.HermesChoice
@@ -80,6 +81,8 @@ data class TaskUi(
     val sessionId: String? = null,
     /** The task's own conversation as it streams: the request, Hermes's tools and its reply. */
     val messages: List<ChatMessage> = emptyList(),
+    /** When Hermes got the request it's working on (`SystemClock.elapsedRealtime`), for the time shown in standby. */
+    val startedAt: Long = 0,
 ) {
     val active: Boolean get() = status == "running" || status == "waiting"
 }
@@ -512,8 +515,7 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        s.copy(call = s.call?.copy(status = "Paused Gemini while Hermes works. Start talking to bring it back; it also comes back with the first answer.",
-                                                   connecting = false, hermesWorking = true, standby = true))
+                        s.copy(call = s.call?.copy(status = STANDBY_STATUS, connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
                     is AssistantCall.Status.Ended -> {
@@ -578,8 +580,9 @@ class AssistantController(
         val id = request.taskId
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true)
         val known = _state.value.call?.tasks?.firstOrNull { it.id == id }
-        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, messages = listOf(ask)))) }
-        else task(id) { it.copy(status = "running", progress = null, messages = it.messages + ask) }
+        val now = SystemClock.elapsedRealtime()
+        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, messages = listOf(ask), startedAt = now))) }
+        else task(id) { it.copy(status = "running", progress = null, messages = it.messages + ask, startedAt = now) }
         voiceBoundary = true
         var turn = TurnState()
         var run: String? = null
@@ -707,6 +710,9 @@ class AssistantController(
                 "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
                 "Bento displays your response directly as a Hermes chat reply on the user's phone. Do not promise a separate document unless you actually create one. " +
                 "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context
+
+        /** What the call bar says while Gemini is paused; the running tasks show under it. */
+        const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
 
         /** Who a call task's reply in the chat is from. */
         internal fun taskSpeaker(id: String) = "Hermes · task $id"

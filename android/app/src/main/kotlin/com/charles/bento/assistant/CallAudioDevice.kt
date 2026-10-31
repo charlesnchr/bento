@@ -17,6 +17,9 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.charles.bento.core.assistant.live.CallAudio
+import com.charles.bento.core.assistant.live.CallEarcons
+import com.charles.bento.core.assistant.live.CueMixer
+import com.charles.bento.core.assistant.live.Earcon
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -27,7 +30,8 @@ import java.util.concurrent.atomic.AtomicReference
  * microphone with the platform's echo canceller (Gemini mustn't hear itself through the
  * speaker and interrupt itself), and playback routed to a headset when one is connected,
  * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16. It holds
- * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost].
+ * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost]. The call's
+ * tones are mixed into the same playback, so the echo canceller takes them out too.
  *
  * Neither side's failure takes the other down: a microphone that fails to read, or that the
  * call restarts ([restartMicrophone]), is reopened while playback goes on, and a speaker whose
@@ -37,6 +41,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     private val audio = context.getSystemService(AudioManager::class.java)
     private val queue = LinkedBlockingQueue<ByteArray>()
     private val queued = AtomicLong()
+    private val cues = CueMixer()
     @Volatile private var running = false
     /** Between a successful start and stop. */
     private var started = false
@@ -187,47 +192,67 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         var t: AudioTrack? = first
         var reopenAt = 0L
         var wroteAt = 0L
+        /** A dead track gets a new one when there's something to play, at most every [REOPEN_MILLIS]. */
+        fun reopen() {
+            if (t != null || SystemClock.elapsedRealtime() < reopenAt) return
+            t = openTrack(micSession)?.also { it.play() }
+            if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
+            else cues.restart() // a new track is stopped until its buffer fills
+            Log.i(TAG, if (t != null) "reopened the speaker" else "the speaker won't reopen; dropping audio meanwhile")
+        }
+        /** Writes to [track]; a dead one plays nothing ever again, so the next audio gets a new one and the rest of this goes. */
+        fun write(track: AudioTrack, pcm: ByteArray, at: Int, length: Int): Int {
+            val n = track.write(pcm, at, length, AudioTrack.WRITE_BLOCKING)
+            if (n < 0) {
+                Log.w(TAG, "the speaker failed to play ($n); reopening it")
+                runCatching { track.release() }
+                t = null
+            } else wroteAt = SystemClock.elapsedRealtime()
+            return n
+        }
         try {
             while (running) {
                 if (flushRequested) {
                     flushRequested = false
                     t?.let { runCatching { it.pause(); it.flush(); it.play() } }
+                    cues.restart()
                 }
-                val pcm = queue.poll(50, TimeUnit.MILLISECONDS)
+                // A tone playing alone fills the buffer, so a stopped track starts it ([CueMixer.lone]); nor does
+                // it wait for Gemini's speech, only joins it.
+                val fill = (t?.bufferSizeInFrames ?: 0) * 2
+                val pcm = if (cues.waiting(fill)) queue.poll() else queue.poll(50, TimeUnit.MILLISECONDS)
                 if (pcm == null) {
-                    // A reopened microphone has a new session: once what's written has played, the track moves to it.
+                    if (cues.playing) reopen()
                     val track = t
-                    if (track != null && track.audioSessionId != micSession && SystemClock.elapsedRealtime() - wroteAt >= DRAINED_MILLIS) {
+                    if (track == null) { cues.clear(); continue } // dropped, as speech is meanwhile
+                    val tone = cues.lone(SLICE_BYTES, fill)
+                    if (tone != null) { write(track, tone, 0, tone.size); continue }
+                    // A reopened microphone has a new session: once what's written has played, the track moves to it.
+                    if (track.audioSessionId != micSession && SystemClock.elapsedRealtime() - wroteAt >= DRAINED_MILLIS) {
                         runCatching { track.stop() }
                         track.release()
                         t = openTrack(micSession)?.also { it.play() }
                         if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
+                        cues.restart()
                     }
                     continue
                 }
+                cues.restart()
                 queued.addAndGet(-pcm.size.toLong())
-                if (t == null && SystemClock.elapsedRealtime() >= reopenAt) {
-                    t = openTrack(micSession)?.also { it.play() }
-                    if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
-                    Log.i(TAG, if (t != null) "reopened the speaker" else "the speaker won't reopen; dropping audio meanwhile")
-                }
+                reopen()
                 val track = t ?: continue
                 // In 20 ms slices, so a flush requested mid-reply takes effect at once.
                 var at = 0
                 while (at < pcm.size && running && !flushRequested) {
-                    val n = track.write(pcm, at, minOf(SLICE_BYTES, pcm.size - at), AudioTrack.WRITE_BLOCKING)
-                    if (n < 0) {
-                        // A dead track plays nothing ever again: the next audio gets a new one, and the rest of this goes.
-                        Log.w(TAG, "the speaker failed to play ($n); reopening it")
-                        runCatching { track.release() }
-                        t = null
-                    }
+                    val length = minOf(SLICE_BYTES, pcm.size - at)
+                    cues.mixInto(pcm, at, length)
+                    val n = write(track, pcm, at, length)
                     if (n <= 0) break
                     at += n
-                    wroteAt = SystemClock.elapsedRealtime()
                 }
             }
         } finally {
+            cues.clear()
             t?.let { runCatching { it.stop() }; it.release() }
         }
     }
@@ -238,6 +263,10 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         while (queued.get() + pcm.size > MAX_QUEUED_BYTES) queue.poll()?.let { queued.addAndGet(-it.size.toLong()) } ?: break
         queue.offer(pcm)
         queued.addAndGet(pcm.size.toLong())
+    }
+
+    override fun cue(earcon: Earcon) {
+        if (running) cues.add(CallEarcons.pcm(earcon))
     }
 
     override fun flush() {

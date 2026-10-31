@@ -72,7 +72,13 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
         return true
     }
 
+    /** The tones the call played itself. */
+    val cues = CopyOnWriteArrayList<Earcon>()
+    /** Runs as a tone is queued, on the call's thread. */
+    @Volatile var onCue: ((Earcon) -> Unit)? = null
+
     override fun play(pcm: ByteArray) { played.add(pcm) }
+    override fun cue(earcon: Earcon) { onCue?.invoke(earcon); cues.add(earcon) }
     override fun flush() { flushes++ }
     override fun restartMicrophone() {
         restarts++
@@ -209,6 +215,56 @@ class AssistantCallTest {
         assertEquals("Task 1 has finished. Hermes's reply:\nIt's sunny in London.", response.message())
         assertTrue(("user" to "What's the weather") in heard)
         assertTrue(("assistant" to "Hi, how can I help?") in heard)
+        call.stop()
+    }
+
+    @Test fun aTaskStartingAndItsResultEachPlayATone() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val result = CompletableDeferred<String>()
+        val call = AssistantCall(transport, audio, null, { result.await() }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "What's the weather in London?")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { while (audio.cues.isEmpty()) delay(10) }
+        // Gemini hears the start silently: the call's own tone says Hermes has it.
+        assertEquals(listOf(Earcon.TaskStarted), audio.cues.toList())
+        result.complete("It's sunny.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        withTimeout(5_000) { while (audio.cues.size < 2) delay(10) }
+        assertEquals(listOf(Earcon.TaskStarted, Earcon.ResultArrived), audio.cues.toList())
+        assertTrue(audio.played.isEmpty(), "the tones never go through Gemini's playback")
+        call.stop()
+    }
+
+    @Test fun aCancelledTaskPlaysNoResultTone() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { CompletableDeferred<String>().await() }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        call.cancelTask("1")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        delay(100)
+        assertEquals(listOf(Earcon.TaskStarted), audio.cues.toList())
+        call.stop()
+    }
+
+    @Test fun aCallCancelledBeforeHermesStartsPlaysNoTone() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(settleQuiet = 0.5))
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Email Sam")
+        transport.push(Live.call("c1"))
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        delay(1_000)
+        assertTrue(audio.cues.isEmpty())
         call.stop()
     }
 
@@ -378,7 +434,8 @@ class AssistantCallTest {
     @Test fun aFollowUpContinuesItsTaskInTheSameSession() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val asked = CopyOnWriteArrayList<HermesCall>()
-        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c); if (c.followUp) "Moved to 8pm." else "Booked for 7pm." }, limits = fast)
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { c -> asked.add(c); if (c.followUp) "Moved to 8pm." else "Booked for 7pm." }, limits = fast)
         call.start()
         transport.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(transport, "Book a table")
@@ -399,6 +456,8 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 5 }
         assertEquals("Task 1 (Book a table; latest follow-up: Make it 8pm instead): finished.", transport.responses().last().message())
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // A follow-up starting is Hermes taking a request too.
+        assertEquals(listOf(Earcon.TaskStarted, Earcon.ResultArrived, Earcon.TaskStarted, Earcon.ResultArrived), audio.cues.toList())
         call.stop()
     }
 
@@ -727,7 +786,8 @@ class AssistantCallTest {
         val inner = FakeTransport(listOf(Frames.setupComplete()))
         val transport = SlowStarts(inner)
         var ran = false
-        val call = AssistantCall(transport, FakeAudio(), null, { ran = true; "" }, limits = fast)
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { ran = true; "" }, limits = fast)
         call.start()
         inner.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(inner, "Email Sam")
@@ -737,6 +797,7 @@ class AssistantCallTest {
         withTimeout(5_000) { while (transport.holding || inner.responses().isEmpty()) delay(10) }
         delay(300)
         assertFalse(ran, "Hermes never got the dropped call")
+        assertTrue(audio.cues.isEmpty(), "no tone says Hermes has a request it never gets")
         assertEquals(listOf("started"), inner.responses().map { it.status() })
         assertEquals(AssistantCall.Status.Listening, call.status.value)
         call.stop()
@@ -1154,7 +1215,8 @@ class AssistantCallTest {
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
         var made = 0
-        val call = waitingOnHermes(first, { made++; second }, result)
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { made++; second }, result, audio = audio)
         assertFalse(call.lend(), "a call on Gemini keeps the microphone")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         assertTrue(call.lend())
@@ -1164,6 +1226,7 @@ class AssistantCallTest {
         delay(400)
         assertEquals(AssistantCall.Status.Standby, call.status.value, "neither the answer nor wake brings it back while lent")
         assertEquals(0, made)
+        assertEquals(listOf(Earcon.TaskStarted), audio.cues.toList(), "the dictation never hears the result's tone")
         call.reclaim()
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         assertEquals(1, made)
@@ -1171,6 +1234,70 @@ class AssistantCallTest {
         assertFalse(call.lend())
         call.stop()
         assertNull(call.ended().message)
+    }
+
+    @Test fun aResultWhoseSendOutlastsTheStandbyTimePlaysNoToneADictationCouldHear() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val booked = CompletableDeferred<String>()
+        val call = AssistantCall(first, audio, null, { c -> if (c.taskId == "1") booked.await() else CompletableDeferred<String>().await() },
+                                 limits = fast, reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.3 })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "Book a table")
+        first.push(Live.call("c1"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        Live.turn(first, "Find me a taxi")
+        first.push(Live.call("c2"))
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        withTimeout(5_000) { while (audio.cues.size < 2) delay(10) }
+        // Task 1's result is held up on the socket until the call has stood by, with task 2 still running.
+        val release = CompletableDeferred<Unit>()
+        first.beforeSend = { f -> if ("\"status\":\"ok\"" in f) release.await() }
+        booked.complete("Booked.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        release.complete(Unit)
+        delay(300)
+        assertEquals(listOf(Earcon.TaskStarted, Earcon.TaskStarted), audio.cues.toList(), "no tone in standby, where a dictation can borrow the microphone")
+        assertTrue(call.lend())
+        call.reclaim()
+        call.stop()
+    }
+
+    @Test fun aResultInStandbyPlaysItsToneAsTheCallComesBack() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { second }, result, audio = audio)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        result.complete("Done.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(listOf(Earcon.TaskStarted, Earcon.ResultArrived), audio.cues.toList())
+        call.stop()
+    }
+
+    @Test fun aDictationCantBorrowTheMicrophoneOnceAResultsToneIsQueued() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { second }, result, audio = audio)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        val queuing = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        audio.onCue = { if (it == Earcon.ResultArrived) { queuing.countDown(); release.await() } }
+        result.complete("Done.")
+        assertTrue(queuing.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // The call is already coming back for the result, so the tone it queues never plays into a dictation.
+        val lent = java.util.concurrent.CompletableFuture.supplyAsync { call.lend() }
+        delay(200)
+        assertFalse(lent.isDone, "lending waits for the tone being queued")
+        release.countDown()
+        assertFalse(lent.get(5, java.util.concurrent.TimeUnit.SECONDS), "and then finds the call coming back")
+        assertEquals(listOf(Earcon.TaskStarted, Earcon.ResultArrived), audio.cues.toList())
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
     }
 
     @Test fun aMicrophoneLentAndReclaimedWithNothingFinishedLeavesTheCallInStandby() = blocking {
@@ -2123,6 +2250,21 @@ class CallSetupTest {
         assertTrue("say it is still running, not that it failed" in CallSetup.INSTRUCTION)
         assertTrue("never make two tool calls in a row without speaking" in macInstruction)
         assertTrue("never make two ask_hermes calls in a row without speaking" in CallSetup.INSTRUCTION)
+    }
+
+    @Test fun theInstructionMatchesWhatTheCallDoes() {
+        // A task's start is answered SILENT, and a tone tells the user: Gemini isn't asked to announce it.
+        assertFalse("say briefly that Hermes is working on it" in CallSetup.INSTRUCTION)
+        assertTrue("don't announce that Hermes is working on it" in CallSetup.INSTRUCTION)
+        assertTrue("say nothing at all, not even an acknowledgement" in CallSetup.INSTRUCTION, "speech not addressed to Gemini gets no reply")
+        assertTrue("say the full answer is on their screen" in CallSetup.INSTRUCTION)
+        assertTrue("say the full answer is on their screen" in CallSetup.RESULT_PREAMBLE)
+    }
+
+    @Test fun aLongResultTellsGeminiTheFullAnswerIsOnScreen() {
+        assertEquals("Task 1 has finished. Hermes's reply:\nSunny.", CallProtocol.taskResult("1", "Sunny."))
+        val recipe = "Cookie and Kate's lasagne. " + (1..150).joinToString(" ") { "ingredient$it" }
+        assertEquals("Task 2 has finished. ${CallProtocol.LONG_RESULT}Hermes's reply:\n$recipe", CallProtocol.taskResult("2", recipe))
     }
 
     @Test fun theResumeWordingMatchesTheHelpers() {

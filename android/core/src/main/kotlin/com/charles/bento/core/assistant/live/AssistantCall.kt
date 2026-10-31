@@ -35,6 +35,8 @@ interface CallAudio {
     /** Starts the microphone; [onPcm] gets frames on the audio thread. False when it can't open. */
     fun start(onPcm: (ByteArray) -> Unit): Boolean
     fun play(pcm: ByteArray)
+    /** Plays a short tone over whatever is playing, at once; Gemini never hears it. */
+    fun cue(earcon: Earcon) {}
     /** Drops what hasn't played yet (the user spoke over Gemini). */
     fun flush()
     /** Reopens a microphone that has stopped giving audio; frames go on to the same callback. Any thread, without blocking. */
@@ -53,7 +55,8 @@ interface CallAudio {
  * Hermes session, after the request it's working on if it's still running. The call is
  * non-blocking, so Bento answers "started" at once and the result later as a second response
  * (scheduled WHEN_IDLE, so it waits for a pause). Gemini follows the tasks with `list_tasks`,
- * `check_task` and `cancel_task`, which Bento answers itself.
+ * `check_task` and `cancel_task`, which Bento answers itself. Gemini hears the start silently,
+ * so the call plays a tone of its own then, and another when a result arrives ([Earcon]).
  *
  * State is confined to one thread. Interrupting Gemini's speech flushes playback but
  * never cancels Hermes; [cancelTask] stops one task, and [stop] ends the call and every task.
@@ -223,6 +226,8 @@ class AssistantCall(
     private var skipTurn = false
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
+    /** When the call last played a tone: standby waits for quiet after it too. */
+    private var toneAt = 0.0
     private var speechUntil = 0.0
     /** Gemini's audio in its current turn, and whether any of it had sound. */
     private var turnBytes = 0
@@ -415,7 +420,7 @@ class AssistantCall(
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
         return after > 0 && running > 0 && settling == 0 && deliveries.isEmpty() && listening && !standby && !waking &&
-            !rotating && reconnect != null && t - maxOf(lastSpeech, speechUntil) >= after &&
+            !rotating && reconnect != null && t - maxOf(lastSpeech, speechUntil, toneAt) >= after &&
             // Gemini hasn't spoken what it was told yet: closing now would lose it (unless it stays silent for long).
             (unspokenSince?.let { t - it >= after * 3 } ?: true)
     }
@@ -934,7 +939,8 @@ class AssistantCall(
         // Cancelled while Gemini was being told it started: Hermes never gets it, and the call gets its last response now.
         if (!task.holds(run)) { closeCancelled(task, run); return }
         // Gemini dropped the call meanwhile: as with one dropped before, nothing runs, and the dropped call needs no answer.
-        if (run.callId in cancelledCalls) skip(task, run)
+        // Otherwise a tone says Hermes has it, since Gemini hears the start silently.
+        if (run.callId in cancelledCalls) skip(task, run) else cue(Earcon.TaskStarted)
         settled()
     }
 
@@ -970,9 +976,22 @@ class AssistantCall(
                 run.callId in cancelledCalls || run.session != session || standby || waking -> deliver(task, result)
                 else -> respond(run.callId, CallProtocol.taskResult(task.id, result), executed = true, task = task.id)
             }
+            // After deliver: in standby the call is coming back by now, so it plays ([cue]).
+            cue(Earcon.ResultArrived)
             if (!active || task.state != RUNNING || task.current !== run) return@launch
             if (advance(task)) settled() else { finished(task, FINISHED, result); afterTask() }
         }
+    }
+
+    /**
+     * A tone for the user, unless a dictation has the microphone or could borrow it while the tone
+     * plays: lent, or in standby and not coming back. Decided under [lending], so a [lend] either
+     * comes first (no tone) or fails; and the call doesn't stand by again until well after the tone.
+     */
+    private fun cue(earcon: Earcon) = synchronized(lending) {
+        if (lent || (standby && !waking)) return
+        audio.cue(earcon)
+        toneAt = now()
     }
 
     private fun finished(task: Task, state: String, result: String) {
