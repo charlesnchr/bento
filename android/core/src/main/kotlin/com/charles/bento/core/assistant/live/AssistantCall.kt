@@ -1,6 +1,7 @@
 package com.charles.bento.core.assistant.live
 
 import com.charles.bento.core.assistant.live.CallProtocol.Companion.str
+import com.charles.bento.core.voice.VoiceLog
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +28,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicLong
 
 /** The call's audio: microphone in (16 kHz PCM16) and the voice out (24 kHz PCM16). */
 interface CallAudio {
@@ -35,6 +37,8 @@ interface CallAudio {
     fun play(pcm: ByteArray)
     /** Drops what hasn't played yet (the user spoke over Gemini). */
     fun flush()
+    /** Reopens a microphone that has stopped giving audio; frames go on to the same callback. Any thread, without blocking. */
+    fun restartMicrophone()
     fun stop()
 }
 
@@ -69,6 +73,10 @@ interface CallAudio {
  * it's back ([reclaim]), hears none of it (nor wakes to it), and only then comes back for a task
  * that finished meanwhile.
  *
+ * A local audio hiccup never ends the call: microphone frames the call's thread can't keep up
+ * with drop the oldest, and a microphone that goes dead (nothing but exact zeros, or nothing at
+ * all) is restarted, and the user told ([microphoneSilent]) if that doesn't bring it back.
+ *
  * Gemini Live sends the user's words only once they stop speaking, so with [captions] the
  * microphone audio Gemini hears also goes to a transcriber whose growing guess is shown
  * meanwhile ([onCaption]). Display only: Gemini's transcript replaces it and is all Hermes gets.
@@ -94,7 +102,10 @@ class AssistantCall(
 ) {
     data class Limits(
         val connect: Double = 25.0,
-        val capture: Double = 5.0,
+        /** Seconds without a nonzero microphone sample (quiet rooms still have some noise), or any frame, before the microphone restarts. */
+        val deadMic: Double = 2.0,
+        /** Seconds between further restarts while it stays dead; the user is told once the first hasn't helped. */
+        val deadMicRetry: Double = 10.0,
         val tickMillis: Long = 1000,
         val settleQuiet: Double = 0.8,
         val settleMax: Double = 5.0,
@@ -127,10 +138,15 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    /** Microphone frames, each with the [lends] count it was captured under. */
-    private val mic = Channel<Pair<Int, ByteArray>>(24)
+    /** Microphone frames, each with the [lends] count it was captured under; when it's full the oldest goes ([offer]). */
+    private val mic = Channel<Pair<Int, ByteArray>>(MIC_FRAMES)
+    /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
+    private val droppedBytes = AtomicLong()
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     val status: StateFlow<Status> = _status.asStateFlow()
+    private val _microphoneSilent = MutableStateFlow(false)
+    /** The microphone has picked nothing up for a while, even after restarting: Gemini can't hear the user. Cleared once it does. */
+    val microphoneSilent: StateFlow<Boolean> = _microphoneSilent.asStateFlow()
 
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
     var onTranscript: ((String, String) -> Unit)? = null
@@ -150,7 +166,11 @@ class AssistantCall(
     private var resumeHandle: String? = null
     private var rotating = false
     private var started = 0.0
-    @Volatile private var lastCaptureAt: Double? = null
+    /** When the microphone last gave a frame with any sound in it (any nonzero sample). */
+    @Volatile private var heardAt = 0.0
+    /** Restarts of a dead microphone since it last gave sound, and when the latest was. */
+    private var micRestarts = 0
+    private var micRestartedAt = 0.0
     @Volatile private var mutedNow = false
     private var streamEnded = false
     private val cancelledCalls = HashSet<String>()
@@ -200,6 +220,9 @@ class AssistantCall(
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
     private var speechUntil = 0.0
+    /** Gemini's audio in its current turn, and whether any of it had sound. */
+    private var turnBytes = 0
+    private var turnAudible = false
     /** The caption on screen, and when the captioner's utterance it came from started. */
     private var captionText: String? = null
     private var captionShownFrom: Double? = null
@@ -348,13 +371,37 @@ class AssistantCall(
             if (!active) return
             val t = now()
             captionEndedAt?.let { if (t - it >= limits.captionLinger) takeDownCaption() }
+            droppedBytes.getAndSet(0).takeIf { it > 0 }?.let { VoiceLog.w(TAG, "the call fell behind the microphone: dropped ${it / 32} ms of audio") }
+            watchMicrophone(t)
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
-                listening && !lent && t - (lastCaptureAt ?: started) >= limits.capture -> { fail("The microphone stopped delivering audio. The call ended."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
             }
         }
+    }
+
+    /**
+     * A microphone that gives only exact zeros, or nothing, has died (the emulator's did mid-call)
+     * or been silenced: it restarts, and if that doesn't help the user is told and it keeps
+     * restarting now and then. The call and its tasks go on regardless. A lent one is the
+     * dictation's business, and time Gemini's voice is playing doesn't count, since an echo
+     * canceller may zero the microphone meanwhile.
+     */
+    private fun watchMicrophone(t: Double) {
+        if (!listening || lent) return
+        if (micRestarts > 0 && heardAt > micRestartedAt) {
+            VoiceLog.i(TAG, "the microphone is giving audio again")
+            micRestarts = 0
+            _microphoneSilent.value = false
+        }
+        val quiet = t - maxOf(heardAt, micRestartedAt, speechUntil)
+        if (quiet < if (micRestarts < 2) limits.deadMic else limits.deadMicRetry) return
+        micRestarts++
+        micRestartedAt = t
+        if (micRestarts >= 2) _microphoneSilent.value = true
+        VoiceLog.w(TAG, "no sound from the microphone for ${quiet.toInt()}s: restarting it (attempt $micRestarts)")
+        audio.restartMicrophone()
     }
 
     /**
@@ -422,7 +469,7 @@ class AssistantCall(
         synchronized(lending) {
             if (!lent) return
             // The microphone may have gone quiet while shared: the watchdog starts counting afresh.
-            lastCaptureAt = now()
+            heardAt = now()
             lent = false
             lends++
         }
@@ -631,6 +678,7 @@ class AssistantCall(
             }
         }
         if ((content["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
+            turnAudio()
             audio.flush()
             speechUntil = now() // the flushed speech won't play
             geminiSpeaking = false // the turn it was in is over
@@ -646,11 +694,14 @@ class AssistantCall(
                 fail("Gemini sent audio Bento can't play. Start a new call."); return
             }
             audio.play(pcm)
+            turnBytes += pcm.size
+            if (!silent(pcm)) turnAudible = true
             geminiSpoke()
             // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
             speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
         }
         if ((content["turnComplete"] as? JsonPrimitive)?.booleanOrNull == true) {
+            turnAudio()
             if (spokeSince) unspokenSince = null
             geminiSpeaking = false
             skipTurn = false
@@ -669,10 +720,20 @@ class AssistantCall(
         }
     }
 
+    /**
+     * At the end of Gemini's turn: says so in the log if all its audio was exact zeros, so a reply
+     * nobody heard can be told apart from one the phone failed to play.
+     */
+    private fun turnAudio() {
+        if (turnBytes >= 24_000 && !turnAudible) VoiceLog.w(TAG, "Gemini's audio for its turn was silent (${turnBytes / 48} ms)")
+        turnBytes = 0
+        turnAudible = false
+    }
+
     private fun listen() {
         if (listening) return
         listening = true
-        lastCaptureAt = now()
+        heardAt = now()
         scope.launch {
             for ((captured, pcm) in mic) {
                 if (!active) return@launch
@@ -684,12 +745,20 @@ class AssistantCall(
             }
         }
         val ok = audio.start { pcm ->
-            lastCaptureAt = now()
+            if (!silent(pcm)) heardAt = now()
             if (mutedNow) return@start
-            if (mic.trySend(lends to pcm).isFailure) scope.launch { fail("Microphone streaming fell behind. The call ended.") }
+            offer(lends to pcm)
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
+    }
+
+    /** Queues a microphone frame for the call's thread; one behind (a busy phone) loses the oldest audio, never the call. Audio thread. */
+    private fun offer(frame: Pair<Int, ByteArray>) {
+        val result = mic.trySend(frame)
+        if (result.isSuccess || result.isClosed) return
+        mic.tryReceive().getOrNull()?.let { droppedBytes.addAndGet(it.second.size.toLong()) }
+        if (mic.trySend(frame).isFailure && !mic.isClosedForSend) droppedBytes.addAndGet(frame.second.size.toLong())
     }
 
     private fun caption(caption: Caption) {
@@ -1042,7 +1111,10 @@ class AssistantCall(
     }
 
     companion object {
+        private const val TAG = "AssistantCall"
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
+        /** Two seconds of 20 ms microphone frames: a burst that big waits for the call's thread rather than being dropped. */
+        const val MIC_FRAMES = 100
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
         /**
          * Seconds after its ACTIVITY_END a turn's transcript can still come (they came 0.01 s apart on
@@ -1060,6 +1132,12 @@ class AssistantCall(
         /** Finished tasks beyond this many are forgotten, oldest first. */
         const val MAX_TASKS = 32
         const val PROGRESS_LIMIT = 300
+
+        /** Exact digital silence: no microphone gives that for long, even in a quiet room. */
+        private fun silent(pcm: ByteArray): Boolean {
+            for (b in pcm) if (b != 0.toByte()) return false
+            return true
+        }
 
         fun audioFrame(pcm: ByteArray): String = buildJsonObject {
             putJsonObject("realtimeInput") {

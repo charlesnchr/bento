@@ -14,6 +14,8 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import com.charles.bento.core.assistant.live.CallAudio
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -25,19 +27,24 @@ import java.util.concurrent.atomic.AtomicLong
  * speaker and interrupt itself), and playback routed to a headset when one is connected,
  * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16. It holds
  * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost].
+ *
+ * Neither side's failure takes the other down: a microphone that fails to read, or that the
+ * call restarts ([restartMicrophone]), is reopened while playback goes on, and a speaker whose
+ * track dies (the audio server restarted, say) gets a new one while the microphone goes on.
  */
 class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}) : CallAudio {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val queue = LinkedBlockingQueue<ByteArray>()
     private val queued = AtomicLong()
     @Volatile private var running = false
-    /** Between a successful start and stop, even if the microphone gave out (running is then false). */
+    /** Between a successful start and stop. */
     private var started = false
     @Volatile private var flushRequested = false
-    private var record: AudioRecord? = null
-    private var track: AudioTrack? = null
+    /** The microphone is to be reopened: it read an error, or the call heard nothing from it. */
+    @Volatile private var reopenRequested = false
+    /** The microphone's recorder, owned by the capture thread; others only stop it, to end a read stuck on a stalled input. */
+    @Volatile private var record: AudioRecord? = null
     private var previousMode = AudioManager.MODE_NORMAL
-    private val effects = ArrayList<AudioEffect>()
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -47,13 +54,35 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         }
         .build()
 
-    @SuppressLint("MissingPermission") // the screen asks for the microphone before a call starts
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
         if (started) return true
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) return false
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         route()
+        val input = openInput() ?: run { restore(); return false }
+        val t = openTrack(input.record.audioSessionId) ?: run { input.release(); restore(); return false }
+        t.play()
+        record = input.record
+        running = true
+        started = true
+        Thread({ captureLoop(input, onPcm) }, "bento-call-mic").start()
+        Thread({ playbackLoop(t) }, "bento-call-speaker").start()
+        return true
+    }
+
+    /** A recorder and the effects on its session. */
+    private class Input(val record: AudioRecord, val effects: List<AudioEffect>) {
+        fun release() {
+            effects.forEach { runCatching { it.release() } }
+            runCatching { record.stop() }
+            record.release()
+        }
+    }
+
+    /** The voice-call microphone with the platform's echo canceller and noise suppressor, recording; null if it won't open. */
+    @SuppressLint("MissingPermission") // the screen asks for the microphone before a call starts
+    private fun openInput(): Input? {
         val minIn = AudioRecord.getMinBufferSize(IN_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val r = runCatching {
             AudioRecord.Builder()
@@ -63,9 +92,18 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                 .setBufferSizeInBytes(maxOf(minIn, IN_RATE * 2))
                 .build()
         }.getOrNull()
-        if (r == null || r.state != AudioRecord.STATE_INITIALIZED) { r?.release(); restore(); return false }
+        if (r == null || r.state != AudioRecord.STATE_INITIALIZED) { r?.release(); return null }
+        val effects = ArrayList<AudioEffect>()
         if (AcousticEchoCanceler.isAvailable()) runCatching { AcousticEchoCanceler.create(r.audioSessionId)?.also { it.enabled = true; effects.add(it) } }
         if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(r.audioSessionId)?.also { it.enabled = true; effects.add(it) } }
+        val input = Input(r, effects)
+        runCatching { r.startRecording() }.onFailure { input.release(); return null }
+        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) { input.release(); return null }
+        return input
+    }
+
+    /** Gemini's voice, on the microphone's session so the echo canceller pairs them; null if it won't open. */
+    private fun openTrack(session: Int): AudioTrack? {
         val minOut = AudioTrack.getMinBufferSize(OUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = runCatching {
             AudioTrack.Builder()
@@ -75,19 +113,11 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setBufferSizeInBytes(maxOf(minOut, OUT_RATE / 5 * 2)) // ~200 ms: short, so an interruption is heard at once
-                .setSessionId(r.audioSessionId)
+                .setSessionId(session)
                 .build()
         }.getOrNull()
-        if (t == null || t.state != AudioTrack.STATE_INITIALIZED) { t?.release(); r.release(); restore(); return false }
-        runCatching { r.startRecording() }.onFailure { r.release(); t.release(); restore(); return false }
-        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) { r.release(); t.release(); restore(); return false }
-        t.play()
-        record = r; track = t
-        running = true
-        started = true
-        Thread({ captureLoop(r, onPcm) }, "bento-call-mic").start()
-        Thread({ playbackLoop(t) }, "bento-call-speaker").start()
-        return true
+        if (t == null || t.state != AudioTrack.STATE_INITIALIZED) { t?.release(); return null }
+        return t
     }
 
     /** A headset (Bluetooth, wired, USB) when there is one, else the loudspeaker: never the earpiece. */
@@ -101,46 +131,78 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         runCatching { audio.setCommunicationDevice(device) }
     }
 
-    private fun captureLoop(r: AudioRecord, onPcm: (ByteArray) -> Unit) {
+    private fun captureLoop(first: Input, onPcm: (ByteArray) -> Unit) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val frame = ByteArray(FRAME_BYTES)
+        var input: Input? = first
+        var reopenedAt = 0L
         try {
             while (running) {
+                if (input == null || reopenRequested) {
+                    // A fresh recorder, its own session and effects; the speaker's track stays on the first one's session.
+                    reopenRequested = false
+                    record = null
+                    input?.release()
+                    input = null
+                    // One that fails as soon as it opens isn't reopened again at once.
+                    SystemClock.sleep(maxOf(0L, reopenedAt + REOPEN_MILLIS - SystemClock.elapsedRealtime()))
+                    if (!running) break
+                    reopenedAt = SystemClock.elapsedRealtime()
+                    input = openInput()
+                    record = input?.record
+                    Log.i(TAG, if (input != null) "reopened the microphone" else "the microphone won't reopen; trying again")
+                    continue
+                }
                 var filled = 0
-                while (filled < frame.size && running) {
-                    val n = r.read(frame, filled, frame.size - filled)
-                    if (n <= 0) { if (n < 0) running = false; break }
+                while (filled < frame.size && running && !reopenRequested) {
+                    val n = input.record.read(frame, filled, frame.size - filled)
+                    if (n < 0) { Log.w(TAG, "the microphone failed to read ($n)"); reopenRequested = true }
+                    if (n <= 0) break
                     filled += n
                 }
-                if (filled == frame.size && running) onPcm(frame.copyOf())
+                if (filled == frame.size && running && !reopenRequested) onPcm(frame.copyOf())
             }
         } finally {
-            runCatching { r.stop() }
-            r.release()
+            record = null
+            input?.release()
         }
     }
 
-    private fun playbackLoop(t: AudioTrack) {
+    private fun playbackLoop(first: AudioTrack) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        val session = first.audioSessionId
+        var t: AudioTrack? = first
+        var reopenAt = 0L
         try {
             while (running) {
                 if (flushRequested) {
                     flushRequested = false
-                    runCatching { t.pause(); t.flush(); t.play() }
+                    t?.let { runCatching { it.pause(); it.flush(); it.play() } }
                 }
                 val pcm = queue.poll(50, TimeUnit.MILLISECONDS) ?: continue
                 queued.addAndGet(-pcm.size.toLong())
+                if (t == null && SystemClock.elapsedRealtime() >= reopenAt) {
+                    t = openTrack(session)?.also { it.play() }
+                    if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
+                    Log.i(TAG, if (t != null) "reopened the speaker" else "the speaker won't reopen; dropping audio meanwhile")
+                }
+                val track = t ?: continue
                 // In 20 ms slices, so a flush requested mid-reply takes effect at once.
                 var at = 0
                 while (at < pcm.size && running && !flushRequested) {
-                    val n = t.write(pcm, at, minOf(SLICE_BYTES, pcm.size - at), AudioTrack.WRITE_BLOCKING)
+                    val n = track.write(pcm, at, minOf(SLICE_BYTES, pcm.size - at), AudioTrack.WRITE_BLOCKING)
+                    if (n < 0) {
+                        // A dead track plays nothing ever again: the next audio gets a new one, and the rest of this goes.
+                        Log.w(TAG, "the speaker failed to play ($n); reopening it")
+                        runCatching { track.release() }
+                        t = null
+                    }
                     if (n <= 0) break
                     at += n
                 }
             }
         } finally {
-            runCatching { t.stop() }
-            t.release()
+            t?.let { runCatching { it.stop() }; it.release() }
         }
     }
 
@@ -158,29 +220,37 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         flushRequested = true
     }
 
+    override fun restartMicrophone() {
+        if (!running) return
+        reopenRequested = true
+        // A read waiting on a stalled input returns once its recorder stops.
+        runCatching { record?.stop() }
+    }
+
     override fun stop() {
         if (!started) return // a start that failed has already put everything back
         started = false
         running = false
+        runCatching { record?.stop() }
         queue.clear()
         queued.set(0)
-        record = null; track = null
         restore()
     }
 
     private fun restore() {
-        effects.forEach { runCatching { it.release() } }
-        effects.clear()
         runCatching { audio.abandonAudioFocusRequest(focus) }
         runCatching { audio.clearCommunicationDevice() }
         audio.mode = previousMode
     }
 
     companion object {
+        private const val TAG = "BentoCallAudio"
         const val IN_RATE = 16_000
         const val OUT_RATE = 24_000
         private const val FRAME_BYTES = IN_RATE / 50 * 2 // 20 ms
         private const val SLICE_BYTES = OUT_RATE / 50 * 2
         private const val MAX_QUEUED_BYTES = OUT_RATE * 2L * 120
+        /** How long a microphone or speaker that won't reopen waits before trying again. */
+        private const val REOPEN_MILLIS = 1_000L
     }
 }
