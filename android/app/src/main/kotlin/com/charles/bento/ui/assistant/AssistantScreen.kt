@@ -545,10 +545,16 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (c.connecting || c.standby) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else if (c.micSilent) Icon(Icons.Rounded.MicOff, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                 else Icon(Icons.Rounded.GraphicEq, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(10.dp))
-                Text(if (c.tapToTalk && !c.connecting && !c.standby && !c.muted) "Talking… tap when you're done" else c.status,
-                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(when {
+                         c.micSilent -> "The microphone isn't picking anything up, so Gemini can't hear you."
+                         c.tapToTalk && !c.connecting && !c.standby && !c.muted -> "Talking… tap when you're done"
+                         else -> c.status
+                     },
+                     style = MaterialTheme.typography.bodyMedium,
+                     color = if (c.micSilent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 if (c.standby) {

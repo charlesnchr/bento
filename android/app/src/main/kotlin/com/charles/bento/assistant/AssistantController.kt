@@ -60,6 +60,8 @@ data class CallUi(
     val muted: Boolean,
     /** Off Gemini while Hermes works ([AssistantCall.Status.Standby]). */
     val standby: Boolean = false,
+    /** The microphone picks nothing up, even restarted ([AssistantCall.microphoneSilent]). */
+    val micSilent: Boolean = false,
     /** The call's Hermes tasks, in the order they started. */
     val tasks: List<TaskUi> = emptyList(),
 )
@@ -497,6 +499,7 @@ class AssistantController(
             call = c
             voiceBoundary = true
             c.start()
+            launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
             c.status.collect { status ->
                 when (status) {
                     AssistantCall.Status.Connecting -> Unit

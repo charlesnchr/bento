@@ -1,6 +1,7 @@
 package com.charles.bento.core.assistant.live
 
 import com.charles.bento.core.voice.FakeTransport
+import com.charles.bento.core.voice.VoiceLog
 import com.charles.bento.core.voice.Frames
 import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.json
@@ -28,7 +29,10 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** A microphone that delivers 20 ms frames until stopped (silence, or speech-loud while [loud]), and a speaker that records. */
+/**
+ * A microphone that delivers 20 ms frames until stopped (a quiet room's faint noise, speech-loud
+ * while [loud], exact zeros while [dead]), and a speaker that records.
+ */
 private class FakeAudio(private val delivers: Boolean = true, private val opens: Boolean = true) : CallAudio {
     val played = CopyOnWriteArrayList<ByteArray>()
     @Volatile var loud = false
@@ -41,6 +45,11 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     @Volatile var started = false
     /** The microphone delivers nothing meanwhile, as one silenced by another recording might. */
     @Volatile var quiet = false
+    /** The microphone gives exact zeros, as a dead one does. */
+    @Volatile var dead = false
+    /** A restart brings a dead microphone back. */
+    @Volatile var healsOnRestart = false
+    @Volatile var restarts = 0
     private var thread: Thread? = null
 
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
@@ -49,7 +58,11 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
         if (delivers) thread = Thread {
             while (!stopped) {
                 if (!quiet) {
-                    val frame = if (loud) LOUD.copyOf() else ByteArray(640)
+                    val frame = when {
+                        loud -> LOUD.copyOf()
+                        dead -> ByteArray(640)
+                        else -> QUIET.copyOf()
+                    }
                     if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
                     onPcm(frame)
                 }
@@ -61,9 +74,15 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
 
     override fun play(pcm: ByteArray) { played.add(pcm) }
     override fun flush() { flushes++ }
+    override fun restartMicrophone() {
+        restarts++
+        if (healsOnRestart) { dead = false; quiet = false }
+    }
     override fun stop() { stopped = true }
 
     companion object {
+        /** A quiet room: the odd sample of noise, never exact zeros. */
+        val QUIET = ByteArray(640) { i -> if (i % 64 == 0) 1 else 0 }
         /** A square wave at a quarter of full scale: speech as far as the level goes. */
         val LOUD = ByteArray(640) { i -> if (i % 2 == 0) 0 else if ((i / 32) % 2 == 0) 0x20 else 0xE0.toByte() }
     }
@@ -774,11 +793,149 @@ class AssistantCallTest {
         call.stop()
     }
 
-    @Test fun aSilentMicrophoneEndsTheCall() = blocking {
-        val call = AssistantCall(FakeTransport(listOf(Frames.setupComplete())), FakeAudio(delivers = false), null, { "" },
-                                 limits = fast.copy(capture = 0.3))
+    /** What the call logs while [block] runs. */
+    private suspend fun logged(block: suspend () -> Unit): List<String> {
+        val logs = CopyOnWriteArrayList<String>()
+        VoiceLog.sink = { _, tag, message -> if (tag == "AssistantCall") logs.add(message) }
+        try { block() } finally { VoiceLog.sink = null }
+        return logs
+    }
+
+    private fun FakeTransport.micNumbers(): List<Int> = sent.filter { "realtimeInput" in it && "\"audio\"" in it }.map { frame ->
+        val data = Json.parseToJsonElement(frame).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+        java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
+    }
+
+    @Test fun aMicrophoneTheCallFallsBehindLosesItsOldestAudioNotTheCall() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { numbered = true }
+        val result = CompletableDeferred<String>()
+        val call = AssistantCall(transport, audio, null, { result.await() }, limits = fast)
+        val logs = logged {
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "What's the weather?"); transport.push(Live.call("c1"))
+            transport.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+            // The socket stalls for three seconds: 150 frames, more than the call holds.
+            val stall = CompletableDeferred<Unit>()
+            transport.beforeSend = { if ("realtimeInput" in it) stall.await() }
+            delay(3_000)
+            transport.beforeSend = null
+            stall.complete(Unit)
+            val stalledAt = transport.micNumbers().size
+            transport.awaitSent { transport.micNumbers().size >= stalledAt + AssistantCall.MIC_FRAMES + 20 }
+            delay(1_200) // a watchdog tick logs the loss
+        }
+        assertFalse(call.status.value is AssistantCall.Status.Ended, "the call goes on")
+        assertTrue(logs.any { "dropped" in it }, "the loss is logged: $logs")
+        val numbers = transport.micNumbers()
+        assertEquals(numbers.sorted(), numbers, "nothing reordered")
+        val gaps = numbers.zipWithNext().filter { (a, b) -> b != a + 1 }
+        assertEquals(1, gaps.size, "one run of the oldest frames dropped: $gaps")
+        // Hermes's task was never cancelled: its result still reaches Gemini.
+        result.complete("Sunny.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        assertEquals("ok", transport.finals().single().status())
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aDeadMicrophoneIsRestarted() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { healsOnRestart = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(deadMic = 0.3))
         call.start()
-        assertEquals("The microphone stopped delivering audio. The call ended.", call.ended().message)
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        delay(600)
+        assertEquals(0, audio.restarts, "a quiet room isn't a dead microphone")
+        audio.dead = true
+        withTimeout(5_000) { while (audio.restarts == 0) delay(20) }
+        delay(600)
+        assertEquals(1, audio.restarts, "back after one restart")
+        assertFalse(call.microphoneSilent.value)
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+    }
+
+    @Test fun aMicrophoneThatStaysDeadIsShownAndTheCallAndItsTasksGoOn() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val result = CompletableDeferred<String>()
+        val call = AssistantCall(transport, audio, null, { result.await() }, limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3, deadMicRetry = 0.5))
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Book a table"); transport.push(Live.call("c1"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        audio.dead = true
+        withTimeout(5_000) { call.microphoneSilent.first { it } }
+        assertTrue(audio.restarts >= 2, "told only after a restart didn't help")
+        withTimeout(5_000) { while (audio.restarts < 3) delay(20) }
+        assertEquals(AssistantCall.Status.Working, call.status.value)
+        result.complete("Booked.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        assertEquals("ok", transport.finals().single().status())
+        audio.dead = false
+        withTimeout(5_000) { call.microphoneSilent.first { !it } }
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aMicrophoneThatDeliversNothingIsRestartedNotHungUp() = blocking {
+        val audio = FakeAudio(delivers = false)
+        val call = AssistantCall(FakeTransport(listOf(Frames.setupComplete())), audio, null, { "" },
+                                 limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3, deadMicRetry = 0.5))
+        call.start()
+        withTimeout(5_000) { call.microphoneSilent.first { it } }
+        assertTrue(audio.restarts >= 2)
+        assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+    }
+
+    @Test fun aDeadMicrophoneLentToADictationAndBackIsStillShown() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { FakeTransport(listOf(Frames.setupComplete())) }, result, audio = audio,
+                                   limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        audio.dead = true
+        withTimeout(5_000) { call.microphoneSilent.first { it } }
+        assertTrue(call.lend())
+        call.reclaim()
+        delay(400)
+        assertTrue(call.microphoneSilent.value, "taking the microphone back brings no sound back")
+        call.stop()
+    }
+
+    @Test fun zerosWhileGeminiSpeaksDontCount() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(deadMic = 0.3))
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        // Two seconds of Gemini's voice, through which an echo canceller zeroes the microphone.
+        audio.dead = true
+        transport.push(Live.audio(ByteArray(96_000) { 1 }))
+        delay(1_500)
+        assertEquals(0, audio.restarts)
+        withTimeout(5_000) { while (audio.restarts == 0) delay(20) }
+        call.stop()
+    }
+
+    @Test fun aSilentReplyFromGeminiIsLogged() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast)
+        val logs = logged {
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            transport.push(Live.audio(ByteArray(48_000)))
+            transport.push(json("serverContent" to mapOf("turnComplete" to true)))
+            transport.push(Live.audio(ByteArray(48_000) { 1 }))
+            transport.push(json("serverContent" to mapOf("turnComplete" to true)))
+            delay(300)
+        }
+        assertEquals(listOf("Gemini's audio for its turn was silent (1000 ms)"), logs)
+        call.stop()
     }
 
     @Test fun aMicrophoneThatWontOpen() = blocking {
@@ -1058,12 +1215,13 @@ class AssistantCallTest {
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
         val audio = FakeAudio()
-        val call = waitingOnHermes(first, { second }, result, audio = audio, limits = fast.copy(capture = 0.3))
+        val call = waitingOnHermes(first, { second }, result, audio = audio, limits = fast.copy(deadMic = 0.3))
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         assertTrue(call.lend())
         audio.quiet = true
         delay(800)
         assertEquals(AssistantCall.Status.Standby, call.status.value)
+        assertEquals(0, audio.restarts, "a dictation has it")
         audio.quiet = false
         call.reclaim()
         result.complete("Done.")
