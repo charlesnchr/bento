@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.VoiceOverOff
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.Add
@@ -180,7 +181,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         // A running call always keeps its bar (and its End button), whatever happens to the setup.
         val c = state.call
         if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onEnd = { assistant.endCall() },
-                               onOpenTask = { shownTask = it })
+                               onInterrupt = assistant::interruptCall, onOpenTask = { shownTask = it })
         else if (configured) {
             ModelPicker(assistant)
             Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
@@ -532,7 +533,7 @@ private fun MenuChoice(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onOpenTask: (String) -> Unit) {
+private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onInterrupt: () -> Unit, onOpenTask: (String) -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (c.tasks.isNotEmpty()) {
@@ -572,6 +573,14 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                 } else {
                     FilledTonalIconButton(onClick = onMute, enabled = !c.connecting, modifier = Modifier.size(56.dp)) {
                         Icon(if (c.muted) Icons.Rounded.MicOff else Icons.Rounded.Mic, if (c.muted) "Unmute" else "Mute")
+                    }
+                }
+                // On the loudspeaker talking over Gemini doesn't stop it (its own voice would): this does.
+                if (!c.voiceInterrupts && !c.standby && !c.connecting) {
+                    FilledTonalButton(onClick = onInterrupt, enabled = c.geminiSpeaking, modifier = Modifier.heightIn(min = 56.dp).testTag("assistant-interrupt")) {
+                        Icon(Icons.Rounded.VoiceOverOff, null, Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Interrupt")
                     }
                 }
                 // Ends the call and every task still running; each task's sheet cancels it alone.

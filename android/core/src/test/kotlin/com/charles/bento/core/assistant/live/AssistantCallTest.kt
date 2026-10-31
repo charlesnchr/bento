@@ -50,6 +50,9 @@ private class FakeAudio(private val delivers: Boolean = true, private val opens:
     /** A restart brings a dead microphone back. */
     @Volatile var healsOnRestart = false
     @Volatile var restarts = 0
+    /** The voice plays from the loudspeaker, not a headset. */
+    @Volatile var speaker = false
+    override val loudspeaker: Boolean get() = speaker
     private var thread: Thread? = null
 
     override fun start(onPcm: (ByteArray) -> Unit): Boolean {
@@ -115,6 +118,7 @@ private object Live {
     fun audio(bytes: ByteArray, mime: String = AssistantCall.OUTPUT_MIME) =
         json("serverContent" to mapOf("modelTurn" to mapOf("parts" to listOf(mapOf("inlineData" to mapOf("mimeType" to mime, "data" to Base64.getEncoder().encodeToString(bytes)))))))
     fun interrupted() = json("serverContent" to mapOf("interrupted" to true))
+    fun turnComplete() = json("serverContent" to mapOf("turnComplete" to true))
     fun resumable(handle: String) = json("sessionResumptionUpdate" to mapOf("newHandle" to handle, "resumable" to true))
     const val GO_AWAY = """{"goAway":{"timeLeft":"10s"}}"""
 }
@@ -775,6 +779,180 @@ class AssistantCallTest {
         assertEquals("Gemini sent audio Bento can't play. Start a new call.", call.ended().message)
     }
 
+    private fun FakeTransport.setup(index: Int = 0) = Json.parseToJsonElement(sent.filter { "\"setup\"" in it }[index]).jsonObject["setup"]!!.jsonObject
+
+    private fun JsonObject.activityHandling() = this["realtimeInputConfig"]?.jsonObject?.get("activityHandling")?.jsonPrimitive?.content
+
+    private fun FakeTransport.audioSent() = sent.count { "realtimeInput" in it && "audio/pcm" in it }
+
+    @Test fun onTheLoudspeakerSpeechDoesntInterruptGemini() = blocking {
+        for (speaker in listOf(true, false)) {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val call = AssistantCall(transport, FakeAudio().apply { this.speaker = speaker }, null, { "" }, limits = fast)
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            assertEquals(if (speaker) "NO_INTERRUPTION" else null, transport.setup().activityHandling())
+            assertEquals(!speaker, call.voiceInterrupts.value)
+            call.stop()
+            call.ended()
+        }
+    }
+
+    @Test fun interruptStopsGeminisSpeechAndTheRestOfItsTurn() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { speaker = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        call.interrupt() // nothing to stop yet
+        transport.push(Live.audio(ByteArray(96_000) { 1 })) // 2 s
+        withTimeout(5_000) { call.speaking.first { it } }
+        call.interrupt()
+        withTimeout(5_000) { call.speaking.first { !it } }
+        assertEquals(1, audio.flushes)
+        // The rest of the turn is never played, however much of it is still to come.
+        transport.push(Live.audio(ByteArray(4_800) { 2 }))
+        transport.push(Live.said("and so on"))
+        transport.push(Live.turnComplete())
+        // Gemini's next turn is heard.
+        transport.push(Live.audio(ByteArray(4_800) { 3 }))
+        withTimeout(5_000) { while (audio.played.size < 2) delay(10) }
+        assertEquals(listOf<Byte>(1, 3), audio.played.map { it[0] })
+        call.stop()
+        call.ended()
+    }
+
+    @Test fun anAnswerQueuedBehindTheStoppedSpeechStillPlaysWhole() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { speaker = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        // Turn A, generated well ahead of playing; the user talks over it and Gemini's answer B queues behind.
+        transport.push(Live.audio(ByteArray(96_000) { 1 })) // 2 s
+        transport.push(Live.turnComplete())
+        transport.push(Live.audio(ByteArray(4_800) { 2 }))
+        withTimeout(5_000) { while (audio.played.size < 2) delay(10) }
+        call.interrupt()
+        withTimeout(5_000) { while (audio.flushes == 0) delay(10) }
+        // B plays again from its start, and the rest of it as it comes.
+        transport.push(Live.audio(ByteArray(4_800) { 3 }))
+        withTimeout(5_000) { while (audio.played.size < 4) delay(10) }
+        assertEquals(listOf<Byte>(1, 2, 2, 3), audio.played.map { it[0] })
+        assertTrue(call.speaking.value)
+        // Stopped again, it stops: it isn't played a third time, nor is the rest of it.
+        call.interrupt()
+        withTimeout(5_000) { while (audio.flushes < 2) delay(10) }
+        transport.push(Live.audio(ByteArray(4_800) { 4 }))
+        transport.push(Live.turnComplete())
+        transport.push(Live.audio(ByteArray(4_800) { 5 }))
+        withTimeout(5_000) { while (audio.played.size < 5) delay(10) }
+        assertEquals(listOf<Byte>(1, 2, 2, 3, 5), audio.played.map { it[0] })
+        call.stop()
+        call.ended()
+    }
+
+    @Test fun anInterruptionByGeminiEndsTheDroppedTurnToo() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { speaker = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        transport.push(Live.audio(ByteArray(48_000) { 1 }))
+        withTimeout(5_000) { call.speaking.first { it } }
+        call.interrupt()
+        withTimeout(5_000) { while (audio.flushes == 0) delay(10) }
+        transport.push(Live.interrupted())
+        transport.push(Live.audio(ByteArray(4_800) { 3 }))
+        withTimeout(5_000) { while (audio.played.size < 2) delay(10) }
+        assertEquals(listOf<Byte>(1, 3), audio.played.map { it[0] })
+        call.stop()
+    }
+
+    @Test fun unmutingStopsGeminiOnlyWhereTalkingWouldnt() = blocking {
+        for (speaker in listOf(true, false)) {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio().apply { this.speaker = speaker }
+            val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+            call.muted = true
+            call.start()
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+            transport.push(Live.audio(ByteArray(96_000) { 1 }))
+            withTimeout(5_000) { call.speaking.first { it } }
+            call.muted = false
+            if (speaker) withTimeout(5_000) { call.speaking.first { !it } } else delay(200)
+            assertEquals(if (speaker) 1 else 0, audio.flushes)
+            call.stop()
+            call.ended()
+        }
+    }
+
+    @Test fun unmutingWhileGeminiIsSilentMidTurnDropsNothing() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { speaker = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.muted = true
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // "Let me check", then a pause in the same turn (a tool call, say) while it has finished playing.
+        transport.push(Live.audio(ByteArray(2_400) { 1 }))
+        withTimeout(5_000) { while (audio.played.isEmpty()) delay(10) }
+        delay(200)
+        call.muted = false
+        delay(100)
+        transport.push(Live.audio(ByteArray(2_400) { 2 }))
+        withTimeout(5_000) { while (audio.played.size < 2) delay(10) }
+        assertEquals(0, audio.flushes)
+        call.stop()
+        call.ended()
+    }
+
+    @Test fun unmutingJustAfterTheHeadsetGoesStopsGemini() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        // A watchdog tick far off: only the unmute itself can see the headset has gone.
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(tickMillis = 60_000))
+        call.muted = true
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        transport.push(Live.audio(ByteArray(96_000) { 1 }))
+        withTimeout(5_000) { while (audio.played.isEmpty()) delay(10) }
+        assertTrue(call.voiceInterrupts.value)
+        audio.speaker = true
+        call.muted = false
+        withTimeout(5_000) { while (audio.flushes == 0) delay(10) }
+        assertFalse(call.voiceInterrupts.value)
+        call.stop()
+        call.ended()
+    }
+
+    @Test fun aSessionSetUpForAHeadsetHearsNothingWhileGeminiSpeaksOnTheLoudspeaker() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertNull(transport.setup().activityHandling())
+        // On a headset the user talks over Gemini.
+        transport.push(Live.audio(ByteArray(24_000))) // 0.5 s
+        withTimeout(5_000) { call.speaking.first { it } }
+        var before = transport.audioSent()
+        delay(200)
+        assertTrue(transport.audioSent() > before, "a headset's microphone goes on while Gemini speaks")
+        withTimeout(5_000) { call.speaking.first { !it } }
+        // The headset goes: the session can't change, so Gemini hears nothing while its voice plays and a moment after.
+        audio.speaker = true
+        withTimeout(5_000) { call.voiceInterrupts.first { !it } }
+        transport.push(Live.audio(ByteArray(24_000)))
+        withTimeout(5_000) { call.speaking.first { it } }
+        before = transport.audioSent()
+        delay(600)
+        assertEquals(before, transport.audioSent(), "nothing while Gemini's voice plays and its tail")
+        transport.awaitSent { transport.audioSent() > before } // then the microphone again
+        call.stop()
+        call.ended()
+    }
+
     @Test fun mutingPausesTheStream() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast)
@@ -1095,6 +1273,38 @@ class AssistantCallTest {
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
         call.stop()
         assertNull(call.ended().message)
+    }
+
+    @Test fun aRouteChangeAppliesToTheSessionBackFromStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { second }, CompletableDeferred(), audio = audio)
+        assertNull(first.setup().activityHandling())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        audio.speaker = true
+        call.wake()
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals("NO_INTERRUPTION", second.setup().activityHandling())
+        assertFalse(call.voiceInterrupts.value)
+        call.stop()
+    }
+
+    @Test fun aResumedSessionKeepsHowItWasSetUp() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { speaker = true }
+        val call = AssistantCall(first, audio, null, { "" }, limits = fast, reconnect = { second })
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        // A headset now, but Gemini keeps a session's setup when it resumes, so the call says what it has.
+        audio.speaker = false
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertEquals("h1", second.setup()["sessionResumption"]!!.jsonObject["handle"]!!.jsonPrimitive.content)
+        assertEquals("NO_INTERRUPTION", second.setup().activityHandling())
+        assertFalse(call.voiceInterrupts.value)
+        call.stop()
     }
 
     @Test fun talkingFirstBringsTheCallBackAndTheAnswerFollowsAsATurn() = blocking {
@@ -2075,6 +2285,13 @@ class CallSetupTest {
         assertTrue(CallSetup.INSTRUCTION.startsWith(macInstruction.substringBefore(" Call it once per request")
                                                         .replace(CallSetup.MAC_WORDS_RULE, CallSetup.PHONE_WORDS_RULE)),
                    "the opening, up to the Mac's one-task wording, is the Mac's")
+    }
+
+    @Test fun onTheLoudspeakerTheSetupOnlyStopsSpeechInterruptingGemini() {
+        val speaker = Json.parseToJsonElement(CallSetup.setupFrame(bargeIn = false)).jsonObject["setup"]!!.jsonObject
+        assertEquals("NO_INTERRUPTION", speaker["realtimeInputConfig"]!!.jsonObject["activityHandling"]!!.jsonPrimitive.content)
+        assertNull(phone["realtimeInputConfig"], "a headset keeps Gemini's default: speech interrupts it")
+        assertEquals(phone, JsonObject(speaker - "realtimeInputConfig"))
     }
 
     @Test fun askHermesIsTheMacsToolWithoutBlocking() {

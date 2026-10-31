@@ -62,6 +62,10 @@ data class CallUi(
     val standby: Boolean = false,
     /** The microphone picks nothing up, even restarted ([AssistantCall.microphoneSilent]). */
     val micSilent: Boolean = false,
+    /** Talking over Gemini stops it; on the loudspeaker it doesn't, and the bar offers Interrupt ([AssistantCall.voiceInterrupts]). */
+    val voiceInterrupts: Boolean = true,
+    /** Gemini's voice is playing. */
+    val geminiSpeaking: Boolean = false,
     /** The call's Hermes tasks, in the order they started. */
     val tasks: List<TaskUi> = emptyList(),
 )
@@ -498,6 +502,8 @@ class AssistantController(
             c.onCaption = { text -> scope.launch { if (call === c) set { it.copy(caption = text) } } }
             call = c
             voiceBoundary = true
+            launch { c.voiceInterrupts.collect { v -> if (call === c) set { s -> s.copy(call = s.call?.copy(voiceInterrupts = v)) } } }
+            launch { c.speaking.collect { v -> if (call === c) set { s -> s.copy(call = s.call?.copy(geminiSpeaking = v)) } } }
             c.start()
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
             c.status.collect { status ->
@@ -531,6 +537,9 @@ class AssistantController(
             }
         }
     }
+
+    /** Stops Gemini's speech, on the loudspeaker where talking over it doesn't. */
+    fun interruptCall() { call?.interrupt() }
 
     /** Back from standby before Hermes finishes, to talk. */
     fun wakeCall() { call?.wake() }

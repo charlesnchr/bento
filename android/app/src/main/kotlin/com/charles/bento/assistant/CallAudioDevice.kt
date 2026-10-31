@@ -3,6 +3,7 @@ package com.charles.bento.assistant
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -26,8 +27,9 @@ import java.util.concurrent.atomic.AtomicReference
  * A voice call's audio, set up as a phone call is: communication mode, the voice-call
  * microphone with the platform's echo canceller (Gemini mustn't hear itself through the
  * speaker and interrupt itself), and playback routed to a headset when one is connected,
- * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16. It holds
- * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost].
+ * else the loudspeaker, and again whenever one comes or goes. Microphone 16 kHz in, Gemini's
+ * 24 kHz out, both mono PCM16. It holds audio focus as a call does; losing it (a phone call
+ * rings) calls [onFocusLost].
  *
  * Neither side's failure takes the other down: a microphone that fails to read, or that the
  * call restarts ([restartMicrophone]), is reopened while playback goes on, and a speaker whose
@@ -35,7 +37,27 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}) : CallAudio {
     private val audio = context.getSystemService(AudioManager::class.java)
-    private val queue = LinkedBlockingQueue<ByteArray>()
+    private val executor = context.mainExecutor
+    /** Where the call's audio goes now, once started: the loudspeaker or not. */
+    @Volatile private var onSpeaker = false
+    @Volatile private var routed = false
+    /** Routing (the device callbacks, on the main thread) and putting it back at the end (the call's thread) take turns. */
+    private val routing = Any()
+    private val communicationDevice = AudioManager.OnCommunicationDeviceChangedListener { device ->
+        onSpeaker = device?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+    /** A headset connected or gone during the call: it moves there, or back to the loudspeaker. */
+    private val devices = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) = route()
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) = route()
+    }
+
+    /** Before the call starts, where [route] would send it. */
+    override val loudspeaker: Boolean
+        get() = if (routed) onSpeaker else pick()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    /** Gemini's audio, each chunk with the [flush] count it was queued under. */
+    private val queue = LinkedBlockingQueue<Pair<Int, ByteArray>>()
+    @Volatile private var flushes = 0
     private val queued = AtomicLong()
     @Volatile private var running = false
     /** Between a successful start and stop. */
@@ -64,7 +86,10 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) return false
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
+        audio.addOnCommunicationDeviceChangedListener(executor, communicationDevice)
+        routed = true
         route()
+        audio.registerAudioDeviceCallback(devices, null)
         val input = openInput() ?: run { restore(); return false }
         val t = openTrack(input.record.audioSessionId) ?: run { input.release(); restore(); return false }
         t.play()
@@ -127,14 +152,20 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     }
 
     /** A headset (Bluetooth, wired, USB) when there is one, else the loudspeaker: never the earpiece. */
-    private fun route() {
+    private fun route() = synchronized(routing) {
+        if (!routed) return
+        val device = pick()
+        if (device != null && audio.communicationDevice?.id != device.id) runCatching { audio.setCommunicationDevice(device) }
+        onSpeaker = audio.communicationDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+
+    private fun pick(): AudioDeviceInfo? {
         val devices = audio.availableCommunicationDevices
         val preferred = listOf(
             AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_WIRED_HEADSET,
             AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
         )
-        val device = preferred.firstNotNullOfOrNull { type -> devices.firstOrNull { it.type == type } } ?: return
-        runCatching { audio.setCommunicationDevice(device) }
+        return preferred.firstNotNullOfOrNull { type -> devices.firstOrNull { it.type == type } }
     }
 
     private fun captureLoop(first: Input, onPcm: (ByteArray) -> Unit) {
@@ -193,7 +224,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     flushRequested = false
                     t?.let { runCatching { it.pause(); it.flush(); it.play() } }
                 }
-                val pcm = queue.poll(50, TimeUnit.MILLISECONDS)
+                val (queuedUnder, pcm) = queue.poll(50, TimeUnit.MILLISECONDS) ?: Pair(0, null)
                 if (pcm == null) {
                     // A reopened microphone has a new session: once what's written has played, the track moves to it.
                     val track = t
@@ -206,6 +237,13 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     continue
                 }
                 queued.addAndGet(-pcm.size.toLong())
+                // Queued before a flush that came since: dropped. Queued after one this loop hasn't done yet
+                // (it came between the check above and the poll): the flush goes first, so this still plays.
+                if (queuedUnder != flushes) continue
+                if (flushRequested) {
+                    flushRequested = false
+                    t?.let { runCatching { it.pause(); it.flush(); it.play() } }
+                }
                 if (t == null && SystemClock.elapsedRealtime() >= reopenAt) {
                     t = openTrack(micSession)?.also { it.play() }
                     if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
@@ -214,7 +252,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                 val track = t ?: continue
                 // In 20 ms slices, so a flush requested mid-reply takes effect at once.
                 var at = 0
-                while (at < pcm.size && running && !flushRequested) {
+                while (at < pcm.size && running && queuedUnder == flushes) {
                     val n = track.write(pcm, at, minOf(SLICE_BYTES, pcm.size - at), AudioTrack.WRITE_BLOCKING)
                     if (n < 0) {
                         // A dead track plays nothing ever again: the next audio gets a new one, and the rest of this goes.
@@ -235,12 +273,13 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     override fun play(pcm: ByteArray) {
         if (!running) return
         // Two minutes of speech at most; past that the oldest is dropped rather than the call growing without bound.
-        while (queued.get() + pcm.size > MAX_QUEUED_BYTES) queue.poll()?.let { queued.addAndGet(-it.size.toLong()) } ?: break
-        queue.offer(pcm)
+        while (queued.get() + pcm.size > MAX_QUEUED_BYTES) queue.poll()?.let { queued.addAndGet(-it.second.size.toLong()) } ?: break
+        queue.offer(flushes to pcm)
         queued.addAndGet(pcm.size.toLong())
     }
 
     override fun flush() {
+        flushes++ // only the call's thread queues and flushes
         queue.clear()
         queued.set(0)
         flushRequested = true
@@ -282,8 +321,15 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     }
 
     private fun restore() {
+        synchronized(routing) {
+            if (routed) {
+                routed = false
+                runCatching { audio.unregisterAudioDeviceCallback(devices) }
+                runCatching { audio.removeOnCommunicationDeviceChangedListener(communicationDevice) }
+            }
+            runCatching { audio.clearCommunicationDevice() }
+        }
         runCatching { audio.abandonAudioFocusRequest(focus) }
-        runCatching { audio.clearCommunicationDevice() }
         audio.mode = previousMode
     }
 
