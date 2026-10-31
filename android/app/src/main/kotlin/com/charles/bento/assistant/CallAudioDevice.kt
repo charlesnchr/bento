@@ -20,6 +20,7 @@ import com.charles.bento.core.assistant.live.CallAudio
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * A voice call's audio, set up as a phone call is: communication mode, the voice-call
@@ -44,6 +45,8 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     @Volatile private var reopenRequested = false
     /** The microphone's recorder, owned by the capture thread; others only stop it, to end a read stuck on a stalled input. */
     @Volatile private var record: AudioRecord? = null
+    /** A recorder being stopped on a thread of its own ([stopRecorder]), so a stuck stop isn't joined by more. */
+    private val stopping = AtomicReference<AudioRecord?>()
     /** The current recorder's session: the speaker's track follows it, so the echo canceller stays paired with Gemini's voice. */
     @Volatile private var micSession = 0
     private var previousMode = AudioManager.MODE_NORMAL
@@ -166,6 +169,8 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                 while (filled < frame.size && running && !reopenRequested) {
                     val n = input.record.read(frame, filled, frame.size - filled)
                     if (n < 0) { Log.w(TAG, "the microphone failed to read ($n)"); reopenRequested = true }
+                    // A recorder stopped from outside reads nothing, at once, forever: reopen rather than spin.
+                    if (n == 0 && input.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) reopenRequested = true
                     if (n <= 0) break
                     filled += n
                 }
@@ -243,24 +248,34 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
 
     override fun restartMicrophone() {
         if (!running) return
+        // The recorder to stop is the one before the reopen: read first, so a quick reopen's new one isn't stopped.
+        val r = record
         reopenRequested = true
-        stopRecorder()
+        stopRecorder(r)
     }
 
     /**
      * Stops the current recorder so a read waiting on a stalled input returns, on a thread of its
      * own: stopping waits for the audio server's record thread, which may be as stuck as the read.
      */
-    private fun stopRecorder() {
-        val r = record ?: return
-        Thread({ runCatching { r.stop() } }, "bento-call-mic-stop").start()
+    private fun stopRecorder(r: AudioRecord?) {
+        r ?: return
+        // One stop per recorder at a time: a second can't unblock the first, and a stuck one would pile up threads.
+        while (true) {
+            val current = stopping.get()
+            if (current === r) return
+            if (stopping.compareAndSet(current, r)) break
+        }
+        Thread({
+            try { runCatching { r.stop() } } finally { stopping.compareAndSet(r, null) }
+        }, "bento-call-mic-stop").start()
     }
 
     override fun stop() {
         if (!started) return // a start that failed has already put everything back
         started = false
         running = false
-        stopRecorder()
+        stopRecorder(record)
         queue.clear()
         queued.set(0)
         restore()
