@@ -168,7 +168,15 @@ class CallProtocol {
          * that it still was, and never spoken.
          */
         fun taskResult(task: String, result: String): String =
-            "Task $task has finished. Hermes's reply:\n" + result.ifEmpty { "Hermes returned no text. Do not infer success." }
+            "Task $task has finished. " + (if (isLong(result)) LONG_RESULT else "") +
+                "Hermes's reply:\n" + result.ifEmpty { "Hermes returned no text. Do not infer success." }
+
+        /** Said before a reply too long to read out; the chat shows all of it. */
+        const val LONG_RESULT = "Its reply is long: give the gist and tell the user the full answer is on their screen. "
+
+        /** Past [LONG_WORDS] words a reply is more than its spoken summary (Hermes is asked for one under 60). */
+        fun isLong(result: String) = result.split(Regex("\\s+")).count { it.isNotEmpty() } > LONG_WORDS
+        const val LONG_WORDS = 120
 
         /** The most of a Hermes reply the voice model gets: the Mac's `LiveHermesResult.limit`, in UTF-16 units. */
         const val RESULT_LIMIT = 64000

@@ -2,6 +2,7 @@ package com.charles.bento.ui.assistant
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Warning
@@ -80,6 +83,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -91,6 +95,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
@@ -108,12 +113,14 @@ import com.charles.bento.assistant.CallUi
 import com.charles.bento.assistant.TaskUi
 import com.charles.bento.core.assistant.ChatMessage
 import com.charles.bento.core.assistant.HermesChoice
+import com.charles.bento.core.assistant.live.TaskLabel
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.graph
 import com.charles.bento.settings.Prefs
 import com.charles.bento.ui.HomeAction
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.theme.SansCode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.DateFormat
 import java.util.Date
@@ -535,16 +542,19 @@ private fun MenuChoice(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onOpenTask: (String) -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (c.tasks.isNotEmpty()) {
+            // In standby the running tasks get rows of their own under the status, with their time and latest step.
+            val (working, chips) = if (c.standby) c.tasks.partition { it.active } else emptyList<TaskUi>() to c.tasks
+            if (chips.isNotEmpty()) {
                 // The call's tasks on one line, newest last, so the conversation keeps the screen; a chip opens its task.
                 val strip = rememberScrollState()
-                LaunchedEffect(c.tasks.size) { strip.animateScrollTo(strip.maxValue) }
+                LaunchedEffect(chips.size) { strip.animateScrollTo(strip.maxValue) }
                 Row(Modifier.fillMaxWidth().horizontalScroll(strip).testTag("assistant-call-tasks"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (task in c.tasks) TaskChip(task, onOpen = { onOpenTask(task.id) })
+                    for (task in chips) TaskChip(task, onOpen = { onOpenTask(task.id) })
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (c.connecting || c.standby) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                if (c.connecting) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else if (c.standby) Icon(Icons.Rounded.Pause, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 else if (c.micSilent) Icon(Icons.Rounded.MicOff, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                 else Icon(Icons.Rounded.GraphicEq, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(10.dp))
@@ -556,6 +566,7 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                      style = MaterialTheme.typography.bodyMedium,
                      color = if (c.micSilent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (working.isNotEmpty()) StandbyTasks(working, onOpenTask)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 if (c.standby) {
                     // Gemini isn't listening in standby: talking first brings it back.
@@ -584,7 +595,41 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
     }
 }
 
-/** A call task in one line: its status, number and what was said. Its sheet has the rest. */
+/** While the call is paused, what Hermes is doing: each running task, how long it has taken and its latest step. */
+@Composable
+internal fun StandbyTasks(tasks: List<TaskUi>, onOpenTask: (String) -> Unit, clock: () -> Long = SystemClock::elapsedRealtime) {
+    var now by remember { mutableLongStateOf(clock()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000 - (clock() % 1000)); now = clock() } }
+    // A fifth of the screen at most, scrolling past that, so however many tasks run (in landscape too) the buttons keep their room.
+    val most = (LocalConfiguration.current.screenHeightDp / 5).coerceIn(56, 140).dp
+    Column(Modifier.fillMaxWidth().heightIn(max = most).verticalScroll(rememberScrollState()).testTag("assistant-standby-tasks"),
+           verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (task in tasks) {
+            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().clickable { onOpenTask(task.id) }.testTag("assistant-standby-task-${task.id}")) {
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    StatusIcon(task.status)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("${task.id} · ${TaskLabel.short(task.request)}", style = MaterialTheme.typography.labelLarge,
+                             maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        task.progress?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (task.startedAt > 0) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(TaskLabel.elapsed((now - task.startedAt) / 1000), style = MaterialTheme.typography.labelMedium,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A call task in one line: its status, number and what was asked. Its sheet has the rest. */
 @Composable
 private fun TaskChip(task: TaskUi, onOpen: () -> Unit) {
     Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -592,7 +637,7 @@ private fun TaskChip(task: TaskUi, onOpen: () -> Unit) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusIcon(task.status)
             Spacer(Modifier.width(6.dp))
-            Text("${task.id} · ${task.request}", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            Text("${task.id} · ${TaskLabel.short(task.request)}", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                  modifier = Modifier.widthIn(max = 180.dp))
         }
     }
