@@ -840,6 +840,14 @@ class AssistantCallTest {
         withTimeout(5_000) { while (audio.played.size < 4) delay(10) }
         assertEquals(listOf<Byte>(1, 2, 2, 3), audio.played.map { it[0] })
         assertTrue(call.speaking.value)
+        // Stopped again, it stops: it isn't played a third time, nor is the rest of it.
+        call.interrupt()
+        withTimeout(5_000) { while (audio.flushes < 2) delay(10) }
+        transport.push(Live.audio(ByteArray(4_800) { 4 }))
+        transport.push(Live.turnComplete())
+        transport.push(Live.audio(ByteArray(4_800) { 5 }))
+        withTimeout(5_000) { while (audio.played.size < 5) delay(10) }
+        assertEquals(listOf<Byte>(1, 2, 2, 3, 5), audio.played.map { it[0] })
         call.stop()
         call.ended()
     }

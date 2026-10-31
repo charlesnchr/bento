@@ -55,7 +55,9 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     /** Before the call starts, where [route] would send it. */
     override val loudspeaker: Boolean
         get() = if (routed) onSpeaker else pick()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-    private val queue = LinkedBlockingQueue<ByteArray>()
+    /** Gemini's audio, each chunk with the [flush] count it was queued under. */
+    private val queue = LinkedBlockingQueue<Pair<Int, ByteArray>>()
+    @Volatile private var flushes = 0
     private val queued = AtomicLong()
     @Volatile private var running = false
     /** Between a successful start and stop. */
@@ -222,7 +224,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     flushRequested = false
                     t?.let { runCatching { it.pause(); it.flush(); it.play() } }
                 }
-                val pcm = queue.poll(50, TimeUnit.MILLISECONDS)
+                val (queuedUnder, pcm) = queue.poll(50, TimeUnit.MILLISECONDS) ?: Pair(0, null)
                 if (pcm == null) {
                     // A reopened microphone has a new session: once what's written has played, the track moves to it.
                     val track = t
@@ -235,6 +237,13 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     continue
                 }
                 queued.addAndGet(-pcm.size.toLong())
+                // Queued before a flush that came since: dropped. Queued after one this loop hasn't done yet
+                // (it came between the check above and the poll): the flush goes first, so this still plays.
+                if (queuedUnder != flushes) continue
+                if (flushRequested) {
+                    flushRequested = false
+                    t?.let { runCatching { it.pause(); it.flush(); it.play() } }
+                }
                 if (t == null && SystemClock.elapsedRealtime() >= reopenAt) {
                     t = openTrack(micSession)?.also { it.play() }
                     if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
@@ -243,7 +252,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                 val track = t ?: continue
                 // In 20 ms slices, so a flush requested mid-reply takes effect at once.
                 var at = 0
-                while (at < pcm.size && running && !flushRequested) {
+                while (at < pcm.size && running && queuedUnder == flushes) {
                     val n = track.write(pcm, at, minOf(SLICE_BYTES, pcm.size - at), AudioTrack.WRITE_BLOCKING)
                     if (n < 0) {
                         // A dead track plays nothing ever again: the next audio gets a new one, and the rest of this goes.
@@ -264,12 +273,13 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     override fun play(pcm: ByteArray) {
         if (!running) return
         // Two minutes of speech at most; past that the oldest is dropped rather than the call growing without bound.
-        while (queued.get() + pcm.size > MAX_QUEUED_BYTES) queue.poll()?.let { queued.addAndGet(-it.size.toLong()) } ?: break
-        queue.offer(pcm)
+        while (queued.get() + pcm.size > MAX_QUEUED_BYTES) queue.poll()?.let { queued.addAndGet(-it.second.size.toLong()) } ?: break
+        queue.offer(flushes to pcm)
         queued.addAndGet(pcm.size.toLong())
     }
 
     override fun flush() {
+        flushes++ // only the call's thread queues and flushes
         queue.clear()
         queued.set(0)
         flushRequested = true

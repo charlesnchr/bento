@@ -509,7 +509,11 @@ class AssistantCall(
         val replay = if (unheard) replayAudio.toList() else emptyList()
         audio.flush()
         speechUntil = now()
-        if (unheard) replay.forEach(::play) else if (geminiSpeaking) discardTurn = true
+        if (unheard) {
+            // It plays from now: stopping it again stops it.
+            replayFrom = now()
+            replay.forEach(::play)
+        } else if (geminiSpeaking) discardTurn = true
         refresh()
     }
 
