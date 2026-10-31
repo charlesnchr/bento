@@ -226,6 +226,8 @@ class AssistantCall(
     private var delivering = false
     /** The user is speaking (between Gemini's ACTIVITY_START and ACTIVITY_END). */
     private var userTalking = false
+    /** User turns so far (ACTIVITY_START), to tell whether a new one began across a suspension. */
+    private var userTurns = 0
     /** When the user's turn ended, until Gemini's reply to it completes. */
     private var replyDue: Double? = null
     /** Gemini has generated all of its current turn, though it may not have played yet. */
@@ -485,10 +487,9 @@ class AssistantCall(
      */
     private fun toldResults(items: List<Unheard>) {
         toldToSpeak()
-        if (userTalking || replyDue?.let { now() - it < limits.settleMax } == true) {
-            skipTurn = true
-            for (item in items) item.tries++
-        }
+        if (userTalking || replyDue?.let { now() - it < limits.settleMax } == true) skipTurn = true
+        // A turn that won't count (it answers the user, or was already underway) spends a try, so it can't repeat for ever.
+        if (skipTurn) for (item in items) item.tries++
     }
 
     /** A new connection: no turn of Gemini's is underway on it, so results it was told and hasn't spoken go again. */
@@ -760,7 +761,7 @@ class AssistantCall(
         }
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
             "ACTIVITY_START" -> {
-                protocol.activityStarted(now()); lastSpeech = now(); userTalking = true
+                protocol.activityStarted(now()); lastSpeech = now(); userTalking = true; userTurns++
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 if (!spokeSince) again(unheard.filter { it.awaiting })
                 geminiTurns.addLast(GeminiTurn(now()))
@@ -1239,13 +1240,17 @@ class AssistantCall(
      * the turn that asked. Calls still open get their last response silently first.
      */
     private suspend fun toldInTurn(items: List<Unheard>) {
+        val turns = userTurns
         val calls = items.map { item -> item.call?.takeIf { item.session == session && it !in cancelledCalls } }
         for (item in items) { item.sending = true; item.call = null }
         items.forEachIndexed { i, item ->
             calls[i]?.let { respond(it, CallProtocol.taskResult(item.task, item.result), executed = true, task = item.task, scheduling = "SILENT") }
         }
+        for (item in items) item.sending = false
+        // The user spoke again meanwhile: what Gemini says next answers them, so the results go again after.
+        if (userTurns != turns || userTalking) { again(items); return }
         // Told only now, just before the answer goes, so a turn that ended meanwhile can't count for them.
-        for (item in items) { item.sending = false; item.told = true }
+        for (item in items) item.told = true
         lastSpeech = now()
         unspokenSince = now()
         spokeSince = false

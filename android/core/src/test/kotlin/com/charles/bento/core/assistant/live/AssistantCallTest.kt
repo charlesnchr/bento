@@ -1084,6 +1084,33 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun theUserSpeakingWhileListTasksClosesACallSendsItsResultsAgain() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = oneTask(transport, result)
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        result.complete("Booked for 8pm.")
+        delay(300)
+        val gate = CompletableDeferred<Unit>()
+        val held = CompletableDeferred<Unit>()
+        transport.beforeSend = { frame -> if ("Task 1 has finished" in frame) { held.complete(Unit); gate.await() } }
+        transport.push(Live.heard("What's still running?")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("l1", name = CallProtocol.LIST_TASKS))
+        withTimeout(5_000) { held.await() }
+        // The user starts their next request while task 1's call is being closed.
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(200)
+        gate.complete(Unit)
+        transport.awaitSent { s -> s.any { "\"l1\"" in it } }
+        // Gemini acknowledges the new request: no word of task 1's, which goes again.
+        transport.push(Live.heard("Find a taxi")); transport.push(Live.activity("ACTIVITY_END")); transport.push(Live.call("c2"))
+        Live.speaks(transport, "Hermes is working on task 2.")
+        transport.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertEquals(CallSetup.resultText(listOf("1" to "Booked for 8pm.")), transport.resultTurns().single().turnText())
+        call.stop()
+    }
+
     @Test fun geminiAnsweringTheUsersNextRequestDoesntCountAsSpeakingAResult() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
