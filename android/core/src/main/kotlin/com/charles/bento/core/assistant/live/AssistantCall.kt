@@ -40,6 +40,11 @@ interface CallAudio {
     /** Reopens a microphone that has stopped giving audio; frames go on to the same callback. Any thread, without blocking. */
     fun restartMicrophone()
     fun stop()
+    /**
+     * The voice plays from the phone's own loudspeaker (no headset), where some of it reaches the
+     * microphone however well the echo is cancelled. Read before [start] too, and as the call goes.
+     */
+    val loudspeaker: Boolean get() = false
 }
 
 /**
@@ -76,6 +81,13 @@ interface CallAudio {
  * A local audio hiccup never ends the call: microphone frames the call's thread can't keep up
  * with drop the oldest, and a microphone that goes dead (nothing but exact zeros, or nothing at
  * all) is restarted, and the user told ([microphoneSilent]) if that doesn't bring it back.
+ *
+ * On the loudspeaker Gemini would hear its own voice and stop for it, take it for the user and
+ * answer it, round and round, so a session set up there ([CallSetup.setupFrame]) doesn't let
+ * speech interrupt Gemini: the screen stops it ([interrupt]), and unmuting does too. A session
+ * keeps how it was set up, a resumed one included, so a change of route applies to the next new
+ * one (back from standby). Until then a session set up for a headset that's gone hears nothing
+ * while Gemini's voice plays ([ECHO_TAIL]).
  *
  * Gemini Live sends the user's words only once they stop speaking, so with [captions] the
  * microphone audio Gemini hears also goes to a transcriber whose growing guess is shown
@@ -150,6 +162,13 @@ class AssistantCall(
     /** The microphone has picked nothing up for a while, even after restarting: Gemini can't hear the user. Cleared once it does. */
     val microphoneSilent: StateFlow<Boolean> = _microphoneSilent.asStateFlow()
 
+    private val _voiceInterrupts = MutableStateFlow(true)
+    /** Whether talking over Gemini stops it; when not, the screen offers [interrupt]. */
+    val voiceInterrupts: StateFlow<Boolean> = _voiceInterrupts.asStateFlow()
+    private val _speaking = MutableStateFlow(false)
+    /** Gemini's voice is playing (to within a tick of the watchdog). */
+    val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
+
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
     var onTranscript: ((String, String) -> Unit)? = null
 
@@ -220,6 +239,19 @@ class AssistantCall(
     private var spokeSince = false
     /** Gemini is partway through a turn; one already underway when it's told something doesn't say it. */
     private var geminiSpeaking = false
+    /** The user stopped Gemini ([interrupt]): the rest of its turn is dropped as it comes. */
+    private var discardTurn = false
+    /**
+     * The latest turn's audio and when it starts playing: one queued behind the speech the user
+     * stops (an answer to what they said over it) plays again from its start ([REPLAY_MAX]).
+     */
+    private val replayAudio = ArrayList<ByteArray>()
+    private var replayBytes = 0
+    private var replayFrom = 0.0
+    /** Gemini's next audio starts a new turn. */
+    private var turnOver = true
+    /** The current session lets the user's speech interrupt Gemini: it was set up off the loudspeaker. */
+    private var bargeIn = true
     private var skipTurn = false
     /** When someone last spoke, and when Gemini's speech already received finishes playing. */
     private var lastSpeech = 0.0
@@ -289,7 +321,13 @@ class AssistantCall(
                     streamEnded = true
                     captions?.pause()
                     send(STREAM_END)
-                } else if (!value) streamEnded = false
+                } else if (!value) {
+                    streamEnded = false
+                    // Gemini doesn't stop for the user's voice: unmuting to talk stops it. Muted, nothing
+                    // refreshed the route, so it's read now.
+                    refresh()
+                    if (!_voiceInterrupts.value) interruptNow()
+                }
             }
         }
 
@@ -310,7 +348,7 @@ class AssistantCall(
         val first = socket
         try {
             first.connect()
-            first.send(CallSetup.setupFrame(setupResume))
+            first.send(CallSetup.setupFrame(setupResume, bargeIn = newSessionBargeIn()))
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException && !active) return
             if (active) fail(endingMessage(ending(first), goingAway))
@@ -348,7 +386,8 @@ class AssistantCall(
                 val ready = withTimeoutOrNull((limits.connect * 1000).toLong()) {
                     runCatching {
                         next.connect()
-                        next.send(CallSetup.setupFrame(setupResume, handle))
+                        // The resumed session keeps whether speech interrupts Gemini, whatever this says.
+                        next.send(CallSetup.setupFrame(setupResume, handle, bargeIn))
                         // The resumed session already has the recap and the microphone: wait for it to take input.
                         while (Json.parseToJsonElement(next.receive()).let { it as? JsonObject }?.get("setupComplete") == null) Unit
                     }.isSuccess
@@ -374,6 +413,7 @@ class AssistantCall(
             delay(limits.tickMillis)
             if (!active) return
             val t = now()
+            refresh()
             captionEndedAt?.let { if (t - it >= limits.captionLinger) takeDownCaption() }
             droppedBytes.getAndSet(0).takeIf { it > 0 }?.let { VoiceLog.w(TAG, "the call fell behind the microphone: dropped ${it / 32} ms of audio") }
             watchMicrophone(t)
@@ -432,6 +472,45 @@ class AssistantCall(
     private fun newSession() {
         geminiSpeaking = false
         skipTurn = false
+        discardTurn = false
+        forgetReplay()
+    }
+
+    private fun forgetReplay() {
+        turnOver = true
+        replayAudio.clear(); replayBytes = 0; replayFrom = 0.0
+    }
+
+    /** Whether a session set up now lets speech interrupt Gemini: not on the loudspeaker. */
+    private fun newSessionBargeIn(): Boolean {
+        bargeIn = !audio.loudspeaker
+        refresh()
+        return bargeIn
+    }
+
+    private fun refresh() {
+        _voiceInterrupts.value = bargeIn && !audio.loudspeaker
+        _speaking.value = active && now() < speechUntil
+    }
+
+    /**
+     * Stops Gemini's speech now, for when the user's voice doesn't ([voiceInterrupts]): what's
+     * waiting to play is dropped, and so is the rest of its turn as it comes, so the user can
+     * talk. Gemini still heard all of it; Hermes's tasks go on.
+     */
+    fun interrupt() {
+        scope.launch { interruptNow() }
+    }
+
+    private fun interruptNow() {
+        // Only speech still playing: a turn paused for a tool, its words not yet come, is left to finish.
+        if (!active || standby || waking || now() >= speechUntil) return
+        val unheard = replayFrom > now() && replayBytes <= REPLAY_MAX
+        val replay = if (unheard) replayAudio.toList() else emptyList()
+        audio.flush()
+        speechUntil = now()
+        if (unheard) replay.forEach(::play) else if (geminiSpeaking) discardTurn = true
+        refresh()
     }
 
     /** Gemini said something: it counts towards what it was told unless its turn began before. */
@@ -510,12 +589,13 @@ class AssistantCall(
         // The old session's calls are gone with it: the new one hears the tasks' numbers, so a follow-up can still name its task.
         setupResume = CallSetup.withTasks(runCatching { recap() }.getOrNull(),
                                           tasks.values.toList().takeLast(TASKS_IN_RECAP).map { Triple(it.id, it.state, it.request) })
+        val setup = CallSetup.setupFrame(setupResume, bargeIn = newSessionBargeIn())
         val next = make()
         socket = next
         scope.launch {
             try {
                 next.connect()
-                next.send(CallSetup.setupFrame(setupResume))
+                next.send(setup)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException && !active) return@launch
                 if (active && socket === next) fail(RECONNECT_FAILED)
@@ -687,6 +767,9 @@ class AssistantCall(
             speechUntil = now() // the flushed speech won't play
             geminiSpeaking = false // the turn it was in is over
             skipTurn = false
+            discardTurn = false
+            forgetReplay()
+            refresh()
         }
         val parts = ((content["modelTurn"] as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
         for (part in parts) {
@@ -697,18 +780,28 @@ class AssistantCall(
             if (mime != OUTPUT_MIME || pcm == null || pcm.isEmpty() || pcm.size % 2 != 0 || pcm.size > 480_000) {
                 fail("Gemini sent audio Bento can't play. Start a new call."); return
             }
-            audio.play(pcm)
             turnBytes += pcm.size
             if (!silent(pcm)) turnAudible = true
             geminiSpoke()
-            // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
-            speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
+            // The user stopped this turn: the rest of it is never played.
+            if (discardTurn) continue
+            if (turnOver) {
+                turnOver = false
+                replayAudio.clear(); replayBytes = 0
+                replayFrom = maxOf(speechUntil, now())
+            }
+            // Past the most kept, the turn can't play again whole, so it never does.
+            replayBytes += pcm.size
+            if (replayBytes <= REPLAY_MAX) replayAudio.add(pcm) else replayAudio.clear()
+            play(pcm)
         }
         if ((content["turnComplete"] as? JsonPrimitive)?.booleanOrNull == true) {
             turnAudio()
             if (spokeSince) unspokenSince = null
             geminiSpeaking = false
             skipTurn = false
+            discardTurn = false
+            turnOver = true
         }
         ((event["toolCallCancellation"] as? JsonObject)?.get("ids") as? JsonArray)?.take(32)?.forEach { id ->
             (id as? JsonPrimitive)?.contentOrNull?.let(cancelledCalls::add)
@@ -734,6 +827,13 @@ class AssistantCall(
         turnAudible = false
     }
 
+    private fun play(pcm: ByteArray) {
+        audio.play(pcm)
+        // 24 kHz 16-bit mono: Gemini is still speaking until this has played.
+        speechUntil = maxOf(speechUntil, now()) + pcm.size / 48_000.0
+        refresh()
+    }
+
     private fun listen() {
         if (listening) return
         listening = true
@@ -744,6 +844,9 @@ class AssistantCall(
                 if (captured != lends) continue
                 freshAudio(captured)
                 if (standby || rejoining) { hold(pcm); continue }
+                refresh()
+                // Set up for a headset that has gone: Gemini would stop for its own voice from the loudspeaker.
+                if (bargeIn && audio.loudspeaker && now() < speechUntil + ECHO_TAIL) continue
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
@@ -1109,6 +1212,7 @@ class AssistantCall(
             captions?.stop()
             mic.close()
             socket.close()
+            _speaking.value = false
             _status.value = Status.Ended(message)
             scope.cancel()
         }
@@ -1127,6 +1231,13 @@ class AssistantCall(
         const val LATE_TRANSCRIPT = 1.5
         /** Silence Gemini Live waits for before it ends a turn (about 0.8 s on 2026-10-30). */
         const val TURN_SILENCE = 0.8
+        /**
+         * Seconds after Gemini's speech should have finished that the loudspeaker may still bring it
+         * to the microphone: the speaker's buffer (about 0.2 s), the platform's output latency and the room.
+         */
+        const val ECHO_TAIL = 0.5
+        /** The most of a turn's audio kept to play again after [interrupt]: 30 s at 24 kHz. */
+        const val REPLAY_MAX = 1_440_000
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
         const val RUNNING = "running"
         const val FINISHED = "finished"

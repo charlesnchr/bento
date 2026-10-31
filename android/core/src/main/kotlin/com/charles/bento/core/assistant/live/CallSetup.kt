@@ -95,8 +95,15 @@ object CallSetup {
     /**
      * `{"setup": …}`. A resumed call's instructions end with the fixed resume line. [handle]
      * picks the session up on a new socket when Gemini rotates the connection.
+     *
+     * Without [bargeIn], the user's speech no longer interrupts Gemini (NO_INTERRUPTION): for a
+     * call on the loudspeaker, whose own voice reaching the microphone Gemini would otherwise
+     * take for the user, stop for and answer (101 times in five minutes on the emulator, and
+     * still 30 at 44 dB under the user's speech). Gemini still hears the user and answers
+     * once it has finished; the screen stops it ([AssistantCall.interrupt]). A session keeps
+     * this from its first setup: one resumed with [handle] ignores a change (2026-10-31).
      */
-    fun setupFrame(resume: Resume? = null, handle: String? = null): String = buildJsonObject {
+    fun setupFrame(resume: Resume? = null, handle: String? = null, bargeIn: Boolean = true): String = buildJsonObject {
         putJsonObject("setup") {
             put("model", "models/$MODEL")
             putJsonObject("generationConfig") {
@@ -147,6 +154,7 @@ object CallSetup {
                     }
                 }
             }
+            if (!bargeIn) putJsonObject("realtimeInputConfig") { put("activityHandling", "NO_INTERRUPTION") }
             putJsonObject("inputAudioTranscription") { putJsonArray("customVocabulary") { add("Hermes"); add("Bento") } }
             putJsonObject("outputAudioTranscription") {}
             // No session time limit, and a handle to resume from when a connection ends.

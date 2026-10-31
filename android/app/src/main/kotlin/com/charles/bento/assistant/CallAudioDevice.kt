@@ -3,6 +3,7 @@ package com.charles.bento.assistant
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -26,8 +27,9 @@ import java.util.concurrent.atomic.AtomicReference
  * A voice call's audio, set up as a phone call is: communication mode, the voice-call
  * microphone with the platform's echo canceller (Gemini mustn't hear itself through the
  * speaker and interrupt itself), and playback routed to a headset when one is connected,
- * else the loudspeaker. Microphone 16 kHz in, Gemini's 24 kHz out, both mono PCM16. It holds
- * audio focus as a call does; losing it (a phone call rings) calls [onFocusLost].
+ * else the loudspeaker, and again whenever one comes or goes. Microphone 16 kHz in, Gemini's
+ * 24 kHz out, both mono PCM16. It holds audio focus as a call does; losing it (a phone call
+ * rings) calls [onFocusLost].
  *
  * Neither side's failure takes the other down: a microphone that fails to read, or that the
  * call restarts ([restartMicrophone]), is reopened while playback goes on, and a speaker whose
@@ -35,6 +37,24 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}) : CallAudio {
     private val audio = context.getSystemService(AudioManager::class.java)
+    private val executor = context.mainExecutor
+    /** Where the call's audio goes now, once started: the loudspeaker or not. */
+    @Volatile private var onSpeaker = false
+    @Volatile private var routed = false
+    /** Routing (the device callbacks, on the main thread) and putting it back at the end (the call's thread) take turns. */
+    private val routing = Any()
+    private val communicationDevice = AudioManager.OnCommunicationDeviceChangedListener { device ->
+        onSpeaker = device?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+    /** A headset connected or gone during the call: it moves there, or back to the loudspeaker. */
+    private val devices = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) = route()
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) = route()
+    }
+
+    /** Before the call starts, where [route] would send it. */
+    override val loudspeaker: Boolean
+        get() = if (routed) onSpeaker else pick()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
     private val queue = LinkedBlockingQueue<ByteArray>()
     private val queued = AtomicLong()
     @Volatile private var running = false
@@ -64,7 +84,10 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) return false
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
+        audio.addOnCommunicationDeviceChangedListener(executor, communicationDevice)
+        routed = true
         route()
+        audio.registerAudioDeviceCallback(devices, null)
         val input = openInput() ?: run { restore(); return false }
         val t = openTrack(input.record.audioSessionId) ?: run { input.release(); restore(); return false }
         t.play()
@@ -127,14 +150,20 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     }
 
     /** A headset (Bluetooth, wired, USB) when there is one, else the loudspeaker: never the earpiece. */
-    private fun route() {
+    private fun route() = synchronized(routing) {
+        if (!routed) return
+        val device = pick()
+        if (device != null && audio.communicationDevice?.id != device.id) runCatching { audio.setCommunicationDevice(device) }
+        onSpeaker = audio.communicationDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+
+    private fun pick(): AudioDeviceInfo? {
         val devices = audio.availableCommunicationDevices
         val preferred = listOf(
             AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_WIRED_HEADSET,
             AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
         )
-        val device = preferred.firstNotNullOfOrNull { type -> devices.firstOrNull { it.type == type } } ?: return
-        runCatching { audio.setCommunicationDevice(device) }
+        return preferred.firstNotNullOfOrNull { type -> devices.firstOrNull { it.type == type } }
     }
 
     private fun captureLoop(first: Input, onPcm: (ByteArray) -> Unit) {
@@ -282,8 +311,15 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     }
 
     private fun restore() {
+        synchronized(routing) {
+            if (routed) {
+                routed = false
+                runCatching { audio.unregisterAudioDeviceCallback(devices) }
+                runCatching { audio.removeOnCommunicationDeviceChangedListener(communicationDevice) }
+            }
+            runCatching { audio.clearCommunicationDevice() }
+        }
         runCatching { audio.abandonAudioFocusRequest(focus) }
-        runCatching { audio.clearCommunicationDevice() }
         audio.mode = previousMode
     }
 
