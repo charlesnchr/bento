@@ -44,6 +44,8 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     @Volatile private var reopenRequested = false
     /** The microphone's recorder, owned by the capture thread; others only stop it, to end a read stuck on a stalled input. */
     @Volatile private var record: AudioRecord? = null
+    /** The current recorder's session: the speaker's track follows it, so the echo canceller stays paired with Gemini's voice. */
+    @Volatile private var micSession = 0
     private var previousMode = AudioManager.MODE_NORMAL
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -64,6 +66,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         val t = openTrack(input.record.audioSessionId) ?: run { input.release(); restore(); return false }
         t.play()
         record = input.record
+        micSession = input.record.audioSessionId
         running = true
         started = true
         Thread({ captureLoop(input, onPcm) }, "bento-call-mic").start()
@@ -136,21 +139,27 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         val frame = ByteArray(FRAME_BYTES)
         var input: Input? = first
         var reopenedAt = 0L
+        var failures = 0
         try {
             while (running) {
                 if (input == null || reopenRequested) {
-                    // A fresh recorder, its own session and effects; the speaker's track stays on the first one's session.
+                    // A fresh recorder, its own session and effects; the speaker's track moves to its session once it's quiet.
                     reopenRequested = false
                     record = null
                     input?.release()
                     input = null
-                    // One that fails as soon as it opens isn't reopened again at once.
-                    SystemClock.sleep(maxOf(0L, reopenedAt + REOPEN_MILLIS - SystemClock.elapsedRealtime()))
+                    // One that fails as soon as it opens, or won't open, is tried less and less often (up to every 8 s).
+                    val wait = REOPEN_MILLIS shl minOf(failures, 3)
+                    SystemClock.sleep(maxOf(0L, reopenedAt + wait - SystemClock.elapsedRealtime()))
                     if (!running) break
                     reopenedAt = SystemClock.elapsedRealtime()
                     input = openInput()
                     record = input?.record
-                    Log.i(TAG, if (input != null) "reopened the microphone" else "the microphone won't reopen; trying again")
+                    if (input != null) {
+                        micSession = input.record.audioSessionId
+                        Log.i(TAG, "reopened the microphone")
+                    } else if (failures == 0) Log.w(TAG, "the microphone won't reopen; trying again now and then")
+                    failures = if (input != null) 0 else failures + 1
                     continue
                 }
                 var filled = 0
@@ -170,19 +179,30 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
 
     private fun playbackLoop(first: AudioTrack) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val session = first.audioSessionId
         var t: AudioTrack? = first
         var reopenAt = 0L
+        var wroteAt = 0L
         try {
             while (running) {
                 if (flushRequested) {
                     flushRequested = false
                     t?.let { runCatching { it.pause(); it.flush(); it.play() } }
                 }
-                val pcm = queue.poll(50, TimeUnit.MILLISECONDS) ?: continue
+                val pcm = queue.poll(50, TimeUnit.MILLISECONDS)
+                if (pcm == null) {
+                    // A reopened microphone has a new session: once what's written has played, the track moves to it.
+                    val track = t
+                    if (track != null && track.audioSessionId != micSession && SystemClock.elapsedRealtime() - wroteAt >= DRAINED_MILLIS) {
+                        runCatching { track.stop() }
+                        track.release()
+                        t = openTrack(micSession)?.also { it.play() }
+                        if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
+                    }
+                    continue
+                }
                 queued.addAndGet(-pcm.size.toLong())
                 if (t == null && SystemClock.elapsedRealtime() >= reopenAt) {
-                    t = openTrack(session)?.also { it.play() }
+                    t = openTrack(micSession)?.also { it.play() }
                     if (t == null) reopenAt = SystemClock.elapsedRealtime() + REOPEN_MILLIS
                     Log.i(TAG, if (t != null) "reopened the speaker" else "the speaker won't reopen; dropping audio meanwhile")
                 }
@@ -199,6 +219,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
                     }
                     if (n <= 0) break
                     at += n
+                    wroteAt = SystemClock.elapsedRealtime()
                 }
             }
         } finally {
@@ -223,15 +244,23 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
     override fun restartMicrophone() {
         if (!running) return
         reopenRequested = true
-        // A read waiting on a stalled input returns once its recorder stops.
-        runCatching { record?.stop() }
+        stopRecorder()
+    }
+
+    /**
+     * Stops the current recorder so a read waiting on a stalled input returns, on a thread of its
+     * own: stopping waits for the audio server's record thread, which may be as stuck as the read.
+     */
+    private fun stopRecorder() {
+        val r = record ?: return
+        Thread({ runCatching { r.stop() } }, "bento-call-mic-stop").start()
     }
 
     override fun stop() {
         if (!started) return // a start that failed has already put everything back
         started = false
         running = false
-        runCatching { record?.stop() }
+        stopRecorder()
         queue.clear()
         queued.set(0)
         restore()
@@ -252,5 +281,7 @@ class CallAudioDevice(context: Context, private val onFocusLost: () -> Unit = {}
         private const val MAX_QUEUED_BYTES = OUT_RATE * 2L * 120
         /** How long a microphone or speaker that won't reopen waits before trying again. */
         private const val REOPEN_MILLIS = 1_000L
+        /** Silence after the last write by which the track's ~200 ms buffer has played out. */
+        private const val DRAINED_MILLIS = 400L
     }
 }

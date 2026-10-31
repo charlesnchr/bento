@@ -104,7 +104,9 @@ class AssistantCall(
         val connect: Double = 25.0,
         /** Seconds without a nonzero microphone sample (quiet rooms still have some noise), or any frame, before the microphone restarts. */
         val deadMic: Double = 2.0,
-        /** Seconds between further restarts while it stays dead; the user is told once the first hasn't helped. */
+        /** Seconds still dead after the first restart before the user is told (and it restarts again). */
+        val deadMicWarn: Double = 5.0,
+        /** Seconds between further restarts while it stays dead. */
         val deadMicRetry: Double = 10.0,
         val tickMillis: Long = 1000,
         val settleQuiet: Double = 0.8,
@@ -168,6 +170,8 @@ class AssistantCall(
     private var started = 0.0
     /** When the microphone last gave a frame with any sound in it (any nonzero sample). */
     @Volatile private var heardAt = 0.0
+    /** When the dead-microphone watch last started counting afresh: the microphone opened, or came back from a dictation. */
+    @Volatile private var micWatchFrom = 0.0
     /** Restarts of a dead microphone since it last gave sound, and when the latest was. */
     private var micRestarts = 0
     private var micRestartedAt = 0.0
@@ -395,8 +399,8 @@ class AssistantCall(
             micRestarts = 0
             _microphoneSilent.value = false
         }
-        val quiet = t - maxOf(heardAt, micRestartedAt, speechUntil)
-        if (quiet < if (micRestarts < 2) limits.deadMic else limits.deadMicRetry) return
+        val quiet = t - maxOf(heardAt, micWatchFrom, micRestartedAt, speechUntil)
+        if (quiet < when (micRestarts) { 0 -> limits.deadMic; 1 -> limits.deadMicWarn; else -> limits.deadMicRetry }) return
         micRestarts++
         micRestartedAt = t
         if (micRestarts >= 2) _microphoneSilent.value = true
@@ -469,7 +473,7 @@ class AssistantCall(
         synchronized(lending) {
             if (!lent) return
             // The microphone may have gone quiet while shared: the watchdog starts counting afresh.
-            heardAt = now()
+            micWatchFrom = now()
             lent = false
             lends++
         }
@@ -733,7 +737,7 @@ class AssistantCall(
     private fun listen() {
         if (listening) return
         listening = true
-        heardAt = now()
+        micWatchFrom = now()
         scope.launch {
             for ((captured, pcm) in mic) {
                 if (!active) return@launch

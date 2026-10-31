@@ -861,7 +861,7 @@ class AssistantCallTest {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val audio = FakeAudio()
         val result = CompletableDeferred<String>()
-        val call = AssistantCall(transport, audio, null, { result.await() }, limits = fast.copy(deadMic = 0.3, deadMicRetry = 0.5))
+        val call = AssistantCall(transport, audio, null, { result.await() }, limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3, deadMicRetry = 0.5))
         call.start()
         transport.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(transport, "Book a table"); transport.push(Live.call("c1"))
@@ -883,11 +883,27 @@ class AssistantCallTest {
     @Test fun aMicrophoneThatDeliversNothingIsRestartedNotHungUp() = blocking {
         val audio = FakeAudio(delivers = false)
         val call = AssistantCall(FakeTransport(listOf(Frames.setupComplete())), audio, null, { "" },
-                                 limits = fast.copy(deadMic = 0.3, deadMicRetry = 0.5))
+                                 limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3, deadMicRetry = 0.5))
         call.start()
         withTimeout(5_000) { call.microphoneSilent.first { it } }
         assertTrue(audio.restarts >= 2)
         assertEquals(AssistantCall.Status.Listening, call.status.value)
+        call.stop()
+    }
+
+    @Test fun aDeadMicrophoneLentToADictationAndBackIsStillShown() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val audio = FakeAudio()
+        val call = waitingOnHermes(first, { FakeTransport(listOf(Frames.setupComplete())) }, result, audio = audio,
+                                   limits = fast.copy(deadMic = 0.3, deadMicWarn = 0.3))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        audio.dead = true
+        withTimeout(5_000) { call.microphoneSilent.first { it } }
+        assertTrue(call.lend())
+        call.reclaim()
+        delay(400)
+        assertTrue(call.microphoneSilent.value, "taking the microphone back brings no sound back")
         call.stop()
     }
 
