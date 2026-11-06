@@ -52,8 +52,11 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
         val hangFrames: Int = 25,
     )
 
-    /** A detection: its score, and the frame it ended on (counting every frame fed). */
-    data class Detection(val score: Float, val atFrame: Long)
+    /**
+     * A detection: its score, the frame it ended on (counting every frame fed), and where in the
+     * samples [feed] was given the audio after it starts. The detector hasn't heard those.
+     */
+    data class Detection(val score: Float, val atFrame: Long, val rest: Int = 0)
 
     private val pending = FloatArray(WakeModel.FRAME)
     private var filled = 0
@@ -72,9 +75,8 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
     /** The highest score since [takePeak]. */
     private var peak = 0f
 
-    /** Feeds PCM16 samples (any count); returns a detection when one completes in them. */
+    /** Feeds PCM16 samples (any count); returns a detection when one completes in them, leaving the samples after it unheard. */
     fun feed(pcm: ShortArray, count: Int = pcm.size): Detection? {
-        var found: Detection? = null
         var i = 0
         while (i < count) {
             val n = minOf(count - i, WakeModel.FRAME - filled)
@@ -83,10 +85,10 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
             i += n
             if (filled == WakeModel.FRAME) {
                 filled = 0
-                frame(pending.copyOf())?.let { found = it }
+                frame(pending.copyOf())?.let { return it.copy(rest = i) }
             }
         }
-        return found
+        return null
     }
 
     /** The highest score since the last call, then forgets it. */

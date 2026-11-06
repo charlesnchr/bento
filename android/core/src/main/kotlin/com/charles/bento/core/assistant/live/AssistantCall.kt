@@ -888,6 +888,8 @@ class AssistantCall(
         if (listening) return
         listening = true
         micWatchFrom = now()
+        // The quiet that hangs up a call counts from here, not from while it connected.
+        lastSpeech = now()
         // Taken before the microphone opens: whoever recorded it lets go of the microphone first.
         val before = runCatching { opening?.invoke() }.getOrNull()
         scope.launch {

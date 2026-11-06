@@ -76,10 +76,18 @@ class WakeWord(
     private var listener: WakeListener? = null
     private var receiver: BroadcastReceiver? = null
     private val earcons by lazy { Earcons(context) }
-    /** Turned off at launch because loading the model brought Bento down last time. */
-    private var crashed = false
+    /** Why it turned itself off (loading the model failed, or brought Bento down last time), until it's turned on again. */
+    private var broken: String? = null
 
     init {
+        if (prefs.wakeLoading.value) {
+            // the last launch died loading the model (its native library on this phone): don't loop
+            VoiceLog.e(TAG, "loading the wake word model crashed Bento last time: turned off")
+            prefs.wakeLoading.value = false
+            prefs.wakeWord.value = false
+            prefs.flush()
+            broken = "Turned off: loading the model crashed Bento"
+        }
         scope.launch {
             combine(prefs.wakeWord.flow, prefs.wakePauseOnSaver.flow, prefs.wakeThreshold.flow) { _, _, _ -> }.collect { refresh() }
         }
@@ -87,7 +95,7 @@ class WakeWord(
 
     /** Turns it on or off (Settings, the tile, the notification). On needs Bento in the foreground the first time. */
     fun setEnabled(on: Boolean) {
-        crashed = false
+        broken = null
         prefs.wakeWord.value = on
         refresh()
     }
@@ -97,16 +105,8 @@ class WakeWord(
      * when Bento comes to the foreground (which may now start the service) and after a call.
      */
     fun refresh() {
-        if (prefs.wakeLoading.value) {
-            // the last launch died loading the model (its native library on this phone): don't loop
-            VoiceLog.e(TAG, "loading the wake word model crashed Bento last time: turned off")
-            prefs.wakeLoading.value = false
-            prefs.wakeWord.value = false
-            prefs.flush()
-            crashed = true
-        }
         val on = prefs.wakeWord.value
-        if (!on) { stopAll(); _state.value = if (crashed) WakeState.Blocked(CRASHED) else WakeState.Off; return }
+        if (!on) { stopAll(); _state.value = broken?.let { WakeState.Blocked(it) } ?: WakeState.Off; return }
         watchPower()
         val missing = missing()
         if (missing != null) {
@@ -125,12 +125,23 @@ class WakeWord(
             val threshold = prefs.wakeThreshold.value / 100f
             if (listener?.threshold != threshold) { listener?.stop(); listener = null }
             if (listener == null) {
-                listener = WakeListener(context, threshold, busy = { busy() }, onWake = { score -> scope.launch { woke(score) } },
-                                        loading = { now -> prefs.wakeLoading.value = now; prefs.flush() }).also { it.start() }
+                lateinit var l: WakeListener
+                l = WakeListener(context, threshold, busy = { busy() }, onWake = { score -> scope.launch { woke(score) } },
+                                 loading = { now -> prefs.wakeLoading.value = now; prefs.flush() },
+                                 failed = { scope.launch { if (listener === l) loadFailed() } })
+                listener = l.also { it.start() }
             }
             _state.value = WakeState.Listening
         }
         VoiceService.refresh(context, VoiceService.KIND_WAKE)
+    }
+
+    /** The model couldn't load (an exception, not a crash): off, saying so, rather than "Listening" with nothing listening. */
+    private fun loadFailed() {
+        listener = null
+        broken = "Turned off: couldn't load the wake word model"
+        prefs.wakeWord.value = false
+        refresh()
     }
 
     /** Debug builds: the listener hears this WAV (16 kHz mono) in real time instead of the microphone, once. */
@@ -164,14 +175,14 @@ class WakeWord(
     private fun busy(): Boolean = assistant().callActive || microphoneBusy()
 
     private fun enter() {
-        if (entering != null) return
         _state.value = WakeState.Starting
+        if (entering != null) return
         entering = scope.launch {
             val ok = VoiceService.enter(context, VoiceService.KIND_WAKE)
             entering = null
-            if (!prefs.wakeWord.value) { if (ok) VoiceService.exit(context, VoiceService.KIND_WAKE); return@launch }
             held = ok
-            if (ok) refresh() else {
+            // turned off or blocked meanwhile: refresh lets go of the service again
+            if (ok) refresh() else if (prefs.wakeWord.value) {
                 // Android doesn't let Bento start listening from the background: opening Bento does
                 _state.value = WakeState.Blocked("Open Bento to start listening", needsBento = true)
                 showResumeNotice()
@@ -179,8 +190,8 @@ class WakeWord(
         }
     }
 
+    /** Out of the microphone service. A start still pending isn't cancelled (the service may be starting): it leaves once it's in. */
     private fun leave() {
-        entering?.cancel(); entering = null
         if (held) VoiceService.exit(context, VoiceService.KIND_WAKE)
         held = false
     }
@@ -269,7 +280,6 @@ class WakeWord(
     companion object {
         private const val TAG = "WakeWord"
         private const val RESUME_NOTIFICATION = 43
-        private const val CRASHED = "Turned off: loading the model crashed Bento"
 
     }
 }
@@ -288,6 +298,8 @@ internal class WakeListener(
     private val onWake: (Float) -> Unit,
     /** True as the model starts loading, false once it has (or failed cleanly). On the listener's thread. */
     private val loading: (Boolean) -> Unit = {},
+    /** The model couldn't load: the thread has ended. On the listener's thread. */
+    private val failed: () -> Unit = {},
 ) {
     /** Where the audio comes from: the microphone, or a test file. */
     private interface Mic {
@@ -337,6 +349,7 @@ internal class WakeListener(
         val model = runCatching { loadModel(context) }.also { loading(false) }.getOrElse {
             VoiceLog.e(TAG, "couldn't load the wake word model: ${it.message}")
             running = false
+            failed()
             return
         }
         val detector = WakeDetector(model, WakeDetector.Limits(threshold = threshold))
@@ -394,7 +407,8 @@ internal class WakeListener(
         if (detector.scored > scoredBefore) inferenceNanos += System.nanoTime() - t0
         val hit = found ?: return null
         VoiceLog.i(TAG, "detected, score %.3f".format(hit.score))
-        handing = ByteArrayOutputStream()
+        // what followed the word in this read is the start of the request
+        handing = ByteArrayOutputStream().apply { if (hit.rest < n) write(bytes(buf.copyOfRange(hit.rest, n), n - hit.rest)) }
         handingSince = SystemClock.elapsedRealtime()
         hit
     }

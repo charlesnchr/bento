@@ -103,6 +103,18 @@ class WakeDetectorTest {
     }
 
     @Test
+    fun theAudioAfterADetectionIsLeftForTheCall() {
+        // the model fires on the first loud frame: the rest of the read is the start of the request
+        val model = FakeModel { if (WakeDetector.dbfs(it) > -40) 0.9f else 0f }
+        val d = WakeDetector(model)
+        d.feed(noise(2.4)) // 30 whole frames: the read starts on a frame boundary
+        val read = tone(0.32, amplitude = 3_000.0) // four frames
+        val hit = assertNotNull(d.feed(read))
+        assertEquals(WakeModel.FRAME, hit.rest)
+        assertEquals(0L, d.frames - 1 - hit.atFrame, "nothing after the detection was fed")
+    }
+
+    @Test
     fun partialChunksAddUp() {
         val model = FakeModel()
         val d = WakeDetector(model)

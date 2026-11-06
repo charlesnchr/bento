@@ -204,6 +204,19 @@ class AssistantCallTest {
         assertNull(call.ended().message, "hanging up isn't an error")
     }
 
+    @Test fun theQuietBeforeHangingUpCountsFromTheMicrophoneOpening() = blocking {
+        // a slow setup isn't quiet time: the call doesn't hang up the moment it connects
+        val transport = FakeTransport(emptyList())
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast, hangUpAfter = { 0.6 })
+        call.start()
+        delay(1_000)
+        transport.push(Frames.setupComplete())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        delay(300)
+        assertTrue(call.status.value !is AssistantCall.Status.Ended, "hung up as it connected")
+        assertNull(call.ended().message)
+    }
+
     @Test fun aCallWaitingOnHermesDoesntHangUp() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
