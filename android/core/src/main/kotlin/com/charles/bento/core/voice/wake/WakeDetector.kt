@@ -35,7 +35,12 @@ interface WakeModel : AutoCloseable {
  * nothing for [Limits.refractoryFrames], and the model starts afresh. Not thread-safe: one
  * audio thread feeds it.
  */
-class WakeDetector(private val model: WakeModel, private val limits: Limits = Limits()) {
+class WakeDetector(
+    private val model: WakeModel,
+    private val limits: Limits = Limits(),
+    /** The score that counts as the word, read at every frame (the Sensitivity setting can change it). */
+    private val threshold: () -> Float = { limits.threshold },
+) {
     data class Limits(
         /** The Echo's operating point for this model (wyoming-lkww.service). */
         val threshold: Float = 0.7f,
@@ -57,9 +62,6 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
      * samples [feed] was given the audio after it starts. The detector hasn't heard those.
      */
     data class Detection(val score: Float, val atFrame: Long, val rest: Int = 0)
-
-    /** [Limits.threshold], changeable as it runs (the Sensitivity setting). Any thread. */
-    @Volatile var threshold: Float = limits.threshold
 
     private val pending = FloatArray(WakeModel.FRAME)
     private var filled = 0
@@ -136,7 +138,7 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
         scored++
         val s = model.step(frame)
         peak = max(peak, s)
-        if (s <= threshold || at < quietUntil) return null
+        if (s <= threshold() || at < quietUntil) return null
         quietUntil = at + limits.refractoryFrames
         model.reset()
         return Detection(s, at)

@@ -76,6 +76,8 @@ class WakeWord(
     private var listener: WakeListener? = null
     private var receiver: BroadcastReceiver? = null
     private val earcons by lazy { Earcons(context) }
+    /** Model loads in progress: a listener stopped mid-load may finish after its replacement started. */
+    private val loads = java.util.concurrent.atomic.AtomicInteger()
     /** Why it turned itself off (loading the model failed, or brought Bento down last time), until it's turned on again. */
     private var broken: String? = null
 
@@ -129,7 +131,7 @@ class WakeWord(
                 earcons // loaded now, so the first detection's tone is ready
                 lateinit var l: WakeListener
                 l = WakeListener(context, threshold, busy = { busy() }, onWake = { score -> scope.launch { woke(score) } },
-                                 loading = { now -> prefs.wakeLoading.value = now; prefs.flush() },
+                                 loading = { now -> loads.addAndGet(if (now) 1 else -1).let { prefs.wakeLoading.value = it > 0 }; prefs.flush() },
                                  failed = { scope.launch { if (listener === l) loadFailed() } })
                 listener = l.also { it.start() }
             }
@@ -312,10 +314,8 @@ internal class WakeListener(
         fun release()
     }
 
-    /** The score that counts as the word; changeable while it runs. Any thread. */
+    /** The score that counts as the word; the detector reads it at every frame. Any thread. */
     @Volatile var threshold: Float = threshold
-        set(value) { field = value; detector?.threshold = value }
-    @Volatile private var detector: WakeDetector? = null
     @Volatile private var running = false
     private var thread: Thread? = null
     private val lock = Object()
@@ -358,9 +358,7 @@ internal class WakeListener(
             failed()
             return
         }
-        val detector = WakeDetector(model, WakeDetector.Limits(threshold = threshold))
-        this.detector = detector
-        detector.threshold = threshold // set meanwhile
+        val detector = WakeDetector(model) { threshold }
         val buf = ShortArray(READ_SAMPLES)
         var statsAt = SystemClock.elapsedRealtime()
         try {
