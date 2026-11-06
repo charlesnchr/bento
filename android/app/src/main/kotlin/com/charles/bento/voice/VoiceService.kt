@@ -166,12 +166,16 @@ class VoiceService : Service() {
 
 /**
  * The kinds in the [VoiceService] and the one whose notification it shows: the call's while
- * there is one (it has End call), else the latest to come in. Main thread.
+ * there is one (it has End call), else the latest to come in, the wake word's last. Main thread.
  */
 internal class VoiceHolders {
     private val kinds = LinkedHashSet<String>()
     val empty: Boolean get() = kinds.isEmpty()
-    val shown: String? get() = if (VoiceService.KIND_ASSISTANT in kinds) VoiceService.KIND_ASSISTANT else kinds.lastOrNull()
+    val shown: String? get() = when {
+        VoiceService.KIND_ASSISTANT in kinds -> VoiceService.KIND_ASSISTANT
+        // the wake word is in for hours: anything else that comes or was in shows over it
+        else -> kinds.lastOrNull { it != VoiceService.KIND_WAKE } ?: kinds.lastOrNull()
+    }
 
     /** Adds [kind]; the notification to show now, or null when it stays as it is. */
     fun add(kind: String): String? = change { kinds.remove(kind); kinds.add(kind) }

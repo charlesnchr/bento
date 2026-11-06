@@ -160,11 +160,13 @@ Runtime, at the Echo's threshold of 0.7 (the Sensitivity slider moves it). The w
 “Woodhouse” go to Gemini once the call connects, the call is open mic whatever the talk mode, and it
 hangs up after 15 s with nothing said and no task running.
 
-Battery: the model only runs while there's sound. `WakeDetector` keeps the room's noise floor and
-starts the model, with the 2 s before, when a frame is 6 dB above it; a quiet room costs a 160 ms
-microphone read and an RMS, nothing more. On a desktop core a model step takes 0.6 ms per 80 ms of
-audio; the log reports the phone's figure and how much of the time it ran (`adb logcat -s
-BentoVoice`, every 30 minutes). It pauses while battery saver is on or the battery is low (a
+Battery: the main cost is the open microphone itself. While an app records, Android's audio
+server keeps the processor awake, so the phone doesn't deep-sleep while it listens (only the
+system's own hotword hardware avoids that, and apps can't use it). On top of that the model only
+runs while there's sound: `WakeDetector` keeps the room's noise floor and starts the model, with
+the 2 s before, when a frame is 6 dB above it, so a quiet room costs a 160 ms read and an RMS. On a
+desktop core a model step takes 0.6 ms per 80 ms of audio; the log reports the phone's figure and
+how much of the time it ran (`adb logcat -s BentoVoice`, every 30 minutes). It pauses while battery saver is on or the battery is low (a
 setting), and lets go of the microphone during calls, dictation and meetings. The Quick Settings
 tile and the notification's Turn off switch it off.
 

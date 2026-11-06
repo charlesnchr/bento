@@ -58,6 +58,9 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
      */
     data class Detection(val score: Float, val atFrame: Long, val rest: Int = 0)
 
+    /** [Limits.threshold], changeable as it runs (the Sensitivity setting). Any thread. */
+    @Volatile var threshold: Float = limits.threshold
+
     private val pending = FloatArray(WakeModel.FRAME)
     private var filled = 0
     private val levels = DoubleArray(limits.floorFrames) { 0.0 }
@@ -133,7 +136,7 @@ class WakeDetector(private val model: WakeModel, private val limits: Limits = Li
         scored++
         val s = model.step(frame)
         peak = max(peak, s)
-        if (s <= limits.threshold || at < quietUntil) return null
+        if (s <= threshold || at < quietUntil) return null
         quietUntil = at + limits.refractoryFrames
         model.reset()
         return Detection(s, at)

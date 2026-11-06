@@ -123,8 +123,10 @@ class WakeWord(
             _state.value = WakeState.Paused(paused)
         } else {
             val threshold = prefs.wakeThreshold.value / 100f
-            if (listener?.threshold != threshold) { listener?.stop(); listener = null }
+            // a new sensitivity applies to the running listener (the slider sends every step)
+            listener?.threshold = threshold
             if (listener == null) {
+                earcons // loaded now, so the first detection's tone is ready
                 lateinit var l: WakeListener
                 l = WakeListener(context, threshold, busy = { busy() }, onWake = { score -> scope.launch { woke(score) } },
                                  loading = { now -> prefs.wakeLoading.value = now; prefs.flush() },
@@ -136,10 +138,10 @@ class WakeWord(
         VoiceService.refresh(context, VoiceService.KIND_WAKE)
     }
 
-    /** The model couldn't load (an exception, not a crash): off, saying so, rather than "Listening" with nothing listening. */
+    /** The model couldn't load or the listener threw: off, saying so, rather than "Listening" with nothing listening. */
     private fun loadFailed() {
         listener = null
-        broken = "Turned off: couldn't load the wake word model"
+        broken = "Turned off: the wake word stopped with an error"
         prefs.wakeWord.value = false
         refresh()
     }
@@ -292,13 +294,13 @@ class WakeWord(
  */
 internal class WakeListener(
     private val context: Context,
-    val threshold: Float,
+    threshold: Float,
     private val busy: () -> Boolean,
     /** On the listener's thread. */
     private val onWake: (Float) -> Unit,
     /** True as the model starts loading, false once it has (or failed cleanly). On the listener's thread. */
     private val loading: (Boolean) -> Unit = {},
-    /** The model couldn't load: the thread has ended. On the listener's thread. */
+    /** The model couldn't load, or listening threw: the thread has ended. On the listener's thread. */
     private val failed: () -> Unit = {},
 ) {
     /** Where the audio comes from: the microphone, or a test file. */
@@ -310,6 +312,10 @@ internal class WakeListener(
         fun release()
     }
 
+    /** The score that counts as the word; changeable while it runs. Any thread. */
+    @Volatile var threshold: Float = threshold
+        set(value) { field = value; detector?.threshold = value }
+    @Volatile private var detector: WakeDetector? = null
     @Volatile private var running = false
     private var thread: Thread? = null
     private val lock = Object()
@@ -353,6 +359,8 @@ internal class WakeListener(
             return
         }
         val detector = WakeDetector(model, WakeDetector.Limits(threshold = threshold))
+        this.detector = detector
+        detector.threshold = threshold // set meanwhile
         val buf = ShortArray(READ_SAMPLES)
         var statsAt = SystemClock.elapsedRealtime()
         try {
@@ -367,7 +375,12 @@ internal class WakeListener(
                 val m = synchronized(lock) { mic } ?: open()
                 if (m == null) { nap(2_000); continue }
                 val n = m.read(buf)
-                if (n <= 0) { close(); continue }
+                if (n <= 0) {
+                    close()
+                    // a microphone that keeps failing (not one taken over or stopped) isn't retried flat out
+                    if (running && !yielded) nap(500)
+                    continue
+                }
                 val hit = heard(detector, buf, n)
                 if (hit != null) onWake(hit.score)
                 val now = SystemClock.elapsedRealtime()
@@ -378,6 +391,11 @@ internal class WakeListener(
                     statsAt = now
                 }
             }
+        } catch (e: Throwable) {
+            // the model or the microphone threw: stop listening, never take Bento down
+            VoiceLog.e(TAG, "the listener failed: ${e.javaClass.simpleName}: ${e.message}")
+            running = false
+            failed()
         } finally {
             close()
             model.close()
