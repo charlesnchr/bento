@@ -56,7 +56,7 @@ OUT="android/app/build/outputs/apk/release/app-release.apk"
 mkdir -p dist
 cp "$OUT" "$APK"
 ${RUN[@]+"${RUN[@]}"} apksigner verify --print-certs "$APK" | grep -q "Signer #1 certificate SHA-256" || die "$APK isn't signed"
-${RUN[@]+"${RUN[@]}"} python3 scripts/check-android-apk.py "$APK" || die "$APK would crash: see above"
+${RUN[@]+"${RUN[@]}"} python3 scripts/check-android-apk.py "$APK" || die "the APK check failed: see above"
 SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
 
 if [ "$DRY" = 1 ]; then
