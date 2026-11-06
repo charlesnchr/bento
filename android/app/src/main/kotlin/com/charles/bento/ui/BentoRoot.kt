@@ -100,6 +100,7 @@ fun BentoRoot(activity: MainActivity, pendingIntent: MutableStateFlow<Intent?>) 
                     ?: Routes.fromLink(link)?.let { nav.navigate(it) }
             }
             MainActivity.ACTION_GRANT_MIC -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            MainActivity.ACTION_WAKE_ON -> if (MainActivity.isInternal(i)) graph.wake.setEnabled(true)
             MainActivity.ACTION_OPEN_NOTE -> id?.let { nav.navigate(NoteRoute(it)) }
             MainActivity.ACTION_NEW_NOTE -> nav.navigate(NoteRoute(Routes.NEW))
             MainActivity.ACTION_QUICK_ADD -> { tab = Tab.Todo; homeAction.value = HomeAction.QuickAdd }

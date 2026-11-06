@@ -15,3 +15,6 @@
 # Its own rule keeps these classes but not their constructors, so in release builds a tap on a task's
 # circle or a note's checkbox failed with NoSuchMethodException and did nothing.
 -keep class * implements androidx.glance.appwidget.action.ActionCallback { <init>(); }
+
+# ONNX Runtime (the wake word): its JNI library finds these classes and members by name
+-keep class ai.onnxruntime.** { *; }

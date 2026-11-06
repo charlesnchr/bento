@@ -21,6 +21,11 @@ class DebugKeyReceiver : BroadcastReceiver() {
             android.appwidget.AppWidgetManager.getInstance(context).requestPinAppWidget(provider, null, null)
             return
         }
+        if (intent.action == "com.charles.bento.debug.WAKE") {
+            // `--es file <name in the app's files dir>`: the wake word hears it once instead of the microphone
+            context.graph.wake.testWith(intent.getStringExtra("file")?.let { java.io.File(context.getExternalFilesDir(null), it) })
+            return
+        }
         if (intent.action == "com.charles.bento.debug.MIC") {
             // `--es file <name in the app's files dir>` replaces the microphone; no extra: the real one again
             com.charles.bento.voice.AudioCapture.testSource = intent.getStringExtra("file")?.let { java.io.File(context.getExternalFilesDir(null), it) }

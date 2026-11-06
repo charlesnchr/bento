@@ -50,8 +50,12 @@ android {
         debug {
             // same application id as release: static shortcuts and widgets name the package
             versionNameSuffix = "-debug"
+            // ONNX Runtime's native library (the wake word) for phones and the x86_64 emulator
+            ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
         }
         release {
+            // phones only: each ABI of ONNX Runtime is 20-40 MB
+            ndk { abiFilters += "arm64-v8a" }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -71,6 +75,8 @@ android {
 
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/versions/9/OSGI-INF/MANIFEST.MF")
+        // compressed in the APK (a third of the download), unpacked at install
+        jniLibs.useLegacyPackaging = true
     }
 
     testOptions {
@@ -110,6 +116,8 @@ dependencies {
 
     implementation(libs.gms.code.scanner)
     implementation(libs.zxing.core)
+    // the "Woodhouse" wake word: a streaming ONNX model (assets/wakeword)
+    implementation(libs.onnxruntime.android)
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(libs.junit.jupiter)

@@ -20,7 +20,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * A microphone foreground service for as long as Bento listens (a dictation into another
- * app, a captured thought, a meeting, a voice call with Hermes). Android only lets an app
+ * app, a captured thought, a meeting, a voice call with Hermes, the wake word). Android only lets an app
  * record while it is in the foreground or runs one of these, so it starts before the
  * microphone opens and stops right after. A dictation while a call is in standby shares it:
  * the service stops when the last of them leaves.
@@ -33,6 +33,11 @@ class VoiceService : Service() {
         if (intent?.action == ACTION_STOP) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_WAKE_OFF) {
+            // the wake word's notification: turning it off takes the service down unless something else is in it
+            applicationContext.graph.wake.setEnabled(false)
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_END_CALL) {
@@ -52,10 +57,13 @@ class VoiceService : Service() {
     companion object {
         private const val ACTION_STOP = "com.charles.bento.voice.STOP"
         private const val ACTION_END_CALL = "com.charles.bento.voice.END_CALL"
+        private const val ACTION_WAKE_OFF = "com.charles.bento.voice.WAKE_OFF"
         private const val EXTRA_KIND = "kind"
         const val KIND_DICTATION = "dictation"
         const val KIND_MEETING = "meeting"
         const val KIND_ASSISTANT = "assistant"
+        /** Listening for the wake word ([WakeWord]): in for as long as it's on. */
+        const val KIND_WAKE = "wake"
         const val NOTIFICATION_ID = 41
         const val CHANNEL_LISTENING = "listening"
         private var ready: CompletableDeferred<Boolean>? = null
@@ -92,6 +100,11 @@ class VoiceService : Service() {
             changed?.let { show(context, it) }
         }
 
+        /** [kind]'s notification changed (the wake word paused, say): shown again if it's the one showing. Main thread. */
+        fun refresh(context: Context, kind: String) {
+            if (holders.shown == kind) show(context, kind)
+        }
+
         /** Replaces the running service's notification with [kind]'s. */
         private fun show(context: Context, kind: String) {
             runCatching { context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(context, kind)) }
@@ -102,7 +115,7 @@ class VoiceService : Service() {
             if (nm.getNotificationChannel(CHANNEL_LISTENING) == null) {
                 nm.createNotificationChannel(
                     NotificationChannel(CHANNEL_LISTENING, "Listening", NotificationManager.IMPORTANCE_LOW).apply {
-                        description = "Shown while Bento records a dictation or a meeting"
+                        description = "Shown while Bento records a dictation or a meeting, or listens for its wake word"
                         setShowBadge(false)
                     },
                 )
@@ -115,7 +128,7 @@ class VoiceService : Service() {
                 Intent(context, MainActivity::class.java).setAction(
                     when (kind) {
                         KIND_MEETING -> MainActivity.ACTION_OPEN_MEETING
-                        KIND_ASSISTANT -> MainActivity.ACTION_OPEN_ASSISTANT
+                        KIND_ASSISTANT, KIND_WAKE -> MainActivity.ACTION_OPEN_ASSISTANT
                         else -> Intent.ACTION_MAIN
                     },
                 ),
@@ -123,7 +136,9 @@ class VoiceService : Service() {
             )
             val builder = NotificationCompat.Builder(context, CHANNEL_LISTENING)
                 .setSmallIcon(R.drawable.ic_stat_mic)
-                .setContentTitle(when (kind) { KIND_MEETING -> "Recording meeting"; KIND_ASSISTANT -> "Voice call with Hermes"; else -> "Listening" })
+                .setContentTitle(when (kind) {
+                    KIND_MEETING -> "Recording meeting"; KIND_ASSISTANT -> "Voice call with Hermes"; KIND_WAKE -> "Listening for “Woodhouse”"; else -> "Listening"
+                })
                 .setOngoing(true)
                 .setSilent(true)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -135,6 +150,14 @@ class VoiceService : Service() {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                 )
                 builder.addAction(R.drawable.ic_stat_mic, "End call", end)
+            }
+            if (kind == KIND_WAKE) {
+                builder.setContentText(context.graph.wake.notificationText())
+                val off = PendingIntent.getService(
+                    context, 2, Intent(context, VoiceService::class.java).setAction(ACTION_WAKE_OFF),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.addAction(R.drawable.ic_stat_mic, "Turn off", off)
             }
             return builder.build()
         }

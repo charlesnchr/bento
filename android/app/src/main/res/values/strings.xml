@@ -6,6 +6,7 @@
     <string name="accessibility_summary">Shows a mic bubble beside the keyboard and lets you hold Volume Down to dictate into any text field.</string>
     <string name="accessibility_description">Bento uses this service to show its dictation bubble while the keyboard is up over a text field, to start dictation when you hold the volume key, and to insert the transcribed text where the cursor is. It reads the focused text field (its text, hint and type) and which app it belongs to, only to insert text and to tell the cleanup model where the text goes. Password, number and phone fields are skipped. Nothing it reads is stored.</string>
     <string name="tile_label">Capture thought</string>
+    <string name="wake_tile_label">Woodhouse</string>
     <string name="alias_dictate">Bento Dictate</string>
     <string name="alias_meeting">Bento Meeting</string>
     <string name="alias_quick_add">Bento Quick Add</string>
