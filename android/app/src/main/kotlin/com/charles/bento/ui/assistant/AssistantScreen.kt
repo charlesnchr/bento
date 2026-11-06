@@ -116,7 +116,6 @@ import com.charles.bento.core.assistant.HermesChoice
 import com.charles.bento.core.assistant.live.TaskLabel
 import com.charles.bento.core.assistant.HermesSession
 import com.charles.bento.graph
-import com.charles.bento.settings.Prefs
 import com.charles.bento.ui.HomeAction
 import com.charles.bento.ui.SettingsRoute
 import com.charles.bento.ui.theme.SansCode
@@ -179,7 +178,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
                 !configured -> SetupCard { nav.navigate(SettingsRoute) }
                 state.messages.isEmpty() && state.caption == null && !state.loading -> EmptyChat()
                 // A task's session opens in the chat once the call is over; during it, the task's sheet shows it.
-                else -> Messages(state.sessionId, state.messages, state.caption, state.working, graph.prefs.hermesScroll, onAnswer = assistant::answer,
+                else -> Messages(state.sessionId, state.messages, state.caption, state.working, savedScroll = { graph.prefs.hermesScroll.value }, saveScroll = { graph.prefs.hermesScroll.value = it }, onAnswer = assistant::answer,
                                  onOpen = { m -> m.link?.let { link -> state.call?.tasks?.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
@@ -231,9 +230,12 @@ private fun EmptyChat() {
     }
 }
 
+// The saved position goes in and out through functions, not as the Prefs.Pref: the Compose compiler reads a $stable
+// field for a parameter of that (inner) class that it never generates, and 0.2.17 crashed on it (NoSuchFieldError).
 @Composable
 private fun Messages(
-    sessionId: String?, messages: List<ChatMessage>, caption: String?, working: Boolean, saved: Prefs.Pref<String>,
+    sessionId: String?, messages: List<ChatMessage>, caption: String?, working: Boolean,
+    savedScroll: () -> String, saveScroll: (String) -> Unit,
     onAnswer: (String, String) -> Unit, onOpen: (ChatMessage) -> Unit,
 ) {
     // Back where the user left this conversation (on another tab or screen, or before a new process), unless they were at
@@ -242,7 +244,7 @@ private fun Messages(
     // another conversation, or the first load after a restart.
     val conversation = messages.firstOrNull()?.id
     val restored = remember(conversation) {
-        messages.lastOrNull()?.let { last -> ChatScroll.restore(saved.value, sessionId)?.takeUnless { it.follows(messages.size, last.text.length) } }
+        messages.lastOrNull()?.let { last -> ChatScroll.restore(savedScroll(), sessionId)?.takeUnless { it.follows(messages.size, last.text.length) } }
     }
     val list = remember(conversation) { LazyListState(restored?.index ?: messages.lastIndex.coerceAtLeast(0), restored?.offset ?: 0) }
     // At the bottom, following the conversation, until the user scrolls away; back once they scroll to the very end.
@@ -258,9 +260,9 @@ private fun Messages(
     val save = {
         val l = current
         if (l.layoutInfo.totalItemsCount > 0 && shown.isNotEmpty()) {
-            saved.value = session?.let {
+            saveScroll(session?.let {
                 ChatScroll(it, l.firstVisibleItemIndex, l.firstVisibleItemScrollOffset, shown.size, shown.last().text.length, following).encode()
-            }.orEmpty()
+            }.orEmpty())
         }
     }
     // Stopped, it has saved already, and its state may be stale (a new Hermes session moves the saved position).
