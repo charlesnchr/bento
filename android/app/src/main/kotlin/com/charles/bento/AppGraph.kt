@@ -70,6 +70,7 @@ class AppGraph(val app: Application) {
     val voicePipeline: VoicePipeline get() = voice
     val meetings: com.charles.bento.voice.MeetingController = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main, { dictation.isBusy || assistant.callActive }) { _, md -> createNote(md) }
     val assistant = com.charles.bento.assistant.AssistantController(app, prefs, secrets, http, main) { dictation.isBusy || meetings.isBusy }
+    val wake = com.charles.bento.voice.WakeWord(app, prefs, main, { assistant }) { dictation.isBusy || meetings.isBusy }
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {
         override suspend fun captureThought(noteId: String?, text: String): String? = this@AppGraph.captureThought(noteId, text)

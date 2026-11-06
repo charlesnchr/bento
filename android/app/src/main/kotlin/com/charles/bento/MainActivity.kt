@@ -34,6 +34,8 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         lifecycleScope.launch { graph.updater.checkOnOpen() }
+        // in the foreground: the wake word's microphone service may start now if it couldn't before
+        graph.wake.refresh()
     }
 
     override fun onStop() {
@@ -61,6 +63,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_OPEN_ASSISTANT = "com.charles.bento.OPEN_ASSISTANT"
         /** A new Hermes chat with a voice call on it (the Hermes call widget). */
         const val ACTION_NEW_CALL = "com.charles.bento.NEW_HERMES_CALL"
+        /** Turns the wake word on (its tile, or the notice that it stopped): only Bento can send it. */
+        const val ACTION_WAKE_ON = "com.charles.bento.WAKE_ON"
         const val EXTRA_ID = "id"
         private const val INTERNAL_ENTRY = "com.charles.bento.InternalEntry"
 

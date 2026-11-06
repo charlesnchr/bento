@@ -20,11 +20,11 @@ android/
     assistant/  the Hermes API client (sessions, streamed turns), the chat transcript, Markdown
                 for reading, and live/: voice calls on Gemini Live that hand requests to Hermes
     voice/      Gemini transcription (batch + live), cleanup, validation, voice edits,
-                history and crash recovery, meetings
+                history and crash recovery, meetings; wake/: the "Woodhouse" wake word detector
   app/    the Android app
     settings/   Prefs, SecretStore (Android Keystore), Pairing (bento://pair QR links)
     sync/       SyncHub: live while Bento is in use, WorkManager in the background
-    voice/      DictationController, AudioCapture, VoiceService (microphone FGS),
+    voice/      DictationController, AudioCapture, VoiceService (microphone FGS), WakeWord,
                 BentoAccessibilityService + DictationOverlay (bubble, held Volume Down,
                 text insertion), CaptureActivity + Quick Settings tile
     keyboard/   the voice-first keyboard (InputMethodService)
@@ -150,3 +150,30 @@ left to wait for, the call leaves Gemini after a quiet spell and comes back when
 starts talking (by the microphone's level; the words that woke it go to the new session) or
 with the first result; results whose session has gone go in as a turn. Hermes's approval prompts offer Allow once, Allow for
 this request (Hermes scopes a streamed turn's approvals to its run) and Deny.
+
+## Wake word
+
+Settings → Wake word → **Listen for “Woodhouse”** starts a voice call with Hermes in a new chat
+when you say the word, hands-free and with the screen off. It's the Echo's model (LiveKit WakeWord
+v2, `woodhouse.onnx` in `app/src/main/assets/wakeword`, trained in the home-assistant repo) on ONNX
+Runtime, at the Echo's threshold of 0.7 (the Sensitivity slider moves it). The words after
+“Woodhouse” go to Gemini once the call connects, the call is open mic whatever the talk mode, and it
+hangs up after 15 s with nothing said and no task running.
+
+Battery: the main cost is the open microphone itself. While an app records, Android's audio server
+keeps the processor awake, so the phone doesn't deep-sleep while it listens (only the system's own
+hotword hardware avoids that, and apps can't use it). On top of that the model only runs while
+there's sound: `WakeDetector` keeps the room's noise floor and starts the model, with the 2 s
+before, when a frame is 6 dB above it, so a quiet room costs a 160 ms read and an RMS. On a desktop
+core a model step takes 0.6 ms per 80 ms of audio; the log reports the phone's figure and how much
+of the time it ran (`adb logcat -s BentoVoice`, every 30 minutes). It pauses while battery saver is
+on or the battery is low (a setting), and lets go of the microphone during calls, dictation and
+meetings. The Quick Settings tile and the notification's Turn off switch it off.
+
+It runs in Bento's microphone service, so Android shows the microphone in use. Android starts that
+service only while Bento is in the foreground or its accessibility service is on; after a reboot
+without the accessibility service, a notification asks to open Bento. Debug builds can feed it a
+WAV: `adb push x.wav /sdcard/Android/data/com.charles.bento/files/` and `adb shell am broadcast -a
+com.charles.bento.debug.WAKE --es file x.wav -p com.charles.bento`. `core`'s tests check the Kotlin
+runtime against LiveKit's Python client on the same audio.
+

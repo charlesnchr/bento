@@ -83,6 +83,15 @@ class Prefs(context: Context) {
     /** Seconds without speech after which a call disconnects from Gemini while Hermes works (0 = never). */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
 
+    // Wake word ("Woodhouse" starts a voice call with Hermes)
+    val wakeWord = bool("wake.enabled", false)
+    /** Not while battery saver is on or the battery is low. */
+    val wakePauseOnSaver = bool("wake.pauseOnSaver", true)
+    /** The score that counts as the word, in hundredths; the Echo uses 70. */
+    val wakeThreshold = int("wake.threshold", 70)
+    /** Set while the model loads: still set at the next launch means loading it brought Bento down. */
+    val wakeLoading = bool("wake.loading", false)
+
     // Updates
     val autoUpdateCheck = bool("update.auto", true)
     val skippedVersion = string("update.skipped", "")

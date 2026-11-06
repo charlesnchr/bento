@@ -48,4 +48,15 @@ class VoiceHoldersTest {
         assertNull(h.remove(KIND_DICTATION))
         assertEquals(KIND_ASSISTANT, h.shown)
     }
+
+    @Test fun theWakeWordShowsOnlyWhenNothingElseIsIn() {
+        val h = VoiceHolders()
+        h.add(KIND_MEETING)
+        // turned on during a meeting: the meeting's notification stays
+        assertNull(h.add(VoiceService.KIND_WAKE))
+        assertEquals(KIND_MEETING, h.shown)
+        assertEquals(VoiceService.KIND_WAKE, h.remove(KIND_MEETING))
+        assertEquals(KIND_DICTATION, h.add(KIND_DICTATION))
+        assertEquals(VoiceService.KIND_WAKE, h.remove(KIND_DICTATION))
+    }
 }

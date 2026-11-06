@@ -21,11 +21,14 @@ dependencies {
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
     api(libs.okhttp)
+    // the wake word model's Java API; the app brings ONNX Runtime for Android, the tests the desktop build
+    compileOnly(libs.onnxruntime.jvm)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.onnxruntime.jvm)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

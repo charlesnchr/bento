@@ -23,6 +23,7 @@ import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -172,6 +173,64 @@ class AssistantCallTest {
         assertNull(call.ended().message)
         assertTrue(audio.stopped)
         assertEquals(1, transport.closeCount)
+    }
+
+    @Test fun wordsSaidBeforeTheCallConnectedGoFirst() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val opening = ByteArray(6_400) { 0x11 }
+        var micOpenAtTaking: Boolean? = null
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast, opening = { micOpenAtTaking = audio.started; opening })
+        call.start()
+        transport.awaitSent { s -> s.count { "realtimeInput" in it } >= 4 }
+        // taken before the call's own microphone opened, so the wake listener could let go of it first
+        assertEquals(false, micOpenAtTaking)
+        val audioFrames = transport.sent.filter { "realtimeInput" in it }.map {
+            Base64.getDecoder().decode(Json.parseToJsonElement(it).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content)
+        }
+        assertContentEquals(opening.copyOfRange(0, 3_200), audioFrames[0])
+        assertContentEquals(opening.copyOfRange(3_200, 6_400), audioFrames[1])
+        assertContentEquals(FakeAudio.QUIET, audioFrames[2])
+        call.stop()
+    }
+
+    @Test fun aCallWithNothingLeftHangsUpAfterTheQuiet() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast, hangUpAfter = { 0.5 })
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "What time is it?")
+        Live.speaks(transport, "It's ten past eight.")
+        assertNull(call.ended().message, "hanging up isn't an error")
+    }
+
+    @Test fun theQuietBeforeHangingUpCountsFromTheMicrophoneOpening() = blocking {
+        // a slow setup isn't quiet time: the call doesn't hang up the moment it connects
+        val transport = FakeTransport(emptyList())
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast, hangUpAfter = { 0.6 })
+        call.start()
+        delay(1_000)
+        transport.push(Frames.setupComplete())
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        delay(300)
+        assertTrue(call.status.value !is AssistantCall.Status.Ended, "hung up as it connected")
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aCallWaitingOnHermesDoesntHangUp() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val result = CompletableDeferred<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { result.await() }, limits = fast, hangUpAfter = { 0.3 })
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(transport, "Turn on the lights.")
+        transport.push(Live.call("c1"))
+        delay(1_000)
+        assertTrue(call.status.value !is AssistantCall.Status.Ended, "a task is running")
+        result.complete("Done.")
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        Live.speaks(transport, "The lights are on.")
+        assertNull(call.ended().message)
     }
 
     @Test fun aResumedCallSendsItsRecapBeforeAnyAudio() = blocking {

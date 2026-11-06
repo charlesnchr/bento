@@ -108,6 +108,13 @@ class AssistantCall(
     private val recap: () -> CallSetup.Resume? = { null },
     /** Captions of the user's speech while Gemini hasn't transcribed it yet ([LiveCaptions]). */
     private val captions: CallCaptions? = null,
+    /**
+     * What the user said before the call's microphone opened (the words after a wake word): taken
+     * once, just before it opens, and heard first. Called on the call's thread.
+     */
+    private val opening: (() -> ByteArray?)? = null,
+    /** Seconds without speech after which a call with nothing left to do hangs up (0 = never); read as the call goes. */
+    private val hangUpAfter: () -> Double = { 0.0 },
 ) {
     data class Limits(
         val connect: Double = 25.0,
@@ -432,6 +439,7 @@ class AssistantCall(
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
+                nothingLeft(t) -> { VoiceLog.i(TAG, "nothing said for ${hangUpAfter().toInt()}s and nothing running: hanging up"); stop(); return }
             }
         }
     }
@@ -457,6 +465,16 @@ class AssistantCall(
         if (micRestarts >= 2) _microphoneSilent.value = true
         VoiceLog.w(TAG, "no sound from the microphone for ${quiet.toInt()}s: restarting it (attempt $micRestarts)")
         audio.restartMicrophone()
+    }
+
+    /**
+     * Nobody has spoken (Gemini included) for [hangUpAfter], no task is running or about to, and
+     * every result has been heard: a call the wake word started is over.
+     */
+    private fun nothingLeft(t: Double): Boolean {
+        val after = hangUpAfter()
+        return after > 0 && listening && !standby && !waking && !rotating && running == 0 && settling == 0 && unheard.isEmpty() &&
+            !userTalking && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
     }
 
     /**
@@ -870,7 +888,21 @@ class AssistantCall(
         if (listening) return
         listening = true
         micWatchFrom = now()
+        // The quiet that hangs up a call counts from here, not from while it connected.
+        lastSpeech = now()
+        // Taken before the microphone opens: whoever recorded it lets go of the microphone first.
+        val before = runCatching { opening?.invoke() }.getOrNull()
         scope.launch {
+            if (before != null && !mutedNow) {
+                VoiceLog.i(TAG, "the call starts with ${before.size / 32} ms said before it connected")
+                var at = 0
+                while (at < before.size) {
+                    val chunk = before.copyOfRange(at, minOf(before.size, at + OPENING_CHUNK))
+                    send(audioFrame(chunk))
+                    captions?.feed(chunk)
+                    at += OPENING_CHUNK
+                }
+            }
             for ((captured, pcm) in mic) {
                 if (!active) return@launch
                 if (captured != lends) continue
@@ -1330,6 +1362,8 @@ class AssistantCall(
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
         /** Two seconds of 20 ms microphone frames: a burst that big waits for the call's thread rather than being dropped. */
         const val MIC_FRAMES = 100
+        /** The words said before the call connected go to Gemini in 100 ms frames. */
+        const val OPENING_CHUNK = 3_200
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
         /**
          * Seconds after its ACTIVITY_END a turn's transcript can still come (they came 0.01 s apart on

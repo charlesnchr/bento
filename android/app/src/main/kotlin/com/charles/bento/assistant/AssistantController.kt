@@ -136,6 +136,8 @@ class AssistantController(
     fun endpoint(): HermesEndpoint? = HermesEndpoint.of(prefs.hermesUrl.value, secrets.hermesToken)
     val configured: Boolean get() = endpoint() != null
     val callActive: Boolean get() = call != null
+    /** Hermes and a Gemini key: what a voice call needs. */
+    val canCall: Boolean get() = configured && secrets.geminiKey != null
 
     /**
      * For a dictation: true when no call is on, and when one is in standby, which then stays
@@ -466,24 +468,44 @@ class AssistantController(
     /** Starts a call on the conversation on screen, or ends the running one. The screen has the microphone permission. */
     fun toggleCall() {
         if (call != null || callJob != null) { endCall(); return }
+        startCall(null)
+    }
+
+    /** How a call the wake word started differs: the words said before it connected, open mic, and hanging up when it's over. */
+    private class WakeStart(val opening: () -> ByteArray?, val ended: (error: String?) -> Unit)
+
+    /**
+     * The wake word: a voice call in a new conversation, hearing first what was said after the word
+     * ([opening], taken as the call's microphone opens). Open mic whatever the talk mode, and it hangs
+     * up after [WAKE_HANG_UP_SECONDS] with nothing said and nothing running; [ended] says how it ended.
+     * False when no call can start now (one is on, a turn is running, or something is missing).
+     */
+    fun callFromWake(opening: () -> ByteArray?, ended: (error: String?) -> Unit): Boolean {
+        if (call != null || callJob != null || _state.value.working || microphoneBusy() || !canCall) return false
+        newChat()
+        return startCall(WakeStart(opening, ended))
+    }
+
+    private fun startCall(wake: WakeStart?): Boolean {
         val key = secrets.geminiKey
         when {
-            !configured -> { set { it.copy(error = "Set up Hermes first: Settings → Hermes.") }; return }
-            key == null -> { set { it.copy(error = "Voice calls need a Gemini API key: pair with your Mac or add one in Settings → Dictation.") }; return }
-            microphoneBusy() -> { set { it.copy(error = "Finish the dictation or meeting first.") }; return }
-            _state.value.working -> { set { it.copy(error = "Wait for Hermes to finish, or stop it, before calling.") }; return }
+            !configured -> { set { it.copy(error = "Set up Hermes first: Settings → Hermes.") }; return false }
+            key == null -> { set { it.copy(error = "Voice calls need a Gemini API key: pair with your Mac or add one in Settings → Dictation.") }; return false }
+            microphoneBusy() -> { set { it.copy(error = "Finish the dictation or meeting first.") }; return false }
+            _state.value.working -> { set { it.copy(error = "Wait for Hermes to finish, or stop it, before calling.") }; return false }
         }
         val resume = try {
             CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages))
         } catch (e: CallError) {
-            set { it.copy(error = e.message) }; return
+            set { it.copy(error = e.message) }; return false
         }
-        val tap = prefs.hermesTalkMode.value == "tap"
+        val tap = wake == null && prefs.hermesTalkMode.value == "tap"
         set { it.copy(error = null, call = CallUi(if (resume != null) "Resuming the conversation…" else "Connecting to Gemini Live…", true, false, tap, tap)) }
         callJob = scope.launch {
             if (!VoiceService.enter(context, VoiceService.KIND_ASSISTANT)) {
                 callJob = null
                 set { it.copy(call = null, error = "Couldn't start the call right now.") }
+                wake?.ended?.invoke("Couldn't start the call right now.")
                 return@launch
             }
             val transport = OkHttpLiveTransport({ key })
@@ -495,7 +517,9 @@ class AssistantController(
                 standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
                 // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
                 recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() },
-                captions = LiveCaptions({ OkHttpLiveTransport({ key }) }))
+                captions = LiveCaptions({ OkHttpLiveTransport({ key }) }),
+                opening = wake?.opening,
+                hangUpAfter = { if (wake != null) WAKE_HANG_UP_SECONDS else 0.0 })
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
             c.onCaption = { text -> scope.launch { if (call === c) set { it.copy(caption = text) } } }
@@ -526,12 +550,14 @@ class AssistantController(
                         val all = TurnState(ids = _state.value.messages.map { it.id }.toSet(), status = "cancelled")
                         val (list, _) = AssistantTranscript.finish(_state.value.messages, all)
                         set { it.copy(messages = list, call = null, caption = null, error = status.message) }
+                        wake?.ended?.invoke(status.message)
                         callJob?.cancel()
                         callJob = null
                     }
                 }
             }
         }
+        return true
     }
 
     /** Back from standby before Hermes finishes, to talk. */
@@ -710,6 +736,9 @@ class AssistantController(
                 "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
                 "Bento displays your response directly as a Hermes chat reply on the user's phone. Do not promise a separate document unless you actually create one. " +
                 "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context
+
+        /** Seconds of quiet, with nothing running, after which a call the wake word started hangs up. */
+        const val WAKE_HANG_UP_SECONDS = 15.0
 
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
