@@ -131,7 +131,7 @@ class WakeWord(
                 earcons // loaded now, so the first detection's tone is ready
                 lateinit var l: WakeListener
                 l = WakeListener(context, threshold, busy = { busy() }, onWake = { score -> scope.launch { woke(score) } },
-                                 loading = { now -> loads.addAndGet(if (now) 1 else -1).let { prefs.wakeLoading.value = it > 0 }; prefs.flush() },
+                                 loading = { now -> synchronized(loads) { prefs.wakeLoading.value = loads.addAndGet(if (now) 1 else -1) > 0; prefs.flush() } },
                                  failed = { scope.launch { if (listener === l) loadFailed() } })
                 listener = l.also { it.start() }
             }
