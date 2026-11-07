@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
@@ -544,16 +545,21 @@ private fun MenuChoice(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: () -> Unit, onOpenTask: (String) -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // In standby the running tasks get rows of their own under the status, with their time and latest step.
-            val (working, chips) = if (c.standby) c.tasks.partition { it.active } else emptyList<TaskUi>() to c.tasks
-            if (chips.isNotEmpty()) {
-                // The call's tasks on one line, newest last, so the conversation keeps the screen; a chip opens its task.
+            // Only what's in flight is on screen; finished work is behind the Done chip. In standby the running tasks get rows of
+            // their own under the status, with their time and latest step.
+            val (working, chips) = if (c.standby) c.inFlight.partition { it.active } else emptyList<TaskUi>() to c.inFlight
+            val done = c.done
+            var showDone by remember { mutableStateOf(false) }
+            if (chips.isNotEmpty() || done.isNotEmpty()) {
+                // The tasks in flight on one line, newest last, so the conversation keeps the screen; a chip opens its task.
                 val strip = rememberScrollState()
                 LaunchedEffect(chips.size) { strip.animateScrollTo(strip.maxValue) }
                 Row(Modifier.fillMaxWidth().horizontalScroll(strip).testTag("assistant-call-tasks"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     for (task in chips) TaskChip(task, onOpen = { onOpenTask(task.id) })
+                    if (done.isNotEmpty()) DoneChip(done.size, onOpen = { showDone = true })
                 }
             }
+            if (showDone && done.isNotEmpty()) DoneSheet(done, onOpen = { showDone = false; onOpenTask(it) }, onDismiss = { showDone = false })
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (c.connecting) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 else if (c.standby) Icon(Icons.Rounded.Pause, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
@@ -613,8 +619,7 @@ internal fun StandbyTasks(tasks: List<TaskUi>, onOpenTask: (String) -> Unit, clo
                     StatusIcon(task.status)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("${task.id} · ${TaskLabel.short(task.request)}", style = MaterialTheme.typography.labelLarge,
-                             maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(task.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         task.progress?.let {
                             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                  maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -631,16 +636,55 @@ internal fun StandbyTasks(tasks: List<TaskUi>, onOpenTask: (String) -> Unit, clo
     }
 }
 
-/** A call task in one line: its status, number and what was asked. Its sheet has the rest. */
+/** A task in flight in one line: its status and name; one waiting for the user's answer says so. Its sheet has the rest. */
 @Composable
 private fun TaskChip(task: TaskUi, onOpen: () -> Unit) {
     Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier.clickable(onClick = onOpen).testTag("assistant-task-${task.id}")) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            StatusIcon(task.status)
+            if (task.active) StatusIcon(task.status)
+            else Icon(Icons.AutoMirrored.Rounded.HelpOutline, "Waiting for your answer", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
-            Text("${task.id} · ${TaskLabel.short(task.request)}", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            Text(task.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                  modifier = Modifier.widthIn(max = 180.dp))
+        }
+    }
+}
+
+/** The end of the strip: how many tasks are done, opening the list of them. */
+@Composable
+private fun DoneChip(count: Int, onOpen: () -> Unit) {
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.clickable(onClick = onOpen).testTag("assistant-done-tasks")) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.CheckCircle, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Done $count", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+    }
+}
+
+/** The call's finished work, newest first: each opens its task's sheet. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DoneSheet(tasks: List<TaskUi>, onOpen: (String) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+            Text("Done", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp).testTag("assistant-done-sheet")) {
+                items(tasks.asReversed(), key = { it.id }) { task ->
+                    Row(Modifier.fillMaxWidth().clickable { onOpen(task.id) }.padding(horizontal = 24.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        StatusIcon(task.status)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(task.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(TaskLabel.short(task.request), style = MaterialTheme.typography.bodySmall,
+                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -682,12 +726,12 @@ private fun TaskSheet(task: TaskUi, onAnswer: (String, String) -> Unit, onCancel
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatusIcon(task.status)
                 Spacer(Modifier.width(10.dp))
-                Text("Task ${task.id}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text(task.label, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (task.active) OutlinedButton(onClick = onCancel, modifier = Modifier.testTag("assistant-cancel-task-${task.id}")) { Text("Cancel task") }
             }
             val line = when (task.status) {
                 "running", "waiting" -> task.progress ?: "Hermes is working…"
-                "completed" -> "Done"
+                "completed" -> task.question?.let { "Waiting for your answer: $it" } ?: "Done"
                 "cancelled" -> "Cancelled"
                 else -> "Failed"
             }

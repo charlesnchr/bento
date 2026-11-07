@@ -11,10 +11,11 @@ import kotlinx.serialization.json.addJsonObject
 
 /**
  * A spoken request for Hermes: the user's own transcribed words, and what was said before them.
- * [taskId] is the call's task as Gemini and the screen name it ("1", "2", …), once it starts;
- * a [followUp] continues that task's Hermes session rather than starting one.
+ * [taskId] is the call's task as the screen keys it ("1", "2", …), once it starts, and [label]
+ * its name as Gemini and the screen say it ("Pennyworth wake word"); Hermes gets neither. A
+ * [followUp] continues that task's Hermes session rather than starting one.
  */
-data class HermesCall(val id: String, val task: String, val context: String, val taskId: String = "", val followUp: Boolean = false)
+data class HermesCall(val id: String, val task: String, val context: String, val taskId: String = "", val followUp: Boolean = false, val label: String = "")
 
 /**
  * Port of the Mac's `GeminiLiveProtocol`. A function call is only a request ID: Hermes
@@ -163,13 +164,16 @@ class CallProtocol {
         }.toString()
 
         /**
-         * A task's result as its call's last response: labelled as finished, since a bare reply
-         * arriving while Gemini was about to say the task is running was sometimes taken for news
-         * that it still was, and never spoken.
+         * A task's result as its call's last response, by the task's name: marked finished, since a
+         * bare reply arriving while Gemini was about to say the task is running was sometimes taken
+         * for news that it still was, and never spoken. When Hermes [asked] the user something, it
+         * says the task waits for their answer, so Gemini sends the answer there.
          */
-        fun taskResult(task: String, result: String): String =
-            "Task $task has finished. " + (if (isLong(result)) LONG_RESULT else "") +
-                "Hermes's reply:\n" + result.ifEmpty { "Hermes returned no text. Do not infer success." }
+        fun taskResult(task: String, result: String, asked: String? = null): String =
+            "Hermes has finished \"$task\". " + (if (isLong(result)) LONG_RESULT else "") +
+                "Give the user the outcome in your own words, after anything they have just asked. Hermes's reply:\n" +
+                result.ifEmpty { "Hermes returned no text. Do not infer success." } +
+                (asked?.let { "\n\"$task\" is waiting for the user's answer to: $it When they answer, call ask_hermes with task \"$task\"." } ?: "")
 
         /** Said before a reply too long to read out; the chat shows all of it. */
         const val LONG_RESULT = "Its reply is long: give the gist and tell the user the full answer is on their screen. "
