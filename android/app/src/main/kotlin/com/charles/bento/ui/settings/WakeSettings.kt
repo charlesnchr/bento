@@ -75,8 +75,8 @@ fun WakeSection(context: Context, tick: Int) {
             if (show && !canShowPanel) allowOverApps(context)
         }
         if (panel && canShowPanel && !overApps) {
-            // it shows as the accessibility service's overlay, which goes over the keyboard
-            SettingsRow("Allow it over other apps", "So it sits below the keyboard", Icons.Rounded.Keyboard, onClick = { allowOverApps(context) })
+            // as the accessibility service's overlay it sits above the keyboard, over what you're typing in
+            SettingsRow("Allow it over other apps", "So the keyboard covers it, not your typing", Icons.Rounded.Keyboard, onClick = { allowOverApps(context) })
         }
         SwitchRow("Pause in battery saver", saver, "And while the battery is low", Icons.Rounded.BatterySaver) { prefs.wakePauseOnSaver.value = it }
         SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 70) "$it (as the Echo)" else it }, steps = 7) {

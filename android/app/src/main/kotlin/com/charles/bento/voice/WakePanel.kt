@@ -106,6 +106,11 @@ class WakePanel(
     /** Once the call has ended, how, until the panel goes. */
     private val ended = MutableStateFlow<Ended?>(null)
     private var hideJob: Job? = null
+    /** One window context for every window over other apps (each holds a token in the system). */
+    private val overAppsContext by lazy {
+        val display = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        context.createWindowContext(display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+    }
 
     init {
         // Bento on screen shows the call itself; left mid-call, the panel comes back
@@ -170,11 +175,7 @@ class WakePanel(
         // service's overlay (no permission needed) sits above both, so it's placed above the keyboard.
         val a11y = BentoAccessibilityService.instance
         val (ctx, type) = when {
-            Settings.canDrawOverlays(context) -> {
-                val display = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
-                context.createWindowContext(display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null) to
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            }
+            Settings.canDrawOverlays(context) -> overAppsContext to WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             a11y != null -> a11y to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             else -> return
         }
@@ -223,12 +224,13 @@ class WakePanel(
         val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
         params.width = screen.width() - insets.left - insets.right - 2 * margin
         val keyboardTop = host?.keyboardTop?.value
+        params.fitInsetsTypes = WindowInsets.Type.systemBars()
         if (keyboardTop != null) {
-            // a screen coordinate: measured from the display's bottom edge, insets aside
-            params.fitInsetsTypes = 0
+            // clear of a side navigation bar, but y is a screen coordinate: from the display's bottom edge
+            params.fitInsetsSides = WindowInsets.Side.LEFT or WindowInsets.Side.RIGHT
             params.y = screen.bottom - keyboardTop + margin
         } else {
-            params.fitInsetsTypes = WindowInsets.Type.systemBars()
+            params.fitInsetsSides = WindowInsets.Side.all()
             params.y = margin
         }
     }

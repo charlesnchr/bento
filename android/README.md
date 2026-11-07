@@ -166,7 +166,8 @@ the call's state, what you're saying and the spoken reply, with End and Open. It
 other apps once "Display over other apps" is allowed (Settings → Wake word → Show it on screen asks
 for it), else an accessibility overlay when the accessibility service is on, placed above the
 keyboard. It never shows while the phone is locked; there, the call's notification carries the
-latest words, as the lock screen's settings allow.
+latest words, as the lock screen's settings allow. Android's own Settings hide every app's overlays,
+so it doesn't show over them either.
 
 Battery: the main cost is the open microphone itself. While an app records, Android's audio server
 keeps the processor awake, so the phone doesn't deep-sleep while it listens (only the system's own
