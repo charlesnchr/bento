@@ -36,6 +36,9 @@ class BentoAccessibilityService : AccessibilityService() {
     private val _field = MutableStateFlow<FocusedField?>(null)
     /** The text field dictation would go into right now, with the keyboard's top edge. */
     val field: StateFlow<FocusedField?> = _field.asStateFlow()
+    private val _keyboardTop = MutableStateFlow<Int?>(null)
+    /** The top edge of the keyboard on screen, any keyboard over any field (null when none is up): the wake panel stays above it. */
+    val keyboardTop: StateFlow<Int?> = _keyboardTop.asStateFlow()
     private var refreshJob: Job? = null
     private var holdJob: Job? = null
     private var holdStarted = false
@@ -76,6 +79,7 @@ class BentoAccessibilityService : AccessibilityService() {
         refreshJob = scope.launch {
             delay(delayMs)
             _field.value = currentField()
+            _keyboardTop.value = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.let { Rect().also(it::getBoundsInScreen).top }
         }
     }
 

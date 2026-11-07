@@ -2,14 +2,18 @@ package com.charles.bento.voice
 
 import android.app.KeyguardManager
 import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Display
 import android.view.Gravity
+import android.view.WindowInsets
 import android.view.WindowManager
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -87,7 +91,14 @@ class WakePanel(
     private val assistant: () -> AssistantController,
 ) {
     /** [host]: the accessibility service whose overlay it is, null for a window over other apps. */
-    private class Window(val wm: WindowManager, val view: ComposeView, val owner: ComposeWindowOwner, val host: BentoAccessibilityService?)
+    private class Window(
+        val ctx: Context, val wm: WindowManager, val view: ComposeView, val owner: ComposeWindowOwner,
+        val params: WindowManager.LayoutParams, val host: BentoAccessibilityService?,
+    ) {
+        /** Places it again as the display rotates and the keyboard comes and goes. */
+        var rotation: ComponentCallbacks? = null
+        var keyboard: Job? = null
+    }
 
     private var window: Window? = null
     /** From the wake word until the panel goes: shown whenever Bento isn't on screen. */
@@ -105,15 +116,19 @@ class WakePanel(
                 else -> Unit
             }
         })
-        // gone as the screen locks, back once it's unlocked
+        // Gone as the screen goes off, back as it comes on unlocked or once it's unlocked. Off counts
+        // as locked: the phone may lock a while later, with the panel up, and say nothing.
         val screen = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
                 if (intent.action == Intent.ACTION_SCREEN_OFF) close() else if (active) open()
             }
         }
-        val filter = IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_USER_PRESENT) }
-        // protected broadcasts from the system only
-        ContextCompat.registerReceiver(context, screen, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_USER_PRESENT)
+        }
+        // Exported: SystemUI sends USER_PRESENT, not the system server, and an unexported receiver
+        // drops it. All three are protected broadcasts, which no app can send.
+        ContextCompat.registerReceiver(context, screen, filter, ContextCompat.RECEIVER_EXPORTED)
     }
 
     /** The wake word was heard: up until [finish]. */
@@ -149,6 +164,7 @@ class WakePanel(
         // an overlay of an accessibility service that has gone since: the system removed it
         window?.takeIf { it.host != null && it.host !== BentoAccessibilityService.instance }?.let { close() }
         if (window != null || !prefs.wakePanel.value || bentoOnScreen()) return
+        if (!context.getSystemService(PowerManager::class.java).isInteractive) return
         if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) return
         // A window over other apps sits below the keyboard and the lock screen; the accessibility
         // service's overlay (no permission needed) sits above both, so it's placed above the keyboard.
@@ -164,25 +180,15 @@ class WakePanel(
         }
         val host = a11y.takeIf { type == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY }
         val wm = ctx.getSystemService(WindowManager::class.java)
-        val screen = wm.currentWindowMetrics.bounds
-        val margin = (12 * ctx.resources.displayMetrics.density).roundToInt()
         val params = WindowManager.LayoutParams(
-            // the margins are the window's, not the card's padding: the strip around it mustn't take taps
-            screen.width() - 2 * margin,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             // touches outside it reach the app below; it never takes the keyboard
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = margin
-            host?.field?.value?.keyboardTop?.let { top ->
-                // a screen coordinate: measured from the display's bottom edge, insets aside
-                fitInsetsTypes = 0
-                y = screen.bottom - top + margin
-            }
-        }
+        ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL }
+        place(params, ctx, wm, host)
         val owner = ComposeWindowOwner()
         val view = ComposeView(ctx).apply {
             owner.attach(this)
@@ -194,12 +200,50 @@ class WakePanel(
         }
         owner.resume()
         if (runCatching { wm.addView(view, params) }.isFailure) { owner.destroy(); return }
-        window = Window(wm, view, owner, host)
+        val w = Window(ctx, wm, view, owner, params, host)
+        window = w
+        w.rotation = object : ComponentCallbacks {
+            override fun onConfigurationChanged(newConfig: Configuration) = replace(w)
+            @Deprecated("Deprecated in Java") override fun onLowMemory() {}
+        }.also(ctx::registerComponentCallbacks)
+        w.keyboard = host?.let { h -> scope.launch { h.keyboardTop.collect { replace(w) } } }
+    }
+
+    /**
+     * The window's margins (mostly not the card's padding: the strip around it mustn't take taps) and width
+     * for the display as it is now, and for an accessibility overlay, which sits above the keyboard,
+     * its place above any keyboard that's up.
+     */
+    private fun place(params: WindowManager.LayoutParams, ctx: Context, wm: WindowManager, host: BentoAccessibilityService?) {
+        val metrics = wm.currentWindowMetrics
+        val screen = metrics.bounds
+        // 12 dp from the edges: half the window's margin, half the card's room for its shadow
+        val margin = (6 * ctx.resources.displayMetrics.density).roundToInt()
+        // the window is laid out clear of the bars and a cutout (down one side in landscape)
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+        params.width = screen.width() - insets.left - insets.right - 2 * margin
+        val keyboardTop = host?.keyboardTop?.value
+        if (keyboardTop != null) {
+            // a screen coordinate: measured from the display's bottom edge, insets aside
+            params.fitInsetsTypes = 0
+            params.y = screen.bottom - keyboardTop + margin
+        } else {
+            params.fitInsetsTypes = WindowInsets.Type.systemBars()
+            params.y = margin
+        }
+    }
+
+    private fun replace(w: Window) {
+        if (window !== w) return
+        place(w.params, w.ctx, w.wm, w.host)
+        runCatching { w.wm.updateViewLayout(w.view, w.params) }
     }
 
     private fun close() {
         val w = window ?: return
         window = null
+        w.keyboard?.cancel()
+        w.rotation?.let { runCatching { w.ctx.unregisterComponentCallbacks(it) } }
         runCatching { w.wm.removeView(w.view) }
         w.owner.destroy()
     }
@@ -248,7 +292,7 @@ private fun Panel(state: StateFlow<AssistantUi>, ended: StateFlow<Ended?>, onEnd
     val over by ended.collectAsState()
     val (said, reply) = s.latestExchange()
     Surface(
-        Modifier.fillMaxWidth(),
+        Modifier.padding(6.dp).fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 6.dp,
