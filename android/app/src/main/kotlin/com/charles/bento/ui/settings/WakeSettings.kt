@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ fun WakeSection(context: Context, tick: Int) {
     val threshold by prefs.wakeThreshold.flow.collectAsStateWithLifecycle()
     val panel by prefs.wakePanel.flow.collectAsStateWithLifecycle()
     val canShowPanel = remember(tick) { WakePanel.canShow(context) }
+    val overApps = remember(tick) { Settings.canDrawOverlays(context) }
     val state by graph.wake.state.collectAsStateWithLifecycle()
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) graph.wake.setEnabled(true) }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -70,9 +72,11 @@ fun WakeSection(context: Context, tick: Int) {
             Icons.Rounded.PictureInPictureAlt,
         ) { show ->
             prefs.wakePanel.value = show
-            if (show && !canShowPanel) {
-                context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:${context.packageName}".toUri()))
-            }
+            if (show && !canShowPanel) allowOverApps(context)
+        }
+        if (panel && canShowPanel && !overApps) {
+            // it shows as the accessibility service's overlay, which goes over the keyboard
+            SettingsRow("Allow it over other apps", "So it sits below the keyboard", Icons.Rounded.Keyboard, onClick = { allowOverApps(context) })
         }
         SwitchRow("Pause in battery saver", saver, "And while the battery is low", Icons.Rounded.BatterySaver) { prefs.wakePauseOnSaver.value = it }
         SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 70) "$it (as the Echo)" else it }, steps = 7) {
@@ -81,6 +85,9 @@ fun WakeSection(context: Context, tick: Int) {
         SettingsRow("Quick Settings tile", "Turn it on or off from anywhere", Icons.Rounded.Bolt, onClick = { requestWakeTile(context) })
     }
 }
+
+private fun allowOverApps(context: Context) =
+    context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:${context.packageName}".toUri()))
 
 private fun requestWakeTile(context: Context) {
     if (Build.VERSION.SDK_INT < 33) {
