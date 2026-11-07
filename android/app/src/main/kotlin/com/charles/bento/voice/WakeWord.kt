@@ -10,13 +10,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
+import android.os.VibrationAttributes
+import android.os.VibrationEffect
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.charles.bento.MainActivity
@@ -76,6 +81,7 @@ class WakeWord(
     private var listener: WakeListener? = null
     private var receiver: BroadcastReceiver? = null
     private val earcons by lazy { Earcons(context) }
+    private val panel by lazy { WakePanel(context, prefs, scope, assistant) }
     /** Model loads in progress: a listener stopped mid-load may finish after its replacement started. */
     private val loads = java.util.concurrent.atomic.AtomicInteger()
     /** Why it turned itself off (loading the model failed, or brought Bento down last time), until it's turned on again. */
@@ -233,6 +239,9 @@ class WakeWord(
     private fun woke(score: Float) {
         val l = listener ?: return
         if (prefs.sounds.value) earcons.play(Earcons.START)
+        // a phone on silent still says it heard: the panel and a buzz
+        if (prefs.haptics.value) buzz()
+        panel.show()
         val started = assistant().callFromWake(
             opening = { l.takeOver() },
             ended = { error ->
@@ -240,6 +249,7 @@ class WakeWord(
                 l.takeOver()
                 scope.launch {
                     if (prefs.sounds.value) earcons.play(if (error == null) Earcons.STOP else Earcons.ERROR)
+                    panel.finish(error)
                     refresh()
                 }
             },
@@ -247,7 +257,22 @@ class WakeWord(
         VoiceLog.i(TAG, "woke (score %.2f): ".format(score) + if (started) "calling Hermes" else "no call could start")
         if (!started) {
             if (prefs.sounds.value) earcons.play(Earcons.ERROR)
+            panel.finish(assistant().state.value.error ?: "Couldn't call Hermes right now")
             l.takeOver()
+        }
+    }
+
+    private fun buzz() {
+        val vibrator = context.getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
+        val effect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+        // a communication request's usage: Android lets it through with Bento off screen
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 33) {
+                vibrator.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_COMMUNICATION_REQUEST))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(effect, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST).build())
+            }
         }
     }
 

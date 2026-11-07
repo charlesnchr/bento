@@ -113,7 +113,7 @@ fun SettingsScreen(nav: NavController) {
             SyncSection(context)
             DictationSection(context, nav)
             HermesSection(context)
-            WakeSection(context)
+            WakeSection(context, tick)
             TriggersSection(context, tick)
             SetupSection(context, tick)
             AppearanceSection(context)
