@@ -34,7 +34,7 @@ import kotlin.test.assertTrue
  * A microphone that delivers 20 ms frames until stopped (a quiet room's faint noise, speech-loud
  * while [loud], exact zeros while [dead]), and a speaker that records.
  */
-private class FakeAudio(private val delivers: Boolean = true, private val opens: Boolean = true) : CallAudio {
+internal class FakeAudio(private val delivers: Boolean = true, private val opens: Boolean = true) : CallAudio {
     val played = CopyOnWriteArrayList<ByteArray>()
     @Volatile var loud = false
     /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
@@ -109,7 +109,7 @@ private class FakeCaptions : CallCaptions {
     fun say(caption: Caption) = onCaption!!(caption)
 }
 
-private object Live {
+internal object Live {
     fun activity(type: String) = json("voiceActivity" to mapOf("type" to type))
     fun heard(text: String) = json("serverContent" to mapOf("inputTranscription" to mapOf("text" to text)))
     fun said(text: String) = json("serverContent" to mapOf("outputTranscription" to mapOf("text" to text)))
