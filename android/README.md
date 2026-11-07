@@ -162,10 +162,11 @@ hangs up after 15 s with nothing said and no task running.
 
 Hearing the word buzzes the phone (with Haptics on) and plays the start sound (with Sounds on).
 Outside Bento, `WakePanel` shows a card at the bottom of the screen until just after the call ends:
-the call's state, what you're saying and the spoken reply, with End and Open. It's an accessibility
-overlay when the accessibility service is on, else it needs "Display over other apps" (Settings →
-Wake word → Show it on screen asks for it). Neither shows over the lock screen; there, the call's
-notification carries the latest words.
+the call's state, what you're saying and the spoken reply, with End and Open. It's a window over
+other apps once "Display over other apps" is allowed (Settings → Wake word → Show it on screen asks
+for it), else an accessibility overlay when the accessibility service is on, placed above the
+keyboard. It never shows while the phone is locked; there, the call's notification carries the
+latest words, as the lock screen's settings allow.
 
 Battery: the main cost is the open microphone itself. While an app records, Android's audio server
 keeps the processor awake, so the phone doesn't deep-sleep while it listens (only the system's own

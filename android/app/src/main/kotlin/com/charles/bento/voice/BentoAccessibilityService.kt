@@ -209,6 +209,8 @@ class BentoAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        // the wake word's panel may have been one of this service's overlays
+        graph.wake.accessibilityGone()
         if (::overlay.isInitialized) overlay.destroy()
         scope.cancel()
         super.onDestroy()

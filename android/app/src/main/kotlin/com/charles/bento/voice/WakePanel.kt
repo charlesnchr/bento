@@ -1,7 +1,10 @@
 package com.charles.bento.voice
 
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.provider.Settings
@@ -46,6 +49,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -64,14 +68,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * What a wake word call shows over other apps, as the Google Assistant does: a card at the
  * bottom of the screen from the moment "Woodhouse" is heard until just after the call ends, with
- * the call's state, what you're saying and the spoken reply, and End and Open. It's an
- * accessibility overlay when Bento's accessibility service is on, else a window over other apps
- * once Android allows that ([canShow]); with neither, only the call's notification says what's
- * happening. Hidden while Bento itself is on screen, which shows the call. Main thread.
+ * the call's state, what you're saying and the spoken reply, and End and Open. It's a window over
+ * other apps once Android allows that, else an accessibility overlay when Bento's accessibility
+ * service is on ([canShow]); with neither, only the call's notification says what's happening.
+ * Hidden while Bento itself is on screen, which shows the call, and while the phone is locked: the
+ * words aren't for anyone who picks it up (the notification keeps to the lock screen's settings).
+ * Main thread.
  */
 class WakePanel(
     private val context: Context,
@@ -79,7 +86,8 @@ class WakePanel(
     private val scope: CoroutineScope,
     private val assistant: () -> AssistantController,
 ) {
-    private class Window(val wm: WindowManager, val view: ComposeView, val owner: ComposeWindowOwner)
+    /** [host]: the accessibility service whose overlay it is, null for a window over other apps. */
+    private class Window(val wm: WindowManager, val view: ComposeView, val owner: ComposeWindowOwner, val host: BentoAccessibilityService?)
 
     private var window: Window? = null
     /** From the wake word until the panel goes: shown whenever Bento isn't on screen. */
@@ -97,6 +105,15 @@ class WakePanel(
                 else -> Unit
             }
         })
+        // gone as the screen locks, back once it's unlocked
+        val screen = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_SCREEN_OFF) close() else if (active) open()
+            }
+        }
+        val filter = IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_USER_PRESENT) }
+        // protected broadcasts from the system only
+        ContextCompat.registerReceiver(context, screen, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     /** The wake word was heard: up until [finish]. */
@@ -119,28 +136,52 @@ class WakePanel(
         }
     }
 
+    /** The accessibility service went away: the system took its overlay with it, so the panel moves to a window of its own if it can. */
+    fun hostGone() {
+        val w = window ?: return
+        if (w.host == null) return
+        close()
+        if (active) open()
+    }
+
     private fun open() {
+        // an overlay of an accessibility service that has gone since: the system removed it
+        window?.takeIf { it.host != null && it.host !== BentoAccessibilityService.instance }?.let { close() }
         if (window != null || !prefs.wakePanel.value || bentoOnScreen()) return
-        // the accessibility service's own window type needs no permission; else "display over other apps"
+        if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) return
+        // A window over other apps sits below the keyboard and the lock screen; the accessibility
+        // service's overlay (no permission needed) sits above both, so it's placed above the keyboard.
         val a11y = BentoAccessibilityService.instance
         val (ctx, type) = when {
-            a11y != null -> a11y to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             Settings.canDrawOverlays(context) -> {
                 val display = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
                 context.createWindowContext(display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null) to
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             }
+            a11y != null -> a11y to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             else -> return
         }
+        val host = a11y.takeIf { type == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY }
+        val wm = ctx.getSystemService(WindowManager::class.java)
+        val screen = wm.currentWindowMetrics.bounds
+        val margin = (12 * ctx.resources.displayMetrics.density).roundToInt()
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            // the margins are the window's, not the card's padding: the strip around it mustn't take taps
+            screen.width() - 2 * margin,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             // touches outside it reach the app below; it never takes the keyboard
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
-        ).apply { gravity = Gravity.BOTTOM }
-        val wm = ctx.getSystemService(WindowManager::class.java)
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = margin
+            host?.field?.value?.keyboardTop?.let { top ->
+                // a screen coordinate: measured from the display's bottom edge, insets aside
+                fitInsetsTypes = 0
+                y = screen.bottom - top + margin
+            }
+        }
         val owner = ComposeWindowOwner()
         val view = ComposeView(ctx).apply {
             owner.attach(this)
@@ -152,7 +193,7 @@ class WakePanel(
         }
         owner.resume()
         if (runCatching { wm.addView(view, params) }.isFailure) { owner.destroy(); return }
-        window = Window(wm, view, owner)
+        window = Window(wm, view, owner, host)
     }
 
     private fun close() {
@@ -168,7 +209,7 @@ class WakePanel(
     }
 
     private fun openBento() {
-        // allowed from the background: Bento may draw over other apps, or its accessibility service is on
+        // allowed from the background: the panel is a visible window of Bento's
         runCatching {
             context.startActivity(
                 Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_OPEN_ASSISTANT).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -180,7 +221,7 @@ class WakePanel(
 
     companion object {
         /** Android lets Bento show the panel over other apps. */
-        fun canShow(context: Context) = BentoAccessibilityService.isRunning || Settings.canDrawOverlays(context)
+        fun canShow(context: Context) = Settings.canDrawOverlays(context) || BentoAccessibilityService.isRunning
     }
 }
 
@@ -206,7 +247,7 @@ private fun Panel(state: StateFlow<AssistantUi>, ended: StateFlow<Ended?>, onEnd
     val over by ended.collectAsState()
     val (said, reply) = s.latestExchange()
     Surface(
-        Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(),
+        Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 6.dp,

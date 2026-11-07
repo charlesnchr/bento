@@ -38,6 +38,12 @@ class WakePanelTest {
         assertEquals("Hi" to null, AssistantUi(messages = listOf(typed, said("Hi"), hermes)).latestExchange())
     }
 
+    @Test fun anEarlierCallsWordsDontCount() {
+        val s = AssistantUi(messages = listOf(said("Hi"), reply("Hello."), said("Next call")))
+        assertEquals("Next call" to null, s.latestExchange(after = "Hello."))
+        assertEquals(null to null, AssistantUi(messages = listOf(said("Hi"), reply("Hello."))).latestExchange(after = "Hello."))
+    }
+
     @Test fun statusFollowsTheCall() {
         assertEquals("Listening…", panelStatus(AssistantUi(), null))
         assertEquals("Connecting…", panelStatus(AssistantUi(call = listening.copy(connecting = true)), null))

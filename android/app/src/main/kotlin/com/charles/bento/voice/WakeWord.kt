@@ -81,7 +81,8 @@ class WakeWord(
     private var listener: WakeListener? = null
     private var receiver: BroadcastReceiver? = null
     private val earcons by lazy { Earcons(context) }
-    private val panel by lazy { WakePanel(context, prefs, scope, assistant) }
+    private val panelLazy = lazy { WakePanel(context, prefs, scope, assistant) }
+    private val panel by panelLazy
     /** Model loads in progress: a listener stopped mid-load may finish after its replacement started. */
     private val loads = java.util.concurrent.atomic.AtomicInteger()
     /** Why it turned itself off (loading the model failed, or brought Bento down last time), until it's turned on again. */
@@ -242,7 +243,7 @@ class WakeWord(
         // a phone on silent still says it heard: the panel and a buzz
         if (prefs.haptics.value) buzz()
         panel.show()
-        val started = assistant().callFromWake(
+        val refused = assistant().callFromWake(
             opening = { l.takeOver() },
             ended = { error ->
                 // a call that never connected never took the words: listening starts afresh
@@ -254,10 +255,10 @@ class WakeWord(
                 }
             },
         )
-        VoiceLog.i(TAG, "woke (score %.2f): ".format(score) + if (started) "calling Hermes" else "no call could start")
-        if (!started) {
+        VoiceLog.i(TAG, "woke (score %.2f): ".format(score) + (refused?.let { "no call: $it" } ?: "calling Hermes"))
+        if (refused != null) {
             if (prefs.sounds.value) earcons.play(Earcons.ERROR)
-            panel.finish(assistant().state.value.error ?: "Couldn't call Hermes right now")
+            panel.finish(refused)
             l.takeOver()
         }
     }
@@ -274,6 +275,11 @@ class WakeWord(
                 vibrator.vibrate(effect, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST).build())
             }
         }
+    }
+
+    /** Bento's accessibility service stopped: the panel, if it was that service's overlay, finds another window. */
+    fun accessibilityGone() {
+        if (panelLazy.isInitialized()) panel.hostGone()
     }
 
     /** What the microphone service's notification says while only the wake word is in it. */
