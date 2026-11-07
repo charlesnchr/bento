@@ -60,7 +60,8 @@ data class AssistantUi(
 fun AssistantUi.latestExchange(after: String? = null): Pair<String?, String?> {
     caption?.takeIf { it.isNotBlank() }?.let { return it to null }
     val start = messages.indexOfFirst { it.id == after } + 1
-    val inCall = messages.drop(start).filter { it.call }
+    // the words spoken both ways, not Hermes's results as they come in (Gemini speaks those when it can)
+    val inCall = messages.drop(start).filter { it.call && it.voice }
     val lastUser = inCall.indexOfLast { it.role == "user" }
     val reply = inCall.drop(lastUser + 1).lastOrNull { it.role == "assistant" }?.text?.trim()
     return inCall.getOrNull(lastUser)?.text?.trim() to reply

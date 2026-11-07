@@ -50,6 +50,7 @@ class BentoAccessibilityService : AccessibilityService() {
         instance = this
         val g = graph
         overlay = DictationOverlay(this, g.prefs, g.dictation, onHide = { hiddenIn = _field.value?.pkg; refreshSoon(0) })
+        g.wake.accessibilityChanged()
         scope.launch {
             combine(_field, g.prefs.bubbleEnabled.flow, g.dictation.state) { f, enabled, state -> Triple(f, enabled, state) }
                 .collect { (f, enabled, state) -> overlay.update(f.takeIf { enabled && it?.pkg != hiddenIn }, f, state) }
@@ -210,7 +211,7 @@ class BentoAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         instance = null
         // the wake word's panel may have been one of this service's overlays
-        graph.wake.accessibilityGone()
+        graph.wake.accessibilityChanged()
         if (::overlay.isInitialized) overlay.destroy()
         scope.cancel()
         super.onDestroy()

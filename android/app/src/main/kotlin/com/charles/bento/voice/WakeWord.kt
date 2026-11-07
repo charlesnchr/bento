@@ -277,9 +277,9 @@ class WakeWord(
         }
     }
 
-    /** Bento's accessibility service stopped: the panel, if it was that service's overlay, finds another window. */
-    fun accessibilityGone() {
-        if (panelLazy.isInitialized()) panel.hostGone()
+    /** Bento's accessibility service started or stopped: the panel may have a window to show in now, or need another. */
+    fun accessibilityChanged() {
+        if (panelLazy.isInitialized()) panel.accessibilityChanged()
     }
 
     /** What the microphone service's notification says while only the wake word is in it. */

@@ -38,6 +38,13 @@ class WakePanelTest {
         assertEquals("Hi" to null, AssistantUi(messages = listOf(typed, said("Hi"), hermes)).latestExchange())
     }
 
+    @Test fun aTaskResultArrivingLateIsntTheReply() {
+        // Hermes's result for the first question lands (call row, not spoken) after the second question
+        val result = ChatMessage("r", "assistant", "Two meetings today.", call = true)
+        val s = AssistantUi(messages = listOf(said("What's on today?"), reply("On it."), said("And tomorrow's weather?"), result))
+        assertEquals("And tomorrow's weather?" to null, s.latestExchange())
+    }
+
     @Test fun anEarlierCallsWordsDontCount() {
         val s = AssistantUi(messages = listOf(said("Hi"), reply("Hello."), said("Next call")))
         assertEquals("Next call" to null, s.latestExchange(after = "Hello."))

@@ -136,11 +136,12 @@ class WakePanel(
         }
     }
 
-    /** The accessibility service went away: the system took its overlay with it, so the panel moves to a window of its own if it can. */
-    fun hostGone() {
-        val w = window ?: return
-        if (w.host == null) return
-        close()
+    /**
+     * The accessibility service started or stopped. Stopped, the system took its overlay with it, so
+     * the panel moves to a window of its own if it can; started, a panel that had nowhere to go shows.
+     */
+    fun accessibilityChanged() {
+        window?.takeIf { it.host != null && it.host !== BentoAccessibilityService.instance }?.let { close() }
         if (active) open()
     }
 
