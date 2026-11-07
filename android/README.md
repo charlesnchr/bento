@@ -160,6 +160,15 @@ Runtime, at the Echo's threshold of 0.7 (the Sensitivity slider moves it). The w
 “Woodhouse” go to Gemini once the call connects, the call is open mic whatever the talk mode, and it
 hangs up after 15 s with nothing said and no task running.
 
+Hearing the word buzzes the phone (with Haptics on) and plays the start sound (with Sounds on).
+Outside Bento, `WakePanel` shows a card at the bottom of the screen until just after the call ends:
+the call's state, what you're saying and the spoken reply, with End and Open. It's a window over
+other apps once "Display over other apps" is allowed (Settings → Wake word → Show it on screen asks
+for it), else an accessibility overlay when the accessibility service is on, placed above the
+keyboard. It never shows while the phone is locked; there, the call's notification carries the
+latest words, as the lock screen's settings allow. Android's own Settings hide every app's overlays,
+so it doesn't show over them either.
+
 Battery: the main cost is the open microphone itself. While an app records, Android's audio server
 keeps the processor awake, so the phone doesn't deep-sleep while it listens (only the system's own
 hotword hardware avoids that, and apps can't use it). On top of that the model only runs while

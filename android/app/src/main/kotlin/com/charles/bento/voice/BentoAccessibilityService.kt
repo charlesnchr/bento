@@ -36,6 +36,9 @@ class BentoAccessibilityService : AccessibilityService() {
     private val _field = MutableStateFlow<FocusedField?>(null)
     /** The text field dictation would go into right now, with the keyboard's top edge. */
     val field: StateFlow<FocusedField?> = _field.asStateFlow()
+    private val _keyboardTop = MutableStateFlow<Int?>(null)
+    /** The top edge of the keyboard on screen, any keyboard over any field (null when none is up): the wake panel stays above it. */
+    val keyboardTop: StateFlow<Int?> = _keyboardTop.asStateFlow()
     private var refreshJob: Job? = null
     private var holdJob: Job? = null
     private var holdStarted = false
@@ -50,6 +53,7 @@ class BentoAccessibilityService : AccessibilityService() {
         instance = this
         val g = graph
         overlay = DictationOverlay(this, g.prefs, g.dictation, onHide = { hiddenIn = _field.value?.pkg; refreshSoon(0) })
+        g.wake.accessibilityChanged()
         scope.launch {
             combine(_field, g.prefs.bubbleEnabled.flow, g.dictation.state) { f, enabled, state -> Triple(f, enabled, state) }
                 .collect { (f, enabled, state) -> overlay.update(f.takeIf { enabled && it?.pkg != hiddenIn }, f, state) }
@@ -75,6 +79,7 @@ class BentoAccessibilityService : AccessibilityService() {
         refreshJob = scope.launch {
             delay(delayMs)
             _field.value = currentField()
+            _keyboardTop.value = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.let { Rect().also(it::getBoundsInScreen).top }
         }
     }
 
@@ -209,6 +214,8 @@ class BentoAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        // the wake word's panel may have been one of this service's overlays
+        graph.wake.accessibilityChanged()
         if (::overlay.isInitialized) overlay.destroy()
         scope.cancel()
         super.onDestroy()

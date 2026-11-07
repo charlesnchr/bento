@@ -145,6 +145,7 @@ class VoiceService : Service() {
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .setContentIntent(open)
             if (kind == KIND_ASSISTANT) {
+                context.graph.assistant.callLine()?.let { builder.setContentText(it).setStyle(NotificationCompat.BigTextStyle().bigText(it)) }
                 val end = PendingIntent.getService(
                     context, 1, Intent(context, VoiceService::class.java).setAction(ACTION_END_CALL),
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

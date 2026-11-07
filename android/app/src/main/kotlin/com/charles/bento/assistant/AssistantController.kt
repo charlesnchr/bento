@@ -53,6 +53,20 @@ data class AssistantUi(
     val caption: String? = null,
 )
 
+/**
+ * A call's latest exchange: what the user is saying or said last, and the reply to it, if there's one
+ * yet. Only rows after the one with id [after] count (the chat's last row as this call started).
+ */
+fun AssistantUi.latestExchange(after: String? = null): Pair<String?, String?> {
+    caption?.takeIf { it.isNotBlank() }?.let { return it to null }
+    val start = messages.indexOfFirst { it.id == after } + 1
+    // the words spoken both ways, not Hermes's results as they come in (Gemini speaks those when it can)
+    val inCall = messages.drop(start).filter { it.call && it.voice }
+    val lastUser = inCall.indexOfLast { it.role == "user" }
+    val reply = inCall.drop(lastUser + 1).lastOrNull { it.role == "assistant" }?.text?.trim()
+    return inCall.getOrNull(lastUser)?.text?.trim() to reply
+}
+
 data class CallUi(
     val status: String,
     val connecting: Boolean,
@@ -478,12 +492,17 @@ class AssistantController(
      * The wake word: a voice call in a new conversation, hearing first what was said after the word
      * ([opening], taken as the call's microphone opens). Open mic whatever the talk mode, and it hangs
      * up after [WAKE_HANG_UP_SECONDS] with nothing said and nothing running; [ended] says how it ended.
-     * False when no call can start now (one is on, a turn is running, or something is missing).
+     * Null once it's starting, else why no call can start now.
      */
-    fun callFromWake(opening: () -> ByteArray?, ended: (error: String?) -> Unit): Boolean {
-        if (call != null || callJob != null || _state.value.working || microphoneBusy() || !canCall) return false
+    fun callFromWake(opening: () -> ByteArray?, ended: (error: String?) -> Unit): String? {
+        when {
+            call != null || callJob != null -> return "A call is already on"
+            _state.value.working -> return "Hermes is still working on your last request"
+            microphoneBusy() -> return "A dictation or a meeting has the microphone"
+            !canCall -> return "Set up Hermes and a Gemini API key first"
+        }
         newChat()
-        return startCall(WakeStart(opening, ended))
+        return if (startCall(WakeStart(opening, ended))) null else _state.value.error ?: "Couldn't call Hermes right now"
     }
 
     private fun startCall(wake: WakeStart?): Boolean {
@@ -500,6 +519,7 @@ class AssistantController(
             set { it.copy(error = e.message) }; return false
         }
         val tap = wake == null && prefs.hermesTalkMode.value == "tap"
+        callAfter = _state.value.messages.lastOrNull()?.id
         set { it.copy(error = null, call = CallUi(if (resume != null) "Resuming the conversation…" else "Connecting to Gemini Live…", true, false, tap, tap)) }
         callJob = scope.launch {
             if (!VoiceService.enter(context, VoiceService.KIND_ASSISTANT)) {
@@ -522,7 +542,7 @@ class AssistantController(
                 hangUpAfter = { if (wake != null) WAKE_HANG_UP_SECONDS else 0.0 })
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
-            c.onCaption = { text -> scope.launch { if (call === c) set { it.copy(caption = text) } } }
+            c.onCaption = { text -> scope.launch { if (call === c) { set { it.copy(caption = text) }; noticeSoon() } } }
             call = c
             voiceBoundary = true
             c.start()
@@ -575,6 +595,22 @@ class AssistantController(
         }
     }
 
+    /** The call's latest words, for its notification: on the lock screen, the only sign of a wake call. */
+    fun callLine(): String? {
+        val (said, reply) = _state.value.latestExchange(callAfter)
+        return reply?.takeIf { it.isNotBlank() } ?: said?.takeIf { it.isNotBlank() }?.let { "You: $it" }
+    }
+
+    private var noticeJob: Job? = null
+    /** The chat's last row as the call started: the notification shows only what came after. */
+    private var callAfter: String? = null
+
+    /** Shows the call's latest words in its notification, at most once a second as they stream in. */
+    private fun noticeSoon() {
+        if (noticeJob?.isActive == true) return
+        noticeJob = scope.launch { delay(1_000); VoiceService.refresh(context, VoiceService.KIND_ASSISTANT) }
+    }
+
     /**
      * A live transcript fragment: adjacent fragments of one speaker join (they aren't turn boundaries).
      * The user's words take the caption's place in the same update ([AssistantCall.onCaption]).
@@ -591,6 +627,7 @@ class AssistantController(
             s.copy(messages = messages, caption = if (role == "user") null else s.caption)
         }
         voiceBoundary = false
+        noticeSoon()
     }
 
     private fun task(id: String, f: (TaskUi) -> TaskUi) =
