@@ -1,0 +1,16 @@
+{"name": "multitask-interrupt", "about": "The 2026-11-07 call in miniature. A task asks a question, the user answers and sends a slow follow-up, then a long new request while it runs, then another task asks a question and its result races the user's yes. Check: every request gets a toolCall and a Hermes session of its own (the long one too); no result frame (WHEN_IDLE ok, or a hermes_result turn) between a USER line starting and its toolCall's started response; the yes carries the weather task's name; no GEMINI line says 'task' or 'session' with a number; each result is voiced once; the last answer is a short overview.",
+ "steps": [
+  ["open_hermes"], ["tap", "New chat"], ["wait", 2], ["call"], ["wait", 5],
+  ["say", "Ask Hermes to suggest one good name for a new wake word, and to ask me whether to go ahead before it does anything else."],
+  ["quiet", 8, 120],
+  ["say", "Yes, go ahead with that one. Have Hermes run a terminal command that sleeps for forty five seconds, and then say it's done."],
+  ["wait", 4],
+  ["say", "And separately, while that's happening, can you ask Hermes how many days it is until Christmas? Take your time, there's no rush at all, I'm just thinking out loud about the holidays and when I should book my flights home this year, because last year I left it far too late and the prices were awful."],
+  ["quiet", 8, 120],
+  ["say", "Ask Hermes whether it should look up the weather in Copenhagen for tomorrow, and have it ask me first before it does."],
+  ["await_speech", 90, 0], ["quiet", 1.5, 40],
+  ["say", "Yes, please do."],
+  ["quiet", 10, 120],
+  ["say", "What's going on at the moment?"],
+  ["quiet", 8, 60],
+  ["shot", "end"], ["end"], ["wait", 2], ["shot", "after-call"]]}
