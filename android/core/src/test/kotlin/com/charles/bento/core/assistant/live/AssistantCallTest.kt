@@ -791,7 +791,7 @@ class AssistantCallTest {
         call.start()
         transport.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(transport, "Book a table")
-        transport.push(Live.call("c1", args = mapOf("task" to "groceries")))
+        transport.push(Live.call("c1", args = mapOf("continue_task" to "groceries")))
         val request = withTimeout(5_000) { asked.await() }
         assertEquals("1", request.taskId)
         assertFalse(request.followUp)
@@ -2749,9 +2749,9 @@ class CallSetupTest {
         assertEquals("NON_BLOCKING", phoneTool["behavior"]!!.jsonPrimitive.content)
         // A task's name, or a new one's, is all it takes, and both are optional: Hermes only gets the user's words.
         val params = phoneTool["parameters"]!!.jsonObject
-        assertEquals(setOf("task", "label"), params["properties"]!!.jsonObject.keys)
+        assertEquals(setOf("continue_task", "label"), params["properties"]!!.jsonObject.keys)
         assertNull(params["required"])
-        assertTrue("as task," in CallSetup.INSTRUCTION)
+        assertTrue("as continue_task," in CallSetup.INSTRUCTION)
         assertTrue("a label of two to four words" in CallSetup.INSTRUCTION)
     }
 
@@ -2832,7 +2832,7 @@ class CallSetupTest {
                      CallSetup.resultText(listOf("book a table" to "A", "taxi" to "B")))
         // A name can't break out of its attribute, and a task that asked the user something is said to wait, outside the fences.
         assertEquals("${CallSetup.RESULT_PREAMBLE}\n<hermes_result task=\"a b\">\nA?\n</hermes_result>\n\"a b\" asked the user a question in its reply " +
-                     "and is waiting for their answer: when they answer, call ask_hermes with task \"a b\".",
+                     "and is waiting for their answer: when they answer, call ask_hermes with continue_task \"a b\".",
                      CallSetup.resultText(listOf("a\">b" to "A?"), waiting = listOf("a\">b")))
         assertTrue(CallSetup.resultText(listOf("book a table" to "x".repeat(70_000))).contains("[Bento cut Hermes's reply here at 64000 characters.]"))
         assertTrue(CallSetup.resultText(listOf("book a table" to "x".repeat(5000))).contains("x".repeat(5000)), "the whole reply")
@@ -2896,7 +2896,7 @@ class CallProtocolTest {
         assertEquals("Hermes has finished \"book a table\". Give the user the outcome in your own words, after anything they have just asked. Hermes's reply:\nHermes returned no text. Do not infer success.", CallProtocol.taskResult("book a table", ""))
         // A reply that asks the user something says the task waits for their answer, and where to send it.
         assertEquals("Hermes has finished \"book a table\". Give the user the outcome in your own words, after anything they have just asked. Hermes's reply:\nFor two? Shall I book?\n\"book a table\" is waiting for the user's answer to: " +
-                     "Shall I book? When they answer, call ask_hermes with task \"book a table\".", CallProtocol.taskResult("book a table", "For two? Shall I book?", "Shall I book?"))
+                     "Shall I book? When they answer, call ask_hermes with continue_task \"book a table\".", CallProtocol.taskResult("book a table", "For two? Shall I book?", "Shall I book?"))
     }
 
     @Test fun theModelGetsTheWholeReply() {

@@ -16,7 +16,6 @@ import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
 import com.charles.bento.core.assistant.live.TaskLabel
-import com.charles.bento.core.assistant.live.TaskNames
 import com.charles.bento.core.assistant.live.HermesCall
 import com.charles.bento.core.assistant.live.LiveCaptions
 import com.charles.bento.core.voice.live.LiveSocketEnding
@@ -96,7 +95,7 @@ data class TaskUi(
     val request: String,
     /** The task's name, by what it's about ("Pennyworth wake word"). */
     val label: String = TaskLabel.short(request),
-    /** What Hermes's reply asked the user, until they answer: the task stays in flight meanwhile. */
+    /** What Hermes's reply asked the user, while the call counts it as waiting for their answer ([AssistantCall.questions]): the task stays in flight meanwhile. */
     val question: String? = null,
     /** "running", "waiting" (for an approval), "completed", "failed" or "cancelled". */
     val status: String = "running",
@@ -559,6 +558,8 @@ class AssistantController(
             voiceBoundary = true
             c.start()
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
+            // Which tasks wait for the user's answer is the call's to say: a question lapses there once the user talks past it.
+            launch { c.questions.collect { asked -> set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks.map { it.copy(question = asked[it.id]) })) } } }
             c.status.collect { status ->
                 when (status) {
                     AssistantCall.Status.Connecting -> Unit
@@ -752,7 +753,7 @@ class AssistantController(
         }
         val task = _state.value.call?.tasks?.firstOrNull { it.id == id }
         val failure = task?.messages?.lastOrNull { it.failed && it.id in turn.ids }?.text
-        task(id) { it.copy(status = status, progress = null, question = TaskNames.question(turn.answer).takeIf { status == "completed" }) }
+        task(id) { it.copy(status = status, progress = null) }
         val label = task?.label ?: id
         messages { list ->
             // Approvals nobody answered lapse with the request.

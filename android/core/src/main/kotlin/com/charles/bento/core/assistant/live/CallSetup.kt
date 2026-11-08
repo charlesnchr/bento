@@ -29,8 +29,8 @@ object CallSetup {
             "they run side by side while you keep talking, so the user can ask for something new while others run. Call ask_hermes " +
             "once per request. Bento names each task by what it is about; give a new one a label of two to four words. A follow-up " +
             "to an earlier task (more about the same thing, a correction, or an answer to a question Hermes asked) passes that " +
-            "task's name as task, so Hermes continues in that task with what it already did; leave task out only for a separate, " +
-            "new request, which starts a new task. An answer to a question goes to the task that asked it. If you don't know which " +
+            "task's name as continue_task, so Hermes continues in that task with what it already did; leave it out for a " +
+            "separate, new request, which starts a new task. An answer to a question goes to the task that asked it. If you don't know which " +
             "task the user means, call list_tasks first. Bento answers at once, silently, and plays the user a short tone that says " +
             "Hermes has it, so don't announce that Hermes is working on it. Its result arrives later as that call's response, " +
             "after another tone. Talk about the work the way a person would, by what it is (\"the Pennyworth training has " +
@@ -83,7 +83,7 @@ object CallSetup {
     /** What [TOOL_DESCRIPTION] adds on the phone: the call doesn't block, it names its task, and a follow-up continues one. */
     const val TOOL_TASKS =
         " Runs as a Hermes task while the conversation goes on: Bento answers at once with the task's name (status started), " +
-            "and the result follows later as a second response to the same call. Without task it starts a new task."
+            "and the result follows later as a second response to the same call. Without continue_task it starts a new task."
 
     const val FOLLOW_UP_DESCRIPTION =
         "For a follow-up to an earlier task of this call (more about the same thing, a correction, or an answer to a question " +
@@ -131,7 +131,7 @@ object CallSetup {
                             putJsonObject("parameters") {
                                 put("type", "OBJECT")
                                 putJsonObject("properties") {
-                                    putJsonObject("task") { put("type", "STRING"); put("description", FOLLOW_UP_DESCRIPTION) }
+                                    putJsonObject("continue_task") { put("type", "STRING"); put("description", FOLLOW_UP_DESCRIPTION) }
                                     putJsonObject("label") { put("type", "STRING"); put("description", LABEL_DESCRIPTION) }
                                 }
                             }
@@ -216,7 +216,7 @@ object CallSetup {
         }
         // Bento's words, outside the fences: which tasks asked the user something and wait for the answer.
         val asks = waiting.mapNotNull(TaskNames::tidy).joinToString("") {
-            "\n\"$it\" asked the user a question in its reply and is waiting for their answer: when they answer, call ask_hermes with task \"$it\"."
+            "\n\"$it\" asked the user a question in its reply and is waiting for their answer: when they answer, call ask_hermes with continue_task \"$it\"."
         }
         return "$RESULT_PREAMBLE\n$fenced$asks"
     }

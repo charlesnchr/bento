@@ -106,30 +106,39 @@ object TaskNames {
         return if (asked.length > 200) asked.take(200).substringBeforeLast(' ') + "…?" else asked
     }
 
+    /** Openers that answer whatever follows them. */
     private val answer = Regex(
-        "^(?:yes|yeah|yep|yup|yea|no|nope|nah|ok(?:ay)?|sure|fine|correct|right|absolutely|definitely|please do|go ahead|go for it|" +
-            "do it|do that|sounds good|that's fine|that works|let's do (?:it|that)|let's go|start it|the (?:first|second|third|last) one|neither|both)\\b",
+        "^(?:yes|yeah|yep|yup|yea|no|nope|nah|please do|go ahead|go for it|do it|do that|let's do (?:it|that)|start it|sounds good)\\b",
         RegexOption.IGNORE_CASE,
     )
-
+    /** Openers that also start plenty of requests ("Okay, so…"): an answer only in a short reply. */
+    private val shortAnswer = Regex(
+        "^(?:ok(?:ay)?|sure|fine|correct|right|absolutely|definitely|that's fine|that works|let's go|the (?:first|second|third|last) one|neither|both)\\b",
+        RegexOption.IGNORE_CASE,
+    )
     private val separate = Regex("\\b(?:separately|also|another|as well|a new|different thing|something else)\\b", RegexOption.IGNORE_CASE)
 
     /**
-     * The user's words start as an answer to a question ("Yes, …", "Go ahead", "No"), not a request
-     * of their own: not when they say it's separate ("Okay, separately, find me a taxi").
+     * The user's words are an answer to a question ("Yes, …", "Go ahead", "No", a short "Okay"), not a
+     * request of their own: not when they say it's separate ("Okay, separately, find me a taxi").
      */
-    fun isAnswer(words: String): Boolean = answer.containsMatchIn(words.trim().trimStart('"', '\'', ' ')) && !separate.containsMatchIn(words)
+    fun isAnswer(words: String): Boolean {
+        val said = words.trim().trimStart('"', '\'', ' ')
+        if (separate.containsMatchIn(said)) return false
+        return answer.containsMatchIn(said) || shortAnswer.containsMatchIn(said) && words(said).size <= 5
+    }
 
     /**
-     * Gemini's [speech] relays the result [result] of the task [name]: it says three of the reply's
-     * distinctive words besides the task's name (all of them for a reply with two). Saying what the
-     * task is about isn't saying what came of it ("still working on the Pennyworth training").
+     * Gemini's [speech] relays the result [result] of the task [name], asked as [request]: it says
+     * three of the reply's distinctive words besides those of the task's name and request (all of
+     * them for a reply with two). Saying what the task is about isn't saying what came of it ("still
+     * working on the Pennyworth training").
      */
-    fun relays(speech: String, name: String, result: String): Boolean {
+    fun relays(speech: String, name: String, result: String, request: String = ""): Boolean {
         val said = distinctive(speech)
         if (said.isEmpty()) return false
         val summary = result.trim().split(Regex("\\n\\s*\\n")).firstOrNull().orEmpty().split(Regex("\\s+")).take(80).joinToString(" ")
-        val reply = distinctive(summary) - distinctive(name)
+        val reply = distinctive(summary) - distinctive(name) - distinctive(request)
         if (reply.size < 2) return false
         return reply.count { it in said } >= minOf(3, reply.size)
     }

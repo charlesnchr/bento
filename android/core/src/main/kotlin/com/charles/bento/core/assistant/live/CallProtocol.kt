@@ -176,7 +176,7 @@ class CallProtocol {
             "Hermes has finished \"$task\". " + (if (isLong(result)) LONG_RESULT else "") +
                 "Give the user the outcome in your own words, after anything they have just asked. Hermes's reply:\n" +
                 result.ifEmpty { "Hermes returned no text. Do not infer success." } +
-                (asked?.let { "\n\"$task\" is waiting for the user's answer to: $it When they answer, call ask_hermes with task \"$task\"." } ?: "")
+                (asked?.let { "\n\"$task\" is waiting for the user's answer to: $it When they answer, call ask_hermes with continue_task \"$task\"." } ?: "")
 
         /** Said before a reply too long to read out; the chat shows all of it. */
         const val LONG_RESULT = "Its reply is long: give the gist and tell the user the full answer is on their screen. "

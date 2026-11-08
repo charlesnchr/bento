@@ -103,11 +103,11 @@ class MultitaskReplayTest {
 
         // 2. The user says go ahead, and while Hermes starts training, how to do it: with a T3 coding agent.
         Live.turn(transport, GO_AHEAD)
-        transport.push(Live.call("c2", args = mapOf("task" to pennyworth, "task_id" to pennyworth)))
+        transport.push(Live.call("c2", args = mapOf("continue_task" to pennyworth, "task_id" to pennyworth)))
         until { transport.response("c2", "started") != null }
         transport.push(Live.turnComplete())
         Live.turn(transport, VIA_T3)
-        transport.push(Live.call("c3", args = mapOf("task" to pennyworth, "task_id" to pennyworth)))
+        transport.push(Live.call("c3", args = mapOf("continue_task" to pennyworth, "task_id" to pennyworth)))
         until { transport.response("c3", "started") != null }
         transport.push(Live.turnComplete())
 
@@ -258,7 +258,85 @@ class MultitaskReplayTest {
         transport.push(Live.turnComplete())
         Live.turn(transport, "Okay, get me a coffee order going"); transport.push(Live.call("c3", args = mapOf("label" to "coffee order")))
         until { asked.size >= 3 }
+        transport.push(Live.turnComplete())
+        Live.turn(transport, "Okay, and can you get me a taxi there at half seven?"); transport.push(Live.call("c4", args = mapOf("label" to "taxi to Noma")))
+        until { asked.size >= 4 }
         assertTrue(asked.drop(1).none { it.followUp }, "a separate request went to the calendar: ${asked.map { it.task to it.followUp }}")
+        call.stop()
+    }
+
+    @Test fun aQuestionTheUserTalksPastLapses() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); if (c.task == "Push the branch") "Pushed. Want me to open a PR?" else "Done." }
+        Live.turn(transport, "Push the branch"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "Pushed the branch. Want me to open a PR as well?")
+        assertTrue(until { call.questions.value.values.singleOrNull() == "Want me to open a PR?" }, "the screen shows it waiting: ${call.questions.value}")
+        // Two turns about other things, then a bare yes: the offer has lapsed, so it starts a task of its own.
+        repeat(2) { n -> Live.turn(transport, "Hmm, let me think $n"); Live.speaks(transport, "Take your time.") }
+        Live.turn(transport, "Yes")
+        assertTrue(until { call.questions.value.isEmpty() }, "the offer still shows as waiting")
+        transport.push(Live.call("c2"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        assertTrue(!asked.single { it.task == "Yes" }.followUp, "a lapsed offer took the yes")
+        call.stop()
+    }
+
+    @Test fun aNumberIsATasksKeyBeforeAnyName() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); "Done." }
+        Live.turn(transport, "Check the top films"); transport.push(Live.call("c1", args = mapOf("label" to "top 2 films")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "Find a taxi"); transport.push(Live.call("c2", args = mapOf("label" to "taxi")))
+        until { transport.response("c2", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "Make it a big one"); transport.push(Live.call("c3", args = mapOf("continue_task" to "2")))
+        assertTrue(until { asked.size >= 3 })
+        assertTrue(asked[2].followUp && asked[2].taskId == "2", "\"2\" went to ${asked[2].label}")
+        call.stop()
+    }
+
+    @Test fun aTurnGeminiNeverEndsHoldsResultsOnlySoLong() = blocking {
+        val result = CompletableDeferred<String>()
+        val (transport, call) = started(limits.copy(deliverMax = 0.5)) { result.await() }
+        Live.turn(transport, "Book a table"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        // The user starts speaking and mutes mid-word: Gemini never sends ACTIVITY_END.
+        transport.push(Live.activity("ACTIVITY_START"))
+        result.complete("Booked for 8pm.")
+        delay(800)
+        assertTrue(transport.sent.none { "Booked for 8pm." in it }, "it waits while the user may still be talking")
+        assertTrue(until(6_000) { transport.sent.any { "Booked for 8pm." in it } }, "it waits for good")
+        call.stop()
+    }
+
+    @Test fun aResultTurnWaitsIfTheUserStartsWhileItsCallsClose() = blocking {
+        val results = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
+        val (transport, call) = started { c -> results.getValue(c.taskId).await() }
+        Live.turn(transport, "Book a table"); transport.push(Live.call("c1")); until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        Live.turn(transport, "Find a taxi"); transport.push(Live.call("c2")); until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        // Both finish together; closing the first call is held up on the socket, and the user starts talking meanwhile.
+        val gate = CompletableDeferred<Unit>()
+        val held = CompletableDeferred<Unit>()
+        transport.beforeSend = { frame -> if ("\"SILENT\"" in frame && "Booked." in frame) { held.complete(Unit); gate.await() } }
+        // Both finish while the user talks, so they go together once the line is quiet.
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        results.getValue("1").complete("Booked."); results.getValue("2").complete("A taxi is on its way.")
+        delay(300)
+        transport.push(Live.heard("Hmm")); transport.push(Live.activity("ACTIVITY_END")); transport.push(Live.turnComplete())
+        assertTrue(until { held.isCompleted }, "the batch never went")
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(200)
+        gate.complete(Unit)
+        delay(500)
+        assertTrue(transport.sent.none { "clientContent" in it && "turnComplete\":true" in it }, "the result turn went in over the user")
+        transport.push(Live.heard("Go on")); transport.push(Live.activity("ACTIVITY_END")); Live.speaks(transport, "Yes?")
+        assertTrue(until { transport.sent.any { "clientContent" in it && "A taxi is on its way." in it } }, "the results never went")
         call.stop()
     }
 }
