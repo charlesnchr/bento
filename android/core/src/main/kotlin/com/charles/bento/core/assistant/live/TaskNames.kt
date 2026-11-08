@@ -151,11 +151,19 @@ object TaskNames {
         return shortAnswer.containsMatchIn(said) && words(said).size <= 5 && !separate.containsMatchIn(said)
     }
 
-    /** Gemini's [speech] asks [question]: two of its distinctive words (all of them for a question with one), or none to go on. */
-    fun says(speech: String, question: String): Boolean {
-        val asked = distinctive(question)
-        if (asked.isEmpty()) return false
-        return distinctive(speech).count { it in asked } >= minOf(2, asked.size)
+    private val questionCue = Regex("\\?|\\b(?:shall i|should i|want me to|do you want|would you like|ok(?:ay)? to)\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * Gemini's [speech] asks [question], from the reply [result] of the task [name] asked as [request]:
+     * it says one of the question's own words, those not already in the rest of the reply, the name or
+     * the request, since the summary often names what the question is about. With none of its own, a
+     * question cue ("shall I…", "?") has to be said.
+     */
+    fun says(speech: String, question: String, result: String = "", name: String = "", request: String = ""): Boolean {
+        val rest = result.replace(question, " ")
+        val own = distinctive(question) - distinctive(rest) - distinctive(name) - distinctive(request)
+        if (own.isNotEmpty()) return distinctive(speech).any { it in own }
+        return distinctive(question).isNotEmpty() && questionCue.containsMatchIn(speech)
     }
 
     /**

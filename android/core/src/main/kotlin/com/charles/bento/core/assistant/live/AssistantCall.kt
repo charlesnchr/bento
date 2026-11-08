@@ -356,7 +356,7 @@ class AssistantCall(
      */
     private fun heardRelayed(): List<Unheard> {
         val said = relayed()
-        for (item in said) item.asked?.let { item.questionSaid = TaskNames.says(geminiSaid.toString(), it) }
+        for (item in said) item.asked?.let { item.questionSaid = TaskNames.says(geminiSaid.toString(), it, item.result, item.label, tasks[item.task]?.request.orEmpty()) }
         heard(said)
         return said
     }
@@ -1169,8 +1169,8 @@ class AssistantCall(
                 if (found == null && answering.size > 1) {
                     // Two questions heard together: guessing could approve the wrong one.
                     respond(d.id, "Not executed: the user's answer could be to more than one question: " +
-                        answering.joinToString("; ") { "\"${it.label}\" asked: ${it.asked}" } + ". Ask the user which they mean, then call " +
-                        "ask_hermes with that task as continue_task. No action was run.", executed = false)
+                        answering.joinToString("; ") { "\"${it.label}\" asked: ${it.asked}" } + ". Ask the user which they mean and to say their " +
+                        "answer again with it; then call ask_hermes with that task as continue_task. No action was run.", executed = false)
                     return@launch
                 }
                 val answered = answering.singleOrNull()

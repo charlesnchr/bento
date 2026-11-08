@@ -69,6 +69,15 @@ class TaskNamesTest {
         assertTrue(TaskNames.says("Your old backups take 40 GB: shall I delete them?", "Shall I delete the old backups?"))
         assertFalse(TaskNames.says("I found forty gigabytes of redundant archives.", "Shall I delete them?"))
         assertFalse(TaskNames.says("Anything else?", "Shall I?"))
+        // The summary names what the question is about: only the question's own words show it was asked.
+        val archives = "I found 40 GB of redundant archives from last year. Shall I delete the redundant archives?"
+        assertFalse(TaskNames.says("I found forty gigabytes of redundant archives from last year.", "Shall I delete the redundant archives?", archives))
+        assertTrue(TaskNames.says("Forty gigabytes of redundant archives. Shall I delete them?", "Shall I delete the redundant archives?", archives))
+        val noma = "There is a table at Noma at eight tonight for two people. Shall I book the Noma table at eight?"
+        assertFalse(TaskNames.says("There's a table for two at Noma at eight tonight.", "Shall I book the Noma table at eight?", noma, "Noma table"))
+        assertTrue(TaskNames.says("There's a table at Noma at eight. Shall I book it?", "Shall I book the Noma table at eight?", noma, "Noma table"))
+        // A question with no words of its own counts once Gemini asks something.
+        assertTrue(TaskNames.says("A table at Noma at eight: shall I?", "Noma at eight?", "A table at Noma at eight. Noma at eight?"))
     }
 
     @Test fun geminiFindsATaskByWhatItSays() {
