@@ -581,4 +581,25 @@ class MultitaskReplayTest {
         assertTrue(asked.none { it.task == "Yes" }, "the yes went to Hermes on a guess")
         call.stop()
     }
+
+    @Test fun aQuestionSaidInFullWhenItsResultGoesAgainCounts() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = dentistThenBackups(backups, asked)
+        // Gemini relays only the summary in a turn that didn't count, three seconds of it still to play, and the user cuts in.
+        transport.push(Live.said("Let me see."))
+        backups.complete("I found 40 GB of old backups, redundant archives from last year. Shall I delete them?")
+        assertTrue(until { transport.response("c2", "ok") != null })
+        transport.push(Live.said("I found forty gigabytes of redundant archives from last year.")); transport.push(Live.audio(ByteArray(144_000)))
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.interrupted())
+        Live.turn(transport, "Sorry, go on"); Live.speaksNothingMore(transport)
+        // It goes again, and this time Gemini asks the question in full.
+        assertTrue(until { transport.sent.any { "clientContent" in it && "delete them" in it } }, "it never went again")
+        Live.speaks(transport, "I found 40 GB of old backups from last year. Shall I delete them?")
+        Live.turn(transport, "Yes"); transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        val yes = asked.single { it.task == "Yes" }
+        assertTrue(yes.followUp && yes.taskId == asked[1].taskId, "the yes went to ${yes.label}, not the question just asked")
+        call.stop()
+    }
 }

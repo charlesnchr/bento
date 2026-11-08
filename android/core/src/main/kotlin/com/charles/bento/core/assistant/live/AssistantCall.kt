@@ -388,7 +388,10 @@ class AssistantCall(
         /** Spoken in a turn that has ended, when that speech finishes playing; an interruption before then sends it again. */
         var playing: Double? = null
         var tries = 0
-        /** Its question was said, as far as the call can tell: a whole counted turn after it was told, or words that ask it. */
+        /**
+         * Its question was said, as far as the call can tell: a whole counted turn after it was told, or words that ask
+         * it. For this delivery only: one sent again starts afresh.
+         */
         var questionSaid = true
         /** Told, and no turn has ended since. */
         val awaiting get() = told && playing == null
@@ -406,7 +409,7 @@ class AssistantCall(
     /** [items] go to Gemini again at the next quiet moment. */
     private fun again(items: List<Unheard>) {
         if (items.isEmpty()) return
-        for (item in items) { item.told = false; item.playing = null }
+        for (item in items) { item.told = false; item.playing = null; item.questionSaid = true }
         if (active && !standby && !waking) deliverWhenIdle()
     }
 
@@ -642,7 +645,7 @@ class AssistantCall(
         synchronized(lending) { standby = true }
         // Told results Gemini never spoke go to the session the call comes back with.
         played()
-        for (item in unheard) { item.told = false; item.playing = null }
+        for (item in unheard) { item.told = false; item.playing = null; item.questionSaid = true }
         goingAway = false
         resumeHandle = null
         socket.close()
