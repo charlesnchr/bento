@@ -106,12 +106,11 @@ object TaskNames {
         if (whole.isEmpty()) return null
         // As stored, then as said without possessives ("Sarah calendar" for "Sarah's calendar"): the whole reference first,
         // since "Capital One" or "The Guardian" may be a name; then without the words around a name ("the … task").
-        for (r in listOf(whole, whole.removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()).distinct()) {
-            if (r.isEmpty()) continue
+        for (r in forms(whole)) {
             tasks.entries.firstOrNull { norm(it.value.first) == r }?.let { return it.key }
             tasks.entries.firstOrNull { bare(it.value.first) == bare(r) }?.let { return it.key }
         }
-        val r = whole.removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()
+        val r = forms(whole).last()
         if (r.isEmpty()) return null
         val said = bare(r)
         // A name said in part, or with words around it: the one sharing the most of its words, if just one does.
@@ -127,6 +126,18 @@ object TaskNames {
             .filter { it.second > 0 }.sortedByDescending { it.second }
         if (scored.isEmpty() || scored.size > 1 && scored[0].second == scored[1].second) return null
         return scored[0].first
+    }
+
+    /**
+     * A normalised reference with less and less around it, least trimmed first: as said, without "the",
+     * without "task", without both, then without "one" too ("the Capital One task" is tried as "Capital One"
+     * before "capital").
+     */
+    private fun forms(whole: String): List<String> {
+        val noThe = whole.removePrefix("the ").trim()
+        val core = noThe.removeSuffix(" task").trim()
+        return listOf(whole, noThe, whole.removeSuffix(" task").trim(), core, core.removeSuffix(" one").trim()).filter { it.isNotEmpty() }.distinct()
+            .ifEmpty { listOf(whole) }
     }
 
     /** [text] lowercased, without quotes or full stops, keeping apostrophes inside words ("sarah's"), the same for names and references. */

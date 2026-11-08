@@ -662,6 +662,10 @@ class MultitaskReplayTest {
         Live.turn(transport, "Pay it in full"); transport.push(Live.call("c3", args = mapOf("continue_task" to "Capital One")))
         assertTrue(until { asked.size >= 3 })
         assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"Capital One\" went to ${asked[2].label}")
+        transport.push(Live.turnComplete())
+        Live.turn(transport, "And set up a direct debit"); transport.push(Live.call("c4", args = mapOf("continue_task" to "the Capital One task")))
+        assertTrue(until { asked.size >= 4 })
+        assertTrue(asked[3].followUp && asked[3].taskId == asked[1].taskId, "\"the Capital One task\" went to ${asked[3].label}")
         call.stop()
     }
 }

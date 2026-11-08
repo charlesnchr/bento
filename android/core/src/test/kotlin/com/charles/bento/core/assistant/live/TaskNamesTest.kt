@@ -111,6 +111,9 @@ class TaskNamesTest {
         assertEquals("1", TaskNames.find("the capital task", banks))
         assertEquals("4", TaskNames.find("The Guardian", banks))
         assertEquals("3", TaskNames.find("Guardian", banks))
+        for (ref in listOf("the Capital One task", "Capital One task", "the Capital One", "\"Capital One\"")) assertEquals("2", TaskNames.find(ref, banks), ref)
+        assertEquals("4", TaskNames.find("The Guardian task", banks))
+        assertEquals("1", TaskNames.find("the capital one", mapOf("1" to ("capital" to "What's the capital of Peru?"))), "\"one\" is still trimmed when no name has it")
         assertNull(TaskNames.find("", tasks))
     }
 
