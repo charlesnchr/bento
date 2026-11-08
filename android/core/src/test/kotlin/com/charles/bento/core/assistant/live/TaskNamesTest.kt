@@ -78,6 +78,13 @@ class TaskNamesTest {
         assertTrue(TaskNames.says("There's a table at Noma at eight. Shall I book it?", "Shall I book the Noma table at eight?", noma, "Noma table"))
         // A question with no words of its own counts once Gemini asks something.
         assertTrue(TaskNames.says("A table at Noma at eight: shall I?", "Noma at eight?", "A table at Noma at eight. Noma at eight?"))
+        // A closing "Anything else?" isn't asking it.
+        assertFalse(TaskNames.says("I found forty gigabytes of old backups from last year. Anything else?", "Shall I delete them?",
+                                   "I found 40 GB of old backups from last year. Shall I delete them?", "backups", "Delete my old backups"))
+        assertFalse(TaskNames.says("I found 40 GB of old backups. Would you like me to check anything else?", "Shall I delete them?",
+                                   "I found 40 GB of old backups. Shall I delete them?", "backups", "Delete my old backups"))
+        assertTrue(TaskNames.says("I found 40 GB of old backups. Shall I delete them?", "Shall I delete them?",
+                                  "I found 40 GB of old backups. Shall I delete them?", "backups", "Delete my old backups"))
     }
 
     @Test fun geminiFindsATaskByWhatItSays() {

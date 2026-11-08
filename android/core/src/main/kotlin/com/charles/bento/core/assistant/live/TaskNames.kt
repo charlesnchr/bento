@@ -172,13 +172,17 @@ object TaskNames {
      * Gemini's [speech] asks [question], from the reply [result] of the task [name] asked as [request]:
      * it says one of the question's own words, those not already in the rest of the reply, the name or
      * the request, since the summary often names what the question is about. With none of its own, a
-     * question cue ("shall I…", "?") has to be said.
+     * question cue ("shall I…", "?") has to be said in a sentence with one of the question's words.
      */
     fun says(speech: String, question: String, result: String = "", name: String = "", request: String = ""): Boolean {
-        val rest = result.replace(question, " ")
-        val own = distinctive(question) - distinctive(rest) - distinctive(name) - distinctive(request)
+        // The rest of the spoken summary: detail after it often repeats the question's verb.
+        val rest = result.trim().split(Regex("\\n\\s*\\n")).firstOrNull().orEmpty().replace(question, " ")
+        val asked = distinctive(question)
+        val own = asked - distinctive(rest) - distinctive(name) - distinctive(request)
         if (own.isNotEmpty()) return distinctive(speech).any { it in own }
-        return distinctive(question).isNotEmpty() && questionCue.containsMatchIn(speech)
+        // A cue in a sentence about the question, not a closing "Anything else?".
+        if (asked.isEmpty()) return false
+        return speech.split(Regex("(?<=[.?!])\\s+")).any { s -> questionCue.containsMatchIn(s) && distinctive(s).any { it in asked } }
     }
 
     /**

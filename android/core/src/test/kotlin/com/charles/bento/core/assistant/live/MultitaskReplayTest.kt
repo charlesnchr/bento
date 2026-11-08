@@ -633,4 +633,20 @@ class MultitaskReplayTest {
         assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"Sarah's calendar\" went to ${asked[2].label}")
         call.stop()
     }
+
+    @Test fun aClosingAnythingElseIsntAskingAConfirmation() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = dentistThenBackups(backups, asked)
+        transport.push(Live.said("Let me see."))
+        backups.complete("I found 40 GB of old files on the backup drive. Shall I tidy them up?")
+        assertTrue(until { transport.response("c2", "ok") != null })
+        transport.push(Live.said("I found forty gigabytes of old files on the backup drive. Anything else?"))
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        val yes = asked.single { it.task == "Yes" }
+        assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question Gemini never asked")
+        call.stop()
+    }
 }
