@@ -118,7 +118,7 @@ object TaskNames {
     )
     /** Words that say a request is separate: any of them after a short opener, the clearest after any. */
     private val separate = Regex("\\b(?:separately|also|another|as well|a new|different thing|something else)\\b", RegexOption.IGNORE_CASE)
-    private val clearlySeparate = Regex("\\b(?:separately|also|as well|something else)\\b", RegexOption.IGNORE_CASE)
+    private val clearlySeparate = Regex("\\b(?:separately|also|as well|something else|different thing)\\b", RegexOption.IGNORE_CASE)
 
     /**
      * The user's words are an answer to a question ("Yes, …", "Go ahead", "No", a short "Okay"), not a

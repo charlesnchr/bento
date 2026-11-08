@@ -61,7 +61,7 @@ class TaskNamesTest {
             assertTrue(TaskNames.isAnswer(yes), yes)
         }
         for (request in listOf("Find a taxi", "Yesterday's news", "Nobody told me", "Okapi facts", "What's next?", "Okay, separately, find me a taxi",
-                               "Yes, and also book a table", "Okay, so please spin up a coding agent to look at multitasking", "Sure, try another hotel")) {
+                               "Yes, and also book a table", "Okay, so please spin up a coding agent to look at multitasking", "Sure, try another hotel", "No, different thing, find me a taxi")) {
             assertFalse(TaskNames.isAnswer(request), request)
         }
     }

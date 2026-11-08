@@ -881,6 +881,8 @@ class AssistantCall(
             "ACTIVITY_START" -> {
                 val at = now()
                 protocol.activityStarted(at); lastSpeech = at; userTalking = true; talkingSince = at; userTurns++
+                // Speech that has all but played is heard now, not at the next tick, so a question that just ended can be answered.
+                played()
                 lapseQuestions()
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 // What it relayed in a turn that didn't count is heard all the same.

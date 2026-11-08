@@ -416,4 +416,33 @@ class MultitaskReplayTest {
         assertTrue(asked.single { it.task == "Yes" }.followUp, "the yes to a question Gemini relayed started a task of its own")
         call.stop()
     }
+
+    @Test fun aQuestionThatAllButEndedCanBeAnsweredBeforeTheNextTick() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        // The watchdog ticks once a second, as in the app.
+        val (transport, call) = started(limits.copy(tickMillis = 1_000)) { c ->
+            asked.add(c)
+            when (c.task) { "Remind me about the dentist" -> "I can add one for 9am. Shall I add a reminder?"; "Tidy up the backup drive" -> backups.await(); else -> "Done." }
+        }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "I can add a dentist reminder for 9am. Shall I add the reminder?")
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        backups.complete("I found 40 GB of old backups. Shall I delete the old backups?")
+        until { transport.response("c2", "ok") != null }
+        // A second and a half of speech; the user says yes over its last half second.
+        transport.push(Live.said("I found 40 GB of old backups. Shall I delete them?"))
+        transport.push(Live.audio(ByteArray(72_000)))
+        Live.speaksNothingMore(transport)
+        delay(1_000)
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        val yes = asked.single { it.task == "Yes" }
+        assertTrue(yes.followUp && yes.taskId == asked[1].taskId, "the yes went to ${yes.label}, not the question that had just ended")
+        call.stop()
+    }
 }
