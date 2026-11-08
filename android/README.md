@@ -156,7 +156,7 @@ this request (Hermes scopes a streamed turn's approvals to its run) and Deny.
 Settings → Wake word → **Listen for “Pennyworth”** starts a voice call with Hermes in a new chat
 when you say the word, hands-free and with the screen off. The model is LiveKit WakeWord v2
 (`pennyworth.onnx` in `app/src/main/assets/wakeword`, trained in the home-assistant repo) on ONNX
-Runtime, at a threshold of 0.6 (the Sensitivity slider moves it). The Echo answers to “Woodhouse”,
+Runtime, at a threshold of 0.7 (the Sensitivity slider moves it). The Echo answers to “Woodhouse”,
 so the phone has its own word: the model fires on 0.1% of synthetic “Woodhouse” clips. The words
 after “Pennyworth” go to Gemini once the call connects, the call is open mic whatever the talk
 mode, and it hangs up after 15 s with nothing said and no task running.

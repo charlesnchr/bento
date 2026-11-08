@@ -79,7 +79,7 @@ fun WakeSection(context: Context, tick: Int) {
             SettingsRow("Allow it over other apps", "So the keyboard covers it, not your typing", Icons.Rounded.Keyboard, onClick = { allowOverApps(context) })
         }
         SwitchRow("Pause in battery saver", saver, "And while the battery is low", Icons.Rounded.BatterySaver) { prefs.wakePauseOnSaver.value = it }
-        SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 60) "$it (default)" else it }, steps = 7) {
+        SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 70) "$it (default)" else it }, steps = 7) {
             prefs.wakeThreshold.value = 100 - it.toInt()
         }
         SettingsRow("Quick Settings tile", "Turn it on or off from anywhere", Icons.Rounded.Bolt, onClick = { requestWakeTile(context) })

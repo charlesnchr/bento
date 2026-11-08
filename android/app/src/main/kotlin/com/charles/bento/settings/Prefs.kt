@@ -90,7 +90,7 @@ class Prefs(context: Context) {
     /** Not while battery saver is on or the battery is low. */
     val wakePauseOnSaver = bool("wake.pauseOnSaver", true)
     /** The score that counts as the word, in hundredths. A new key for the Pennyworth model: the Woodhouse value doesn't carry over. */
-    val wakeThreshold = int("wake.threshold.v2", 60)
+    val wakeThreshold = int("wake.threshold.v2", 70)
     /** A wake call shows a panel over other apps ([com.charles.bento.voice.WakePanel]), where Android allows it. */
     val wakePanel = bool("wake.panel", true)
     /** Set while the model loads: still set at the next launch means loading it brought Bento down. */
