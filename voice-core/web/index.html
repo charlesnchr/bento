@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice core</title>
+<style>
+  :root { --bg: #f6f5f1; --panel: #fff; --ink: #1d1d1b; --mute: #6b6a65; --line: #e2e0d8; --accent: #2f5d50; --warn: #a2561b; --bad: #a12d2d; --you: #eef3f7; --gem: #f3f0e8; --her: #eef5ef; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --panel: #1f1f1d; --ink: #ecebe6; --mute: #9b9a94; --line: #34332f; --accent: #7fb8a4; --warn: #e0a06a; --bad: #e07a7a; --you: #1f2a33; --gem: #2a2722; --her: #1f2b22; } }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--ink); height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--mute); font-size: 12px; }
+  header code { font-size: 12px; }
+  nav button { border: 0; background: none; padding: 6px 10px; color: var(--mute); cursor: pointer; border-radius: 6px; font: inherit; }
+  nav button.on { background: var(--bg); color: var(--ink); }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px 1fr 1fr; gap: 12px; padding: 12px; }
+  main.replay-on { display: block; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); margin: 0; font-weight: 600; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  #call { background: var(--accent); color: #fff; border: 0; font-weight: 600; padding: 10px 18px; font-size: 15px; }
+  #call.live { background: var(--bad); }
+  #mute.on { background: var(--warn); color: #fff; }
+  #wake.armed { outline: 2px solid var(--warn); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label { color: var(--mute); font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  select, input[type=number] { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+  textarea { font: 12px/1.4 ui-monospace, monospace; width: 100%; flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); color: var(--ink); resize: none; }
+  #status { font-weight: 600; }
+  #status.ended { color: var(--bad); }
+  #status.standby, #status.waking { color: var(--warn); }
+  #status.listening, #status.working { color: var(--accent); }
+  .meter { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  #meter { height: 100%; width: 0; background: var(--accent); transition: width .08s; }
+  #counts, #tracename { color: var(--mute); font-size: 12px; }
+  #micwarn { color: var(--bad); font-size: 13px; }
+  #transcript { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .line { padding: 6px 10px; border-radius: 8px; max-width: 92%; }
+  .line .who { display: block; font-size: 11px; color: var(--mute); }
+  .line.user { background: var(--you); align-self: flex-end; }
+  .line.assistant { background: var(--gem); }
+  .line.hermes { background: var(--her); font-size: 13px; white-space: pre-wrap; }
+  #tasks { display: flex; flex-direction: column; gap: 6px; max-height: 35%; overflow: auto; }
+  .task { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+  .task i { color: var(--mute); font-style: normal; font-size: 12px; }
+  .task.running i { color: var(--accent); }
+  .task .p { color: var(--mute); font-size: 12px; }
+  .task button { float: right; padding: 2px 8px; font-size: 12px; }
+  #log, .timeline { flex: 1; overflow: auto; font: 11.5px/1.45 ui-monospace, monospace; }
+  .row { display: flex; gap: 8px; padding: 1px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+  .row .t { color: var(--mute); min-width: 48px; text-align: right; }
+  .row .k { min-width: 46px; color: var(--mute); }
+  .row .b { white-space: pre-wrap; word-break: break-all; }
+  .row.in .b { color: var(--ink); }
+  .row.out .b { color: var(--accent); }
+  .row.status .b { font-weight: 600; }
+  .row.warn .b { color: var(--warn); }
+  .row.err .b { color: var(--bad); }
+  .row.gone { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .row.new { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  #replay { height: 100%; }
+  #replay .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #replay .summary { color: var(--mute); font-size: 13px; }
+  #replay .pick { max-width: 520px; }
+  #defaultsview { font: 11px/1.4 ui-monospace, monospace; max-height: 240px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; margin: 0; }
+  #reload { color: var(--warn); }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } section { min-height: 300px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice core</h1>
+  <nav><button id="tab-call" class="on">Call</button><button id="tab-replay">Replay</button></nav>
+  <span class="meta">core <code id="version"></code></span>
+  <span class="meta" id="route"></span>
+  <span class="meta" id="reload" hidden>The page changed: reload after this call.</span>
+</header>
+<main id="main">
+  <section id="setup">
+    <h2>Call</h2>
+    <div class="controls">
+      <button id="call">Call</button>
+      <button id="mute" title="Tap to talk: the model hears nothing while it's on">Mute</button>
+      <button id="resume" title="Back from standby before Hermes finishes">Resume</button>
+      <button id="wake" disabled title="Say the wake word over the reply (the Echo's way)">Wake word</button>
+    </div>
+    <div><span id="status">idle</span> <span id="micwarn" hidden>The microphone hears nothing.</span></div>
+    <div class="meter"><div id="meter"></div></div>
+    <div id="counts"></div>
+    <h2>Settings</h2>
+    <label>Surface <select id="preset"></select></label>
+    <label><input type="checkbox" id="aec" checked> Browser echo cancellation</label>
+    <label><input type="checkbox" id="fakehermes"> Fake Hermes, answering after <input type="number" id="fakedelay" value="4" min="0" max="120" style="width:56px"> s</label>
+    <label><input type="checkbox" id="trace" checked> Keep a trace for replay <span id="tracename"></span></label>
+    <textarea id="config" spellcheck="false"></textarea>
+    <div class="controls"><button id="defaults">Show every setting</button></div>
+    <pre id="defaultsview" hidden></pre>
+  </section>
+  <section>
+    <h2>Conversation</h2>
+    <div id="tasks"></div>
+    <div id="transcript"></div>
+  </section>
+  <section>
+    <h2>What the core heard and did</h2>
+    <div id="log"></div>
+  </section>
+</main>
+<main id="replaymain" class="replay-on" hidden>
+  <section id="replay"></section>
+</main>
+<script type="module">
+  const tabs = { call: [document.getElementById("main")], replay: [document.getElementById("replaymain")] };
+  for (const name of Object.keys(tabs)) {
+    document.getElementById(`tab-${name}`).onclick = () => {
+      for (const [other, els] of Object.entries(tabs)) {
+        els.forEach((el) => (el.hidden = other !== name));
+        document.getElementById(`tab-${other}`).classList.toggle("on", other === name);
+      }
+    };
+  }
+</script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

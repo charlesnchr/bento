@@ -118,6 +118,7 @@ dependencies {
     implementation(libs.zxing.core)
     // the "Pennyworth" wake word: a streaming ONNX model (assets/wakeword)
     implementation(libs.onnxruntime.android)
+    implementation(libs.zipline.android)
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(libs.junit.jupiter)

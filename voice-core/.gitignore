@@ -1,0 +1,6 @@
+node_modules/
+dist/versions/
+web/dist/
+traces/
+hosts/python/.venv/
+.pytest_cache/
