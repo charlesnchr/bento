@@ -649,4 +649,19 @@ class MultitaskReplayTest {
         assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question Gemini never asked")
         call.stop()
     }
+
+    @Test fun aNameEndingInOneIsThatName() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); "Done." }
+        Live.turn(transport, "What's the capital of Peru?"); transport.push(Live.call("c1", args = mapOf("label" to "capital")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "Check my Capital One card"); transport.push(Live.call("c2", args = mapOf("label" to "Capital One")))
+        until { transport.response("c2", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "Pay it in full"); transport.push(Live.call("c3", args = mapOf("continue_task" to "Capital One")))
+        assertTrue(until { asked.size >= 3 })
+        assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"Capital One\" went to ${asked[2].label}")
+        call.stop()
+    }
 }

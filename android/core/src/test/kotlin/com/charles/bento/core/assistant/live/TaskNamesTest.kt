@@ -104,6 +104,13 @@ class TaskNamesTest {
         assertEquals("2", TaskNames.find("Sarah calendar", calendars))
         assertEquals("2", TaskNames.find("\"Sarah's calendar\"", calendars))
         assertEquals("1", TaskNames.find("calendar", calendars))
+        // A name that ends in "one" or starts with "the" is a name before it's decoration.
+        val banks = mapOf("1" to ("capital" to "What's the capital of Peru?"), "2" to ("Capital One" to "Check my Capital One card"),
+                          "3" to ("Guardian" to "Find the guardian angel quote"), "4" to ("The Guardian" to "Read The Guardian's front page"))
+        assertEquals("2", TaskNames.find("Capital One", banks))
+        assertEquals("1", TaskNames.find("the capital task", banks))
+        assertEquals("4", TaskNames.find("The Guardian", banks))
+        assertEquals("3", TaskNames.find("Guardian", banks))
         assertNull(TaskNames.find("", tasks))
     }
 

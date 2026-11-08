@@ -102,12 +102,18 @@ object TaskNames {
      * Null when none fits or two fit equally.
      */
     fun <K> find(ref: String, tasks: Map<K, Pair<String, String>>): K? {
-        val r = norm(ref).removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()
+        val whole = norm(ref)
+        if (whole.isEmpty()) return null
+        // As stored, then as said without possessives ("Sarah calendar" for "Sarah's calendar"): the whole reference first,
+        // since "Capital One" or "The Guardian" may be a name; then without the words around a name ("the … task").
+        for (r in listOf(whole, whole.removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()).distinct()) {
+            if (r.isEmpty()) continue
+            tasks.entries.firstOrNull { norm(it.value.first) == r }?.let { return it.key }
+            tasks.entries.firstOrNull { bare(it.value.first) == bare(r) }?.let { return it.key }
+        }
+        val r = whole.removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()
         if (r.isEmpty()) return null
-        // As stored, then as said without possessives ("Sarah calendar" for "Sarah's calendar").
-        tasks.entries.firstOrNull { norm(it.value.first) == r }?.let { return it.key }
         val said = bare(r)
-        tasks.entries.firstOrNull { bare(it.value.first) == said }?.let { return it.key }
         // A name said in part, or with words around it: the one sharing the most of its words, if just one does.
         val within = tasks.entries.mapNotNull { e ->
             val name = bare(e.value.first)
