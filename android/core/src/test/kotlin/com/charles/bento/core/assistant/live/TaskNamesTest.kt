@@ -65,6 +65,12 @@ class TaskNamesTest {
         }
     }
 
+    @Test fun geminiAsksAQuestionInItsOwnWords() {
+        assertTrue(TaskNames.says("Your old backups take 40 GB: shall I delete them?", "Shall I delete the old backups?"))
+        assertFalse(TaskNames.says("I found forty gigabytes of redundant archives.", "Shall I delete them?"))
+        assertFalse(TaskNames.says("Anything else?", "Shall I?"))
+    }
+
     @Test fun geminiFindsATaskByWhatItSays() {
         val tasks = mapOf("1" to ("Pennyworth wake word" to "Can you think of a different wake word model"),
                           "2" to ("coding session" to "Are you able to spin up a new coding session?"),

@@ -522,4 +522,63 @@ class MultitaskReplayTest {
         assertTrue(until { transport.sent.any { "clientContent" in it && "Booked for 8pm." in it } }, "the result was lost")
         call.stop()
     }
+
+    /** A dentist task whose question the user has heard, and a backup task started after it, Hermes still on it. */
+    private suspend fun dentistThenBackups(backups: CompletableDeferred<String>, asked: MutableList<HermesCall>): Pair<FakeTransport, AssistantCall> {
+        val (transport, call) = started { c ->
+            asked.add(c)
+            when (c.task) { "Remind me about the dentist" -> "I can add one for 9am. Shall I add a reminder?"; "Tidy up the backup drive" -> backups.await(); else -> "Done." }
+        }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "I can add a dentist reminder for 9am. Shall I add the reminder?")
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        return transport to call
+    }
+
+    @Test fun relayingAResultsSummaryIsntAskingItsQuestion() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = dentistThenBackups(backups, asked)
+        // Gemini is partway through a turn when the backups finish, and relays only the summary before the user cuts in.
+        transport.push(Live.said("Let me see."))
+        backups.complete("I found 40 GB of old backups, redundant archives from last year. Shall I delete them?")
+        assertTrue(until { transport.response("c2", "ok") != null })
+        transport.push(Live.said("I found forty gigabytes of redundant archives from last year."))
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        val yes = asked.single { it.task == "Yes" }
+        assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question Gemini never said")
+        call.stop()
+    }
+
+    @Test fun twoQuestionsHeardTogetherAreAskedAboutNotGuessed() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val gates = mapOf("Remind me about the dentist" to CompletableDeferred<String>(), "Tidy up the backup drive" to CompletableDeferred())
+        val (transport, call) = started { c -> asked.add(c); gates[c.task]?.await() ?: "Done." }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        // Both finish while the user talks, so they go to Gemini together, and it says both questions in one turn.
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        gates.getValue("Remind me about the dentist").complete("I can add one for 9am. Shall I add a reminder?")
+        gates.getValue("Tidy up the backup drive").complete("I found 40 GB of old backups. Shall I delete them?")
+        delay(300)
+        transport.push(Live.heard("Hmm")); transport.push(Live.activity("ACTIVITY_END")); transport.push(Live.turnComplete())
+        assertTrue(until { transport.sent.any { "clientContent" in it && "delete them" in it } })
+        Live.speaks(transport, "Your old backups take 40 GB: shall I delete them? And shall I add the dentist reminder for 9am?")
+        Live.turn(transport, "Yes"); transport.push(Live.call("c3"))
+        assertTrue(until { transport.response("c3") != null })
+        val answer = transport.response("c3")!!.response()["message"]!!.jsonPrimitive.content
+        assertTrue(answer.startsWith("Not executed") && "dentist reminder" in answer && "backup cleanup" in answer, answer)
+        assertTrue(asked.none { it.task == "Yes" }, "the yes went to Hermes on a guess")
+        call.stop()
+    }
 }

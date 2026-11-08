@@ -332,7 +332,7 @@ class AssistantCall(
      * When each recent user turn started, and the task whose question the user had heard by then:
      * an answer in that turn goes there, whatever finishes while they say it.
      */
-    private val answerFor = ArrayDeque<Pair<Double, String?>>()
+    private val answerFor = ArrayDeque<Pair<Double, List<String>>>()
 
     /**
      * [items] have been heard, their speech played: they leave [unheard], and a question in one becomes
@@ -341,11 +341,24 @@ class AssistantCall(
     private fun heardOut(items: Collection<Unheard>) {
         if (items.isEmpty()) return
         unheard.removeAll(items.toSet())
+        // Questions heard together share a stamp: which of them Gemini said last isn't known, so neither is the latest.
+        val stamp = ++asks
         for (item in items) {
             val task = tasks[item.task] ?: continue
-            if (item.asked != null && task.asked == item.asked) { task.askedAt = ++asks; task.askedTurn = userTurns }
+            if (item.asked != null && item.questionSaid && task.asked == item.asked) { task.askedAt = stamp; task.askedTurn = userTurns }
         }
         if (items.any { it.asked != null }) questionsChanged()
+    }
+
+    /**
+     * Results Gemini relayed in a turn that didn't count are heard; a question in one only if Gemini's
+     * words say it too, as relaying a reply's summary isn't asking what it asks.
+     */
+    private fun heardRelayed(): List<Unheard> {
+        val said = relayed()
+        for (item in said) item.asked?.let { item.questionSaid = TaskNames.says(geminiSaid.toString(), it) }
+        heard(said)
+        return said
     }
 
     /** Publishes [questions] after a task's question changed: those the user has heard, as one they never hear never lapses. */
@@ -375,6 +388,8 @@ class AssistantCall(
         /** Spoken in a turn that has ended, when that speech finishes playing; an interruption before then sends it again. */
         var playing: Double? = null
         var tries = 0
+        /** Its question was said, as far as the call can tell: a whole counted turn after it was told, or words that ask it. */
+        var questionSaid = true
         /** Told, and no turn has ended since. */
         val awaiting get() = told && playing == null
     }
@@ -890,9 +905,9 @@ class AssistantCall(
                 if (spokeSince) { if (generated) heard(unheard.filter { it.awaiting }) }
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 // What it relayed in a turn that didn't count is heard all the same.
-                else { heard(relayed()); again(unheard.filter { it.awaiting }) }
+                else { heardRelayed(); again(unheard.filter { it.awaiting }) }
                 // After that, so a question Gemini just relayed is one this turn can answer.
-                answerFor.addLast(at to asking()?.id)
+                answerFor.addLast(at to asking().map { it.id })
                 if (answerFor.size > 8) answerFor.removeFirst()
                 geminiTurns.addLast(GeminiTurn(now()))
                 if (geminiTurns.size > 8) geminiTurns.removeFirst()
@@ -968,7 +983,7 @@ class AssistantCall(
             turnAudio()
             // A turn already underway when Gemini was told results isn't about them; the next one is.
             if (!skipTurn) { if (spokeSince) turnEnded(spoke = true) else silentAbout() }
-            else relayed().takeIf { it.isNotEmpty() }?.let { said -> heard(said); if (unheard.none { it.awaiting }) unspokenSince = null }
+            else if (heardRelayed().isNotEmpty() && unheard.none { it.awaiting }) unspokenSince = null
             if (spokeSince) unspokenSince = null
             geminiSaid.clear()
             geminiSpeaking = false
@@ -1147,7 +1162,15 @@ class AssistantCall(
                 val found = named?.let { find(it, byRequest = false) }
                 // An answer Gemini didn't place ("yes, go ahead") goes to the task whose question the user had heard last
                 // as they started saying it. Not one Gemini labelled as a new task.
-                val answered = if (named == null && label == null && TaskNames.isAnswer(request.task)) answering(d) else null
+                val answering = if (named == null && label == null && TaskNames.isAnswer(request.task)) answering(d) else emptyList()
+                if (found == null && answering.size > 1) {
+                    // Two questions heard together: guessing could approve the wrong one.
+                    respond(d.id, "Not executed: the user's answer could be to more than one question: " +
+                        answering.joinToString("; ") { "\"${it.label}\" asked: ${it.asked}" } + ". Ask the user which they mean, then call " +
+                        "ask_hermes with that task as continue_task. No action was run.", executed = false)
+                    return@launch
+                }
+                val answered = answering.singleOrNull()
                 val task = found ?: answered
                 val run = Run(d.id, request, session, d.turn, followUp = task != null)
                 when {
@@ -1176,16 +1199,21 @@ class AssistantCall(
         return TaskNames.find(ref, tasks.mapValues { it.value.label to if (byRequest) it.value.request else "" })?.let { tasks[it] }
     }
 
-    /** The task waiting for the user's answer whose question they heard last, if any: said, and played out. */
-    private fun asking(): Task? = tasks.values.filter { t ->
-        t.asked != null && t.state == FINISHED && t.askedAt > 0 && unheard.none { it.task == t.id }
-    }.maxByOrNull { it.askedAt }
+    /**
+     * The tasks waiting for the user's answer whose question they heard last: said, and played out.
+     * More than one when they were heard together, and then the call can't tell which is meant.
+     */
+    private fun asking(): List<Task> {
+        val heard = tasks.values.filter { t -> t.asked != null && t.state == FINISHED && t.askedAt > 0 && unheard.none { it.task == t.id } }
+        val latest = heard.maxOfOrNull { it.askedAt } ?: return emptyList()
+        return heard.filter { it.askedAt == latest }
+    }
 
-    /** The task the user was answering in [d]'s turn: the question they'd heard as it started, if it still waits. */
-    private fun answering(d: CallProtocol.Delegation): Task? {
-        val started = protocol.startedAt(d) ?: return null
-        val id = answerFor.lastOrNull { it.first == started }?.second ?: return null
-        return tasks[id]?.takeIf { it.asked != null && it.state == FINISHED }
+    /** The tasks the user may have been answering in [d]'s turn: the latest questions they'd heard as it started, still waiting. */
+    private fun answering(d: CallProtocol.Delegation): List<Task> {
+        val started = protocol.startedAt(d) ?: return emptyList()
+        val ids = answerFor.lastOrNull { it.first == started }?.second ?: return emptyList()
+        return ids.mapNotNull { tasks[it] }.filter { it.asked != null && it.state == FINISHED }
     }
 
     /** Starts [task] in Hermes: Gemini hears its name at once, and its result when Hermes finishes. */
@@ -1412,8 +1440,8 @@ class AssistantCall(
         val all = tasks.values
         val groups = listOf(
             "Running:" to all.filter { it.state == RUNNING },
-            "Waiting for the user's answer:" to all.filter { it.state == FINISHED && it.asked != null },
-            "Done:" to all.filter { it.state == FINISHED && it.asked == null },
+            "Waiting for the user's answer:" to all.filter { it.state == FINISHED && it.asked != null && it.askedAt > 0 },
+            "Done:" to all.filter { it.state == FINISHED && (it.asked == null || it.askedAt == 0L) },
             "Cancelled:" to all.filter { it.state == CANCELLED },
         ).filter { it.second.isNotEmpty() }
         return groups.flatMap { (heading, group) -> listOf<Pair<Task?, String>>(null to heading) + group.map { it to "- " + describe(it, state = false) } } +
@@ -1476,7 +1504,7 @@ class AssistantCall(
         (task.progress?.takeIf { task.state == RUNNING }?.let { ". Latest: $it" } ?: "") +
         (task.asked?.takeIf { task.state == FINISHED }?.let { ". Hermes asked: $it" } ?: "") + "."
 
-    private fun stateOf(task: Task) = if (task.state == FINISHED && task.asked != null) "waiting for the user's answer" else task.state
+    private fun stateOf(task: Task) = if (task.state == FINISHED && task.asked != null && task.askedAt > 0) "waiting for the user's answer" else task.state
 
     private fun quote(request: String) = "\"" + request.replace(Regex("\\s+"), " ").trim().let { if (it.length > 120) it.take(120) + "…" else it } + "\""
 

@@ -19,7 +19,7 @@ object TaskNames {
         "please", "just", "also", "now", "right", "separately", "then", "really", "quite", "very", "one", "more", "thing", "things",
         "think", "find", "out", "look", "up", "tell", "check", "get", "give", "show", "make", "let", "let's", "see", "know", "want",
         "like", "need", "use", "using", "new", "different", "another", "better", "good", "nice", "currently", "current", "still",
-        "hermes", "okay", "ok", "yeah", "yes", "no", "hey", "um", "uh", "oh", "well", "actually", "maybe", "because",
+        "hermes", "okay", "ok", "yeah", "yes", "no", "hey", "um", "uh", "oh", "well", "actually", "maybe", "because", "them", "they", "their", "then", "than",
     )
     /** Words between two named words that read better kept ("weather in Copenhagen", "book a table"). */
     private val joins = setOf("in", "on", "for", "with", "from", "of", "to", "a", "an", "the")
@@ -149,6 +149,13 @@ object TaskNames {
         val said = words.trim().trimStart('"', '\'', ' ')
         if (answer.containsMatchIn(said)) return !clearlySeparate.containsMatchIn(said)
         return shortAnswer.containsMatchIn(said) && words(said).size <= 5 && !separate.containsMatchIn(said)
+    }
+
+    /** Gemini's [speech] asks [question]: two of its distinctive words (all of them for a question with one), or none to go on. */
+    fun says(speech: String, question: String): Boolean {
+        val asked = distinctive(question)
+        if (asked.isEmpty()) return false
+        return distinctive(speech).count { it in asked } >= minOf(2, asked.size)
     }
 
     /**
