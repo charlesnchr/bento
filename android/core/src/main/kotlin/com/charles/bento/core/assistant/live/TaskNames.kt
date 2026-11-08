@@ -19,7 +19,7 @@ object TaskNames {
         "please", "just", "also", "now", "right", "separately", "then", "really", "quite", "very", "one", "more", "thing", "things",
         "think", "find", "out", "look", "up", "tell", "check", "get", "give", "show", "make", "let", "let's", "see", "know", "want",
         "like", "need", "use", "using", "new", "different", "another", "better", "good", "nice", "currently", "current", "still",
-        "hermes", "okay", "ok", "yeah", "yes", "no", "hey", "um", "uh", "oh", "well", "actually", "maybe",
+        "hermes", "okay", "ok", "yeah", "yes", "no", "hey", "um", "uh", "oh", "well", "actually", "maybe", "because",
     )
     /** Words between two named words that read better kept ("weather in Copenhagen", "book a table"). */
     private val joins = setOf("in", "on", "for", "with", "from", "of", "to", "a", "an", "the")
@@ -112,20 +112,24 @@ object TaskNames {
         RegexOption.IGNORE_CASE,
     )
 
-    /** The user's words start as an answer to a question ("Yes, …", "Go ahead", "No"), not a request of their own. */
-    fun isAnswer(words: String): Boolean = answer.containsMatchIn(words.trim().trimStart('"', '\'', ' '))
+    private val separate = Regex("\\b(?:separately|also|another|as well|a new|different thing|something else)\\b", RegexOption.IGNORE_CASE)
 
     /**
-     * Gemini's [speech] relays the result [result] of the task [name]: it says the task's name,
-     * or three of the reply's distinctive words (all of them for a reply with fewer).
+     * The user's words start as an answer to a question ("Yes, …", "Go ahead", "No"), not a request
+     * of their own: not when they say it's separate ("Okay, separately, find me a taxi").
+     */
+    fun isAnswer(words: String): Boolean = answer.containsMatchIn(words.trim().trimStart('"', '\'', ' ')) && !separate.containsMatchIn(words)
+
+    /**
+     * Gemini's [speech] relays the result [result] of the task [name]: it says three of the reply's
+     * distinctive words besides the task's name (all of them for a reply with two). Saying what the
+     * task is about isn't saying what came of it ("still working on the Pennyworth training").
      */
     fun relays(speech: String, name: String, result: String): Boolean {
         val said = distinctive(speech)
         if (said.isEmpty()) return false
-        val named = distinctive(name)
-        if (named.isNotEmpty() && said.containsAll(named)) return true
         val summary = result.trim().split(Regex("\\n\\s*\\n")).firstOrNull().orEmpty().split(Regex("\\s+")).take(80).joinToString(" ")
-        val reply = distinctive(summary)
+        val reply = distinctive(summary) - distinctive(name)
         if (reply.size < 2) return false
         return reply.count { it in said } >= minOf(3, reply.size)
     }

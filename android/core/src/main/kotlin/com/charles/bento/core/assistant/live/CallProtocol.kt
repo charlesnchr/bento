@@ -103,6 +103,9 @@ class CallProtocol {
         return TurnState(turn.ended != null && turn.text.isNotEmpty(), listOfNotNull(turn.ended, turn.heard).maxOrNull())
     }
 
+    /** When the call's turn started (its ACTIVITY_START), if it's still known. */
+    fun startedAt(d: Delegation): Double? = turns.firstOrNull { it.id == d.turn }?.started
+
     /** Consumes a declined call's turn so a later call cannot replay it. */
     fun discardRequest(d: Delegation) {
         turns.firstOrNull { it.id == d.turn }?.consumed = true

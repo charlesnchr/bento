@@ -301,7 +301,7 @@ class AssistantCall(
         val request = first.request.task
         /** What Hermes's latest reply asked the user, until a follow-up goes to Hermes. */
         var asked: String? = null
-        /** When [asked] reached Gemini, in order: an answer Gemini doesn't place goes to the latest. */
+        /** When [asked] went to Gemini to say, in order (0 until then): an answer Gemini doesn't place goes to the latest heard. */
         var askedAt = 0L
         var current = first
         /** Follow-ups said while it ran: Hermes takes them next, in the same session. */
@@ -321,6 +321,17 @@ class AssistantCall(
     private val running get() = tasks.values.count { it.state == RUNNING }
     /** Counts questions told to Gemini, for [Task.askedAt]. */
     private var asks = 0L
+    /**
+     * When each recent user turn started, and the task whose question the user had heard by then:
+     * an answer in that turn goes there, whatever finishes while they say it.
+     */
+    private val answerFor = ArrayDeque<Pair<Double, String?>>()
+
+    /** [item] has gone to Gemini to say: a question in it becomes one the user can answer once it's heard. */
+    private fun toldQuestion(item: Unheard) {
+        val task = tasks[item.task] ?: return
+        if (item.asked != null && task.asked == item.asked) task.askedAt = ++asks
+    }
 
     /**
      * A result on its way to the user, of the task keyed [task] and named [label], with what it
@@ -780,7 +791,7 @@ class AssistantCall(
         val calls = batch.map { item -> item.call?.takeIf { item.session == session && it !in cancelledCalls } }
         for (item in batch) { item.sending = true; item.call = null }
         // Each counts as told only as it goes, so a turn that ends meanwhile can't take one not yet sent for heard.
-        fun told(item: Unheard) { item.sending = false; item.told = true }
+        fun told(item: Unheard) { item.sending = false; item.told = true; toldQuestion(item) }
         try {
             // One result to an open call is its last response; Gemini may give each of several its own turn, so they go as one.
             val only = batch.singleOrNull()
@@ -823,7 +834,10 @@ class AssistantCall(
         }
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
             "ACTIVITY_START" -> {
-                protocol.activityStarted(now()); lastSpeech = now(); userTalking = true; userTurns++
+                val at = now()
+                protocol.activityStarted(at); lastSpeech = at; userTalking = true; userTurns++
+                answerFor.addLast(at to asking()?.id)
+                if (answerFor.size > 8) answerFor.removeFirst()
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 // What it relayed in a turn that didn't count is heard all the same.
                 if (!spokeSince) { heard(relayed()); again(unheard.filter { it.awaiting }) }
@@ -1077,8 +1091,9 @@ class AssistantCall(
                     return@launch
                 }
                 val found = named?.let(::find)
-                // An answer Gemini didn't place ("yes, go ahead") goes to the task whose question the user heard last.
-                val answered = if (named == null) asking().takeIf { TaskNames.isAnswer(request.task) } else null
+                // An answer Gemini didn't place ("yes, go ahead") goes to the task whose question the user had heard last
+                // as they started saying it. Not one Gemini labelled as a new task.
+                val answered = if (named == null && label == null && TaskNames.isAnswer(request.task)) answering(d) else null
                 val task = found ?: answered
                 val run = Run(d.id, request, session, d.turn, followUp = task != null)
                 when {
@@ -1103,8 +1118,17 @@ class AssistantCall(
         TaskNames.find(ref, tasks.mapValues { it.value.label to it.value.request })?.let { tasks[it] }
             ?: ref.filter { it.isDigit() }.takeIf { it.isNotEmpty() && it.length == ref.trim().length }?.let { tasks[it] }
 
-    /** The task waiting for the user's answer whose question Gemini was told last, if any. */
-    private fun asking(): Task? = tasks.values.filter { it.asked != null && it.state == FINISHED }.maxByOrNull { it.askedAt }
+    /** The task waiting for the user's answer whose question they heard last, if any: told to Gemini, and said. */
+    private fun asking(): Task? = tasks.values.filter { t ->
+        t.asked != null && t.state == FINISHED && t.askedAt > 0 && unheard.none { it.task == t.id && it.playing == null }
+    }.maxByOrNull { it.askedAt }
+
+    /** The task the user was answering in [d]'s turn: the question they'd heard as it started, if it still waits. */
+    private fun answering(d: CallProtocol.Delegation): Task? {
+        val started = protocol.startedAt(d) ?: return null
+        val id = answerFor.lastOrNull { it.first == started }?.second ?: return null
+        return tasks[id]?.takeIf { it.asked != null && it.state == FINISHED }
+    }
 
     /** Starts [task] in Hermes: Gemini hears its name at once, and its result when Hermes finishes. */
     private suspend fun start(task: Task, unknown: String?) {
@@ -1204,7 +1228,7 @@ class AssistantCall(
             // A question with more of the task's requests still to come is theirs to settle first.
             val asked = TaskNames.question(result).takeIf { task.queued.isEmpty() }
             task.asked = asked
-            if (asked != null) task.askedAt = ++asks
+            task.askedAt = 0
             // Gemini dropped the call (the user talked over it, say), but the task ran on: its result goes in as a turn.
             val open = run.callId !in cancelledCalls && run.session == session && !standby && !waking
             deliver(Unheard(task.id, task.label, result, asked, run.callId.takeIf { open }, session))
@@ -1377,7 +1401,7 @@ class AssistantCall(
         // The user spoke again meanwhile: what Gemini says next answers them, so the results go again after.
         if (userTurns != turns || userTalking) { again(items); return }
         // Told only now, just before the answer goes, so a turn that ended meanwhile can't count for them.
-        for (item in items) item.told = true
+        for (item in items) { item.told = true; toldQuestion(item) }
         lastSpeech = now()
         unspokenSince = now()
         spokeSince = false

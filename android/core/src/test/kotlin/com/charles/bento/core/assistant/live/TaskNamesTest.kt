@@ -59,18 +59,21 @@ class TaskNamesTest {
         for (yes in listOf("Yes", "yeah, go ahead", "Yes, because you didn't do that.", "Okay, let's do it", "No thanks", "Go ahead", "Sure.")) {
             assertTrue(TaskNames.isAnswer(yes), yes)
         }
-        for (request in listOf("Find a taxi", "Yesterday's news", "Nobody told me", "Okapi facts", "What's next?")) {
+        for (request in listOf("Find a taxi", "Yesterday's news", "Nobody told me", "Okapi facts", "What's next?", "Okay, separately, find me a taxi",
+                               "Yes, and also book a table")) {
             assertFalse(TaskNames.isAnswer(request), request)
         }
     }
 
-    @Test fun geminiRelaysAResultByNameOrByItsWords() {
+    @Test fun geminiRelaysAResultByWhatCameOfIt() {
         val training = "I've started training \"Pennyworth\" on homelab. It should take roughly one to two hours."
         assertTrue(TaskNames.relays("I've started training the Pennyworth model on your homelab, about two hours.", "wake word model", training))
-        assertTrue(TaskNames.relays("The Pennyworth wake word is underway.", "Pennyworth wake word", training))
+        // Naming the task, or saying it's still going, isn't saying what came of it.
+        assertFalse(TaskNames.relays("The Pennyworth wake word is underway.", "Pennyworth wake word", training))
+        assertFalse(TaskNames.relays("I'm still working on the Pennyworth training.", "Pennyworth training", "Training failed because the disk is full."))
+        assertTrue(TaskNames.relays("The Pennyworth training failed: the disk is full.", "Pennyworth training", "Training failed because the disk is full."))
         assertFalse(TaskNames.relays("Yes, that's correct. You can ask for something else.", "Pennyworth wake word", training))
         assertFalse(TaskNames.relays("Hermes is working on it.", "taxi", "A taxi is on its way."))
-        assertTrue(TaskNames.relays("A taxi is coming.", "taxi", "A taxi is on its way."))
         assertFalse(TaskNames.relays("", "taxi", "A taxi is on its way."))
     }
 }

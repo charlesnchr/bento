@@ -193,4 +193,72 @@ class MultitaskReplayTest {
         call.stop()
         assertTrue(problems.isEmpty(), "\n" + problems.joinToString("\n") { "- $it" })
     }
+
+    private suspend fun started(limits: AssistantCall.Limits = this.limits, hermes: suspend (HermesCall) -> String): Pair<FakeTransport, AssistantCall> {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = AssistantCall(transport, FakeAudio(), null, hermes, limits = limits)
+        call.start()
+        until { transport.sent.any { "realtimeInput" in it } }
+        return transport to call
+    }
+
+    @Test fun aQuestionTheUserHasntHeardDoesntTakeTheirAnswer() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c ->
+            asked.add(c)
+            when (c.task) { "Remind me about the dentist" -> "I can add one for 9am. Shall I add a reminder?"; "Tidy up the backup drive" -> backups.await(); else -> "Done." }
+        }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "I can add a dentist reminder for 9am. Shall I add the reminder?")
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        delay(300)
+        // The user answers the reminder question; the backups ask theirs while they do, unheard.
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(100)
+        backups.complete("I found 40 GB of old backups. Shall I delete the old backups?")
+        delay(300)
+        transport.push(Live.heard("Yes please")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes please" } })
+        val yes = asked.single { it.task == "Yes please" }
+        assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, not the dentist reminder")
+        call.stop()
+    }
+
+    @Test fun sayingWhatATaskIsAboutIsntSayingItsResult() = blocking {
+        val training = CompletableDeferred<String>()
+        val (transport, call) = started(limits.copy(deliverMax = 1.0)) { training.await() }
+        Live.turn(transport, "Train the Pennyworth model"); transport.push(Live.call("c1", args = mapOf("label" to "Pennyworth training")))
+        until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        // The user asks something; the training fails while Gemini is partway through its answer, which only says it's going.
+        Live.turn(transport, "How long will it take?")
+        transport.push(Live.said("Let me think."))
+        training.complete("Training failed because the disk is full.")
+        assertTrue(until { transport.sent.any { "disk is full" in it } })
+        transport.push(Live.said("I'm still working on the Pennyworth training."))
+        Live.speaksNothingMore(transport)
+        // Not heard: it goes again.
+        assertTrue(until(8_000) { transport.sent.count { "disk is full" in it } >= 2 }, "the failure was taken for heard")
+        call.stop()
+    }
+
+    @Test fun aNewTaskGeminiLabelledIsntTakenForAnAnswer() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); if (c.task == "What's on my calendar?") "You're free at 3. Shall I book it?" else "Done." }
+        Live.turn(transport, "What's on my calendar?"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "You're free at 3. Shall I book the slot at 3?")
+        Live.turn(transport, "Okay, separately, find me a taxi"); transport.push(Live.call("c2"))
+        until { asked.size >= 2 }
+        transport.push(Live.turnComplete())
+        Live.turn(transport, "Okay, get me a coffee order going"); transport.push(Live.call("c3", args = mapOf("label" to "coffee order")))
+        until { asked.size >= 3 }
+        assertTrue(asked.drop(1).none { it.followUp }, "a separate request went to the calendar: ${asked.map { it.task to it.followUp }}")
+        call.stop()
+    }
 }
