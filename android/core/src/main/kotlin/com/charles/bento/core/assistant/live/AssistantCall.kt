@@ -884,9 +884,12 @@ class AssistantCall(
                 // Speech that has all but played is heard now, not at the next tick, so a question that just ended can be answered.
                 played()
                 lapseQuestions()
+                // Gemini has spoken since it was told, in a turn that counts: what it was told is heard as its turn
+                // would have it (once its speech has played), though turnComplete hasn't come yet.
+                if (spokeSince) heard(unheard.filter { it.awaiting })
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 // What it relayed in a turn that didn't count is heard all the same.
-                if (!spokeSince) { heard(relayed()); again(unheard.filter { it.awaiting }) }
+                else { heard(relayed()); again(unheard.filter { it.awaiting }) }
                 // After that, so a question Gemini just relayed is one this turn can answer.
                 answerFor.addLast(at to asking()?.id)
                 if (answerFor.size > 8) answerFor.removeFirst()

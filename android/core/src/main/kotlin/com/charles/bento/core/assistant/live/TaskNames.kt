@@ -61,20 +61,31 @@ object TaskNames {
         return text
     }
 
-    /** [name], or if another task already has it, told apart by another word of [request] or "again". */
+    /**
+     * [name], or if another task already has it, told apart by another word of [request] or "again",
+     * cut to leave room for that so the result is still unique within [MAX_NAME].
+     */
     fun unique(name: String, request: String, taken: Collection<String>): String {
         val used = taken.map { it.lowercase() }.toSet()
         if (name.lowercase() !in used) return name
+        fun with(suffix: String): String {
+            val room = MAX_NAME - suffix.length - 1
+            val base = if (name.length <= room) name else name.take(room).substringBeforeLast(' ').ifEmpty { name.take(room) }
+            return "$base $suffix"
+        }
         val have = words(name).toSet()
         for (w in words(TaskLabel.short(request))) {
             if (w in stop || w in have) continue
-            val candidate = tidy("$name $w") ?: continue
-            if (candidate.lowercase() !in used) return candidate
+            val candidate = with(w)
+            if (candidate.length <= MAX_NAME && tidy(candidate) == candidate && candidate.lowercase() !in used) return candidate
         }
-        var again = "$name again"
-        while (again.lowercase() in used) again += " again"
-        return again
+        var n = 1
+        while (with(again(n)).lowercase() in used) n++
+        return with(again(n))
     }
+
+    /** How a repeat of a name is told apart when the request has no other word: no numbers, which Gemini would read out. */
+    private fun again(n: Int) = when (n) { 1 -> "again"; 2 -> "once more"; else -> "yet again" + " too".repeat(n - 3) }
 
     /**
      * The task Gemini means by [ref] among (name, request) pairs by key: its name, more or less

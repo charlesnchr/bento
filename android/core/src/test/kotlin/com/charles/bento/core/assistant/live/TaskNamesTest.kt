@@ -32,6 +32,16 @@ class TaskNamesTest {
         assertEquals("weather", TaskNames.unique("weather", "What's the weather?", listOf("taxi")))
         assertEquals("weather paris", TaskNames.unique("weather", "Weather Paris", listOf("Weather")))
         assertEquals("weather again", TaskNames.unique("weather", "What's the weather?", listOf("weather")))
+        assertEquals("weather once more", TaskNames.unique("weather", "What's the weather?", listOf("weather", "weather again")))
+    }
+
+    @Test fun aLongNameToldApartStaysApartWhereverItsQuoted() {
+        // Cut to leave room for what tells it apart, so the result fence and continue_task quote it whole.
+        val long = "Copenhagen weather tomorrow afternoon"
+        val again = TaskNames.unique(long, "Copenhagen weather tomorrow afternoon", listOf(long))
+        assertTrue(again.length <= TaskNames.MAX_NAME && again.lowercase() != long.lowercase(), again)
+        assertTrue(CallSetup.resultText(listOf(again to "Sunny."), waiting = listOf(again)).contains("<hermes_result task=\"$again\">"), again)
+        assertTrue(CallSetup.resultText(listOf(again to "Sunny?"), waiting = listOf(again)).contains("continue_task \"$again\"."), again)
     }
 
     @Test fun geminiFindsATaskByWhatItSays() {

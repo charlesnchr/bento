@@ -445,4 +445,38 @@ class MultitaskReplayTest {
         assertTrue(yes.followUp && yes.taskId == asked[1].taskId, "the yes went to ${yes.label}, not the question that had just ended")
         call.stop()
     }
+
+    @Test fun aYesRightAfterAQuestionGeminiSpokeAnswersIt() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); if (c.task == "What's on my calendar?") "You're free at 3. Shall I book it?" else "Done." }
+        Live.turn(transport, "What's on my calendar?"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "ok") != null }
+        // Gemini says it in an ordinary turn, and the user answers before that turn's turnComplete arrives.
+        transport.push(Live.said("You're free at 3. Shall I book it?"))
+        delay(100)
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        Live.speaksNothingMore(transport)
+        transport.push(Live.call("c2"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        assertTrue(asked.single { it.task == "Yes" }.followUp, "the yes started a task of its own")
+        call.stop()
+    }
+
+    @Test fun twoTasksWithTheSameLongNameStayApart() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); "Done." }
+        val name = "Copenhagen weather tomorrow afternoon"
+        Live.turn(transport, "What's the weather in Copenhagen tomorrow afternoon?"); transport.push(Live.call("c1", args = mapOf("label" to name)))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "And the weather in Copenhagen tomorrow afternoon for the harbour?"); transport.push(Live.call("c2", args = mapOf("label" to name)))
+        until { transport.response("c2", "ok") != null }
+        Live.speaks(transport, "All done.")
+        val second = transport.response("c2", "started")!!.response()["task"]!!.jsonPrimitive.content
+        assertTrue(second != name, second)
+        Live.turn(transport, "Make it the evening"); transport.push(Live.call("c3", args = mapOf("continue_task" to second)))
+        assertTrue(until { asked.size >= 3 })
+        assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"$second\" went to ${asked[2].label}")
+        call.stop()
+    }
 }
