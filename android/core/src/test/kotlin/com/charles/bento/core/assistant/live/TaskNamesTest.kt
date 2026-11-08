@@ -56,11 +56,12 @@ class TaskNamesTest {
     }
 
     @Test fun anAnswerSaysYesOrNo() {
-        for (yes in listOf("Yes", "yeah, go ahead", "Yes, because you didn't do that.", "Okay, let's do it", "No thanks", "Go ahead", "Sure.")) {
+        for (yes in listOf("Yes", "yeah, go ahead", "Yes, because you didn't do that.", "Okay, let's do it", "No thanks", "Go ahead", "Sure.",
+                           "No, try another one", "No, book a new slot")) {
             assertTrue(TaskNames.isAnswer(yes), yes)
         }
         for (request in listOf("Find a taxi", "Yesterday's news", "Nobody told me", "Okapi facts", "What's next?", "Okay, separately, find me a taxi",
-                               "Yes, and also book a table")) {
+                               "Yes, and also book a table", "Okay, so please spin up a coding agent to look at multitasking", "Sure, try another hotel")) {
             assertFalse(TaskNames.isAnswer(request), request)
         }
     }

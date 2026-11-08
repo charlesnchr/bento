@@ -345,11 +345,12 @@ class AssistantCall(
             val task = tasks[item.task] ?: continue
             if (item.asked != null && task.asked == item.asked) { task.askedAt = ++asks; task.askedTurn = userTurns }
         }
+        if (items.any { it.asked != null }) questionsChanged()
     }
 
-    /** Publishes [questions] after a task's question changed. */
+    /** Publishes [questions] after a task's question changed: those the user has heard, as one they never hear never lapses. */
     private fun questionsChanged() {
-        _questions.value = tasks.values.filter { it.asked != null && it.state == FINISHED }.associate { it.id to it.asked!! }
+        _questions.value = tasks.values.filter { it.asked != null && it.state == FINISHED && it.askedAt > 0 }.associate { it.id to it.asked!! }
     }
 
     /**
@@ -567,7 +568,7 @@ class AssistantCall(
      */
     private fun toldResults(items: List<Unheard>) {
         toldToSpeak()
-        if (userTalking || replyDue?.let { now() - it < limits.settleMax } == true) skipTurn = true
+        if (talking(now()) || replyDue?.let { now() - it < limits.settleMax } == true) skipTurn = true
         // A turn that won't count (it answers the user, or was already underway) spends a try, so it can't repeat for ever.
         if (skipTurn) for (item in items) item.tries++
     }
@@ -881,11 +882,12 @@ class AssistantCall(
                 val at = now()
                 protocol.activityStarted(at); lastSpeech = at; userTalking = true; talkingSince = at; userTurns++
                 lapseQuestions()
-                answerFor.addLast(at to asking()?.id)
-                if (answerFor.size > 8) answerFor.removeFirst()
                 // The user spoke before Gemini said anything of what it was told: whatever Gemini says next answers them.
                 // What it relayed in a turn that didn't count is heard all the same.
                 if (!spokeSince) { heard(relayed()); again(unheard.filter { it.awaiting }) }
+                // After that, so a question Gemini just relayed is one this turn can answer.
+                answerFor.addLast(at to asking()?.id)
+                if (answerFor.size > 8) answerFor.removeFirst()
                 geminiTurns.addLast(GeminiTurn(now()))
                 if (geminiTurns.size > 8) geminiTurns.removeFirst()
             }

@@ -397,4 +397,23 @@ class MultitaskReplayTest {
         assertTrue(until(6_000) { transport.sent.any { "clientContent" in it && "Booked for 8pm." in it } }, "the result turn waits for good")
         call.stop()
     }
+
+    @Test fun aQuestionGeminiRelaysMidTurnCanBeAnsweredAtOnce() = blocking {
+        val reply = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); if (c.task == "Remind me about the dentist") reply.await() else "Done." }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "started") != null }
+        // Gemini is partway through a turn when the reply comes, and relays its question in that turn.
+        transport.push(Live.said("Sure, one moment."))
+        reply.complete("Your dentist appointment is Tuesday at 9am. Shall I add a calendar reminder the evening before?")
+        assertTrue(until { transport.response("c1", "ok") != null })
+        transport.push(Live.said("Your dentist appointment is on Tuesday. Shall I add a calendar reminder the evening before?"))
+        // The user answers before the turn has ended.
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c2"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        assertTrue(asked.single { it.task == "Yes" }.followUp, "the yes to a question Gemini relayed started a task of its own")
+        call.stop()
+    }
 }

@@ -116,16 +116,19 @@ object TaskNames {
         "^(?:ok(?:ay)?|sure|fine|correct|right|absolutely|definitely|that's fine|that works|let's go|the (?:first|second|third|last) one|neither|both)\\b",
         RegexOption.IGNORE_CASE,
     )
+    /** Words that say a request is separate: any of them after a short opener, the clearest after any. */
     private val separate = Regex("\\b(?:separately|also|another|as well|a new|different thing|something else)\\b", RegexOption.IGNORE_CASE)
+    private val clearlySeparate = Regex("\\b(?:separately|also|as well|something else)\\b", RegexOption.IGNORE_CASE)
 
     /**
      * The user's words are an answer to a question ("Yes, …", "Go ahead", "No", a short "Okay"), not a
      * request of their own: not when they say it's separate ("Okay, separately, find me a taxi").
+     * "No, try another one" still answers.
      */
     fun isAnswer(words: String): Boolean {
         val said = words.trim().trimStart('"', '\'', ' ')
-        if (separate.containsMatchIn(said)) return false
-        return answer.containsMatchIn(said) || shortAnswer.containsMatchIn(said) && words(said).size <= 5
+        if (answer.containsMatchIn(said)) return !clearlySeparate.containsMatchIn(said)
+        return shortAnswer.containsMatchIn(said) && words(said).size <= 5 && !separate.containsMatchIn(said)
     }
 
     /**
