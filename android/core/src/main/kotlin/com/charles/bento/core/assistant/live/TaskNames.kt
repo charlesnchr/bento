@@ -68,24 +68,30 @@ object TaskNames {
     fun unique(name: String, request: String, taken: Collection<String>): String {
         val used = taken.map { it.lowercase() }.toSet()
         if (name.lowercase() !in used) return name
-        fun with(suffix: String): String {
+        fun with(suffix: String): String? {
             val room = MAX_NAME - suffix.length - 1
+            if (room < 3) return null
             val base = if (name.length <= room) name else name.take(room).substringBeforeLast(' ').ifEmpty { name.take(room) }
-            return "$base $suffix"
+            return "$base $suffix".takeIf { tidy(it) == it && it.lowercase() !in used }
         }
         val have = words(name).toSet()
         for (w in words(TaskLabel.short(request))) {
-            if (w in stop || w in have) continue
-            val candidate = with(w)
-            if (candidate.length <= MAX_NAME && tidy(candidate) == candidate && candidate.lowercase() !in used) return candidate
+            if (w in stop || w in have || w.length > 20) continue
+            with(w)?.let { return it }
         }
-        var n = 1
-        while (with(again(n)).lowercase() in used) n++
-        return with(again(n))
+        for (suffix in AGAIN) with(suffix)?.let { return it }
+        // Past those, a letter: never a number, which Gemini would read out.
+        var n = 0
+        while (true) {
+            var tag = ""
+            var k = n++
+            do { tag = ('a' + k % 26) + tag; k = k / 26 - 1 } while (k >= 0)
+            with("again $tag")?.let { return it }
+        }
     }
 
-    /** How a repeat of a name is told apart when the request has no other word: no numbers, which Gemini would read out. */
-    private fun again(n: Int) = when (n) { 1 -> "again"; 2 -> "once more"; else -> "yet again" + " too".repeat(n - 3) }
+    /** How a repeat of a name is told apart when the request has no other word. */
+    private val AGAIN = listOf("again", "once more", "yet again", "anew", "afresh", "encore", "reprise", "redux")
 
     /**
      * The task Gemini means by [ref] among (name, request) pairs by key: its name, more or less

@@ -451,8 +451,8 @@ class MultitaskReplayTest {
         val (transport, call) = started { c -> asked.add(c); if (c.task == "What's on my calendar?") "You're free at 3. Shall I book it?" else "Done." }
         Live.turn(transport, "What's on my calendar?"); transport.push(Live.call("c1"))
         until { transport.response("c1", "ok") != null }
-        // Gemini says it in an ordinary turn, and the user answers before that turn's turnComplete arrives.
-        transport.push(Live.said("You're free at 3. Shall I book it?"))
+        // Gemini says it in an ordinary turn, all generated, and the user answers before that turn's turnComplete arrives.
+        transport.push(Live.said("You're free at 3. Shall I book it?")); transport.push(Live.generated())
         delay(100)
         transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
         Live.speaksNothingMore(transport)
@@ -477,6 +477,49 @@ class MultitaskReplayTest {
         Live.turn(transport, "Make it the evening"); transport.push(Live.call("c3", args = mapOf("continue_task" to second)))
         assertTrue(until { asked.size >= 3 })
         assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"$second\" went to ${asked[2].label}")
+        call.stop()
+    }
+
+    @Test fun aQuestionGeminiHadBarelyStartedDoesntTakeTheAnswer() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c ->
+            asked.add(c)
+            when (c.task) { "Remind me about the dentist" -> "I can add one for 9am. Shall I add a reminder?"; "Tidy up the backup drive" -> backups.await(); else -> "Done." }
+        }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "I can add a dentist reminder for 9am. Shall I add the reminder?")
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        backups.complete("I found 40 GB of old backups. Shall I delete them?")
+        until { transport.response("c2", "ok") != null }
+        // Gemini has said two words of it, still generating, when the user answers the reminder.
+        transport.push(Live.said("I found")); transport.push(Live.audio(ByteArray(9_600)))
+        delay(300)
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.interrupted())
+        transport.push(Live.heard("Yes")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        val yes = asked.single { it.task == "Yes" }
+        assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question Gemini hadn't said")
+        call.stop()
+    }
+
+    @Test fun aResultGeminiHadBarelyStartedGoesAgain() = blocking {
+        val result = CompletableDeferred<String>()
+        val (transport, call) = started { result.await() }
+        Live.turn(transport, "Book a table"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        result.complete("Booked for 8pm.")
+        until { transport.response("c1", "ok") != null }
+        transport.push(Live.said("Your table")); transport.push(Live.audio(ByteArray(9_600)))
+        delay(300)
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.interrupted())
+        Live.turn(transport, "Sorry, go on"); Live.speaksNothingMore(transport)
+        assertTrue(until { transport.sent.any { "clientContent" in it && "Booked for 8pm." in it } }, "the result was lost")
         call.stop()
     }
 }

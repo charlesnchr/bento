@@ -44,6 +44,15 @@ class TaskNamesTest {
         assertTrue(CallSetup.resultText(listOf(again to "Sunny?"), waiting = listOf(again)).contains("continue_task \"$again\"."), again)
     }
 
+    @Test fun manyRepeatsOfANameStayDistinctAndShort() {
+        val taken = ArrayList<String>()
+        repeat(40) { taken += TaskNames.unique("weather", "What's the weather?", taken) }
+        assertEquals(taken.size, taken.map { it.lowercase() }.toSet().size, taken.toString())
+        assertTrue(taken.all { it.length <= TaskNames.MAX_NAME && TaskNames.tidy(it) == it && it.none(Char::isDigit) }, taken.toString())
+        val long = "x".repeat(39)
+        assertTrue(TaskNames.unique(long, "Look up " + "y".repeat(60), listOf(long)).length <= TaskNames.MAX_NAME)
+    }
+
     @Test fun geminiFindsATaskByWhatItSays() {
         val tasks = mapOf("1" to ("Pennyworth wake word" to "Can you think of a different wake word model"),
                           "2" to ("coding session" to "Are you able to spin up a new coding session?"),
