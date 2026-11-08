@@ -618,4 +618,19 @@ class MultitaskReplayTest {
         assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question Gemini never said")
         call.stop()
     }
+
+    @Test fun aNameWithAnApostropheFindsItsTask() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); "Done." }
+        Live.turn(transport, "What's on my calendar?"); transport.push(Live.call("c1", args = mapOf("label" to "calendar")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "What's on Sarah's calendar?"); transport.push(Live.call("c2", args = mapOf("label" to "Sarah's calendar")))
+        until { transport.response("c2", "ok") != null }
+        Live.speaks(transport, "All done.")
+        Live.turn(transport, "Move it to eleven"); transport.push(Live.call("c3", args = mapOf("continue_task" to "Sarah's calendar")))
+        assertTrue(until { asked.size >= 3 })
+        assertTrue(asked[2].followUp && asked[2].taskId == asked[1].taskId, "\"Sarah's calendar\" went to ${asked[2].label}")
+        call.stop()
+    }
 }

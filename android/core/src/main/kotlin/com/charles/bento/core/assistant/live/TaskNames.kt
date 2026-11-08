@@ -102,11 +102,19 @@ object TaskNames {
      * Null when none fits or two fit equally.
      */
     fun <K> find(ref: String, tasks: Map<K, Pair<String, String>>): K? {
-        val r = ref.lowercase().replace(Regex("[\"“”'`.]"), " ").replace(Regex("\\s+"), " ").trim()
-            .removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()
+        val r = norm(ref).removePrefix("the ").removeSuffix(" task").removeSuffix(" one").trim()
         if (r.isEmpty()) return null
-        tasks.entries.firstOrNull { it.value.first.lowercase() == r }?.let { return it.key }
-        tasks.entries.filter { val n = it.value.first.lowercase(); n in r || r in n }.singleOrNull()?.let { return it.key }
+        // As stored, then as said without possessives ("Sarah calendar" for "Sarah's calendar").
+        tasks.entries.firstOrNull { norm(it.value.first) == r }?.let { return it.key }
+        val said = bare(r)
+        tasks.entries.firstOrNull { bare(it.value.first) == said }?.let { return it.key }
+        // A name said in part, or with words around it: the one sharing the most of its words, if just one does.
+        val within = tasks.entries.mapNotNull { e ->
+            val name = bare(e.value.first)
+            if (name.isEmpty() || !(said.containsAll(name) || name.containsAll(said))) null else e.key to name.count { it in said }
+        }
+        val most = within.maxOfOrNull { it.second }
+        within.filter { it.second == most }.singleOrNull()?.let { return it.first }
         val wanted = distinctive(r)
         if (wanted.isEmpty()) return null
         val scored = tasks.entries.map { it.key to (distinctive(it.value.first).count { w -> w in wanted } * 2 + distinctive(it.value.second).count { w -> w in wanted }) }
@@ -114,6 +122,13 @@ object TaskNames {
         if (scored.isEmpty() || scored.size > 1 && scored[0].second == scored[1].second) return null
         return scored[0].first
     }
+
+    /** [text] lowercased, without quotes or full stops, keeping apostrophes inside words ("sarah's"), the same for names and references. */
+    private fun norm(text: String) = text.lowercase().replace('’', '\'').replace(Regex("[\"“”`.]"), " ")
+        .replace(Regex("(?<![\\p{L}\\p{N}])'|'(?![\\p{L}\\p{N}])"), " ").replace(Regex("\\s+"), " ").trim()
+
+    /** [text]'s words, normalised, without possessives. */
+    private fun bare(text: String) = norm(text).split(' ').filter { it.isNotEmpty() }.map { it.removeSuffix("'s") }
 
     /**
      * What [reply] asks the user, if anything: the last question in its spoken summary (Hermes

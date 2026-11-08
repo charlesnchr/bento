@@ -90,6 +90,13 @@ class TaskNamesTest {
         assertEquals("3", TaskNames.find("London weather", tasks))
         assertEquals("1", TaskNames.find("wake word", tasks))
         assertNull(TaskNames.find("groceries", tasks))
+        // A name with an apostrophe, next to a shorter one it contains.
+        val calendars = mapOf("1" to ("calendar" to "What's on my calendar?"), "2" to ("Sarah's calendar" to "What's on Sarah's calendar?"))
+        assertEquals("2", TaskNames.find("Sarah's calendar", calendars))
+        assertEquals("2", TaskNames.find("sarah’s calendar", calendars))
+        assertEquals("2", TaskNames.find("Sarah calendar", calendars))
+        assertEquals("2", TaskNames.find("\"Sarah's calendar\"", calendars))
+        assertEquals("1", TaskNames.find("calendar", calendars))
         assertNull(TaskNames.find("", tasks))
     }
 
