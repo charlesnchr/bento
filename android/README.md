@@ -124,16 +124,22 @@ Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the 
 with the Mac's call setup (`helper/gemini_live_setup.json`, phone wording; the tests hold the
 phone's instruction to the Mac's safety rules). Gemini supervises Hermes tasks as sub-agents:
 a new request starts a task in a Hermes session of its own, with the user's own transcribed
-words for that turn, and several run at once. A follow-up (more on the same thing, a
-correction, an answer to Hermes's question) passes the task's number as `task_id`, the only
-argument `ask_hermes` takes, and goes into that task's session, so Hermes has what it did; a
-task still working takes it once its current request is done. The call is non-blocking, so
-Bento answers "started task N" at once and the conversation goes on; Hermes's reply comes back
-to the same call when it finishes, scheduled for the next pause, and joins the chat.
-`list_tasks`, `check_task` and `cancel_task` let Gemini say what's running, report one task's
-progress or result, and cancel one; Bento answers them itself. The call bar shows the tasks as
-one line of chips; a chip opens the task's live Hermes conversation, its latest step and a
-Cancel button. Only what needs the user (an approval) and Hermes's replies go into the chat,
+words for that turn, and several run at once. Tasks are named by what they're about (Gemini's
+`label`, or a few of the user's words), never numbered, so Gemini talks about "the Pennyworth
+training" rather than "task one". A follow-up (more on the same thing, a correction, an answer
+to Hermes's question) passes the task's name as `task` and goes into that task's session, so
+Hermes has what it did; a task still working takes it once its current request is done. When
+Hermes's reply asks the user something, the task waits for their answer, and a "yes" Gemini
+sends without naming a task goes to the task whose question was heard last. The call is
+non-blocking, so Bento answers "started" at once and the conversation goes on; Hermes's reply
+comes back to the same call when it finishes, at the next pause, and joins the chat. A result
+never goes in while the user is speaking, a call of theirs is settling or Gemini owes them a
+reply, so it can't push a new request aside. `list_tasks`, `check_task` and `cancel_task` let
+Gemini give a short overview of what's in flight, report one task's progress or result, and
+cancel one; Bento answers them itself. The call bar shows what's in flight as one line of
+chips (running, or waiting for the user's answer), with a Done chip at its end that opens the
+finished work; a chip opens the task's live Hermes conversation, its latest step and a Cancel
+button. Only what needs the user (an approval) and Hermes's replies go into the chat,
 and a reply's label opens its task. Each task's session joins the conversation list; the
 call's transcript and the tasks' replies stay in the chat on screen, are what a typed
 follow-up there hears as reference, and aren't stored by Hermes. After the call a reply's

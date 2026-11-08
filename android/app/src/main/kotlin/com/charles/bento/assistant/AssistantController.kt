@@ -15,6 +15,7 @@ import com.charles.bento.core.assistant.TurnState
 import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
+import com.charles.bento.core.assistant.live.TaskLabel
 import com.charles.bento.core.assistant.live.HermesCall
 import com.charles.bento.core.assistant.live.LiveCaptions
 import com.charles.bento.core.voice.live.LiveSocketEnding
@@ -79,14 +80,23 @@ data class CallUi(
     val micSilent: Boolean = false,
     /** The call's Hermes tasks, in the order they started. */
     val tasks: List<TaskUi> = emptyList(),
-)
+) {
+    /** What's in flight, for the strip: running, waiting on an approval, or waiting for the user's answer to Hermes's question. */
+    val inFlight: List<TaskUi> get() = tasks.filter { it.inFlight }
+    /** Finished work, tucked away behind the strip's Done chip. */
+    val done: List<TaskUi> get() = tasks.filterNot { it.inFlight }
+}
 
 /** One spoken request Hermes works on in a session of its own, while the call goes on. */
 data class TaskUi(
-    /** The task's number in the call, as Gemini says it. */
+    /** The task's key in the call; the screen and Gemini name it by [label]. */
     val id: String,
     /** What the user said. */
     val request: String,
+    /** The task's name, by what it's about ("Pennyworth wake word"). */
+    val label: String = TaskLabel.short(request),
+    /** What Hermes's reply asked the user, while the call counts it as waiting for their answer ([AssistantCall.questions]): the task stays in flight meanwhile. */
+    val question: String? = null,
     /** "running", "waiting" (for an approval), "completed", "failed" or "cancelled". */
     val status: String = "running",
     /** The latest step: the tool Hermes is using, or that it's writing its reply. */
@@ -99,6 +109,7 @@ data class TaskUi(
     val startedAt: Long = 0,
 ) {
     val active: Boolean get() = status == "running" || status == "waiting"
+    val inFlight: Boolean get() = active || (status == "completed" && question != null)
 }
 
 /** Hermes's model list for the picker: loaded on demand, kept until the server changes. */
@@ -547,6 +558,8 @@ class AssistantController(
             voiceBoundary = true
             c.start()
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
+            // Which tasks wait for the user's answer is the call's to say: a question lapses there once the user talks past it.
+            launch { c.questions.collect { asked -> set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks.map { it.copy(question = asked[it.id]) })) } } }
             c.status.collect { status ->
                 when (status) {
                     AssistantCall.Status.Connecting -> Unit
@@ -644,8 +657,9 @@ class AssistantController(
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true)
         val known = _state.value.call?.tasks?.firstOrNull { it.id == id }
         val now = SystemClock.elapsedRealtime()
-        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, messages = listOf(ask), startedAt = now))) }
-        else task(id) { it.copy(status = "running", progress = null, messages = it.messages + ask, startedAt = now) }
+        val label = request.label.ifEmpty { TaskLabel.short(request.task) }
+        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, label, messages = listOf(ask), startedAt = now))) }
+        else task(id) { it.copy(status = "running", progress = null, question = null, messages = it.messages + ask, startedAt = now) }
         voiceBoundary = true
         var turn = TurnState()
         var run: String? = null
@@ -740,15 +754,16 @@ class AssistantController(
         val task = _state.value.call?.tasks?.firstOrNull { it.id == id }
         val failure = task?.messages?.lastOrNull { it.failed && it.id in turn.ids }?.text
         task(id) { it.copy(status = status, progress = null) }
+        val label = task?.label ?: id
         messages { list ->
             // Approvals nobody answered lapse with the request.
             val (marked, _) = AssistantTranscript.finish(list, TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
             val link = turn.sessionId ?: task?.sessionId
             when {
                 status == "cancelled" -> marked
-                turn.answer.isNotBlank() -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(id), link = link, call = true)
-                status == "failed" -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", "Task $id failed. " + failure.orEmpty(),
-                                                           speaker = taskSpeaker(id), failed = true, link = link, call = true)
+                turn.answer.isNotBlank() -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(label), link = link, call = true)
+                status == "failed" -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", "\"$label\" failed. " + failure.orEmpty(),
+                                                           speaker = taskSpeaker(label), failed = true, link = link, call = true)
                 else -> marked
             }
         }
@@ -780,8 +795,8 @@ class AssistantController(
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
 
-        /** Who a call task's reply in the chat is from. */
-        internal fun taskSpeaker(id: String) = "Hermes · task $id"
+        /** Who a call task's reply in the chat is from: by the task's name, since a recap of the chat goes back to Gemini. */
+        internal fun taskSpeaker(label: String) = "Hermes · $label"
 
         const val CALL_TAG = "voice_call"
 
