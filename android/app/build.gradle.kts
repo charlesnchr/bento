@@ -116,7 +116,7 @@ dependencies {
 
     implementation(libs.gms.code.scanner)
     implementation(libs.zxing.core)
-    // the "Woodhouse" wake word: a streaming ONNX model (assets/wakeword)
+    // the "Pennyworth" wake word: a streaming ONNX model (assets/wakeword)
     implementation(libs.onnxruntime.android)
 
     testImplementation(kotlin("test-junit5"))

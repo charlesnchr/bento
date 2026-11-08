@@ -54,9 +54,10 @@ sealed interface WakeState {
 }
 
 /**
- * "Woodhouse", around the clock: the Echo's wake word model, on the phone. Saying it starts a
- * voice call with Hermes in a new conversation, the words after it included, and the call hangs
- * up once nothing is said for a while.
+ * "Pennyworth", around the clock: a LiveKit WakeWord model like the Echo's, on the phone. The Echo
+ * answers to "Woodhouse", so the phone has its own word. Saying it starts a voice call with Hermes
+ * in a new conversation, the words after it included, and the call hangs up once nothing is said
+ * for a while.
  *
  * While it's on, Bento keeps its microphone service ([VoiceService.KIND_WAKE]) running, so the
  * microphone can come back after a pause without Bento on screen. Android only lets that service
@@ -284,7 +285,7 @@ class WakeWord(
 
     /** What the microphone service's notification says while only the wake word is in it. */
     fun notificationText(): String = when (val s = _state.value) {
-        WakeState.Listening -> "Say “Woodhouse” to talk to Hermes"
+        WakeState.Listening -> "Say “Pennyworth” to talk to Hermes"
         is WakeState.Paused -> s.why
         is WakeState.Blocked -> s.why
         WakeState.Starting -> "Starting…"
@@ -299,7 +300,7 @@ class WakeWord(
         )
         val n: Notification = NotificationCompat.Builder(context, VoiceService.CHANNEL_LISTENING)
             .setSmallIcon(R.drawable.ic_stat_mic)
-            .setContentTitle("Not listening for “Woodhouse”")
+            .setContentTitle("Not listening for “Pennyworth”")
             .setContentText("Tap to start listening again")
             .setContentIntent(open)
             .setAutoCancel(true)
@@ -389,6 +390,7 @@ internal class WakeListener(
             failed()
             return
         }
+        VoiceLog.i(TAG, "loaded $MODEL, threshold %.2f".format(threshold))
         val detector = WakeDetector(model) { threshold }
         val buf = ShortArray(READ_SAMPLES)
         var statsAt = SystemClock.elapsedRealtime()
@@ -552,7 +554,9 @@ internal class WakeListener(
         /** Set only by debug builds' test receiver. */
         @Volatile var testSource: java.io.File? = null
 
+        const val MODEL = "wakeword/pennyworth.onnx"
+
         fun loadModel(context: Context): WakeModel =
-            OnnxWakeModel(context.assets.open("wakeword/woodhouse.onnx").use { it.readBytes() })
+            OnnxWakeModel(context.assets.open(MODEL).use { it.readBytes() })
     }
 }

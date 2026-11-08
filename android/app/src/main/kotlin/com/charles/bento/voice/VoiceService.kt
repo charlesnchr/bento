@@ -137,7 +137,7 @@ class VoiceService : Service() {
             val builder = NotificationCompat.Builder(context, CHANNEL_LISTENING)
                 .setSmallIcon(R.drawable.ic_stat_mic)
                 .setContentTitle(when (kind) {
-                    KIND_MEETING -> "Recording meeting"; KIND_ASSISTANT -> "Voice call with Hermes"; KIND_WAKE -> "Listening for “Woodhouse”"; else -> "Listening"
+                    KIND_MEETING -> "Recording meeting"; KIND_ASSISTANT -> "Voice call with Hermes"; KIND_WAKE -> "Listening for “Pennyworth”"; else -> "Listening"
                 })
                 .setOngoing(true)
                 .setSilent(true)

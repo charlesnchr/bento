@@ -27,7 +27,7 @@ import com.charles.bento.voice.WakePanel
 import com.charles.bento.voice.WakeState
 import com.charles.bento.voice.WakeTileService
 
-/** Settings → Wake word: "Woodhouse" starts a voice call with Hermes, around the clock. */
+/** Settings → Wake word: "Pennyworth" starts a voice call with Hermes, around the clock. */
 @Composable
 fun WakeSection(context: Context, tick: Int) {
     val graph = context.graph
@@ -44,8 +44,8 @@ fun WakeSection(context: Context, tick: Int) {
 
     SettingsSection(
         "Wake word",
-        footer = "Say “Woodhouse” and a voice call with Hermes starts in a new chat, hearing what you say after the word. " +
-            "It hangs up after 15 seconds of quiet. The Echo's model runs on the phone and nothing leaves it until you say the word; " +
+        footer = "Say “Pennyworth” and a voice call with Hermes starts in a new chat, hearing what you say after the word. " +
+            "It hangs up after 15 seconds of quiet. The model runs on the phone and nothing leaves it until you say the word; " +
             "in a quiet room it doesn't run at all. Android shows the microphone in use while Bento listens.",
     ) {
         val status = when (val s = state) {
@@ -55,7 +55,7 @@ fun WakeSection(context: Context, tick: Int) {
             is WakeState.Paused -> s.why
             is WakeState.Blocked -> s.why
         }
-        SwitchRow("Listen for “Woodhouse”", on, status, Icons.Rounded.RecordVoiceOver) { enable ->
+        SwitchRow("Listen for “Pennyworth”", on, status, Icons.Rounded.RecordVoiceOver) { enable ->
             when {
                 !enable -> graph.wake.setEnabled(false)
                 !Setup.hasMic(context) -> mic.launch(Manifest.permission.RECORD_AUDIO)
@@ -79,7 +79,7 @@ fun WakeSection(context: Context, tick: Int) {
             SettingsRow("Allow it over other apps", "So the keyboard covers it, not your typing", Icons.Rounded.Keyboard, onClick = { allowOverApps(context) })
         }
         SwitchRow("Pause in battery saver", saver, "And while the battery is low", Icons.Rounded.BatterySaver) { prefs.wakePauseOnSaver.value = it }
-        SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 70) "$it (as the Echo)" else it }, steps = 7) {
+        SliderRow("Sensitivity", (100 - threshold).toFloat(), 10f..50f, "${100 - threshold}%".let { if (threshold == 60) "$it (default)" else it }, steps = 7) {
             prefs.wakeThreshold.value = 100 - it.toInt()
         }
         SettingsRow("Quick Settings tile", "Turn it on or off from anywhere", Icons.Rounded.Bolt, onClick = { requestWakeTile(context) })
@@ -91,11 +91,11 @@ private fun allowOverApps(context: Context) =
 
 private fun requestWakeTile(context: Context) {
     if (Build.VERSION.SDK_INT < 33) {
-        Toast.makeText(context, "Edit Quick Settings and drag in “Woodhouse”", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Edit Quick Settings and drag in “Pennyworth”", Toast.LENGTH_LONG).show()
         return
     }
     context.getSystemService(android.app.StatusBarManager::class.java).requestAddTileService(
-        ComponentName(context, WakeTileService::class.java), "Woodhouse",
+        ComponentName(context, WakeTileService::class.java), "Pennyworth",
         Icon.createWithResource(context, R.drawable.ic_stat_mic), context.mainExecutor,
     ) {}
 }
