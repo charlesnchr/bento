@@ -339,4 +339,62 @@ class MultitaskReplayTest {
         assertTrue(until { transport.sent.any { "clientContent" in it && "A taxi is on its way." in it } }, "the results never went")
         call.stop()
     }
+
+    @Test fun aQuestionStillPlayingDoesntTakeTheAnswer() = blocking {
+        val backups = CompletableDeferred<String>()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c ->
+            asked.add(c)
+            when (c.task) { "Remind me about the dentist" -> "I can add one for 9am. Shall I add a reminder?"; "Tidy up the backup drive" -> backups.await(); else -> "Done." }
+        }
+        Live.turn(transport, "Remind me about the dentist"); transport.push(Live.call("c1", args = mapOf("label" to "dentist reminder")))
+        until { transport.response("c1", "ok") != null }
+        Live.speaks(transport, "I can add a dentist reminder for 9am. Shall I add the reminder?")
+        Live.turn(transport, "Tidy up the backup drive"); transport.push(Live.call("c2", args = mapOf("label" to "backup cleanup")))
+        until { transport.response("c2", "started") != null }
+        transport.push(Live.turnComplete())
+        backups.complete("I found 40 GB of old backups. Shall I delete the old backups?")
+        until { transport.response("c2", "ok") != null }
+        // Gemini's whole turn about the backups arrives, ten seconds still to play, and the user talks over its start to answer the reminder.
+        transport.push(Live.said("I found 40 GB of old backups. Shall I delete them?"))
+        transport.push(Live.audio(ByteArray(480_000)))
+        Live.speaksNothingMore(transport)
+        delay(100)
+        transport.push(Live.activity("ACTIVITY_START")); transport.push(Live.interrupted())
+        transport.push(Live.heard("Yes please")); transport.push(Live.activity("ACTIVITY_END"))
+        transport.push(Live.call("c3"))
+        assertTrue(until { asked.any { it.task == "Yes please" } })
+        val yes = asked.single { it.task == "Yes please" }
+        assertTrue(yes.followUp && yes.taskId == asked.first().taskId, "the yes went to ${yes.label}, whose question was still playing")
+        call.stop()
+    }
+
+    @Test fun aQuestionsAnswerWindowStartsWhenItsHeard() = blocking {
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val (transport, call) = started { c -> asked.add(c); if (c.task == "Push the branch") "Pushed. Want me to open a PR?" else "Done." }
+        Live.turn(transport, "Push the branch"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "ok") != null }
+        // The user talks over it three times before Gemini says anything of it.
+        repeat(3) { n -> Live.turn(transport, "Hold on $n"); delay(150) }
+        assertTrue(until(8_000) { transport.sent.count { "open a PR" in it } >= 2 }, "it never went again")
+        Live.speaks(transport, "Pushed the branch. Want me to open a PR as well?")
+        Live.turn(transport, "Yes"); transport.push(Live.call("c2"))
+        assertTrue(until { asked.any { it.task == "Yes" } })
+        assertTrue(asked.single { it.task == "Yes" }.followUp, "the question lapsed before the user heard it")
+        call.stop()
+    }
+
+    @Test fun aTurnGeminiNeverEndsHoldsAResultTurnOnlySoLong() = blocking {
+        val result = CompletableDeferred<String>()
+        val (transport, call) = started(limits.copy(deliverMax = 0.5)) { result.await() }
+        Live.turn(transport, "Book a table"); transport.push(Live.call("c1"))
+        until { transport.response("c1", "started") != null }
+        transport.push(Live.turnComplete())
+        // Gemini drops the call, so the result goes as a turn of its own; the user's next turn never ends.
+        transport.push(json("toolCallCancellation" to mapOf("ids" to listOf("c1"))))
+        transport.push(Live.activity("ACTIVITY_START"))
+        result.complete("Booked for 8pm.")
+        assertTrue(until(6_000) { transport.sent.any { "clientContent" in it && "Booked for 8pm." in it } }, "the result turn waits for good")
+        call.stop()
+    }
 }
