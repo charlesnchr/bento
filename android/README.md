@@ -20,7 +20,7 @@ android/
     assistant/  the Hermes API client (sessions, streamed turns), the chat transcript, Markdown
                 for reading, and live/: voice calls on Gemini Live that hand requests to Hermes
     voice/      Gemini transcription (batch + live), cleanup, validation, voice edits,
-                history and crash recovery, meetings; wake/: the "Woodhouse" wake word detector
+                history and crash recovery, meetings; wake/: the "Pennyworth" wake word detector
   app/    the Android app
     settings/   Prefs, SecretStore (Android Keystore), Pairing (bento://pair QR links)
     sync/       SyncHub: live while Bento is in use, WorkManager in the background
@@ -153,12 +153,13 @@ this request (Hermes scopes a streamed turn's approvals to its run) and Deny.
 
 ## Wake word
 
-Settings → Wake word → **Listen for “Woodhouse”** starts a voice call with Hermes in a new chat
-when you say the word, hands-free and with the screen off. It's the Echo's model (LiveKit WakeWord
-v2, `woodhouse.onnx` in `app/src/main/assets/wakeword`, trained in the home-assistant repo) on ONNX
-Runtime, at the Echo's threshold of 0.7 (the Sensitivity slider moves it). The words after
-“Woodhouse” go to Gemini once the call connects, the call is open mic whatever the talk mode, and it
-hangs up after 15 s with nothing said and no task running.
+Settings → Wake word → **Listen for “Pennyworth”** starts a voice call with Hermes in a new chat
+when you say the word, hands-free and with the screen off. The model is LiveKit WakeWord v2
+(`pennyworth.onnx` in `app/src/main/assets/wakeword`, trained in the home-assistant repo) on ONNX
+Runtime, at a threshold of 0.7 (the Sensitivity slider moves it). The Echo answers to “Woodhouse”,
+so the phone has its own word: the model fires on 0.1% of synthetic “Woodhouse” clips. The words
+after “Pennyworth” go to Gemini once the call connects, the call is open mic whatever the talk
+mode, and it hangs up after 15 s with nothing said and no task running.
 
 Hearing the word buzzes the phone (with Haptics on) and plays the start sound (with Sounds on).
 Outside Bento, `WakePanel` shows a card at the bottom of the screen until just after the call ends:

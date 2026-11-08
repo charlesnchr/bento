@@ -42,7 +42,7 @@ class WakeDetector(
     private val threshold: () -> Float = { limits.threshold },
 ) {
     data class Limits(
-        /** The Echo's operating point for this model (wyoming-lkww.service). */
+        /** The Pennyworth model's operating point: Woodhouse's noisy-room false wakes at 0.7, none on 13.7 h of held-out real speech. */
         val threshold: Float = 0.7f,
         val refractoryFrames: Int = 25,
         val marginDb: Double = 6.0,

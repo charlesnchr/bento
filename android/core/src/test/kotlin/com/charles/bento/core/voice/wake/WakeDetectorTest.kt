@@ -127,7 +127,7 @@ class WakeDetectorTest {
 
 /** The shipped model, run through the app's runtime, against the LiveKit Python client's scores for the same audio. */
 class OnnxWakeModelTest {
-    private val modelFile = File("../app/src/main/assets/wakeword/woodhouse.onnx")
+    private val modelFile = File("../app/src/main/assets/wakeword/pennyworth.onnx")
     private val reference = Json.parseToJsonElement(File(javaClass.getResource("/wake/reference_scores.json")!!.toURI()).readText()) as JsonObject
 
     @Test
@@ -155,8 +155,9 @@ class OnnxWakeModelTest {
                 // a stretch of quiet room first: the gate is shut when the word starts
                 d.feed(noise(4.0))
                 val hit = d.feed(wav(name))
-                if (name.startsWith("woodhouse")) assertNotNull(hit, name) else assertNull(hit, name)
-                hit?.let { assertTrue(it.score > 0.7f) }
+                // "Woodhouse" is the Echo's word: the phone must not answer to it
+                if (name.startsWith("pennyworth")) assertNotNull(hit, name) else assertNull(hit, name)
+                hit?.let { assertTrue(it.score > WakeDetector.Limits().threshold) }
                 // the gate saved the silence
                 assertTrue(d.scored < d.frames, name)
             }
@@ -165,12 +166,12 @@ class OnnxWakeModelTest {
 
     @Test
     fun aWordRightAfterAnotherStillCounts() {
-        // "Woodhouse" 2.5 s after another, on one detector: the refractory time is over
+        // "Pennyworth" 3 s after another, on one detector: the refractory time is over
         OnnxWakeModel(modelFile.readBytes()).use { model ->
             val d = WakeDetector(model)
             d.feed(noise(2.0))
-            assertNotNull(d.feed(wav("woodhouse_alan")))
-            assertNotNull(d.feed(wav("woodhouse_amy")))
+            assertNotNull(d.feed(wav("pennyworth_alan")))
+            assertNotNull(d.feed(wav("pennyworth_amy")))
         }
     }
 }

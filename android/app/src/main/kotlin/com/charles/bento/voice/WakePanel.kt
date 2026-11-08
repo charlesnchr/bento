@@ -76,7 +76,7 @@ import kotlin.math.roundToInt
 
 /**
  * What a wake word call shows over other apps, as the Google Assistant does: a card at the
- * bottom of the screen from the moment "Woodhouse" is heard until just after the call ends, with
+ * bottom of the screen from the moment "Pennyworth" is heard until just after the call ends, with
  * the call's state, what you're saying and the spoken reply, and End and Open. It's a window over
  * other apps once Android allows that, else an accessibility overlay when Bento's accessibility
  * service is on ([canShow]); with neither, only the call's notification says what's happening.

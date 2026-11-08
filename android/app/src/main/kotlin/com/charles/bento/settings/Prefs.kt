@@ -22,6 +22,8 @@ class Prefs(context: Context) {
 
     init {
         sp.registerOnSharedPreferenceChangeListener(changeListener)
+        // tuned for the Woodhouse model, replaced by wake.threshold.v2
+        if (sp.contains("wake.threshold")) sp.edit().remove("wake.threshold").apply()
     }
 
     // Sync (paired with a Mac's "Pair Android Phone" code)
@@ -83,12 +85,12 @@ class Prefs(context: Context) {
     /** Seconds without speech after which a call disconnects from Gemini while Hermes works (0 = never). */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
 
-    // Wake word ("Woodhouse" starts a voice call with Hermes)
+    // Wake word ("Pennyworth" starts a voice call with Hermes)
     val wakeWord = bool("wake.enabled", false)
     /** Not while battery saver is on or the battery is low. */
     val wakePauseOnSaver = bool("wake.pauseOnSaver", true)
-    /** The score that counts as the word, in hundredths; the Echo uses 70. */
-    val wakeThreshold = int("wake.threshold", 70)
+    /** The score that counts as the word, in hundredths. A new key for the Pennyworth model: the Woodhouse value doesn't carry over. */
+    val wakeThreshold = int("wake.threshold.v2", 70)
     /** A wake call shows a panel over other apps ([com.charles.bento.voice.WakePanel]), where Android allows it. */
     val wakePanel = bool("wake.panel", true)
     /** Set while the model loads: still set at the next launch means loading it brought Bento down. */
