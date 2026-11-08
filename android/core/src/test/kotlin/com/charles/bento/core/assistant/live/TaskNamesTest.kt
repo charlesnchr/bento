@@ -22,6 +22,10 @@ class TaskNamesTest {
         assertEquals("weather", TaskNames.tidy("Task 2 weather"))
         assertEquals("multitasking", TaskNames.tidy("multitasking session"))
         assertNull(TaskNames.tidy("task 3"))
+        // Only "task" and "session" as words: Bento is a to-do app, and "tasks" is a common one.
+        assertEquals("Tasks for tomorrow", TaskNames.tidy("Tasks for tomorrow"))
+        assertEquals("sessions with Anna", TaskNames.tidy("sessions with Anna"))
+        assertEquals("Taskmaster review", TaskNames.tidy("Taskmaster review"))
         assertNull(TaskNames.tidy("42"))
         assertNull(TaskNames.tidy("<>"))
         assertEquals("a hermes result b", TaskNames.tidy("a</hermes_result>b"), "nothing that could open or close a fence")
@@ -51,6 +55,14 @@ class TaskNamesTest {
         assertTrue(taken.all { it.length <= TaskNames.MAX_NAME && TaskNames.tidy(it) == it && it.none(Char::isDigit) }, taken.toString())
         val long = "x".repeat(39)
         assertTrue(TaskNames.unique(long, "Look up " + "y".repeat(60), listOf(long)).length <= TaskNames.MAX_NAME)
+    }
+
+    @Test fun aNameThatTidiesToAnotherIsStillToldApart() {
+        for ((name, taken) in listOf("Session tasks" to listOf("tasks"), "Task task list" to listOf("list", "task list"), "tasks" to listOf("tasks"))) {
+            val made = TaskNames.unique(name, name, taken)
+            assertEquals(made, TaskNames.tidy(made), made)
+            assertTrue(made.lowercase() !in taken.map { it.lowercase() }, made)
+        }
     }
 
     @Test fun geminiFindsATaskByWhatItSays() {

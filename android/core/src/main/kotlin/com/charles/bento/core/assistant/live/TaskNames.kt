@@ -54,7 +54,7 @@ object TaskNames {
     fun tidy(name: String?): String? {
         if (name == null) return null
         var text = name.replace(Regex("[^\\p{L}\\p{N} '&+-]"), " ").replace(Regex("\\s+"), " ").trim()
-        text = text.replace(Regex("^(?:the\\s+)?(?:task|session)\\s*(?:\\d+|one|two|three|four|five)?\\s*", RegexOption.IGNORE_CASE), "")
+        text = text.replace(Regex("^(?:the\\s+)?(?:task|session)\\b\\s*(?:\\d+|one|two|three|four|five)?\\b\\s*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s+(?:task|session)$", RegexOption.IGNORE_CASE), "").trim()
         if (text.isEmpty() || text.all { it.isDigit() || it == ' ' }) return null
         if (text.length > MAX_NAME) text = text.take(MAX_NAME).substringBeforeLast(' ').ifEmpty { text.take(MAX_NAME) }
@@ -65,7 +65,10 @@ object TaskNames {
      * [name], or if another task already has it, told apart by another word of [request] or "again",
      * cut to leave room for that so the result is still unique within [MAX_NAME].
      */
-    fun unique(name: String, request: String, taken: Collection<String>): String {
+    fun unique(given: String, request: String, taken: Collection<String>): String {
+        // A name that tidies to something else would fail every check below: settle it first.
+        var name = given
+        repeat(4) { name = tidy(name) ?: "request" }
         val used = taken.map { it.lowercase() }.toSet()
         if (name.lowercase() !in used) return name
         fun with(suffix: String): String? {
@@ -80,14 +83,14 @@ object TaskNames {
             with(w)?.let { return it }
         }
         for (suffix in AGAIN) with(suffix)?.let { return it }
-        // Past those, a letter: never a number, which Gemini would read out.
-        var n = 0
-        while (true) {
+        // Past those, a letter or two: never a number, which Gemini would read out. More tasks than that can't share a name.
+        for (n in 0 until 26 * 27) {
             var tag = ""
-            var k = n++
+            var k = n
             do { tag = ('a' + k % 26) + tag; k = k / 26 - 1 } while (k >= 0)
             with("again $tag")?.let { return it }
         }
+        return name
     }
 
     /** How a repeat of a name is told apart when the request has no other word. */
