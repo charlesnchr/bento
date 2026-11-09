@@ -55,7 +55,9 @@ public final class AudioHardwareActivity: @unchecked Sendable {
     /// can stall mid-change, and the pool must already know the HAL is busy.
     private func changed() {
         report()
+        // Checking and moving them is HAL time too: the quiet period restarts after it.
         watchDefaultInput()
+        report()
     }
 
     private func report() {
