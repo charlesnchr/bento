@@ -246,3 +246,55 @@ test("without steering a follow-up waits for the run, as before", () => {
   s.push({ type: "steer", task: "1", text: "Only direct ones" });
   assert.ok(!s.commands.some((c) => c.type === "tool.steer"));
 });
+
+test("a connection lost to the network resumes the session on a new one", () => {
+  const s = sim();
+  s.resumable("h1");
+  s.push({ type: "ws.closed", sid: 1, code: 1006 });
+  assert.equal(s.ended(), undefined);
+  s.advance(0.1);
+  const setup = JSON.parse(s.sent(2)[0]).setup;
+  assert.equal(setup.sessionResumption.handle, "h1");
+  assert.equal(s.statuses().at(-1), "listening");
+  s.turn("Are you still there?");
+  s.audio(9_600);
+  assert.ok(s.commands.some((c) => c.type === "play"));
+  assert.ok(s.sent(2).some((f) => f.startsWith('{"realtimeInput"')));
+});
+
+test("without a handle to resume from, or after three drops a minute, a lost connection ends the call", () => {
+  const s = sim();
+  s.push({ type: "ws.closed", sid: 1, code: 1006 });
+  assert.ok(s.ended());
+  const t = sim();
+  for (let i = 0; i < 4; i++) {
+    t.resumable(`h${i}`);
+    t.push({ type: "ws.closed", sid: t.sid, code: 1006 });
+    t.advance(0.2);
+  }
+  assert.ok(t.ended());
+});
+
+test("a refused connection isn't retried", () => {
+  const s = sim();
+  s.resumable("h1");
+  s.push({ type: "ws.closed", sid: 1, code: 1008, reason: "policy" });
+  assert.ok(s.ended());
+});
+
+test("getting a lost connection back keeps trying while the network is down", () => {
+  const s = sim();
+  s.resumable("h1");
+  s.push({ type: "ws.closed", sid: 1, code: 1006 });
+  // The new socket fails at once, twice, then gets through.
+  const failNext = () => {
+    const connect = s.commands.filter((c) => c.type === "ws.connect").at(-1) as any;
+    s.push({ type: "ws.closed", sid: connect.sid, code: 1006 });
+  };
+  failNext();
+  s.advance(1.1);
+  failNext();
+  s.advance(1.1);
+  assert.equal(s.ended(), undefined);
+  assert.equal(s.statuses().at(-1), "listening");
+});

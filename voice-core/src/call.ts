@@ -64,6 +64,8 @@ const ANSWER_TURNS = 2;
 const HUSH_MAX = 10;
 /** Seconds after "goodbye" with nothing more said before the call hangs up. */
 const HANG_UP_WAIT = 1.2;
+/** Lost connections a minute the call resumes from before it gives up. */
+const MAX_RECONNECTS = 3;
 /** A user turn this many times deliverMax old, with nothing heard lately, no longer holds results back. */
 const STUCK_TURNS = 3;
 /** Timers due within this of an event's time run on it: ticks land on 0.1 s steps that floats miss by a hair. */
@@ -268,6 +270,9 @@ export class Call {
   /** Frames typed while the call was off the model, sent once it's back. */
   private typedLater: string[] = [];
   private nextScreen = 1;
+  /** When the connection was lost lately, and whether the call is getting it back. */
+  private reconnects: number[] = [];
+  private reconnecting = false;
   /** Runs a follow-up was steered into, by job, to the task: where it goes if the agent refuses it. */
   private readonly steered = new Map<string, string>();
   private wakewordOn = false;
@@ -454,6 +459,14 @@ export class Call {
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       rotation.sock.closed = true;
+      // Getting a lost connection back: the network may still be down, so it tries again until the deadline.
+      if (this.reconnecting && this.t + 1 < rotation.deadline) {
+        this.rotation = null;
+        this.sleep(1, () => {
+          if (this.active && this.reconnecting && this.rotation == null) this.rotation = { ...rotation, sock: this.openSocket() };
+        });
+        return;
+      }
       this.rotated(false);
       return;
     }
@@ -463,6 +476,7 @@ export class Call {
     sock.closed = true;
     if (!this.active || this.rotating || wasClosed) return;
     if (e.reason) this.log("warn", `the model's socket closed (${e.code ?? e.httpStatus}): ${e.reason}`);
+    if (!this.waking && !this.standby && this.dropped(e)) return;
     if (this.waking) this.stop(RECONNECT_FAILED);
     else if (!this.standby) this.stop(endingMessage(e, this.goingAway));
   }
@@ -474,6 +488,19 @@ export class Call {
   }
 
   /** Moves the call to a new socket that resumes the session; the old one carries audio until it's set up. */
+  /** A connection lost to the network, not refused: the session resumes on a new socket, a few times a minute at most. */
+  private dropped(e: { code?: number; httpStatus?: number }): boolean {
+    const transient = e.httpStatus == null && !this.goingAway && (e.code == null || [1000, 1001, 1005, 1006, 1011, 1012, 1013, 1014, 4500, 4502].includes(e.code));
+    this.reconnects = this.reconnects.filter((at) => this.t - at < 60);
+    if (!transient || !this.c.reconnect || this.resumeHandle == null || this.reconnects.length >= MAX_RECONNECTS) return false;
+    this.reconnects.push(this.t);
+    this.log("warn", "lost the connection to Gemini: resuming the session on a new one");
+    this.reconnecting = true;
+    this.setStatus("waking");
+    this.rotate();
+    return true;
+  }
+
   private rotate(): void {
     if (!this.c.reconnect) return;
     const handle = this.resumeHandle;
@@ -497,12 +524,14 @@ export class Call {
       this.stop("Gemini voice couldn't reconnect. Start again to continue.");
       return;
     }
+    if (this.reconnecting) { this.reconnecting = false; this.log("info", "reconnected: the session goes on"); }
     const old = this.socket;
     this.socket = rotation.sock;
     this.goingAway = false;
     this.newSession();
     this.closeSocket(old);
     for (const frame of this.resend.splice(0)) this.send(frame);
+    this.settled();
   }
 
   private watchdog(): void {

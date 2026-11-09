@@ -25,6 +25,8 @@ const PRESET = option("preset", "web");
 const QUIET = Number(option("quiet", "4"));
 /** Tasks still running: the call waits for them before it hangs up. */
 const running = new Set<string>();
+/** Each tool run's task, for steering it. */
+const taskOf = new Map<string, string>();
 const MAX = Number(option("max", "60"));
 const OUT = option("out", "");
 const optionValues = new Set(["--server", "--preset", "--quiet", "--max", "--out"].filter((o) => args.includes(o)).map((o) => args[args.indexOf(o) + 1]));
@@ -136,9 +138,18 @@ function run(commands: Record<string, any>[]) {
         flushLines();
         if (c.kind === "host") { say(`host tool ${c.name} ${JSON.stringify(c.args)}`); setTimeout(() => push({ type: "tool.result", run: c.run, text: "Done." }), 300); break; }
         say(`${c.agent === "t3" ? "T3" : "Hermes"} ${c.followUp ? "follow-up" : "task"} "${c.label}"${c.project ? ` in ${c.project}` : ""}: ${c.request}`);
+        taskOf.set(c.run, c.taskId);
         if (flag("hermes")) void hermes(c); else setTimeout(() => push({ type: "tool.result", run: c.run, text: `(Fake ${c.agent === "t3" ? "T3" : "Hermes"}) Done: ${c.request}. Nothing was actually run.` }), 2000);
         break;
       case "voiceCommand": say(`(voice command ${c.command}: ${c.heard})`); break;
+      case "tool.steer": {
+        say(`(steering ${c.agent === "t3" ? "T3" : "Hermes"}: ${c.text})`);
+        const task = taskOf.get(c.run);
+        if (!flag("hermes") || !task) break;
+        void get(`${SERVER}/${c.agent === "t3" ? "agent" : "hermes"}/steer`, { method: "POST", body: JSON.stringify({ call: name, taskId: task, text: c.message }) })
+          .then((r) => { say(`(steer ${r.ok ? "taken" : "refused"})`); if (!r.ok) push({ type: "tool.steerFailed", run: c.run, text: c.text }); });
+        break;
+      }
       case "log": say(`(${c.level}: ${c.message})`); break;
     }
   }
@@ -202,7 +213,7 @@ function writeReply(path: string) {
 
 // The microphone: room noise, with each WAV said when its time comes.
 
-const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, ...PRESETS[PRESET],
+const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, steering: ["hermes", "t3"], ...PRESETS[PRESET],
   ...(flag("coding") ? { codingAgent: { projects: config.t3 ?? [] } } : {}) }), now()));
 callId = created.id;
 run(created.commands);
