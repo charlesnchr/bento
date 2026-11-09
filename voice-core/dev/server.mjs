@@ -266,7 +266,7 @@ watch(join(root, "web"), { recursive: true }, (_, file) => { if (file && !String
 
 // HTTP.
 
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jsonl": "application/json", ".wav": "audio/wav" };
+const TYPES = { ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jsonl": "application/json", ".wav": "audio/wav" };
 
 function read(req) {
   return new Promise((resolve, reject) => {
