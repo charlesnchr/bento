@@ -824,10 +824,14 @@ function keys() {
 function submitText(e: Event) {
   e.preventDefault();
   const input = $<HTMLInputElement>("text");
-  const text = input.value.trim();
+  let text = input.value.trim();
   if (!text) return;
   if (!callId) { toast("Start a call first"); return; }
-  const mode = $<HTMLSelectElement>("mode").value;
+  // "/t3 …" and "/h …" pick the agent whatever the selector says.
+  let mode = $<HTMLSelectElement>("mode").value;
+  const prefix = text.match(/^\/(t3|code|h|hermes)\s+/i);
+  if (prefix) { mode = /^(t3|code)$/i.test(prefix[1]) ? "t3" : "hermes"; text = text.slice(prefix[0].length).trim(); }
+  if (!text) return;
   if (mode === "say") push({ type: "say", text });
   else {
     push({ type: "ask", text, agent: mode });
