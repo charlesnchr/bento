@@ -47,6 +47,7 @@
   #side { border-left: 1px solid var(--line); background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   #side h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--mute); margin: 0; font-weight: 650; padding: 12px 14px 6px; display: flex; justify-content: space-between; align-items: center; }
   #tasks { overflow: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+  #cancelall { padding: 2px 8px; font-size: 11px; margin-left: 6px; text-transform: none; letter-spacing: 0; }
   #notasks { color: var(--mute); font-size: 13px; padding: 4px 4px; }
   .task { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; font-size: 13.5px; background: var(--bg); }
   .task .top { display: flex; gap: 6px; align-items: baseline; }
@@ -163,7 +164,7 @@
     <div id="transcript">
       <div id="empty">
         <p><b>Press Call and talk.</b> Ask anything; work goes to Hermes, and code changes to a coding agent in T3, while you keep talking.</p>
-        <p>Say <b>“stop”</b> to cut a reply short and <b>“goodbye”</b> to hang up. You can also type, start a task without saying it, or follow one up from its card.</p>
+        <p>Say <b>“stop”</b> to cut a reply short, <b>“stop everything”</b> to cancel every task too, and <b>“goodbye”</b> to hang up. You can also type, start a task without saying it, or follow one up from its card.</p>
       </div>
     </div>
     <div id="dock">
@@ -195,7 +196,7 @@
     </div>
   </div>
   <aside id="side">
-    <h2><span>Tasks</span><span id="taskcount"></span></h2>
+    <h2><span>Tasks</span><span><span id="taskcount"></span> <button id="cancelall" hidden title="Cancel every running task">Cancel all</button></span></h2>
     <div id="tasks"><div id="notasks">No tasks yet. Ask for something that takes work and it appears here.</div></div>
   </aside>
 </main>

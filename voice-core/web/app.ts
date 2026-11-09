@@ -278,6 +278,7 @@ function showTasks(force = false) {
   if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
   const running = all.filter((t) => t.c.state === "running").length;
   $("taskcount").textContent = running > 0 ? `${running} running` : "";
+  $("cancelall").hidden = !callId || running < 2;
   for (const view of all) {
     const t = view.c;
     const waiting = t.state.startsWith("waiting");
@@ -440,7 +441,7 @@ function run(commands: Command[]) {
       case "questions": break;
       case "micSilent": $("micwarn").hidden = !c.silent; break;
       case "voiceCommand":
-        toast(c.command === "stop" ? `Heard “${c.heard}”: stopped` : `Heard “${c.heard}”: hanging up`);
+        toast(`Heard “${c.heard}”: ${c.command === "stop" ? "stopped" : c.command === "cancelAll" ? "cancelling every task" : "hanging up"}`);
         log("out", `voice command ${c.command}: ${c.heard}`, "out");
         break;
       case "log": log(c.level, c.message, c.level === "warn" ? "warn" : ""); break;
@@ -676,7 +677,7 @@ async function saveTrace() {
 class StopWords {
   private rec: any = null;
   private on = false;
-  private commands = { stop: [] as string[], hangUp: [] as string[] };
+  private commands = { stop: [] as string[], hangUp: [] as string[], cancelAll: [] as string[] };
 
   get supported(): boolean {
     return "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
@@ -697,6 +698,10 @@ class StopWords {
         if (command === "stop" && audio.queued > 0.05) {
           log("out", `local stop word: ${text}`, "out");
           toast(`Heard “${text.trim()}”: stopped`);
+          push({ type: "interrupt" });
+        } else if (command === "cancelAll" && e.results[i].isFinal) {
+          log("out", `local cancel-all: ${text}`, "out");
+          push({ type: "cancelAll" });
           push({ type: "interrupt" });
         } else if (command === "hangUp" && e.results[i].isFinal) {
           log("out", `local hang-up: ${text}`, "out");
@@ -813,6 +818,7 @@ async function main() {
   if (savedHistory().length > 0) { $("resume").hidden = false; $("resume").title = "Call again, carrying on from the last conversation"; }
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
+  $("cancelall").onclick = () => push({ type: "cancelAll" });
   $("say").onsubmit = submitText;
   $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
   tabs();

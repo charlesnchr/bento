@@ -58,11 +58,13 @@ export type Api = "gemini" | "vertex";
  * Spoken commands the core acts on itself, from the user's transcribed words. An utterance that is
  * one of these and nothing more counts: names and fillers around it ("Woodhouse, stop please") are
  * ignored. `stop` cuts the model's reply and keeps it quiet until the user speaks again; `hangUp`
- * ends the call once the user has finished saying it.
+ * ends the call once the user has finished saying it; `cancelAll` cancels every running task too.
  */
 export interface VoiceCommands {
   stop: string[];
   hangUp: string[];
+  /** Cancels every running task and stops the reply. */
+  cancelAll: string[];
 }
 
 /**
@@ -135,6 +137,8 @@ export type Event =
   /** The host heard its wake word (whileSpeaking "wake"). */
   | { t: number; type: "wake" }
   | { t: number; type: "cancelTask"; task: string }
+  /** Cancels every running task. */
+  | { t: number; type: "cancelAll" }
   /** The user pressed stop (or the host heard a stop word): the reply stops, and the rest of its turn is dropped. */
   | { t: number; type: "interrupt" }
   /** The user typed to the model: a turn of its own, as if said. */
@@ -192,4 +196,4 @@ export type Command =
   | { type: "micSilent"; silent: boolean }
   | { type: "log"; level: "info" | "warn"; message: string }
   /** The core heard a spoken command and acted on it. */
-  | { type: "voiceCommand"; command: "stop" | "hangUp"; heard: string };
+  | { type: "voiceCommand"; command: "stop" | "hangUp" | "cancelAll"; heard: string };

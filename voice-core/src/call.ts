@@ -35,7 +35,7 @@ import {
   type Delegation, type HermesCall, type ResponseOptions,
 } from "./protocol.ts";
 import {
-  type Resume, codingInstruction, codingMessage, instructionFor, recapFrame, resultFrame, resumeFrom, setupFrame, typedFrame, voiceMessage,
+  type Resume, codingInstruction, codingMessage, instructionFor, noteFrame, recapFrame, resultFrame, resumeFrom, setupFrame, typedFrame, voiceMessage,
   withTasks, type Setup,
 } from "./setup.ts";
 import * as TaskNames from "./taskNames.ts";
@@ -396,6 +396,7 @@ export class Call {
       case "resume": return this.defer(() => this.comeBack());
       case "wake": return this.wakeWord();
       case "cancelTask": return this.defer(() => { this.cancelNow(e.task); });
+      case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
@@ -1121,6 +1122,16 @@ export class Call {
     this.updateWakeword();
   }
 
+  /** Cancels every running task; the model hears what was cancelled with the next turn. */
+  private cancelAll(): void {
+    const running = [...this.tasks.values()].filter((t) => t.state === RUNNING);
+    if (!this.active || running.length === 0) return;
+    for (const task of running) this.cancelNow(task.id);
+    const names = running.map((t) => `"${t.label}"`).join(", ");
+    this.log("info", `cancelled every task: ${names}`);
+    this.send(noteFrame(`From Bento, not the user's words: the user cancelled every running task (${names}). What they already did was not undone. Don't call ask_hermes for them again unless the user asks.`));
+  }
+
   /** The stop button, or the host's stop word. */
   private interrupt(): void {
     if (!this.active) return;
@@ -1132,6 +1143,13 @@ export class Call {
     this.utterance = take(this.utterance + text, 400);
     const names = [...this.c.vocabulary, "Woodhouse"];
     const command = commandIn(this.utterance, this.c.voiceCommands, names);
+    if (command === "cancelAll") {
+      if (this.hush?.byVoice) return;
+      this.emit({ type: "voiceCommand", command, heard: collapse(this.utterance) });
+      this.hushReply(`the user said "${collapse(this.utterance)}": every task stops`, true);
+      this.cancelAll();
+      return;
+    }
     if (command === "stop") {
       if (this.hush?.byVoice) return;
       this.emit({ type: "voiceCommand", command, heard: collapse(this.utterance) });

@@ -51,6 +51,15 @@
     "bye bye",
     "that's all",
     "that's all for now"
+   ],
+   "cancelAll": [
+    "stop everything",
+    "cancel everything",
+    "cancel all tasks",
+    "cancel all the tasks",
+    "stop all tasks",
+    "stop all the tasks",
+    "abort everything"
    ]
   },
   "codingAgent": null,

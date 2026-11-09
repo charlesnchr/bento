@@ -24,7 +24,7 @@
 // money: set it on purpose). Hermes is the API server in ~/.hermes/.env (API_SERVER_*).
 
 import { createServer } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import os from "node:os";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -183,6 +183,25 @@ async function hermesRun(req, res, action) {
   res.writeHead(r.ok ? 204 : 409);
   res.end();
 }
+
+// Traces: a minute of call is two or three megabytes, mostly audio. Old ones go, and the newest
+// that fit in TRACE_BUDGET stay.
+const TRACE_DAYS = 30;
+const TRACE_BUDGET = 5 * 1024 ** 3;
+function pruneTraces() {
+  if (!existsSync(TRACES)) return;
+  const all = readdirSync(TRACES).filter((f) => f.endsWith(".jsonl")).map((f) => ({ f, ...statSync(join(TRACES, f)) }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let kept = 0;
+  for (const t of all) {
+    kept += t.size;
+    if (Date.now() - t.mtimeMs > TRACE_DAYS * 86_400_000 || kept > TRACE_BUDGET) {
+      try { unlinkSync(join(TRACES, t.f)); console.log(`pruned trace ${t.f}`); } catch {}
+    }
+  }
+}
+pruneTraces();
+setInterval(pruneTraces, 3600_000).unref();
 
 // The coding agent.
 

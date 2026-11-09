@@ -35,6 +35,7 @@ export function defaults(): CallConfig {
     voiceCommands: {
       stop: ["stop", "stop it", "stop talking", "stop there", "quiet", "be quiet", "hush", "shush", "shut up", "enough", "that's enough", "pause"],
       hangUp: ["hang up", "end call", "end the call", "stop the call", "goodbye", "bye", "bye bye", "that's all", "that's all for now"],
+      cancelAll: ["stop everything", "cancel everything", "cancel all tasks", "cancel all the tasks", "stop all tasks", "stop all the tasks", "abort everything"],
     },
     codingAgent: null,
     steering: [],

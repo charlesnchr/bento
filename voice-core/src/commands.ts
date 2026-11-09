@@ -4,7 +4,7 @@
 
 import type { VoiceCommands } from "./types.ts";
 
-export type VoiceCommand = "stop" | "hangUp";
+export type VoiceCommand = "stop" | "hangUp" | "cancelAll";
 
 /** Words that may come before or after a command without changing it. */
 const FILLER = new Set([
@@ -29,6 +29,7 @@ export function commandIn(utterance: string, commands: VoiceCommands, names: str
   const core = said.slice(from, to).join(" ");
   const is = (phrases: string[]) => phrases.some((p) => words(p).join(" ") === core);
   if (is(commands.hangUp)) return "hangUp";
+  if (is(commands.cancelAll ?? [])) return "cancelAll";
   if (is(commands.stop)) return "stop";
   return null;
 }

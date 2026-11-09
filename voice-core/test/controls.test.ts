@@ -298,3 +298,21 @@ test("getting a lost connection back keeps trying while the network is down", ()
   assert.equal(s.ended(), undefined);
   assert.equal(s.statuses().at(-1), "listening");
 });
+
+test("saying stop everything cancels every running task and the reply", () => {
+  const s = sim();
+  s.push({ type: "ask", text: "Find flights to Rome" });
+  s.push({ type: "ask", text: "Summarise my email" });
+  s.advance(0.1);
+  s.audio(48_000);
+  s.activity("ACTIVITY_START");
+  s.heard("Woodhouse, stop everything.");
+  const cancels = s.commands.filter((c) => c.type === "tool.cancel");
+  assert.equal(cancels.length, 2);
+  assert.ok(s.commands.some((c) => c.type === "voiceCommand" && c.command === "cancelAll"));
+  assert.ok(s.commands.some((c) => c.type === "flush"));
+  const note = s.turns().at(-1);
+  assert.equal(note.turnComplete, false);
+  assert.ok(turnText(note).includes("cancelled every running task"));
+  assert.ok(s.commands.filter((c) => c.type === "task").slice(-2).every((c: any) => c.state === "cancelled"));
+});

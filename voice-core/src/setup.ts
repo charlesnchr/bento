@@ -193,6 +193,11 @@ function userTurn(text: string, turnComplete: boolean): string {
   return JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete } });
 }
 
+/** Something the model should know, as a user turn it doesn't answer (turnComplete false). */
+export function noteFrame(text: string): string {
+  return userTurn(text, false);
+}
+
 /** What the user typed to the model: a turn it answers, as if said. */
 export function typedFrame(text: string): string {
   return userTurn(text, true);
