@@ -56,7 +56,7 @@ final class WarmEnginePool {
     private var wake: Task<Void, Never>?
     private let hardware = AudioHardwareActivity()
 
-    private static let buildQueue = DispatchQueue(label: "com.charles.bento.voice.audio.prewarm", qos: .utility)
+    nonisolated private static let buildQueue = DispatchQueue(label: "com.charles.bento.voice.audio.prewarm", qos: .utility)
     nonisolated private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     init() {

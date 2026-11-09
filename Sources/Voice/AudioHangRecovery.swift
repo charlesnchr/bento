@@ -15,7 +15,7 @@ import VoiceCore
 @MainActor
 final class AudioHangRecovery {
     private let isQuiescent: () -> Bool
-    private let relaunch: () -> Void
+    private let relaunch: @MainActor () -> Void
     private let pollInterval: TimeInterval
     private var waiting: Task<Void, Never>?
     private(set) var relaunched = false
@@ -23,7 +23,7 @@ final class AudioHangRecovery {
     init(
         pollInterval: TimeInterval = 15,
         isQuiescent: @escaping () -> Bool,
-        relaunch: @escaping () -> Void = AudioHangRecovery.relaunchApp
+        relaunch: @escaping @MainActor () -> Void = { AudioHangRecovery.relaunchApp() }
     ) {
         self.pollInterval = pollInterval
         self.isQuiescent = isQuiescent

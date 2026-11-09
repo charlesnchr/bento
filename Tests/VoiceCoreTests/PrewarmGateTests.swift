@@ -55,7 +55,8 @@ struct PrewarmGateTests {
     @Test func aCleanBuildIsKeptAndHoldsFurtherBuilds() {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
-        #expect(gate.buildFinished(.built))
+        let kept = gate.buildFinished(.built)
+        #expect(kept)
         #expect(gate.decide(at: 60) == .hold(.warm))
         gate.spareGone()
         #expect(gate.decide(at: 60) == .build)
@@ -65,26 +66,30 @@ struct PrewarmGateTests {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
         gate.noteActivity(at: 10)
-        #expect(!gate.buildFinished(.built))
+        let kept = gate.buildFinished(.built)
+        #expect(!kept)
         #expect(gate.decide(at: 11) == .wait(1))
         #expect(gate.decide(at: 12) == .build)
         // The flag belongs to that build only.
         gate.buildStarted()
-        #expect(gate.buildFinished(.built))
+        let kept2 = gate.buildFinished(.built)
+        #expect(kept2)
     }
 
     @Test func aBuildThatLandsAfterSuspendIsDiscarded() {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
         gate.setSuspended(true)
-        #expect(!gate.buildFinished(.built))
+        let kept = gate.buildFinished(.built)
+        #expect(!kept)
         #expect(!gate.hasSpare)
     }
 
     @Test func anUnsettledDeviceWaitsForTheHALInsteadOfPolling() {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
-        #expect(!gate.buildFinished(.unsettled))
+        let kept = gate.buildFinished(.unsettled)
+        #expect(!kept)
         #expect(gate.decide(at: 600) == .hold(.unsettled))
         gate.noteActivity(at: 600)
         #expect(gate.decide(at: 602) == .build)
@@ -93,7 +98,8 @@ struct PrewarmGateTests {
     @Test func aFailedBuildIsNotRetriedInALoop() {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
-        #expect(!gate.buildFinished(.failed))
+        let kept = gate.buildFinished(.failed)
+        #expect(!kept)
         #expect(gate.decide(at: 600) == .hold(.unsettled))
     }
 
@@ -101,7 +107,8 @@ struct PrewarmGateTests {
         var gate = PrewarmGate(quietPeriod: 2, now: 0)
         gate.buildStarted()
         gate.noteActivity(at: 10)
-        #expect(!gate.buildFinished(.failed))
+        let kept = gate.buildFinished(.failed)
+        #expect(!kept)
         #expect(gate.decide(at: 12) == .build)
     }
 
@@ -111,7 +118,8 @@ struct PrewarmGateTests {
         gate.disable()
         #expect(gate.decide(at: 600) == .hold(.disabled))
         // Should the hung build ever return, it is not used.
-        #expect(!gate.buildFinished(.built))
+        let kept = gate.buildFinished(.built)
+        #expect(!kept)
         gate.noteActivity(at: 700)
         #expect(gate.decide(at: 800) == .hold(.disabled))
     }
@@ -122,8 +130,10 @@ struct BuildWatchdogTests {
     @Test func aNormalBuildReportsNothing() {
         var dog = BuildWatchdog(slowAfter: 1, hungAfter: 10)
         dog.begin(at: 0)
-        #expect(dog.check(at: 0.13) == nil)
-        #expect(dog.finish(at: 0.135) == 0.135)
+        let verdict = dog.check(at: 0.13)
+        #expect(verdict == nil)
+        let duration = dog.finish(at: 0.135)
+        #expect(duration == 0.135)
         #expect(!dog.isTiming)
         #expect(!dog.hung)
     }
@@ -131,25 +141,34 @@ struct BuildWatchdogTests {
     @Test func slowThenHungEachReportedOnce() {
         var dog = BuildWatchdog(slowAfter: 1, hungAfter: 10)
         dog.begin(at: 0)
-        #expect(dog.check(at: 0.5) == nil)
-        #expect(dog.check(at: 1.5) == .slow(1.5))
-        #expect(dog.check(at: 2) == nil)
-        #expect(dog.check(at: 10.5) == .hung(10.5))
-        #expect(dog.check(at: 3600) == nil)
+        let verdict = dog.check(at: 0.5)
+        #expect(verdict == nil)
+        let verdict2 = dog.check(at: 1.5)
+        #expect(verdict2 == .slow(1.5))
+        let verdict3 = dog.check(at: 2)
+        #expect(verdict3 == nil)
+        let verdict4 = dog.check(at: 10.5)
+        #expect(verdict4 == .hung(10.5))
+        let verdict5 = dog.check(at: 3600)
+        #expect(verdict5 == nil)
         #expect(dog.hung)
     }
 
     @Test func aBuildFirstCheckedPastTheBoundIsHungNotSlow() {
         var dog = BuildWatchdog(slowAfter: 1, hungAfter: 10)
         dog.begin(at: 0)
-        #expect(dog.check(at: 30) == .hung(30))
-        #expect(dog.check(at: 31) == nil)
+        let verdict = dog.check(at: 30)
+        #expect(verdict == .hung(30))
+        let verdict2 = dog.check(at: 31)
+        #expect(verdict2 == nil)
     }
 
     @Test func nothingToReportWhenIdle() {
         var dog = BuildWatchdog()
-        #expect(dog.check(at: 1000) == nil)
-        #expect(dog.finish(at: 1000) == nil)
+        let verdict = dog.check(at: 1000)
+        #expect(verdict == nil)
+        let duration = dog.finish(at: 1000)
+        #expect(duration == nil)
     }
 
     @Test func aNewBuildResetsTheVerdicts() {
@@ -158,7 +177,8 @@ struct BuildWatchdogTests {
         _ = dog.check(at: 2)
         _ = dog.finish(at: 3)
         dog.begin(at: 100)
-        #expect(dog.check(at: 101.5) == .slow(1.5))
+        let verdict = dog.check(at: 101.5)
+        #expect(verdict == .slow(1.5))
     }
 }
 
