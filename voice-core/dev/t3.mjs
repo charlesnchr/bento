@@ -1,19 +1,21 @@
 // The coding agent: T3 Code threads, run through the `t3` CLI of the T3 service on this machine.
 // A task's first request starts a thread (in a new worktree when the project is a git repo), a
 // follow-up sends the thread another message, and the result is the agent's last message once its
-// run ends. Cancelling interrupts the run through T3's MCP endpoint; a call that hangs up only
-// stops watching, so the agent carries on in T3.
+// run ends. Cancelling interrupts the run, and steering adds to it, over T3's WebSocket; a call that
+// hangs up only stops watching, so the agent carries on in T3.
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import WebSocket from "ws";
 
 const run = promisify(execFile);
 const T3HOME = process.env.T3CODE_HOME ?? join(os.homedir(), ".t3");
 const DB = join(T3HOME, "userdata/statev2.sqlite");
-const MCP = process.env.T3_MCP_URL ?? "http://127.0.0.1:3773/mcp";
+const WS = process.env.T3_WS_URL ?? "ws://127.0.0.1:3773/ws?orchestrationProtocol=2";
 const POLL = 2.5;
 
 export function available() {
@@ -140,35 +142,52 @@ function sleep(seconds, signal) {
   });
 }
 
+// Steering and interrupting go over T3's own WebSocket protocol, as its app does, with a user
+// session: its MCP endpoint caps a client without a thread at approval-required, below the
+// threads' full access, so it refuses to touch them.
+
 /** Interrupts the task's thread's running turn: the cancel button, or cancel_task. */
 export async function cancel(body) {
   const thread = body.thread ?? threads[`${body.call}/${body.taskId}`];
-  if (!thread) return false;
-  await mcpCall("t3_thread_interrupt", { threadId: thread, reason: "Cancelled from the voice call" });
+  const run = thread && (await show(thread, 1)).thread.activeRunId;
+  if (!run) return false;
+  await dispatch({ type: "run.interrupt", commandId: randomUUID(), threadId: thread, runId: run, reason: "Cancelled from the voice call" });
   return true;
 }
 
-let mcp = null;
-async function mcpCall(name, args) {
-  if (!mcp) {
-    const token = (await t3(["auth", "session", "issue", "--ttl", "12h", "--subject", "mcp-client", "--label", "voice-core", "--token-only"])).trim();
-    mcp = { token, session: null, id: 1 };
-    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "voice-core", version: "1" } });
-    await rpc("notifications/initialized", undefined, true);
-  }
-  return rpc("tools/call", { name, arguments: args });
+/** More for the task's running turn, without restarting it. */
+export async function steer(body) {
+  const thread = threads[`${body.call}/${body.taskId}`];
+  const run = thread && (await show(thread, 1)).thread.activeRunId;
+  if (!run) return false;
+  await dispatch({
+    type: "message.dispatch", commandId: randomUUID(), threadId: thread, messageId: randomUUID(), text: body.text, attachments: [],
+    createdBy: "user", creationSource: "web", deliveryIntent: "steer", dispatchMode: { type: "steer_active", targetRunId: run },
+  });
+  return true;
 }
 
-async function rpc(method, params, notification = false) {
-  const headers = { Authorization: `Bearer ${mcp.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
-  if (mcp.session) headers["mcp-session-id"] = mcp.session;
-  const message = notification ? { jsonrpc: "2.0", method } : { jsonrpc: "2.0", id: mcp.id++, method, params };
-  const r = await fetch(MCP, { method: "POST", headers, body: JSON.stringify(message) });
-  mcp.session = r.headers.get("mcp-session-id") ?? mcp.session;
-  if (!r.ok && r.status !== 202) { const text = await r.text(); mcp = null; throw new Error(`T3 MCP ${method}: HTTP ${r.status} ${text.slice(0, 200)}`); }
-  if (notification) return null;
-  const text = await r.text();
-  const json = text.trimStart().startsWith("{") ? JSON.parse(text) : JSON.parse(text.split("\n").filter((l) => l.startsWith("data:")).at(-1).slice(5));
-  if (json.error) throw new Error(`T3 MCP ${method}: ${json.error.message}`);
-  return json.result;
+let session = null;
+async function dispatch(command) {
+  session ??= (await t3(["auth", "session", "issue", "--ttl", "12h", "--label", "voice-core", "--token-only"])).trim();
+  const ws = new WebSocket(WS, { headers: { Authorization: `Bearer ${session}` } });
+  try {
+    await new Promise((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); ws.once("unexpected-response", (_, r) => reject(new Error(`HTTP ${r.statusCode}`))); });
+    const reply = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("T3 didn't answer")), 15_000);
+      ws.on("message", (data) => {
+        const m = JSON.parse(data.toString());
+        if (m.requestId === "1" || m.id === "1") { clearTimeout(timer); resolve(m); }
+      });
+      ws.send(JSON.stringify({ _tag: "Request", id: "1", tag: "orchestration.dispatchCommand", headers: [], payload: command }));
+    });
+    const ok = reply._tag === "Exit" && reply.exit?._tag === "Success";
+    if (!ok) throw new Error(`T3 refused ${command.type}: ${JSON.stringify(reply).slice(0, 300)}`);
+    return reply;
+  } catch (err) {
+    if (/HTTP 401|HTTP 403/.test(err.message)) session = null;
+    throw err;
+  } finally {
+    ws.close();
+  }
 }

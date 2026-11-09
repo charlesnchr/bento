@@ -53,6 +53,9 @@
     "Bento"
    ]
   },
+  "steering": [
+   "hermes"
+  ],
   "limits": {
    "connect": 25,
    "deadMic": 2,
@@ -230,6 +233,12 @@
    "type": "steer",
    "task": "1",
    "text": "Run the whole suite too",
+   "t": 0.6000000000000001
+  },
+  {
+   "type": "steer",
+   "task": "2",
+   "text": "Include tomorrow too",
    "t": 0.6000000000000001
   },
   {

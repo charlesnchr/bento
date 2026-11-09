@@ -124,8 +124,14 @@
   #defaultsview { font: 11px/1.4 ui-monospace, monospace; max-height: 240px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; margin: 0; }
 
   @media (max-width: 860px) {
-    #talk { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-    #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; }
+    #talk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; min-width: 0; }
+    #side:has(#notasks) { display: none; }
+    header { gap: 6px 12px; }
+    #bar { flex-wrap: wrap; }
+    #say { order: -1; flex-basis: 100%; }
+    #call { margin-left: auto; }
+    #call { padding: 11px 16px; }
     #side h2 { padding: 8px 12px 4px; }
     #tasks { flex-direction: row; overflow-x: auto; padding-bottom: 8px; }
     .task { min-width: 260px; max-width: 300px; }

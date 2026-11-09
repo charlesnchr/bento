@@ -49,6 +49,7 @@
    ]
   },
   "codingAgent": null,
+  "steering": [],
   "limits": {
    "connect": 25,
    "deadMic": 2,

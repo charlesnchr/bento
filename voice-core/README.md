@@ -40,13 +40,27 @@ The ABI is strings in and strings out: `VoiceCore.create(configJson, t)` and
 
 ## Try it
 
-The dev server runs as a user service on homelab and is on the tailnet at
-https://homelab.tailbf93d.ts.net:8770 (HTTPS, so the browser allows the microphone).
+The dev server runs as a user service on homelab. Open **https://voice.charlesnchr.com** (Cloudflare
+Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf93d.ts.net:8770.
 
-1. Open the page, pick a surface preset (web, android, macos, echo) and press Call.
-2. Edit anything in `src/`. The server rebuilds within a second, and the next call runs the new
-   build. The header shows the core's version, a hash of the bundle.
-3. Every call is kept as a trace in `traces/`. The Replay tab runs any trace or scenario through
+1. Press Call and talk. Work goes to Hermes and code changes to a coding agent in T3 while the
+   conversation goes on; each task gets a card with its live progress.
+2. The controls:
+   - Say "stop" (or "Woodhouse, stop", "that's enough", "quiet") to cut a reply short: the model
+     stays quiet until you speak again. The stop button and Esc do the same.
+   - Say "goodbye" or "hang up" to end the call.
+   - Mute with M or the microphone button; with Settings → Start muted, hold Space to talk.
+   - Type to the call (Enter), or pick "New Hermes task" / "New coding task" to start one without
+     saying it.
+   - A card's Follow up goes to that task. A running Hermes task or T3 thread takes it at once,
+     in its current run (steering); otherwise it runs next, in the task's session. Cancel stops
+     the agent (Hermes's run, or the T3 turn). Hanging up leaves T3 threads working.
+3. The header shows the network round trip, how long replies take to start after you stop
+   talking, and the browser's audio latency.
+4. Edit anything in `src/`. The server rebuilds within a second, and the next call runs the new
+   build. The Developer tab has the surface presets (web, android, macos, echo), the raw config
+   and everything the core heard and did.
+5. Every call is kept as a trace in `traces/`. The Replay tab runs any trace or scenario through
    the latest build and through the build that recorded it, and marks where they differ: the same
    words and the same model answers, with your change.
 
@@ -56,8 +70,26 @@ Without a microphone:
 node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav] [--preset echo] [--hermes] [--out reply.wav]
 ```
 
-It says the WAVs into a real call through the same relay and prints the conversation. Hermes is
-faked unless `--hermes` is given. Echo test clips are in `home-assistant/live-bridge/testdata/`.
+It says the WAVs into a real call through the same relay and prints the conversation, with how
+long each reply took to start. Hermes is faked unless `--hermes` is given; `--coding` gives the call
+the T3 coding agent. Echo test clips are in `home-assistant/live-bridge/testdata/`; make more with
+`node dev/tts.mjs out.wav "Words to say"` (Gemini TTS on GSK Vertex).
+
+Through Cloudflare, with the Access service token kept for tests:
+
+```sh
+set -a; . ~/.local/share/voice-core/access.env; set +a
+node dev/talk.ts question.wav --server https://voice.charlesnchr.com
+```
+
+Measured on 2026-11-09 from homelab, Vertex us-central1 (the only region that serves the Live model
+to this project): replies start 0.75 to 0.9 s after the user stops talking, locally and through
+Cloudflare alike.
+
+The coding agent is T3 Code on this machine: `dev/t3.mjs` starts threads with the `t3` CLI (in a
+new worktree on a `voice/…` branch when the project is a git repo), follows them up, and steers and
+interrupts them over T3's WebSocket. A task is told to do the work itself and to open a pull
+request, not to merge or deploy.
 
 The model route is GSK Vertex through the GSK SOCKS route (`VERTEX_*` in `~/.hermes/.env`).
 `VOICE_CORE_ROUTE=gemini` with `GEMINI_API_KEY` set uses the public Gemini API, which is billed
@@ -98,8 +130,8 @@ result goes in as a turn.
 
 ## Not done yet
 
-- No surface uses the core for real calls yet. The engines run it and pass conformance; the next
-  step is to wire each call screen's I/O to it behind a setting, Android first (its
+- The web page is the only surface that uses the core for real calls. The other engines run it
+  and pass conformance; the next step is to wire each call screen's I/O to it behind a setting, Android first (its
   `AssistantCall` is what this ports). After that the Mac (it gains multiple tasks, earcons,
   standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
 - Captions (Android's second transcription socket) aren't ported.

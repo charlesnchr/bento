@@ -268,6 +268,8 @@ export class Call {
   /** Frames typed while the call was off the model, sent once it's back. */
   private typedLater: string[] = [];
   private nextScreen = 1;
+  /** Runs a follow-up was steered into, by job, to the task: where it goes if the agent refuses it. */
+  private readonly steered = new Map<string, string>();
   private wakewordOn = false;
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
@@ -393,6 +395,7 @@ export class Call {
       case "say": return this.typed(e.text);
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
       case "steer": return this.defer(() => this.steer(e.task, e.text));
+      case "tool.steerFailed": return this.defer(() => this.steerFailed(e.run, e.text));
       case "lend": this.lend(); return;
       case "reclaim": return this.reclaim();
       case "stop": return this.stop(e.message ?? null);
@@ -1175,10 +1178,39 @@ export class Call {
     const text = collapse(String(raw ?? ""));
     const task = this.tasks.get(String(taskId));
     if (!this.active || !task || text.length === 0 || text.length > 4000) return;
-    const run = this.screenRun(text, true);
-    task.runs++;
     this.chat.push({ role: "user", text: `(to "${task.label}") ${text}` });
     this.boundary = true;
+    if (this.steerable(task)) { task.runs++; this.steerInto(task, text); return; }
+    this.queueFromScreen(task, text);
+  }
+
+  /** Whether a follow-up can go into [task]'s current run: it's working on one, nothing waits behind it, and its agent can be steered. */
+  private steerable(task: Task): boolean {
+    return task.state === RUNNING && task.job != null && task.queued.length === 0 && this.c.steering.includes(task.agent);
+  }
+
+  private steerInto(task: Task, text: string): void {
+    const job = task.job!;
+    this.steered.set(job, task.id);
+    this.log("info", `steering "${task.label}" while it works`);
+    this.emit({ type: "tool.steer", run: job, agent: task.agent, text, message: steerMessage(text) });
+    this.cue("taskStarted");
+    this.showTask(task);
+    this.settled();
+  }
+
+  /** The agent refused the steer: the follow-up runs next instead, in the task's session. */
+  private steerFailed(job: string, text: string): void {
+    const task = this.tasks.get(this.steered.get(job) ?? "");
+    if (!this.active || !task || task.state === CANCELLED) return;
+    this.log("info", `"${task.label}" couldn't take the follow-up while working: it goes next`);
+    this.queueFromScreen(task, text);
+  }
+
+  private queueFromScreen(task: Task, raw: string): void {
+    const text = collapse(raw);
+    const run = this.screenRun(text, true);
+    task.runs++;
     if (task.state === RUNNING) task.queued.push(run);
     else {
       task.revivedFrom = task.state;
@@ -1308,6 +1340,13 @@ export class Call {
   private followUp(task: Task, run: Run, answer: boolean): void {
     task.runs++;
     const asAnswer = answer ? `Bento took this as the user's answer to "${task.label}": ${task.asked} ` : "";
+    if (this.steerable(task)) {
+      this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
+        "it works and takes it into account, and one result covers both. Don't announce it.", true, { task: task.label, scheduling: "SILENT" });
+      run.closed = true;
+      this.steerInto(task, run.request.task);
+      return;
+    }
     if (task.state === RUNNING) {
       task.queued.push(run);
       this.acknowledge(task, run, asAnswer + `"${task.label}" is still working on its earlier request; Hermes takes this follow-up next, in ` +
@@ -1664,6 +1703,12 @@ function taskRef(call: Json): string | null {
     }
   }
   return null;
+}
+
+/** What a running agent gets when the user adds to its task. */
+function steerMessage(text: string): string {
+  return "The user added this while you work on the task (transcribed from their voice call, may be imperfect). Take it " +
+    "into account in what you're doing now, without starting over unless it asks you to:\n" + text;
 }
 
 function quote(request: string): string {

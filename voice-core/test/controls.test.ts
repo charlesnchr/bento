@@ -198,3 +198,51 @@ test("a result the user stopped isn't said again later", () => {
   s.advance(10);
   assert.equal(s.finals().length + s.resultTurns().length, 1);
 });
+
+test("a follow-up to a running task that can be steered goes into its current run", () => {
+  const s = sim({ steering: ["hermes"] });
+  s.turn("Find flights to Rome");
+  s.toolCall("c1", "ask_hermes", { label: "Rome flights" });
+  s.advance(0.3);
+  s.turn("Only direct ones");
+  s.toolCall("c2", "ask_hermes", { continue_task: "Rome flights" });
+  s.advance(0.3);
+  const steer = s.commands.find((c) => c.type === "tool.steer") as any;
+  assert.equal(steer.run, s.hermes()[0].run);
+  assert.equal(steer.text, "Only direct ones");
+  assert.ok(steer.message.includes("Only direct ones"));
+  assert.equal(s.hermes().length, 1);
+  const answer = s.responses().find((r) => r.id === "c2");
+  assert.equal(answer.response.status, "ok");
+  assert.ok(answer.response.message.includes("one result covers both"));
+  // From the screen too.
+  s.push({ type: "steer", task: "1", text: "Under 200 pounds" });
+  assert.equal(s.commands.filter((c) => c.type === "tool.steer").length, 2);
+  // One result covers it all.
+  s.complete("Two direct flights under £200.");
+  s.advance(3);
+  assert.equal(s.hermes().length, 1);
+});
+
+test("a steer the agent refuses waits for the next run", () => {
+  const s = sim({ steering: ["hermes"] });
+  s.push({ type: "ask", text: "Find flights to Rome" });
+  s.advance(0.1);
+  s.push({ type: "steer", task: "1", text: "Only direct ones" });
+  const steer = s.commands.find((c) => c.type === "tool.steer") as any;
+  s.push({ type: "tool.steerFailed", run: steer.run, text: "Only direct ones" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  s.complete("Five flights.");
+  s.advance(0.1);
+  assert.equal(s.hermes()[1].request, "Only direct ones");
+  assert.equal(s.hermes()[1].followUp, true);
+});
+
+test("without steering a follow-up waits for the run, as before", () => {
+  const s = sim();
+  s.push({ type: "ask", text: "Find flights to Rome" });
+  s.advance(0.1);
+  s.push({ type: "steer", task: "1", text: "Only direct ones" });
+  assert.ok(!s.commands.some((c) => c.type === "tool.steer"));
+});

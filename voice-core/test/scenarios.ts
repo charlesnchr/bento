@@ -125,7 +125,7 @@ export const scenarios: Record<string, () => Sim> = {
 
   /** Spoken stop and goodbye, the stop button, typing, tasks from the screen and the coding agent. */
   controls: () => {
-    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: { limits: fast, codingAgent: { projects: ["Bento"] } } as any });
+    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: { limits: fast, codingAgent: { projects: ["Bento"] }, steering: ["hermes"] } as any });
     s.advance(0.1);
     s.audio(24_000);
     s.activity("ACTIVITY_START");
@@ -140,6 +140,7 @@ export const scenarios: Record<string, () => Sim> = {
     s.push({ type: "ask", text: "What's on my calendar today?" });
     s.advance(0.2);
     s.push({ type: "steer", task: "1", text: "Run the whole suite too" });
+    s.push({ type: "steer", task: "2", text: "Include tomorrow too" });
     s.audio(24_000);
     s.push({ type: "interrupt" });
     s.audio(9_600);

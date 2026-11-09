@@ -106,6 +106,11 @@ export interface CallConfig {
   voiceCommands: VoiceCommands;
   /** Declares ask_coding_agent when set. */
   codingAgent: CodingAgent | null;
+  /**
+   * Agents the host can steer while they work (`tool.steer`): a follow-up to a running task of one
+   * goes into its current run instead of waiting for it to finish.
+   */
+  steering: Agent[];
   limits: Limits;
 }
 
@@ -136,8 +141,10 @@ export type Event =
   | { t: number; type: "say"; text: string }
   /** A new task from the screen, straight to its agent ("hermes" unless "t3"); its result comes back like any other. */
   | { t: number; type: "ask"; text: string; agent?: Agent; project?: string }
-  /** A follow-up to a task from the screen: its agent gets it next, in the task's session. */
+  /** A follow-up to a task from the screen: into its current run if it can be steered, otherwise next, in the task's session. */
   | { t: number; type: "steer"; task: string; text: string }
+  /** The agent wouldn't take a steer (its run was ending): the follow-up waits for the next run instead. */
+  | { t: number; type: "tool.steerFailed"; run: string; text: string }
   /** Lends the microphone to a dictation while in standby; `reclaim` takes it back. */
   | { t: number; type: "lend" }
   | { t: number; type: "reclaim" }
@@ -171,6 +178,8 @@ export type Command =
    */
   | { type: "tool.call"; run: string; kind: "hermes"; agent: Agent; message: string; request: string; taskId: string; label: string; followUp: boolean; project?: string }
   | { type: "tool.call"; run: string; kind: "host"; name: string; args: unknown }
+  /** Give a running task's agent more to go on, in its current run; `tool.steerFailed` if it won't take it. */
+  | { type: "tool.steer"; run: string; agent: Agent; text: string; message: string }
   /** Stop a tool run: the task was cancelled, or the call ended (a host may leave a long agent running then). */
   | { type: "tool.cancel"; run: string; reason: "cancelled" | "ended" }
   | { type: "status"; status: Status; message?: string | null }

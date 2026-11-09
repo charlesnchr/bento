@@ -37,6 +37,7 @@ export function defaults(): CallConfig {
       hangUp: ["hang up", "end call", "end the call", "stop the call", "goodbye", "bye", "bye bye", "that's all", "that's all for now"],
     },
     codingAgent: null,
+    steering: [],
     limits: {
       connect: 25,
       deadMic: 2,

@@ -193,6 +193,7 @@ function transcript(role: "user" | "assistant", text: string) {
 }
 
 function note(text: string) {
+  $("empty").hidden = true;
   const row = document.createElement("div");
   row.className = "line note";
   row.textContent = text;
@@ -357,6 +358,7 @@ function run(commands: Command[]) {
       case "wakeword": log("out", `wake word ${c.on ? "listening" : "off"}`, "out"); break;
       case "tool.call": void tool(c); break;
       case "tool.cancel": cancelRun(c.run, c.reason); break;
+      case "tool.steer": void steerRun(c); break;
       case "status":
         coreStatus = c.status;
         showStatus(c.status === "ended" ? c.message ?? undefined : undefined);
@@ -413,10 +415,21 @@ function cancelRun(key: string, reason: string) {
   if (!r) return;
   runs.delete(key);
   r.abort.abort();
-  // Cancelled on purpose: T3 stops the agent too. A call that ended leaves it working in T3.
-  if (r.agent === "t3" && reason === "cancelled" && !checked("fakehermes")) {
-    void fetch("/agent/cancel", { method: "POST", body: JSON.stringify({ call: callName, taskId: r.taskId }) });
+  // Cancelled on purpose: the agent stops too. A call that ended leaves a coding agent working in T3.
+  if (reason === "cancelled" && !checked("fakehermes")) {
+    void fetch(r.agent === "t3" ? "/agent/cancel" : "/hermes/stop", { method: "POST", body: JSON.stringify({ call: callName, taskId: r.taskId }) });
   }
+}
+
+/** More for a running task, into its current run; if the agent won't take it, the core queues it instead. */
+async function steerRun(c: Command) {
+  const r = runs.get(c.run);
+  log("out", `steer ${c.run}: ${c.text}`, "out");
+  if (checked("fakehermes")) return;
+  const ok = r != null &&
+    (await fetch(c.agent === "t3" ? "/agent/steer" : "/hermes/steer", { method: "POST", body: JSON.stringify({ call: callName, taskId: r.taskId, text: c.message }) }).then((x) => x.ok, () => false));
+  if (!ok) push({ type: "tool.steerFailed", run: c.run, text: c.text });
+  else toast(`${c.agent === "t3" ? "The coding agent" : "Hermes"} took the follow-up while it works`);
 }
 
 async function tool(c: Command) {
@@ -487,6 +500,7 @@ function readConfig(): Record<string, unknown> {
     ...given, trace: checked("trace"),
   };
   if (checked("ptt")) config.muted = true;
+  if (config.steering === undefined) config.steering = ["hermes", "t3"];
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   return config;
 }

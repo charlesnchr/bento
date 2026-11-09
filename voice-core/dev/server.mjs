@@ -8,8 +8,9 @@
 //   GET  /config            the model and what's available (route, Hermes)
 //   WS   /live              a Gemini Live socket, relayed with the server's credentials
 //   POST /hermes            one Hermes request, streamed back as server-sent events
+//   POST /hermes/steer      more for a running Hermes task; /hermes/stop stops it
 //   POST /agent             one coding-agent (T3 Code) request, streamed back the same way
-//   POST /agent/cancel      interrupts a coding task's T3 thread
+//   POST /agent/cancel      interrupts a coding task's T3 thread; /agent/steer adds to its running turn
 //   GET  /ping              for the page's round-trip time
 //   POST /traces            a call's recording, appended in pieces; GET /traces lists them
 //
@@ -77,6 +78,8 @@ const HERMES_URL = process.env.HERMES_API_URL ?? (hermesEnv.API_SERVER_PORT ? `h
 const HERMES_KEY = process.env.HERMES_API_KEY ?? hermesEnv.API_SERVER_KEY;
 /** Hermes sessions by call and task: a follow-up continues its task's session. */
 const sessions = new Map();
+/** The Hermes run each call's task is on, while it runs: what steer and stop act on. */
+const hermesRuns = new Map();
 
 async function hermes(req, res) {
   const body = JSON.parse(await read(req));
@@ -87,9 +90,10 @@ async function hermes(req, res) {
   const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 20_000);
   res.on("close", () => clearInterval(ping));
   const headers = { Authorization: `Bearer ${HERMES_KEY}`, "content-type": "application/json" };
+  let key = null;
   try {
     if (!HERMES_URL) throw new Error("no Hermes API server in ~/.hermes/.env");
-    const key = `${body.call}/${body.taskId}`;
+    key = `${body.call}/${body.taskId}`;
     let sid = body.followUp ? sessions.get(key) : null;
     if (!sid) {
       const r = await fetch(`${HERMES_URL}/api/sessions`, { method: "POST", headers, body: JSON.stringify({ source: "api_server" }), signal: abort.signal });
@@ -115,6 +119,7 @@ async function hermes(req, res) {
         try { o = JSON.parse(line.slice(5).trim() || "{}"); } catch {}
         const name = ev ?? o.event;
         ev = null;
+        if (typeof o.run_id === "string") hermesRuns.set(key, o.run_id);
         if (name === "tool.started") send("progress", { text: `Using ${o.tool_name}${o.preview ? ": " + String(o.preview).slice(0, 120) : ""}` });
         else if (name === "approval.request") {
           // Anyone near the speaker could be talking: risky commands are denied, as on the Echo.
@@ -125,6 +130,7 @@ async function hermes(req, res) {
         else if (name?.startsWith("run.") && name !== "run.started" && name !== "run.queued") status = name.slice(4);
       }
     }
+    hermesRuns.delete(key);
     if (status === "cancelled") send("result", { text: "Cancelled. Completed actions were not undone.", failed: true });
     else if (answer) send("result", { text: answer });
     else if (status === "failed") send("result", { text: "Task failed. No automatic retry. Completed actions were not undone.", failed: true });
@@ -132,6 +138,20 @@ async function hermes(req, res) {
   } catch (err) {
     if (!abort.signal.aborted) send("error", { message: err.message });
   }
+  res.end();
+}
+
+/** POST /hermes/steer and /hermes/stop: the running Hermes run of a call's task, given more to go on or stopped. */
+async function hermesRun(req, res, action) {
+  const body = JSON.parse(await read(req));
+  const run = hermesRuns.get(`${body.call}/${body.taskId}`);
+  if (!run) { res.writeHead(409); return res.end("no run"); }
+  const r = await fetch(`${HERMES_URL}/v1/runs/${encodeURIComponent(run)}/${action}`, {
+    method: "POST", headers: { Authorization: `Bearer ${HERMES_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify(action === "steer" ? { input: body.text } : {}),
+  }).catch((err) => ({ ok: false, status: 502, text: async () => err.message }));
+  if (!r.ok) console.error(`Hermes ${action} ${run}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  res.writeHead(r.ok ? 204 : 409);
   res.end();
 }
 
@@ -246,6 +266,13 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/hermes" && req.method === "POST") return hermes(req, res);
     if (path === "/agent" && req.method === "POST") return agent(req, res);
+    if (path === "/hermes/steer" && req.method === "POST") return hermesRun(req, res, "steer");
+    if (path === "/hermes/stop" && req.method === "POST") return hermesRun(req, res, "stop");
+    if (path === "/agent/steer" && req.method === "POST") {
+      const ok = await T3.steer(JSON.parse(await read(req))).catch((err) => { console.error(`T3 steer: ${err.message}`); return false; });
+      res.writeHead(ok ? 204 : 409);
+      return res.end();
+    }
     if (path === "/agent/cancel" && req.method === "POST") {
       const ok = await T3.cancel(JSON.parse(await read(req))).catch((err) => { console.error(`T3 cancel: ${err.message}`); return false; });
       res.writeHead(ok ? 204 : 404);
