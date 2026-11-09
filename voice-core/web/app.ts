@@ -41,7 +41,7 @@ const FAKE_TV = [
 ];
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", standbyAfter: 30, vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
+  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
   android: { platform: "Android", device: "phone", standbyAfter: 20 },
   "android wake word": { platform: "Android", device: "phone", standbyAfter: 20, hangUpAfter: 15 },
   macos: { platform: "macOS", device: "Mac", standbyAfter: 20 },
@@ -63,7 +63,7 @@ let traceTimer = 0;
 let startedAt = now();
 const sockets = new Map<number, WebSocket>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
-interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement }
+interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
 let counts = { mic: 0, play: 0, sent: 0 };
 let fakeTvLevel = 15;
@@ -71,6 +71,43 @@ let coreStatus = "idle";
 let muted = false;
 let holding = false;
 let wakeLock: { release(): Promise<void> } | null = null;
+
+// The conversation, kept so a new call can carry on from it (the core's `history`, recapped to the model).
+interface ChatLine { role: "user" | "assistant"; speaker?: string; text: string }
+const HISTORY = "voice.history";
+const HISTORY_MAX_AGE = 12 * 3600 * 1000;
+let chat: ChatLine[] = [];
+let lastRole = "";
+
+function remember(role: "user" | "assistant", text: string, speaker?: string, join = false) {
+  const last = chat.at(-1);
+  if (join && last && last.role === role && last.speaker === speaker) last.text += text;
+  else chat.push(speaker ? { role, speaker, text } : { role, text });
+  if (chat.length > 200) chat.splice(0, chat.length - 200);
+  localStorage.setItem(HISTORY, JSON.stringify({ at: Date.now(), chat }));
+}
+
+function savedHistory(): ChatLine[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HISTORY) ?? "null");
+    return saved && Date.now() - saved.at < HISTORY_MAX_AGE && Array.isArray(saved.chat) ? saved.chat : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Two rising notes: something on the screen needs the user. PCM16 at 24 kHz, base64. */
+const APPROVAL_TONE = (() => {
+  const rate = 24000, out = new Int16Array(rate * 0.32);
+  for (let i = 0; i < out.length; i++) {
+    const t = i / rate, f = t < 0.16 ? 660 : 880, local = t < 0.16 ? t : t - 0.16;
+    out[i] = Math.round(Math.sin(2 * Math.PI * f * t) * Math.min(1, local * 60, (0.16 - local) * 60) * 6000);
+  }
+  let bin = "";
+  const bytes = new Uint8Array(out.buffer);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+})();
 
 // Latency: the network's round trip, and how long after the user stops talking the reply starts.
 const metrics = { rtt: [] as number[], reply: [] as number[], lastVoice: 0, lastPlay: 0, replied: true };
@@ -232,10 +269,10 @@ function elapsed(seconds: number): string {
 /** The empty task list's words, kept to put back. */
 const noTasks = document.getElementById("notasks")!;
 
-function showTasks() {
+function showTasks(force = false) {
   const pane = $("tasks");
   const open = document.activeElement?.closest?.(".task") as HTMLElement | null;
-  if (open && pane.contains(open)) return; // don't redraw under someone typing a follow-up
+  if (!force && open && pane.contains(open) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
   pane.innerHTML = "";
   const all = [...tasks.values()].reverse();
   if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
@@ -258,6 +295,27 @@ function showTasks() {
       q.textContent = `Asks: ${t.question}`;
       card.append(q);
     }
+    if (view.approval && t.state === "running") {
+      const box = document.createElement("div");
+      box.className = "approval";
+      box.innerHTML = `<div>Hermes asks to run:</div><code></code><div class="acts"></div>`;
+      box.querySelector("code")!.textContent = view.approval.command;
+      const answer = (choice: "once" | "deny") => {
+        view.approval = undefined;
+        showTasks(true);
+        void fetch("/hermes/approval", { method: "POST", body: JSON.stringify({ call: callName, taskId: t.id, choice }) })
+          .then((r) => toast(r.ok ? (choice === "once" ? "Approved" : "Denied") : "That approval had already lapsed"));
+      };
+      for (const [label, choice] of [["Approve once", "once"], ["Deny", "deny"]] as const) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        if (choice === "once") b.className = "go";
+        b.onclick = () => answer(choice);
+        box.querySelector(".acts")!.append(b);
+      }
+      card.append(box);
+    }
+    if (t.state !== "running") view.approval = undefined;
     const acts = document.createElement("div");
     acts.className = "acts";
     const button = (text: string, fn: () => void) => { const b = document.createElement("button"); b.textContent = text; b.onclick = fn; acts.append(b); return b; };
@@ -365,7 +423,11 @@ function run(commands: Command[]) {
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
-      case "transcript": transcript(c.role, c.text); break;
+      case "transcript":
+        transcript(c.role, c.text);
+        remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastRole === c.role);
+        lastRole = c.role;
+        break;
       case "task": {
         const view = tasks.get(c.id) ?? { c, since: now(), ended: null };
         if (c.state === "running" && view.c.state !== "running") { view.since = now(); view.ended = null; }
@@ -449,6 +511,7 @@ async function tool(c: Command) {
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
     const row = result(agent, c.label, text, failed);
+    if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastRole = ""; }
     if (view) { view.result = row; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
   };
@@ -460,7 +523,7 @@ async function tool(c: Command) {
   try {
     const response = await fetch(agent === "t3" ? "/agent" : "/hermes", {
       method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
-      body: JSON.stringify({ call: callName, taskId: c.taskId, followUp: c.followUp, message: c.message, label: c.label, request: c.request, project: c.project }),
+      body: JSON.stringify({ call: callName, taskId: c.taskId, followUp: c.followUp, message: c.message, label: c.label, request: c.request, project: c.project, approvals: "screen" }),
     });
     if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -478,6 +541,12 @@ async function tool(c: Command) {
         const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
         if (event === "progress") push({ type: "task.progress", task: c.taskId, text: data.text });
         else if (event === "thread") { const view = tasks.get(c.taskId); if (view) { view.thread = data.thread; showTasks(); } }
+        else if (event === "approval") {
+          const view = tasks.get(c.taskId);
+          if (view) { view.approval = { command: data.command }; showTasks(true); }
+          toast(`Hermes asks to run: ${data.command.slice(0, 80)}`);
+          audio.cue(APPROVAL_TONE);
+        }
         else if (event === "result") done(data.text, data.failed);
         else if (event === "error") { runs.delete(c.run); push({ type: "tool.error", run: c.run, message: data.message }); }
       }
@@ -505,7 +574,7 @@ function readConfig(): Record<string, unknown> {
   return config;
 }
 
-async function start() {
+async function start(carryOn = false) {
   if (callId) return;
   let given: Record<string, unknown>;
   try {
@@ -530,6 +599,12 @@ async function start() {
   metrics.reply = [];
   startedAt = now();
   muted = given.muted === true;
+  // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
+  if (carryOn && given.history === undefined) given.history = savedHistory();
+  else if (!carryOn) chat = [];
+  if (carryOn) chat = savedHistory();
+  lastRole = "";
+  $("resume").hidden = true;
   callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-web-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));
   callId = created.id;
@@ -569,6 +644,7 @@ function end() {
   $("call").classList.remove("live");
   for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = true;
   $("ring").style.opacity = "0";
+  $("resume").hidden = chat.length === 0;
   void wakeLock?.release().catch(() => {});
   wakeLock = null;
 }
@@ -733,6 +809,8 @@ async function main() {
     $("defaultsview").hidden = !$("defaultsview").hidden;
   };
   $("call").onclick = () => (callId ? hangUp() : void start().catch((err) => { toast(err.message); log("error", err.message, "err"); }));
+  $("resume").onclick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
+  if (savedHistory().length > 0) { $("resume").hidden = false; $("resume").title = "Call again, carrying on from the last conversation"; }
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("say").onsubmit = submitText;

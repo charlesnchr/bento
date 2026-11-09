@@ -107,6 +107,7 @@ function run(commands: Record<string, any>[]) {
         const ws = new WebSocket(`${SERVER.replace(/^http/, "ws")}/live`, { headers: ACCESS });
         sockets.set(c.sid, ws);
         ws.on("open", () => push({ type: "ws.open", sid: c.sid }));
+        ws.on("error", (err) => say(`(socket ${c.sid}: ${err.message})`)); // "close" follows
         ws.on("message", (d) => push({ type: "ws.message", sid: c.sid, data: d.toString() }));
         ws.on("close", (code, reason) => { if (sockets.get(c.sid) === ws) push({ type: "ws.closed", sid: c.sid, code, reason: reason.toString() }); });
         break;

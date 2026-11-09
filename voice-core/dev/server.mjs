@@ -8,7 +8,9 @@
 //   GET  /config            the model and what's available (route, Hermes)
 //   WS   /live              a Gemini Live socket, relayed with the server's credentials
 //   POST /hermes            one Hermes request, streamed back as server-sent events
-//   POST /hermes/steer      more for a running Hermes task; /hermes/stop stops it
+//   POST /hermes/steer      more for a running Hermes task; /hermes/stop stops it;
+//                           /hermes/approval answers a command Hermes asked to run (the page's
+//                           requests ask for approvals with `approvals: "screen"`; others deny them)
 //   POST /agent             one coding-agent (T3 Code) request, streamed back the same way
 //   POST /agent/cancel      interrupts a coding task's T3 thread; /agent/steer adds to its running turn
 //   GET  /ping              for the page's round-trip time
@@ -80,6 +82,22 @@ const HERMES_KEY = process.env.HERMES_API_KEY ?? hermesEnv.API_SERVER_KEY;
 const sessions = new Map();
 /** The Hermes run each call's task is on, while it runs: what steer and stop act on. */
 const hermesRuns = new Map();
+/** Approvals the page was asked for, by call and task. */
+const approvals = new Map();
+const APPROVAL_WAIT = 180;
+
+async function approve(key, choice, why) {
+  const pending = approvals.get(key);
+  if (!pending) return false;
+  approvals.delete(key);
+  clearTimeout(pending.timer);
+  const r = await fetch(`${HERMES_URL}/v1/runs/${encodeURIComponent(pending.run)}/approval`, {
+    method: "POST", headers: { Authorization: `Bearer ${HERMES_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify(pending.request ? { choice, request_id: pending.request } : { choice }),
+  }).catch((err) => ({ ok: false, status: 502, text: async () => err.message }));
+  if (!r.ok) console.error(`Hermes approval ${choice} (${why}): HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  return r.ok;
+}
 
 async function hermes(req, res) {
   const body = JSON.parse(await read(req));
@@ -122,15 +140,26 @@ async function hermes(req, res) {
         if (typeof o.run_id === "string") hermesRuns.set(key, o.run_id);
         if (name === "tool.started") send("progress", { text: `Using ${o.tool_name}${o.preview ? ": " + String(o.preview).slice(0, 120) : ""}` });
         else if (name === "approval.request") {
-          // Anyone near the speaker could be talking: risky commands are denied, as on the Echo.
-          send("progress", { text: "Denied a command that needed approval" });
-          await fetch(`${HERMES_URL}/v1/runs/${o.run_id}/approval`, { method: "POST", headers, body: JSON.stringify({ choice: "deny" }) });
+          const what = String(o.command ?? o.description ?? "a command").slice(0, 400);
+          if (body.approvals === "screen") {
+            // The page shows it with Approve and Deny; unanswered, it's denied.
+            const pending = { run: o.run_id, request: o.request_id ?? null, timer: null };
+            pending.timer = setTimeout(() => void approve(key, "deny", "nobody answered"), APPROVAL_WAIT * 1000);
+            approvals.set(key, pending);
+            send("approval", { command: what, description: o.description ?? null });
+            send("progress", { text: `Waiting for your approval: ${what}` });
+          } else {
+            // Anyone near the speaker could be talking: risky commands are denied, as on the Echo.
+            send("progress", { text: `Denied a command that needed approval: ${what}` });
+            await fetch(`${HERMES_URL}/v1/runs/${o.run_id}/approval`, { method: "POST", headers, body: JSON.stringify({ choice: "deny", request_id: o.request_id }) });
+          }
         } else if (name === "assistant.completed") answer = o.content ?? "";
         else if (name === "error") throw new Error(o.message ?? "Hermes error");
         else if (name?.startsWith("run.") && name !== "run.started" && name !== "run.queued") status = name.slice(4);
       }
     }
     hermesRuns.delete(key);
+    if (approvals.has(key)) { clearTimeout(approvals.get(key).timer); approvals.delete(key); }
     if (status === "cancelled") send("result", { text: "Cancelled. Completed actions were not undone.", failed: true });
     else if (answer) send("result", { text: answer });
     else if (status === "failed") send("result", { text: "Task failed. No automatic retry. Completed actions were not undone.", failed: true });
@@ -268,6 +297,12 @@ const server = createServer(async (req, res) => {
     if (path === "/agent" && req.method === "POST") return agent(req, res);
     if (path === "/hermes/steer" && req.method === "POST") return hermesRun(req, res, "steer");
     if (path === "/hermes/stop" && req.method === "POST") return hermesRun(req, res, "stop");
+    if (path === "/hermes/approval" && req.method === "POST") {
+      const b = JSON.parse(await read(req));
+      const ok = await approve(`${b.call}/${b.taskId}`, b.choice === "once" ? "once" : "deny", "the page");
+      res.writeHead(ok ? 204 : 409);
+      return res.end();
+    }
     if (path === "/agent/steer" && req.method === "POST") {
       const ok = await T3.steer(JSON.parse(await read(req))).catch((err) => { console.error(`T3 steer: ${err.message}`); return false; });
       res.writeHead(ok ? 204 : 409);
