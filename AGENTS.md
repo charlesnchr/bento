@@ -39,7 +39,8 @@ and setup; SPEC.md and QA.md go deeper.
 `voice-core/` is the voice call logic every surface runs (TypeScript, built to
 `voice-core/dist/voice-core.js`, run by QuickJS on Android and JavaScriptCore on the Mac). See
 voice-core/README.md: change it there, try it on the web surface, and keep `scenarios/` passing
-on every engine.
+on every engine. The web surface is https://voice.charlesnchr.com (the dev server on homelab, user
+unit `voice-core-dev`, behind Cloudflare Access); `voice-core/dev/talk.ts` makes scripted calls.
 
 ## Off macOS
 
