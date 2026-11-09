@@ -72,6 +72,8 @@
   .approval code { display: block; color: var(--ink); font: 12px ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 3px 0; max-height: 120px; overflow: auto; }
   .approval button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
   .task form input { flex: 1; min-width: 0; }
+  #earlier { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+  #earlier .task a { color: var(--accent); }
   .spin { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
 
@@ -136,7 +138,8 @@
   @media (max-width: 860px) {
     #talk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; min-width: 0; }
-    #side:has(#notasks) { display: none; }
+    #side:has(#notasks):has(#earlierbox[hidden]) { display: none; }
+    #earlier { flex-direction: row; overflow-x: auto; }
     header { gap: 6px 12px; }
     #bar { flex-wrap: wrap; }
     #say { order: -1; flex-basis: 100%; }
@@ -203,6 +206,10 @@
   <aside id="side">
     <h2><span>Tasks</span><span><span id="taskcount"></span> <button id="cancelall" hidden title="Cancel every running task">Cancel all</button></span></h2>
     <div id="tasks"><div id="notasks">No tasks yet. Ask for something that takes work and it appears here.</div></div>
+    <div id="earlierbox" hidden>
+      <h2><span>Coding agents from earlier calls</span></h2>
+      <div id="earlier"></div>
+    </div>
   </aside>
 </main>
 

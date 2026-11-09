@@ -322,6 +322,11 @@ const server = createServer(async (req, res) => {
       res.writeHead(ok ? 204 : 409);
       return res.end();
     }
+    if (path === "/agent/recent") {
+      const list = T3.available() ? await T3.recent().catch(() => []) : [];
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(JSON.stringify(list));
+    }
     if (path === "/agent/steer" && req.method === "POST") {
       const ok = await T3.steer(JSON.parse(await read(req))).catch((err) => { console.error(`T3 steer: ${err.message}`); return false; });
       res.writeHead(ok ? 204 : 409);

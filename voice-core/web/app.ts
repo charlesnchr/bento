@@ -360,6 +360,36 @@ function followUpForm(card: HTMLElement, t: Command) {
   input.focus();
 }
 
+/** T3 threads earlier calls started: they carry on after a call, so the panel says how they're doing. */
+async function showEarlier() {
+  let list: { thread: string; title: string; status: string; branch: string | null; pr: string | null; updated: string; last: string; waiting: boolean }[] = [];
+  try { list = await (await fetch("/agent/recent", { cache: "no-store" })).json(); } catch {}
+  const current = new Set([...tasks.values()].map((v) => v.thread).filter(Boolean));
+  list = list.filter((t) => !current.has(t.thread));
+  $("earlierbox").hidden = list.length === 0;
+  const pane = $("earlier");
+  pane.innerHTML = "";
+  for (const t of list) {
+    const card = document.createElement("div");
+    const state = t.waiting ? "waiting for approval in T3" : t.status;
+    card.className = `task ${t.status === "running" ? "running" : t.waiting ? "waiting" : "finished"}`;
+    const ago = Math.max(0, (Date.now() - Date.parse(t.updated)) / 1000);
+    card.innerHTML = `<div class="top"><span class="badge t3">T3</span><span class="label"></span>` +
+      `<span class="state">${t.status === "running" ? '<span class="spin"></span> ' : ""}${escapeHtml(state)} · ${elapsed(ago)} ago</span></div><div class="p"></div>`;
+    card.querySelector(".label")!.textContent = t.title;
+    card.querySelector(".p")!.textContent = t.last || (t.branch ? `On ${t.branch}` : "");
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    if (t.pr) { const a = document.createElement("a"); a.href = t.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Pull request"; acts.append(a); }
+    const copy = document.createElement("button");
+    copy.textContent = "Copy thread id";
+    copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
+    acts.append(copy);
+    card.append(acts);
+    pane.append(card);
+  }
+}
+
 const STATUS_TEXT: Record<string, string> = {
   idle: "Idle", connecting: "Connecting…", listening: "Listening", working: "Listening · tasks running",
   standby: "Paused while tasks run · speak to resume", waking: "Resuming…", ended: "Ended",
@@ -661,6 +691,7 @@ function end() {
   for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = true;
   $("ring").style.opacity = "0";
   $("resume").hidden = chat.length === 0;
+  void showEarlier();
   void wakeLock?.release().catch(() => {});
   wakeLock = null;
 }
@@ -854,6 +885,8 @@ async function main() {
   });
   new Replay($("replay"), loadCore);
   void ping();
+  void showEarlier();
+  window.setInterval(() => void showEarlier(), 30_000);
 }
 
 void main();

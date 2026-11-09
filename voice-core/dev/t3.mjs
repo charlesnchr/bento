@@ -74,9 +74,32 @@ async function show(thread, messages = 3) {
 const STORE = join(os.homedir(), ".local/share/voice-core/t3-threads.json");
 let threads = {};
 try { threads = JSON.parse(readFileSync(STORE, "utf8")); } catch {}
+/** Threads started from calls, newest last, for the page's list of earlier coding tasks. */
+let started = Object.values(threads).map((thread) => ({ thread, at: 0 }));
 function remember(key, thread) {
   threads[key] = thread;
+  started = [...started.filter((s) => s.thread !== thread), { thread, at: Date.now() }].slice(-50);
   try { writeFileSync(STORE, JSON.stringify(threads)); } catch {}
+}
+
+/** The latest threads calls started, newest first, with how each is doing. */
+export async function recent(limit = 8) {
+  const picked = [...started].reverse().slice(0, limit);
+  const out = await Promise.all(picked.map(async ({ thread }) => {
+    try {
+      const { thread: t, messages } = await show(thread, 1);
+      if (t.archived) return null;
+      const pr = t.linkedPullRequest?.url ?? t.pullRequests?.at(-1)?.url ?? null;
+      return {
+        thread, title: t.title, status: t.activeRunId != null ? "running" : t.status, branch: t.branch ?? null, pr,
+        updated: t.updatedAt, last: (messages.filter((m) => m.role === "assistant").at(-1)?.text ?? "").slice(0, 600),
+        waiting: t.pendingRequestCount > 0,
+      };
+    } catch {
+      return null;
+    }
+  }));
+  return out.filter((t) => t != null);
 }
 
 /**
