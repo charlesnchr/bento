@@ -104,7 +104,8 @@ async function hermes(req, res) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const abort = new AbortController();
-  req.on("close", () => abort.abort());
+  // The request's own "close" has long fired once its body is read: the response's says the page left.
+  res.on("close", () => abort.abort());
   const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 20_000);
   res.on("close", () => clearInterval(ping));
   const headers = { Authorization: `Bearer ${HERMES_KEY}`, "content-type": "application/json" };
@@ -166,6 +167,9 @@ async function hermes(req, res) {
     else send("result", { text: "Hermes finished without a text result. Do not infer success." });
   } catch (err) {
     if (!abort.signal.aborted) send("error", { message: err.message });
+  } finally {
+    if (key && approvals.has(key)) { clearTimeout(approvals.get(key).timer); approvals.delete(key); }
+    if (key) hermesRuns.delete(key);
   }
   res.end();
 }
@@ -210,7 +214,8 @@ async function agent(req, res) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const abort = new AbortController();
-  req.on("close", () => abort.abort());
+  // The request's own "close" has long fired once its body is read: the response's says the page left.
+  res.on("close", () => abort.abort());
   // Proxies close a quiet stream: a comment every 20 s keeps a long run's stream open.
   const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 20_000);
   try {
@@ -312,10 +317,10 @@ const server = createServer(async (req, res) => {
       req.on("close", () => { listeners.delete(res); clearInterval(ping); });
       return;
     }
-    if (path === "/hermes" && req.method === "POST") return hermes(req, res);
-    if (path === "/agent" && req.method === "POST") return agent(req, res);
-    if (path === "/hermes/steer" && req.method === "POST") return hermesRun(req, res, "steer");
-    if (path === "/hermes/stop" && req.method === "POST") return hermesRun(req, res, "stop");
+    if (path === "/hermes" && req.method === "POST") return await hermes(req, res);
+    if (path === "/agent" && req.method === "POST") return await agent(req, res);
+    if (path === "/hermes/steer" && req.method === "POST") return await hermesRun(req, res, "steer");
+    if (path === "/hermes/stop" && req.method === "POST") return await hermesRun(req, res, "stop");
     if (path === "/hermes/approval" && req.method === "POST") {
       const b = JSON.parse(await read(req));
       const ok = await approve(`${b.call}/${b.taskId}`, b.choice === "once" ? "once" : "deny", "the page");

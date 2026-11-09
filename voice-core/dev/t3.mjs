@@ -131,10 +131,12 @@ export async function runTask(body, send, signal) {
   }
   send("thread", { thread });
   let said = "";
+  const since = Date.now();
   for (;;) {
     await sleep(POLL, signal);
     const { thread: t, messages } = await show(thread, 3);
     const started = t.latestRunId != null && t.latestRunId !== before;
+    if (!started && Date.now() - since > 120_000) throw new Error("the T3 thread never started working on it");
     const last = messages.filter((m) => m.role === "assistant" && m.runId === t.latestRunId).at(-1)?.text ?? "";
     if (started && last && last !== said) {
       said = last;

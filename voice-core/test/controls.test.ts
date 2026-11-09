@@ -316,3 +316,59 @@ test("saying stop everything cancels every running task and the reply", () => {
   assert.ok(turnText(note).includes("cancelled every running task"));
   assert.ok(s.commands.filter((c) => c.type === "task").slice(-2).every((c: any) => c.state === "cancelled"));
 });
+
+test("stop everything arriving in pieces still cancels every task", () => {
+  const s = sim();
+  s.push({ type: "ask", text: "Find flights to Rome" });
+  s.advance(0.1);
+  s.audio(48_000);
+  s.activity("ACTIVITY_START");
+  s.heard("Stop");
+  s.heard(" everything.");
+  s.activity("ACTIVITY_END");
+  s.advance(1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1);
+});
+
+test("a message typed while the connection comes back goes once it's back", () => {
+  const s = sim();
+  s.resumable("h1");
+  s.push({ type: "ws.closed", sid: 1, code: 1006 });
+  s.push({ type: "say", text: "Are you there?" });
+  s.advance(0.5);
+  assert.equal(s.turns().filter((t) => turnText(t) === "Are you there?").length, 1);
+});
+
+test("a stop that turns into a request gives back the results it would have dropped", () => {
+  const s = sim();
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(0.3);
+  s.complete("Booked for two at seven.");
+  s.advance(2);
+  const before = s.finals().length + s.resultTurns().length;
+  s.said("Your");
+  s.audio(4_800);
+  s.activity("ACTIVITY_START");
+  s.interrupted();
+  s.heard("Stop");
+  s.heard(" the timer and what's the weather");
+  s.activity("ACTIVITY_END");
+  s.speaks("It's sunny.");
+  s.advance(15);
+  assert.equal(s.finals().length + s.resultTurns().length, before + 1);
+});
+
+test("the stop button after the model's turn has ended doesn't swallow the next one", () => {
+  const s = sim();
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(0.3);
+  s.audio(48_000); s.said("Sure."); s.generated(); s.turnComplete();
+  s.push({ type: "interrupt" });
+  s.complete("Booked.");
+  s.advance(3);
+  const plays = s.commands.filter((c) => c.type === "play").length;
+  s.audio(9_600); s.said("Your table is booked."); s.generated(); s.turnComplete();
+  assert.equal(s.commands.filter((c) => c.type === "play").length, plays + 1);
+});

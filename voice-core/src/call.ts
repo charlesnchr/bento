@@ -264,7 +264,9 @@ export class Call {
   /** whileSpeaking: the reply was cut by the wake word; the rest of its turn isn't played. */
   private dropTurn = false;
   /** After stop: the model's speech is dropped until it has answered the user's stop (or they speak again). */
-  private hush: { afterEnd: boolean; byVoice: boolean } | null = null;
+  private hush: { afterEnd: boolean; byVoice: boolean; stopped: Unheard[] } | null = null;
+  /** Whether the user's current utterance already cancelled every task. */
+  private cancelledAll = false;
   /** What the user has said in their current turn, for spoken commands. */
   private utterance = "";
   /** Frames typed while the call was off the model, sent once it's back. */
@@ -526,12 +528,14 @@ export class Call {
       return;
     }
     if (this.reconnecting) { this.reconnecting = false; this.log("info", "reconnected: the session goes on"); }
+    const typed = this.typedLater.splice(0);
     const old = this.socket;
     this.socket = rotation.sock;
     this.goingAway = false;
     this.newSession();
     this.closeSocket(old);
     for (const frame of this.resend.splice(0)) this.send(frame);
+    for (const frame of typed) this.send(frame);
     this.settled();
   }
 
@@ -975,6 +979,7 @@ export class Call {
   private activityStart(): void {
     const at = this.t;
     this.utterance = "";
+    this.cancelledAll = false;
     if (this.hush?.afterEnd) this.hush = null;
     this.protocol.activityStarted(at);
     this.lastSpeech = at;
@@ -1113,10 +1118,14 @@ export class Call {
   private hushReply(why: string, byVoice: boolean): void {
     this.log("info", why);
     this.emit({ type: "flush" });
-    // The user stopped it on purpose: what it was saying isn't said again.
-    this.heardOut(this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting));
+    // The user stopped it on purpose: what it was saying isn't said again, unless the stop turns
+    // out to be the start of something else (see spoken).
+    const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting);
+    for (const item of stopped) this.unheard.splice(this.unheard.indexOf(item), 1);
     this.speechUntil = this.t;
-    this.hush = { afterEnd: !this.userTalking, byVoice };
+    // A turn the model has finished needs no hush: only what was still to play goes.
+    if (!byVoice && !this.geminiSpeaking) { this.updateWakeword(); return; }
+    this.hush = { afterEnd: !this.userTalking, byVoice, stopped };
     const hush = this.hush;
     this.sleep(HUSH_MAX, () => { if (this.hush === hush) this.hush = null; });
     this.updateWakeword();
@@ -1129,7 +1138,7 @@ export class Call {
     for (const task of running) this.cancelNow(task.id);
     const names = running.map((t) => `"${t.label}"`).join(", ");
     this.log("info", `cancelled every task: ${names}`);
-    this.send(noteFrame(`From Bento, not the user's words: the user cancelled every running task (${names}). What they already did was not undone. Don't call ask_hermes for them again unless the user asks.`));
+    this.send(noteFrame(`From Bento, not the user's words: the user cancelled every running task (${names}). What they already did was not undone. Don't call ask_hermes for them again unless the user asks.`), true);
   }
 
   /** The stop button, or the host's stop word. */
@@ -1144,7 +1153,8 @@ export class Call {
     const names = [...this.c.vocabulary, "Woodhouse"];
     const command = commandIn(this.utterance, this.c.voiceCommands, names);
     if (command === "cancelAll") {
-      if (this.hush?.byVoice) return;
+      if (this.cancelledAll) return;
+      this.cancelledAll = true;
       this.emit({ type: "voiceCommand", command, heard: collapse(this.utterance) });
       this.hushReply(`the user said "${collapse(this.utterance)}": every task stops`, true);
       this.cancelAll();
@@ -1156,8 +1166,15 @@ export class Call {
       this.hushReply(`the user said "${collapse(this.utterance)}": the reply stops`, true);
       return;
     }
-    // More words after a stop: it was the start of something else, so the model may answer it.
-    if (this.hush?.byVoice) { this.hush = null; this.log("info", "not a stop after all: the model may answer"); }
+    // More words after a stop: it was the start of something else, so the model may answer it, and
+    // the results it would have dropped go again.
+    if (this.hush?.byVoice && !this.cancelledAll) {
+      const { stopped } = this.hush;
+      this.hush = null;
+      this.log("info", "not a stop after all: the model may answer");
+      this.unheard.push(...stopped.filter((u) => !this.unheard.includes(u)));
+      this.again(stopped);
+    }
     if (command === "hangUp") {
       const turn = this.userTurns;
       const heard = this.utterance;
@@ -1187,7 +1204,7 @@ export class Call {
     this.played();
     this.lapseQuestions();
     const frame = typedFrame(text);
-    if (this.standby || this.waking || !this.listening) {
+    if (this.standby || this.waking || !this.listening || this.rotating) {
       this.typedLater.push(frame);
       if (this.standby) this.defer(() => this.comeBack());
       return;
