@@ -8,17 +8,34 @@ class Capture extends AudioWorkletProcessor {
     super();
     this.step = sampleRate / 16000;
     this.pos = 0;
-    this.prev = 0;
     this.frame = new Int16Array(320);
     this.n = 0;
+    // A windowed-sinc low-pass at 7 kHz, so nothing above 16 kHz's 8 kHz limit folds back into speech.
+    const taps = 47, cut = 7000 / sampleRate;
+    this.taps = new Float32Array(taps);
+    let sum = 0;
+    for (let k = 0; k < taps; k++) {
+      const m = k - (taps - 1) / 2;
+      const sinc = m === 0 ? 2 * cut : Math.sin(2 * Math.PI * cut * m) / (Math.PI * m);
+      const w = 0.42 - 0.5 * Math.cos((2 * Math.PI * k) / (taps - 1)) + 0.08 * Math.cos((4 * Math.PI * k) / (taps - 1));
+      this.taps[k] = sinc * w;
+      sum += this.taps[k];
+    }
+    for (let k = 0; k < taps; k++) this.taps[k] /= sum;
+    this.history = new Float32Array(taps);
+    this.at = 0;
   }
   process(inputs) {
     const input = inputs[0] && inputs[0][0];
     if (!input) return true;
-    // Linear interpolation down to 16 kHz, after a two-tap average that takes the edge off aliasing.
+    const taps = this.taps, h = this.history, n = taps.length;
     for (let i = 0; i < input.length; i++) {
-      const x = (input[i] + this.prev) / 2;
-      this.prev = input[i];
+      h[this.at] = input[i];
+      this.at = (this.at + 1) % n;
+      // Only the samples kept need filtering: at most one in every step.
+      if (this.pos > 1) { this.pos -= 1; continue; }
+      let x = 0;
+      for (let k = 0, j = this.at; k < n; k++, j = j + 1 === n ? 0 : j + 1) x += taps[k] * h[j];
       while (this.pos <= 1) {
         const s = Math.max(-1, Math.min(1, x));
         this.frame[this.n++] = s < 0 ? s * 32768 : s * 32767;
