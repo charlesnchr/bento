@@ -49,6 +49,19 @@ final class DictationController {
     private(set) var assistantEnabled = false
     /// The tap, pill and warm microphone are only wanted while one of them is on.
     private var wantsEngine: Bool { dictationEnabled || assistantEnabled }
+    /// A speculative graph build hung inside AVFAudio (see WarmEnginePool).
+    var onPrewarmHang: (() -> Void)? {
+        get { warmEngines.onHang }
+        set { warmEngines.onHang = newValue }
+    }
+    /// Nothing is recording, transcribing, retrying or talking, and no Composer
+    /// draft would be lost: safe to relaunch.
+    var isQuiescent: Bool {
+        (coordinator.state == .idle || coordinator.state.isTerminal) && !retrying
+            && !assistant.isBusy && !assistant.isLive && !composer.isInUse
+    }
+    /// A meeting's own capture is running: no speculative build beside it.
+    func setMeetingCapturing(_ capturing: Bool) { warmEngines.setMeetingActive(capturing) }
     var onStatusItemState: ((VoiceIndicator) -> Void)? {
         didSet { pill.onStatusItemState = onStatusItemState }
     }
@@ -172,7 +185,10 @@ final class DictationController {
             return self.coordinator.state == .idle || self.coordinator.state.isTerminal
         }
         assistant.beforeLiveStart = { [weak self] in await self?.warmEngines.suspend() }
-        assistant.afterLiveEnd = { [weak self] in self?.warmEngines.resume() }
+        assistant.afterLiveEnd = { [weak self] in
+            guard let self, self.wantsEngine else { return }
+            self.warmEngines.resume()
+        }
         assistant.onLegacyDictation = { [weak self] in self?.toggleAssistantRequest() }
     }
 
@@ -941,6 +957,10 @@ final class DictationController {
             engine.setExternalSessionActive(true)
         default:
             engine.setExternalSessionActive(assistant.isBusy)
+        }
+        switch state {
+        case .warming, .recording, .finalizing: warmEngines.setCaptureActive(true)
+        default: warmEngines.setCaptureActive(false)
         }
         pill.transition(to: state)
     }

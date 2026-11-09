@@ -56,6 +56,7 @@ final class VoiceApp {
     private var observers: [NSObjectProtocol] = []
     private var accessibilityGranted = AXIsProcessTrusted()
     private let recognizer = ParakeetRecognizer()
+    private var hangRecovery: AudioHangRecovery?
 
     private init() {
         // Before anything reads settings: Bento's config.json may change them.
@@ -70,6 +71,9 @@ final class VoiceApp {
     private func start() {
         dictation.start()
         startMeetings()
+        let recovery = AudioHangRecovery(isQuiescent: { [weak self] in self?.isQuiescent ?? true })
+        dictation.onPrewarmHang = { recovery.begin() }
+        hangRecovery = recovery
         startLocalSpeech()
         if ProcessInfo.processInfo.environment["BENTO_DEV"] != nil { observeDevCommands() }
         // Accessibility granted in Settings → General after launch: start the tap.
@@ -79,12 +83,20 @@ final class VoiceApp {
         })
     }
 
+    /// No dictation, voice call or meeting in progress, notes included.
+    private var isQuiescent: Bool {
+        dictation.isQuiescent && meetingState == .idle && (meetings?.finishing.isEmpty ?? true)
+    }
+
     /// Meetings record beside dictation: their own capture and sockets, and
     /// the pill for notices.
     private func startMeetings() {
         let meetings = MeetingController(coordinator: dictation.coordinator)
         meetings.onNotice = { [weak dictation] message in dictation?.showMeetingNotice(message) }
-        meetings.onMenuState = { [weak self] state in self?.meetingState = state }
+        meetings.onMenuState = { [weak self] state in
+            self?.meetingState = state
+            self?.dictation.setMeetingCapturing(state != .idle)
+        }
         dictation.onAssistantLiveCall = { [weak meetings] active in meetings?.setAssistantCallActive(active) }
         self.meetings = meetings
     }
