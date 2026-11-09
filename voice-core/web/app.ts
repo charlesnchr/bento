@@ -144,6 +144,17 @@ async function ping() {
 
 // The screen.
 
+/** A system notification while the page is hidden: a task finished, or one needs the user. */
+function notify(title: string, body: string) {
+  if (!document.hidden || !("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const n = new Notification(title, { body: body.slice(0, 180), icon: "/web/icons/icon-192.png", tag: title });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch {
+    // Phones want notifications from a service worker; the page has none.
+  }
+}
+
 function toast(text: string) {
   const t = $("toast");
   t.textContent = text;
@@ -512,6 +523,7 @@ async function tool(c: Command) {
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
     const row = result(agent, c.label, text, failed);
+    notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
     if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastRole = ""; }
     if (view) { view.result = row; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
@@ -546,6 +558,7 @@ async function tool(c: Command) {
           const view = tasks.get(c.taskId);
           if (view) { view.approval = { command: data.command }; showTasks(true); }
           toast(`Hermes asks to run: ${data.command.slice(0, 80)}`);
+          notify(`Hermes · ${c.label} needs your approval`, data.command);
           audio.cue(APPROVAL_TONE);
         }
         else if (event === "result") done(data.text, data.failed);
@@ -585,6 +598,7 @@ async function start(carryOn = false) {
     return;
   }
   $<HTMLButtonElement>("call").disabled = true;
+  if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission().catch(() => {});
   try {
     await audio.open();
     core = await loadCore();
