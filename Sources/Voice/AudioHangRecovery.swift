@@ -48,13 +48,25 @@ final class AudioHangRecovery {
         }
     }
 
-    /// Opens this same app bundle once this process has exited, then quits.
-    /// BENTO_* variables carry over, as in Updater.restart().
+    /// What to reopen: this bundle, or, when `brew upgrade` has removed the
+    /// keg it ran from, the stable Homebrew opt path. Nil means nothing to
+    /// reopen, and then Bento must not quit.
+    static func relaunchTarget(
+        bundle: URL = Bundle.main.bundleURL,
+        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> URL? {
+        // DevVoice and other bare binaries have nothing to reopen.
+        guard bundle.pathExtension == "app" else { return nil }
+        if exists(bundle.path) { return bundle }
+        return ["/opt/homebrew/opt/bento/Bento.app", "/usr/local/opt/bento/Bento.app"]
+            .first(where: exists).map { URL(fileURLWithPath: $0) }
+    }
+
+    /// Opens the app once this process has exited, then quits. BENTO_*
+    /// variables carry over, as in Updater.restart().
     static func relaunchApp() {
-        let bundle = Bundle.main.bundleURL
-        guard bundle.pathExtension == "app" else {
-            // DevVoice and other bare binaries have nothing to reopen.
-            Log.audio.error("prewarm hang: not running from an app bundle — quit and restart to recover the CPU")
+        guard let bundle = relaunchTarget() else {
+            Log.audio.error("prewarm hang: no app bundle to reopen — quit and restart Bento to recover the CPU")
             return
         }
         let carried = ProcessInfo.processInfo.environment.filter { $0.key.hasPrefix("BENTO_") }.sorted { $0.key < $1.key }

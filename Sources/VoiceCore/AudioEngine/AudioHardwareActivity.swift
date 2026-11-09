@@ -46,12 +46,19 @@ public final class AudioHardwareActivity: @unchecked Sendable {
                 AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listener)
             }
             watchDefaultInput()
+            // Registration took HAL time: the quiet period starts after it.
+            report()
         }
     }
 
-    /// Runs on `queue`.
+    /// Runs on `queue`. Reports first: moving the listeners is HAL work that
+    /// can stall mid-change, and the pool must already know the HAL is busy.
     private func changed() {
+        report()
         watchDefaultInput()
+    }
+
+    private func report() {
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { self?.onActivity?() }
         }

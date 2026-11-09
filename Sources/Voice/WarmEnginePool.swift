@@ -53,6 +53,12 @@ final class WarmEnginePool {
     private var gate = PrewarmGate(now: WarmEnginePool.now)
     private var watchdog = BuildWatchdog()
     private var buildNumber = 0
+    private var dictationCapturing = false
+    private var meetingCapturing = false
+    /// A build hung in this process. Unlike a hang inherited from before a
+    /// relaunch, this one never expires: the stuck thread is still here.
+    private var hungThisRun = false
+    private var cooldownEnd: Task<Void, Never>?
     private var wake: Task<Void, Never>?
     private let hardware = AudioHardwareActivity()
 
@@ -66,7 +72,17 @@ final class WarmEnginePool {
         gate.setSuspended(true)
         if let hang = PrewarmHangRecord().recentHang(now: Date()) {
             gate.disable()
-            Log.audio.error("prewarm: off for this run — a capture-graph build hung at \(hang, privacy: .public); dictation builds its graph at the key press")
+            let until = hang.addingTimeInterval(PrewarmHangRecord.cooldown)
+            Log.audio.error("prewarm: off until \(until, privacy: .public) — a capture-graph build hung at \(hang, privacy: .public); dictation builds its graph at the key press")
+            cooldownEnd = Task { [weak self] in
+                let seconds = max(until.timeIntervalSinceNow, 0)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard !Task.isCancelled, let self, !self.hungThisRun else { return }
+                Log.audio.info("prewarm: hang cooldown over — prewarming again")
+                self.gate.enable()
+                self.gate.noteActivity(at: Self.now)
+                self.prewarmNext()
+            }
         }
         hardware.onActivity = { [weak self] in self?.hardwareChanged() }
         hardware.start()
@@ -75,6 +91,7 @@ final class WarmEnginePool {
     /// The engine for a session that is starting right now. The next spare is
     /// built once the session's capture ends and the HAL settles.
     func take() -> AudioCaptureEngine {
+        dictationCapturing = true
         gate.setCaptureActive(true)
         if let spare {
             // A stale spare is still correct: start() sees the device moved
@@ -91,6 +108,18 @@ final class WarmEnginePool {
 
     /// The dictation's capture started or ended (warming, recording, finalizing).
     func setCaptureActive(_ active: Bool) {
+        dictationCapturing = active
+        captureChanged()
+    }
+
+    /// A meeting is recording with its own engine.
+    func setMeetingActive(_ active: Bool) {
+        meetingCapturing = active
+        captureChanged()
+    }
+
+    private func captureChanged() {
+        let active = dictationCapturing || meetingCapturing
         guard active != gate.captureActive else { return }
         gate.setCaptureActive(active)
         // Stopping an engine moves the route (a Bluetooth headset drops back
@@ -124,7 +153,7 @@ final class WarmEnginePool {
         // build must not keep the call from starting.
         let deadline = Self.now + watchdog.hungAfter
         while gate.building, !watchdog.hung, Self.now < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
+            do { try await Task.sleep(nanoseconds: 20_000_000) } catch { return }
         }
     }
 
@@ -239,6 +268,8 @@ final class WarmEnginePool {
     }
 
     private func buildHung(after seconds: TimeInterval) {
+        hungThisRun = true
+        cooldownEnd?.cancel(); cooldownEnd = nil
         gate.disable()
         wake?.cancel(); wake = nil
         PrewarmHangRecord().record(at: Date())

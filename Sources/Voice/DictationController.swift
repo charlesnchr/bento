@@ -54,10 +54,14 @@ final class DictationController {
         get { warmEngines.onHang }
         set { warmEngines.onHang = newValue }
     }
-    /// Nothing is recording, transcribing or talking: safe to relaunch.
+    /// Nothing is recording, transcribing, retrying or talking, and no Composer
+    /// draft would be lost: safe to relaunch.
     var isQuiescent: Bool {
-        (coordinator.state == .idle || coordinator.state.isTerminal) && !assistant.isBusy && !assistant.isLive
+        (coordinator.state == .idle || coordinator.state.isTerminal) && !retrying
+            && !assistant.isBusy && !assistant.isLive && !composer.isInUse
     }
+    /// A meeting's own capture is running: no speculative build beside it.
+    func setMeetingCapturing(_ capturing: Bool) { warmEngines.setMeetingActive(capturing) }
     var onStatusItemState: ((VoiceIndicator) -> Void)? {
         didSet { pill.onStatusItemState = onStatusItemState }
     }

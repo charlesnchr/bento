@@ -43,6 +43,24 @@ struct AudioHangRecoveryTests {
         #expect(probe.relaunches == 1)
     }
 
+    @Test func reopensTheRunningBundleWhenItIsThere() {
+        let bundle = URL(fileURLWithPath: "/Users/me/workspace/bento/dist/Bento.app")
+        #expect(AudioHangRecovery.relaunchTarget(bundle: bundle, exists: { _ in true }) == bundle)
+    }
+
+    @Test func reopensTheHomebrewAppWhenAnUpgradeRemovedTheKeg() {
+        let keg = URL(fileURLWithPath: "/opt/homebrew/Cellar/bento/0.7.8/Bento.app")
+        let target = AudioHangRecovery.relaunchTarget(bundle: keg, exists: { $0 == "/opt/homebrew/opt/bento/Bento.app" })
+        #expect(target?.path == "/opt/homebrew/opt/bento/Bento.app")
+    }
+
+    @Test func doesNotQuitWithNothingToReopen() {
+        let bare = URL(fileURLWithPath: "/Users/me/workspace/bento/.build/debug")
+        #expect(AudioHangRecovery.relaunchTarget(bundle: bare, exists: { _ in true }) == nil)
+        let gone = URL(fileURLWithPath: "/tmp/Bento.app")
+        #expect(AudioHangRecovery.relaunchTarget(bundle: gone, exists: { _ in false }) == nil)
+    }
+
     private func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<200 where !condition() {
             try? await Task.sleep(nanoseconds: 10_000_000)

@@ -93,7 +93,10 @@ final class VoiceApp {
     private func startMeetings() {
         let meetings = MeetingController(coordinator: dictation.coordinator)
         meetings.onNotice = { [weak dictation] message in dictation?.showMeetingNotice(message) }
-        meetings.onMenuState = { [weak self] state in self?.meetingState = state }
+        meetings.onMenuState = { [weak self] state in
+            self?.meetingState = state
+            self?.dictation.setMeetingCapturing(state != .idle)
+        }
         dictation.onAssistantLiveCall = { [weak meetings] active in meetings?.setAssistantCallActive(active) }
         self.meetings = meetings
     }

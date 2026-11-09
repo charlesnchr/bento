@@ -125,6 +125,19 @@ struct PrewarmGateTests {
     }
 }
 
+extension PrewarmGateTests {
+    @Test func anInheritedCooldownCanEndButNotWhileABuildIsStuck() {
+        var gate = PrewarmGate(quietPeriod: 2, now: 0)
+        gate.disable()
+        gate.enable()
+        #expect(gate.decide(at: 10) == .build)
+        gate.buildStarted()
+        gate.disable()
+        gate.enable()
+        #expect(gate.decide(at: 100) == .hold(.building))
+    }
+}
+
 struct BuildWatchdogTests {
 
     @Test func aNormalBuildReportsNothing() {

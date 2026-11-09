@@ -74,6 +74,9 @@ public struct PrewarmGate: Sendable {
     public mutating func setCaptureActive(_ value: Bool) { captureActive = value }
     public mutating func spareGone() { hasSpare = false }
     public mutating func disable() { disabled = true; hasSpare = false }
+    /// Only for a cooldown inherited from an earlier process. A build stuck in
+    /// this one is still running (`building` stays set), so nothing starts.
+    public mutating func enable() { disabled = false }
 
     public mutating func buildStarted() {
         building = true
