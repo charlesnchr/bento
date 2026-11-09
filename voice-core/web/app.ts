@@ -583,6 +583,7 @@ function readConfig(): Record<string, unknown> {
     ...given, trace: checked("trace"),
   };
   if (checked("ptt")) config.muted = true;
+  if (given.voice === undefined) config.voice = $<HTMLSelectElement>("voice").value;
   if (config.steering === undefined) config.steering = ["hermes", "t3"];
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   return config;
@@ -748,6 +749,9 @@ function settingsFromStorage() {
   const delay = localStorage.getItem("voice.fakedelay");
   if (delay) $<HTMLInputElement>("fakedelay").value = delay;
   $("fakedelay").addEventListener("change", () => localStorage.setItem("voice.fakedelay", $<HTMLInputElement>("fakedelay").value));
+  const voice = localStorage.getItem("voice.voice");
+  if (voice) $<HTMLSelectElement>("voice").value = voice;
+  $("voice").addEventListener("change", () => localStorage.setItem("voice.voice", $<HTMLSelectElement>("voice").value));
   const mode = localStorage.getItem("voice.mode");
   if (mode) $<HTMLSelectElement>("mode").value = mode;
   $("mode").addEventListener("change", () => localStorage.setItem("voice.mode", $<HTMLSelectElement>("mode").value));
