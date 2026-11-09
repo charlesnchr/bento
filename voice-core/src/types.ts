@@ -54,6 +54,25 @@ export type WhileSpeaking = "send" | "silence" | "wake";
  */
 export type Api = "gemini" | "vertex";
 
+/**
+ * Spoken commands the core acts on itself, from the user's transcribed words. An utterance that is
+ * one of these and nothing more counts: names and fillers around it ("Woodhouse, stop please") are
+ * ignored. `stop` cuts the model's reply and keeps it quiet until the user speaks again; `hangUp`
+ * ends the call once the user has finished saying it.
+ */
+export interface VoiceCommands {
+  stop: string[];
+  hangUp: string[];
+}
+
+/**
+ * A coding agent the model can hand repository work to (T3 Code), alongside Hermes: its tasks work
+ * like Hermes tasks. `projects` are the names the model may pass as `project`.
+ */
+export interface CodingAgent {
+  projects: string[];
+}
+
 export interface CallConfig {
   api: Api;
   /** The surface, for the instruction and the words Hermes gets: "Android", "macOS", "web", "Echo". */
@@ -84,6 +103,9 @@ export interface CallConfig {
   opening?: string;
   mic: { whileSpeaking: WhileSpeaking; gainDb: number };
   earcons: boolean;
+  voiceCommands: VoiceCommands;
+  /** Declares ask_coding_agent when set. */
+  codingAgent: CodingAgent | null;
   limits: Limits;
 }
 
@@ -108,10 +130,21 @@ export type Event =
   /** The host heard its wake word (whileSpeaking "wake"). */
   | { t: number; type: "wake" }
   | { t: number; type: "cancelTask"; task: string }
+  /** The user pressed stop (or the host heard a stop word): the reply stops, and the rest of its turn is dropped. */
+  | { t: number; type: "interrupt" }
+  /** The user typed to the model: a turn of its own, as if said. */
+  | { t: number; type: "say"; text: string }
+  /** A new task from the screen, straight to its agent ("hermes" unless "t3"); its result comes back like any other. */
+  | { t: number; type: "ask"; text: string; agent?: Agent; project?: string }
+  /** A follow-up to a task from the screen: its agent gets it next, in the task's session. */
+  | { t: number; type: "steer"; task: string; text: string }
   /** Lends the microphone to a dictation while in standby; `reclaim` takes it back. */
   | { t: number; type: "lend" }
   | { t: number; type: "reclaim" }
   | { t: number; type: "stop"; message?: string };
+
+/** Who works on a task: Hermes, or the coding agent (T3 Code). */
+export type Agent = "hermes" | "t3";
 
 export type Status = "connecting" | "listening" | "working" | "standby" | "waking" | "ended";
 
@@ -132,18 +165,22 @@ export type Command =
   /** whileSpeaking "wake": listen for the wake word (on) or stop (off). */
   | { type: "wakeword"; on: boolean }
   /**
-   * Run a tool and answer with `tool.result` or `tool.error` for `run`. A Hermes task carries the
-   * message for Hermes, its task key and name, and whether it continues that task's session.
+   * Run a tool and answer with `tool.result` or `tool.error` for `run`. A task carries the message
+   * for its agent, its task key and name, and whether it continues that task's session; a coding
+   * task the project the model named, if it did.
    */
-  | { type: "tool.call"; run: string; kind: "hermes"; message: string; request: string; taskId: string; label: string; followUp: boolean }
+  | { type: "tool.call"; run: string; kind: "hermes"; agent: Agent; message: string; request: string; taskId: string; label: string; followUp: boolean; project?: string }
   | { type: "tool.call"; run: string; kind: "host"; name: string; args: unknown }
-  | { type: "tool.cancel"; run: string }
+  /** Stop a tool run: the task was cancelled, or the call ended (a host may leave a long agent running then). */
+  | { type: "tool.cancel"; run: string; reason: "cancelled" | "ended" }
   | { type: "status"; status: Status; message?: string | null }
   | { type: "transcript"; role: "user" | "assistant"; text: string }
   /** A task's state for the screen. */
-  | { type: "task"; id: string; label: string; request: string; state: string; progress: string | null; question: string | null }
+  | { type: "task"; id: string; label: string; agent: Agent; request: string; state: string; progress: string | null; question: string | null }
   /** Tasks waiting for the user's answer, by key, with what Hermes asked. */
   | { type: "questions"; questions: Record<string, string> }
   /** The microphone has picked nothing up for a while, even after restarting. */
   | { type: "micSilent"; silent: boolean }
-  | { type: "log"; level: "info" | "warn"; message: string };
+  | { type: "log"; level: "info" | "warn"; message: string }
+  /** The core heard a spoken command and acted on it. */
+  | { type: "voiceCommand"; command: "stop" | "hangUp"; heard: string };

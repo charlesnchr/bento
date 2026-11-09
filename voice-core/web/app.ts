@@ -1,7 +1,11 @@
-// The web surface: a fourth host for the voice core, for trying a change in seconds. It loads the
-// dev server's latest build at each call, so an edit in src/ is live on the next call, and keeps
-// every call as a trace the replay view (and any other host) can run again.
+// The web surface: a fourth host for the voice core, and a phone-friendly way to use it for work.
+// It loads the dev server's latest build at each call, so an edit in src/ is live on the next
+// call, and keeps every call as a trace the replay view (and any other host) can run again.
+//
+// The host's part is small: the microphone and speaker (audio.ts), the model's socket through the
+// server's relay, Hermes and T3 through the server, and the screen. The core decides the rest.
 
+import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
 import { Replay } from "./replay.ts";
 
@@ -14,9 +18,11 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
+interface ServerConfig { route: string; model: string; version: string; hermes: boolean; t3: string[] | null }
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
+const checked = (id: string) => $<HTMLInputElement>(id).checked;
 
 /** The latest build from the dev server, evaluated afresh: an edit in src/ is in the next call. */
 export async function loadCore(url = "/voice-core.js"): Promise<Core> {
@@ -35,7 +41,7 @@ const FAKE_TV = [
 ];
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", standbyAfter: 20 },
+  web: { platform: "web", device: "browser", standbyAfter: 30, vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
   android: { platform: "Android", device: "phone", standbyAfter: 20 },
   "android wake word": { platform: "Android", device: "phone", standbyAfter: 20, hangUpAfter: 15 },
   macos: { platform: "macOS", device: "Mac", standbyAfter: 20 },
@@ -45,20 +51,69 @@ const PRESETS: Record<string, Record<string, unknown>> = {
   },
 };
 
-// The page.
+// State.
 
 const audio = new CallAudio();
-let config: { route: string; model: string; version: string; hermes: boolean };
+let server: ServerConfig;
 let core: Core | null = null;
 let callId = 0;
 let callName = "";
 let ticker = 0;
 let traceTimer = 0;
+let startedAt = now();
 const sockets = new Map<number, WebSocket>();
-const tools = new Map<string, AbortController>();
-const tasks = new Map<string, Command>();
+const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
+interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement }
+const tasks = new Map<string, TaskView>();
 let counts = { mic: 0, play: 0, sent: 0 };
 let fakeTvLevel = 15;
+let coreStatus = "idle";
+let muted = false;
+let holding = false;
+let wakeLock: { release(): Promise<void> } | null = null;
+
+// Latency: the network's round trip, and how long after the user stops talking the reply starts.
+const metrics = { rtt: [] as number[], reply: [] as number[], lastVoice: 0, lastPlay: 0, replied: true };
+
+function median(xs: number[]): number | null {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+function showMetrics() {
+  const parts: string[] = [];
+  const rtt = median(metrics.rtt);
+  if (rtt != null) parts.push(`network ${Math.round(rtt * 1000)} ms`);
+  const reply = median(metrics.reply);
+  if (reply != null) parts.push(`reply ${metrics.reply.at(-1)!.toFixed(1)} s (median ${reply.toFixed(1)})`);
+  const out = audio.outputLatency;
+  if (out != null) parts.push(`audio ${Math.round(out * 1000)} ms`);
+  let buffered = 0;
+  for (const ws of sockets.values()) buffered += ws.bufferedAmount;
+  if (buffered > 32_000) parts.push(`upload behind ${(buffered / 32_000).toFixed(1)} s`);
+  $("metrics").textContent = parts.join(" · ");
+}
+
+async function ping() {
+  const t = now();
+  try {
+    await fetch("/ping", { cache: "no-store" });
+    metrics.rtt.push(now() - t);
+    if (metrics.rtt.length > 12) metrics.rtt.shift();
+  } catch {}
+  showMetrics();
+}
+
+// The screen.
+
+function toast(text: string) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("on");
+  clearTimeout((toast as any).timer);
+  (toast as any).timer = setTimeout(() => t.classList.remove("on"), 1800);
+}
 
 function log(kind: string, text: string, cls = "") {
   const pane = $("log");
@@ -71,59 +126,184 @@ function log(kind: string, text: string, cls = "") {
   row.append(body);
   const stick = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 30;
   pane.append(row);
-  while (pane.childElementCount > 2000) pane.firstElementChild!.remove();
+  while (pane.childElementCount > 3000) pane.firstElementChild!.remove();
   if (stick) pane.scrollTop = pane.scrollHeight;
 }
-let startedAt = now();
 
 /** A frame from or to Gemini, with audio cut out, short enough to read. */
 function brief(data: string): string {
   return data.replace(/"data":"[A-Za-z0-9+/=]{40,}"/g, (m) => `"data":"…${Math.round(((m.length - 9) * 3) / 4)} bytes"`).slice(0, 600);
 }
 
-function transcript(role: string, text: string) {
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** A little Markdown, safely: code, bold, links, lists and headings, the rest as text. */
+function markdown(text: string): string {
+  const blocks = escapeHtml(text.trim()).split(/```(?:\w+)?\n?/);
+  return blocks.map((block, i) => {
+    if (i % 2 === 1) return `<pre>${block}</pre>`;
+    const inline = (s: string) => s
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+    let html = "";
+    let list: string | null = null;
+    for (const raw of block.split("\n")) {
+      const item = raw.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)$/);
+      if (item) {
+        const kind = item[1] ? "ol" : "ul";
+        if (list !== kind) { if (list) html += `</${list}>`; html += `<${kind}>`; list = kind; }
+        html += `<li>${inline(item[2])}</li>`;
+        continue;
+      }
+      if (list) { html += `</${list}>`; list = null; }
+      const heading = raw.match(/^#{1,6}\s+(.*)$/);
+      html += heading ? `<b>${inline(heading[1])}</b><br>` : raw.trim() === "" ? "<br>" : `${inline(raw)}<br>`;
+    }
+    if (list) html += `</${list}>`;
+    return html;
+  }).join("");
+}
+
+function scrollDown(force = false) {
+  const pane = $("transcript");
+  if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
+}
+
+let lineOpen = false;
+
+function transcript(role: "user" | "assistant", text: string) {
+  $("empty").hidden = true;
   const pane = $("transcript");
   const last = pane.lastElementChild as HTMLElement | null;
-  if (last && last.dataset.role === role && !last.dataset.closed) last.querySelector(".text")!.textContent += text;
+  if (lineOpen && last && last.dataset.role === role) last.querySelector(".text")!.textContent += text;
   else {
     const row = document.createElement("div");
     row.className = `line ${role}`;
     row.dataset.role = role;
-    row.innerHTML = `<span class="who">${role === "user" ? "You" : role === "hermes" ? "Hermes" : "Gemini"}</span><span class="text"></span>`;
-    row.querySelector(".text")!.textContent = text;
+    row.innerHTML = `<span class="who">${role === "user" ? "You" : "Gemini"}</span><span class="text"></span>`;
+    row.querySelector(".text")!.textContent = text.trimStart();
     pane.append(row);
+    lineOpen = true;
   }
-  pane.scrollTop = pane.scrollHeight;
+  scrollDown(role === "user");
 }
 
-function closeLine() {
-  const last = $("transcript").lastElementChild as HTMLElement | null;
-  if (last) last.dataset.closed = "1";
+function note(text: string) {
+  const row = document.createElement("div");
+  row.className = "line note";
+  row.textContent = text;
+  $("transcript").append(row);
+  lineOpen = false;
+  scrollDown();
 }
+
+function result(agent: string, label: string, text: string, failed = false): HTMLElement {
+  $("empty").hidden = true;
+  const row = document.createElement("div");
+  row.className = `line result ${agent === "t3" ? "t3" : ""}`;
+  row.innerHTML = `<span class="who">${agent === "t3" ? "T3" : "Hermes"} · ${escapeHtml(label)}${failed ? " · failed" : ""}</span><div class="body">${markdown(text)}</div>`;
+  $("transcript").append(row);
+  lineOpen = false;
+  const body = row.querySelector(".body") as HTMLElement;
+  requestAnimationFrame(() => {
+    if (body.scrollHeight > body.clientHeight + 4) {
+      const more = document.createElement("button");
+      more.className = "more";
+      more.textContent = "Show all";
+      more.onclick = () => { row.classList.toggle("open"); more.textContent = row.classList.contains("open") ? "Show less" : "Show all"; };
+      row.append(more);
+    }
+  });
+  scrollDown(true);
+  return row;
+}
+
+function elapsed(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)} s`;
+  const m = Math.floor(seconds / 60);
+  return m < 60 ? `${m} min ${Math.floor(seconds % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/** The empty task list's words, kept to put back. */
+const noTasks = document.getElementById("notasks")!;
 
 function showTasks() {
   const pane = $("tasks");
+  const open = document.activeElement?.closest?.(".task") as HTMLElement | null;
+  if (open && pane.contains(open)) return; // don't redraw under someone typing a follow-up
   pane.innerHTML = "";
-  for (const t of tasks.values()) {
-    const row = document.createElement("div");
-    row.className = `task ${t.state.replace(/\W+/g, "-")}`;
-    row.innerHTML = `<b></b> <i></i><div class="p"></div>`;
-    row.querySelector("b")!.textContent = t.label;
-    row.querySelector("i")!.textContent = t.state;
-    row.querySelector(".p")!.textContent = t.question ? `Asks: ${t.question}` : t.progress ?? t.request;
-    if (t.state === "running") {
-      const cancel = document.createElement("button");
-      cancel.textContent = "Cancel";
-      cancel.onclick = () => push({ type: "cancelTask", task: t.id });
-      row.append(cancel);
+  const all = [...tasks.values()].reverse();
+  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
+  const running = all.filter((t) => t.c.state === "running").length;
+  $("taskcount").textContent = running > 0 ? `${running} running` : "";
+  for (const view of all) {
+    const t = view.c;
+    const waiting = t.state.startsWith("waiting");
+    const card = document.createElement("div");
+    card.className = `task ${waiting ? "waiting" : t.state}`;
+    const age = (view.ended ?? now()) - view.since;
+    card.innerHTML = `<div class="top"><span class="badge ${t.agent === "t3" ? "t3" : ""}">${t.agent === "t3" ? "T3" : "Hermes"}</span>` +
+      `<span class="label"></span><span class="state">${t.state === "running" ? '<span class="spin"></span> ' : ""}${escapeHtml(t.state)} · ${elapsed(age)}</span></div>` +
+      `<div class="p"></div>`;
+    card.querySelector(".label")!.textContent = t.label;
+    card.querySelector(".p")!.textContent = t.progress ?? t.request;
+    if (t.question) {
+      const q = document.createElement("div");
+      q.className = "q";
+      q.textContent = `Asks: ${t.question}`;
+      card.append(q);
     }
-    pane.append(row);
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    const button = (text: string, fn: () => void) => { const b = document.createElement("button"); b.textContent = text; b.onclick = fn; acts.append(b); return b; };
+    if (callId) {
+      button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
+      if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }));
+    }
+    if (view.result) button("Result", () => { view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
+    if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
+    if (acts.childElementCount) card.append(acts);
+    pane.append(card);
   }
 }
 
-function setStatus(text: string, cls = "") {
-  $("status").textContent = text;
-  $("status").className = cls;
+function followUpForm(card: HTMLElement, t: Command) {
+  if (card.querySelector("form")) return;
+  const form = document.createElement("form");
+  form.innerHTML = `<input type="text" placeholder="Tell “${escapeHtml(t.label)}”…" enterkeyhint="send"><button>Send</button>`;
+  const input = form.querySelector("input")!;
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (text) { push({ type: "steer", task: t.id, text }); note(`You → ${t.label}: ${text}`); }
+    input.blur();
+    form.remove();
+    showTasks();
+  };
+  input.onkeydown = (e) => { if (e.key === "Escape") { input.blur(); form.remove(); showTasks(); } };
+  card.append(form);
+  input.focus();
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  idle: "Idle", connecting: "Connecting…", listening: "Listening", working: "Listening · tasks running",
+  standby: "Paused while tasks run · speak to resume", waking: "Resuming…", ended: "Ended",
+};
+
+function showStatus(message?: string) {
+  const speaking = callId && coreStatus !== "standby" && audio.queued > 0.05;
+  const shown = speaking ? "speaking" : coreStatus;
+  $("status").className = shown;
+  let text = speaking ? "Speaking" : STATUS_TEXT[coreStatus] ?? coreStatus;
+  if (callId && muted && !holding && !speaking) text += " · muted";
+  if (holding) text = "Talking (hold)";
+  if (message) text = `${text}: ${message}`;
+  if (coreStatus !== "ended" || message) $("statustext").textContent = text;
+  $<HTMLButtonElement>("hush").classList.toggle("live", Boolean(speaking));
 }
 
 // The call.
@@ -150,48 +330,93 @@ function run(commands: Command[]) {
       case "mic.start":
       case "mic.restart":
         log("out", c.type, "out");
-        void audio.startMic((pcm) => { counts.mic++; push({ type: "mic", pcm }); }, micOptions()).catch((err) => log("error", `microphone: ${err.message}`, "err"));
+        void audio.startMic(onMic, micOptions()).catch((err) => { log("error", `microphone: ${err.message}`, "err"); toast(`Microphone: ${err.message}`); });
         break;
       case "mic.stop": audio.stopMic(); break;
-      case "play": audio.play(c.pcm); counts.play++; break;
-      case "flush": audio.flush(); log("out", "flush (barge-in)", "out"); break;
-      case "cue": audio.cue(c.pcm); log("out", `cue ${c.earcon}`, "out"); break;
-      case "wakeword":
-        $<HTMLButtonElement>("wake").disabled = !c.on;
-        $("wake").classList.toggle("armed", c.on);
-        log("out", `wake word ${c.on ? "listening" : "off"}`, "out");
+      case "play": {
+        const t = now();
+        // A reply starting: from the end of the user's speech to its first sound.
+        if (!metrics.replied && audio.queued < 0.05 && t - metrics.lastPlay > 0.6 && metrics.lastVoice > 0 && t - metrics.lastVoice < 10) {
+          metrics.reply.push(t - metrics.lastVoice);
+          if (metrics.reply.length > 20) metrics.reply.shift();
+          metrics.replied = true;
+          showMetrics();
+        }
+        metrics.lastPlay = t;
+        audio.play(c.pcm);
+        counts.play++;
         break;
-      case "tool.call": tool(c); break;
-      case "tool.cancel": tools.get(c.run)?.abort(); tools.delete(c.run); log("out", `cancel ${c.run}`, "out"); break;
+      }
+      case "flush": audio.flush(); log("out", "flush", "out"); break;
+      case "cue":
+        audio.cue(c.pcm);
+        log("out", `cue ${c.earcon}`, "out");
+        // A request that became a task gets a tone, not a spoken reply: nothing to time.
+        if (c.earcon === "taskStarted") metrics.replied = true;
+        break;
+      case "wakeword": log("out", `wake word ${c.on ? "listening" : "off"}`, "out"); break;
+      case "tool.call": void tool(c); break;
+      case "tool.cancel": cancelRun(c.run, c.reason); break;
       case "status":
-        setStatus(c.status === "ended" ? `Ended${c.message ? ": " + c.message : ""}` : c.status, c.status);
+        coreStatus = c.status;
+        showStatus(c.status === "ended" ? c.message ?? undefined : undefined);
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
-        if (c.status === "ended") end();
+        if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
       case "transcript": transcript(c.role, c.text); break;
-      case "task": tasks.set(c.id, c); showTasks(); break;
+      case "task": {
+        const view = tasks.get(c.id) ?? { c, since: now(), ended: null };
+        if (c.state === "running" && view.c.state !== "running") { view.since = now(); view.ended = null; }
+        if (c.state !== "running" && view.ended == null) view.ended = now();
+        view.c = c;
+        tasks.set(c.id, view);
+        showTasks();
+        break;
+      }
       case "questions": break;
       case "micSilent": $("micwarn").hidden = !c.silent; break;
+      case "voiceCommand":
+        toast(c.command === "stop" ? `Heard “${c.heard}”: stopped` : `Heard “${c.heard}”: hanging up`);
+        log("out", `voice command ${c.command}: ${c.heard}`, "out");
+        break;
       case "log": log(c.level, c.message, c.level === "warn" ? "warn" : ""); break;
       default: log("out", JSON.stringify(c).slice(0, 300), "out");
     }
   }
 }
 
+function onMic(pcm: string, level: number) {
+  counts.mic++;
+  if (level > 0.03 && !(muted && !holding)) {
+    metrics.lastVoice = now();
+    if (audio.queued < 0.05) metrics.replied = false;
+  }
+  push({ type: "mic", pcm });
+}
+
 function connect(sid: number) {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live`);
   sockets.set(sid, ws);
-  log("out", `ws ${sid} connect (${config.route})`, "out");
+  log("out", `ws ${sid} connect (${server.route})`, "out");
   ws.onopen = () => push({ type: "ws.open", sid });
-  ws.onmessage = (m) => {
-    const data = typeof m.data === "string" ? m.data : "";
-    push({ type: "ws.message", sid, data });
-  };
+  ws.onmessage = (m) => push({ type: "ws.message", sid, data: typeof m.data === "string" ? m.data : "" });
   ws.onclose = (e) => {
     if (sockets.get(sid) !== ws && sockets.has(sid)) return;
     const httpStatus = e.code >= 4100 && e.code < 4600 ? e.code - 4000 : undefined;
     push({ type: "ws.closed", sid, code: httpStatus ? undefined : e.code, reason: e.reason, httpStatus });
   };
+}
+
+function cancelRun(key: string, reason: string) {
+  const r = runs.get(key);
+  log("out", `cancel ${key} (${reason})`, "out");
+  if (!r) return;
+  runs.delete(key);
+  r.abort.abort();
+  // Cancelled on purpose: T3 stops the agent too. A call that ended leaves it working in T3.
+  if (r.agent === "t3" && reason === "cancelled" && !checked("fakehermes")) {
+    void fetch("/agent/cancel", { method: "POST", body: JSON.stringify({ call: callName, taskId: r.taskId }) });
+  }
 }
 
 async function tool(c: Command) {
@@ -202,63 +427,68 @@ async function tool(c: Command) {
     setTimeout(() => push({ type: "tool.result", run: c.run, text: answer }), 300);
     return;
   }
-  log("out", `Hermes ${c.followUp ? "follow-up" : "task"} "${c.label}": ${c.request}`, "out");
-  if ($<HTMLInputElement>("fakehermes").checked) {
-    const delay = Number($<HTMLInputElement>("fakedelay").value) * 1000;
-    const timer = setTimeout(() => {
-      tools.delete(c.run);
-      const text = `(Fake Hermes) Done: "${c.request}". Nothing was actually run.`;
-      transcript("hermes", text); closeLine();
-      push({ type: "tool.result", run: c.run, text });
-    }, delay);
-    const abort = new AbortController();
+  const agent = c.agent === "t3" ? "t3" : "hermes";
+  log("out", `${agent} ${c.followUp ? "follow-up" : "task"} "${c.label}"${c.project ? ` in ${c.project}` : ""}: ${c.request}`, "out");
+  const abort = new AbortController();
+  runs.set(c.run, { abort, agent, taskId: c.taskId });
+  const done = (text: string, failed = false) => {
+    if (!runs.has(c.run)) return;
+    runs.delete(c.run);
+    const view = tasks.get(c.taskId);
+    const row = result(agent, c.label, text, failed);
+    if (view) { view.result = row; showTasks(); }
+    push({ type: "tool.result", run: c.run, text, failed });
+  };
+  if (checked("fakehermes")) {
+    const timer = setTimeout(() => done(`(Fake ${agent === "t3" ? "T3" : "Hermes"}) Done: “${c.request}”. Nothing was actually run.`), Number($<HTMLInputElement>("fakedelay").value) * 1000);
     abort.signal.onabort = () => clearTimeout(timer);
-    tools.set(c.run, abort);
     return;
   }
-  const abort = new AbortController();
-  tools.set(c.run, abort);
   try {
-    const response = await fetch("/hermes", {
+    const response = await fetch(agent === "t3" ? "/agent" : "/hermes", {
       method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
-      body: JSON.stringify({ call: callName, taskId: c.taskId, followUp: c.followUp, message: c.message }),
+      body: JSON.stringify({ call: callName, taskId: c.taskId, followUp: c.followUp, message: c.message, label: c.label, request: c.request, project: c.project }),
     });
-    const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
     for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
+      const { value, done: finished } = await reader.read();
+      if (finished) break;
       buffer += value;
-      let end;
-      while ((end = buffer.indexOf("\n\n")) >= 0) {
-        const block = buffer.slice(0, end);
-        buffer = buffer.slice(end + 2);
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
         const event = block.match(/^event: (.*)$/m)?.[1];
+        if (!event) continue;
         const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
         if (event === "progress") push({ type: "task.progress", task: c.taskId, text: data.text });
-        else if (event === "result") { transcript("hermes", data.text); closeLine(); push({ type: "tool.result", run: c.run, text: data.text, failed: data.failed }); }
-        else if (event === "error") push({ type: "tool.error", run: c.run, message: data.message });
+        else if (event === "thread") { const view = tasks.get(c.taskId); if (view) { view.thread = data.thread; showTasks(); } }
+        else if (event === "result") done(data.text, data.failed);
+        else if (event === "error") { runs.delete(c.run); push({ type: "tool.error", run: c.run, message: data.message }); }
       }
     }
+    if (runs.has(c.run)) { runs.delete(c.run); push({ type: "tool.error", run: c.run, message: "the server closed the stream without a result" }); }
   } catch (err) {
-    if (!abort.signal.aborted) push({ type: "tool.error", run: c.run, message: (err as Error).message });
-  } finally {
-    tools.delete(c.run);
+    if (!abort.signal.aborted && runs.has(c.run)) { runs.delete(c.run); push({ type: "tool.error", run: c.run, message: (err as Error).message }); }
   }
 }
 
 function micOptions() {
-  const aec = $<HTMLInputElement>("aec").checked;
+  const aec = checked("aec");
   return { echoCancellation: aec, noiseSuppression: aec, autoGainControl: aec };
 }
 
 function readConfig(): Record<string, unknown> {
-  const text = $<HTMLTextAreaElement>("config").value;
-  const given = JSON.parse(text);
-  return {
-    model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10),
-    ...given, trace: $<HTMLInputElement>("trace").checked,
+  const given = JSON.parse($<HTMLTextAreaElement>("config").value);
+  const config: Record<string, unknown> = {
+    model: server.model, api: server.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10),
+    ...given, trace: checked("trace"),
   };
+  if (checked("ptt")) config.muted = true;
+  if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
+  return config;
 }
 
 async function start() {
@@ -267,73 +497,216 @@ async function start() {
   try {
     given = readConfig();
   } catch (err) {
-    setStatus(`The settings aren't valid JSON: ${(err as Error).message}`, "ended");
+    toast(`The developer settings aren't valid JSON: ${(err as Error).message}`);
     return;
   }
-  await audio.open();
-  core = await loadCore();
+  $<HTMLButtonElement>("call").disabled = true;
+  try {
+    await audio.open();
+    core = await loadCore();
+  } finally {
+    $<HTMLButtonElement>("call").disabled = false;
+  }
   $("version").textContent = core.version;
   $("log").innerHTML = "";
-  $("transcript").innerHTML = "";
+  if (tasks.size > 0 || $("transcript").childElementCount > 1) note(`New call · ${new Date().toLocaleTimeString()}`);
   tasks.clear();
   showTasks();
   counts = { mic: 0, play: 0, sent: 0 };
+  metrics.reply = [];
   startedAt = now();
+  muted = given.muted === true;
   callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-web-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));
   callId = created.id;
   $<HTMLButtonElement>("call").textContent = "Hang up";
   $("call").classList.add("live");
+  for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = false;
+  $("mic").classList.toggle("muted", muted);
   run(created.commands);
   ticker = window.setInterval(() => {
     push({ type: "tick" });
-    $("meter").style.width = `${Math.min(100, audio.level * 400)}%`;
+    const level = muted && !holding ? 0 : audio.level;
+    $("ring").style.opacity = String(Math.min(1, level * 12));
     $("counts").textContent = `mic ${counts.mic} · sent ${counts.sent} · played ${counts.play} · queued ${audio.queued.toFixed(1)} s`;
+    showStatus();
   }, 100);
-  traceTimer = window.setInterval(() => void saveTrace(), 5000);
+  traceTimer = window.setInterval(() => { void saveTrace(); void ping(); showTasks(); }, 5000);
+  void ping();
+  stopWords.start();
+  try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
 }
 
 function hangUp() {
-  if (callId) push({ type: "stop" });
+  if (callId) push({ type: "stop", message: "You hung up." });
 }
 
 function end() {
   window.clearInterval(ticker);
   window.clearInterval(traceTimer);
-  void saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; });
+  stopWords.stop();
+  void saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); });
   audio.stop();
   for (const ws of sockets.values()) ws.close();
   sockets.clear();
-  for (const a of tools.values()) a.abort();
-  tools.clear();
+  for (const r of runs.values()) r.abort.abort();
+  runs.clear();
   $<HTMLButtonElement>("call").textContent = "Call";
   $("call").classList.remove("live");
-  $<HTMLButtonElement>("wake").disabled = true;
+  for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = true;
+  $("ring").style.opacity = "0";
+  void wakeLock?.release().catch(() => {});
+  wakeLock = null;
+}
+
+function setMuted(value: boolean) {
+  if (!callId || muted === value) return;
+  muted = value;
+  $("mic").classList.toggle("muted", muted);
+  push({ type: muted ? "mute" : "unmute" });
+  showStatus();
 }
 
 /** Sends what the trace kept since last time to the dev server, as JSON lines: a header, then events. */
 async function saveTrace() {
-  if (!core || !callId || !$<HTMLInputElement>("trace").checked) return;
+  if (!core || !callId || !checked("trace")) return;
   const kept = JSON.parse(core.trace(callId));
   if (!kept) return;
   const lines: string[] = [];
   if (kept.config) lines.push(JSON.stringify({ version: kept.version, config: kept.config, start: kept.start }));
   for (const e of kept.events) lines.push(JSON.stringify(e));
   if (lines.length === 0) return;
-  await fetch(`/traces?name=${encodeURIComponent(callName)}.jsonl`, { method: "POST", body: lines.join("\n") + "\n" });
-  $("tracename").textContent = `${callName}.jsonl`;
+  await fetch(`/traces?name=${encodeURIComponent(callName)}.jsonl`, { method: "POST", body: lines.join("\n") + "\n" }).catch(() => {});
+  $("tracename").textContent = `trace ${callName}.jsonl`;
+}
+
+// "Stop" and "goodbye" heard by the browser's own recognizer: quicker than the model's transcript,
+// and it works while the model's reply plays even when the model isn't hearing the microphone.
+
+class StopWords {
+  private rec: any = null;
+  private on = false;
+  private commands = { stop: [] as string[], hangUp: [] as string[] };
+
+  get supported(): boolean {
+    return "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
+  }
+
+  start() {
+    if (!checked("stopword") || !this.supported || !core) return;
+    this.commands = JSON.parse(core.defaults()).voiceCommands;
+    const Recognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    this.rec = new Recognition();
+    this.rec.continuous = true;
+    this.rec.interimResults = true;
+    this.rec.lang = navigator.language || "en-GB";
+    this.rec.onresult = (e: any) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript as string;
+        const command = commandIn(text, this.commands, ["Woodhouse", "Hermes", "Bento"]);
+        if (command === "stop" && audio.queued > 0.05) {
+          log("out", `local stop word: ${text}`, "out");
+          toast(`Heard “${text.trim()}”: stopped`);
+          push({ type: "interrupt" });
+        } else if (command === "hangUp" && e.results[i].isFinal) {
+          log("out", `local hang-up: ${text}`, "out");
+          hangUp();
+        }
+      }
+    };
+    this.rec.onend = () => { if (this.on) setTimeout(() => { try { this.rec?.start(); } catch {} }, 250); };
+    this.rec.onerror = (e: any) => { if (e.error === "not-allowed") this.on = false; };
+    this.on = true;
+    try { this.rec.start(); } catch {}
+  }
+
+  stop() {
+    this.on = false;
+    try { this.rec?.stop(); } catch {}
+    this.rec = null;
+  }
+}
+const stopWords = new StopWords();
+
+// Wiring.
+
+function settingsFromStorage() {
+  for (const id of ["aec", "stopword", "ptt", "coding", "fakehermes", "trace"]) {
+    const v = localStorage.getItem(`voice.${id}`);
+    if (v != null) $<HTMLInputElement>(id).checked = v === "1";
+    $(id).addEventListener("change", () => localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0"));
+  }
+  const delay = localStorage.getItem("voice.fakedelay");
+  if (delay) $<HTMLInputElement>("fakedelay").value = delay;
+  $("fakedelay").addEventListener("change", () => localStorage.setItem("voice.fakedelay", $<HTMLInputElement>("fakedelay").value));
+  const mode = localStorage.getItem("voice.mode");
+  if (mode) $<HTMLSelectElement>("mode").value = mode;
+  $("mode").addEventListener("change", () => localStorage.setItem("voice.mode", $<HTMLSelectElement>("mode").value));
+}
+
+function tabs() {
+  const views: Record<string, HTMLElement> = { talk: $("talk"), dev: $("dev"), replay: $("replaymain") };
+  for (const name of Object.keys(views)) {
+    $(`tab-${name}`).onclick = () => {
+      for (const [other, el] of Object.entries(views)) {
+        el.hidden = other !== name;
+        $(`tab-${other}`).classList.toggle("on", other === name);
+      }
+    };
+  }
+  $("gear").onclick = () => { $("settings").hidden = false; };
+  $("closesettings").onclick = () => { $("settings").hidden = true; };
+  $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
+}
+
+function typing(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+}
+
+function keys() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && callId) { push({ type: "interrupt" }); audio.flush(); return; }
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "m" || e.key === "M") { setMuted(!muted); e.preventDefault(); }
+    else if (e.key === "/") { $("text").focus(); e.preventDefault(); }
+    else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.code === "Space" && holding) { holding = false; push({ type: "mute" }); showStatus(); }
+  });
+}
+
+function submitText(e: Event) {
+  e.preventDefault();
+  const input = $<HTMLInputElement>("text");
+  const text = input.value.trim();
+  if (!text) return;
+  if (!callId) { toast("Start a call first"); return; }
+  const mode = $<HTMLSelectElement>("mode").value;
+  if (mode === "say") push({ type: "say", text });
+  else {
+    push({ type: "ask", text, agent: mode });
+    note(`You → new ${mode === "t3" ? "coding" : "Hermes"} task: ${text}`);
+  }
+  input.value = "";
 }
 
 async function main() {
-  config = await (await fetch("/config")).json();
-  $("route").textContent = `${config.route === "vertex" ? "GSK Vertex" : "Gemini API"} · ${config.model.split("/").pop()}`;
-  $("version").textContent = config.version;
-  if (!config.hermes) { $<HTMLInputElement>("fakehermes").checked = true; $<HTMLInputElement>("fakehermes").disabled = true; }
+  server = await (await fetch("/config")).json();
+  $("route").textContent = `${server.route === "vertex" ? "GSK Vertex" : "Gemini API"} · ${server.model.split("/").pop()}`;
+  $("version").textContent = server.version;
+  $("build").textContent = `core ${server.version}`;
+  settingsFromStorage();
+  if (!server.hermes) { $<HTMLInputElement>("fakehermes").checked = true; $<HTMLInputElement>("fakehermes").disabled = true; }
+  if (!server.t3) $("codinghelp").textContent = "T3 isn't available on the server: only with fake answers.";
+  else $("codinghelp").textContent = `Code changes go to a T3 Code thread in one of: ${server.t3.join(", ")}.`;
+  if (!stopWords.supported) { $<HTMLInputElement>("stopword").checked = false; $<HTMLInputElement>("stopword").disabled = true; }
   const preset = $<HTMLSelectElement>("preset");
   for (const name of Object.keys(PRESETS)) preset.add(new Option(name, name));
-  const saved = localStorage.getItem("voice-core.config");
   preset.value = localStorage.getItem("voice-core.preset") ?? "web";
-  $<HTMLTextAreaElement>("config").value = saved ?? JSON.stringify(PRESETS[preset.value], null, 2);
+  if (!PRESETS[preset.value]) preset.value = "web";
+  $<HTMLTextAreaElement>("config").value = localStorage.getItem("voice-core.config") ?? JSON.stringify(PRESETS[preset.value], null, 2);
   preset.onchange = () => {
     $<HTMLTextAreaElement>("config").value = JSON.stringify(PRESETS[preset.value], null, 2);
     localStorage.setItem("voice-core.preset", preset.value);
@@ -345,24 +718,26 @@ async function main() {
     $("defaultsview").textContent = JSON.stringify(JSON.parse(c.defaults()), null, 2);
     $("defaultsview").hidden = !$("defaultsview").hidden;
   };
-  $("call").onclick = () => (callId ? hangUp() : void start().catch((err) => setStatus(err.message, "ended")));
-  $("mute").onclick = () => {
-    const muted = $("mute").classList.toggle("on");
-    push({ type: muted ? "mute" : "unmute" });
-  };
-  $("resume").onclick = () => push({ type: "resume" });
-  $("wake").onclick = () => push({ type: "wake" });
+  $("call").onclick = () => (callId ? hangUp() : void start().catch((err) => { toast(err.message); log("error", err.message, "err"); }));
+  $("mic").onclick = () => setMuted(!muted);
+  $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
+  $("say").onsubmit = submitText;
+  $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
+  tabs();
+  keys();
   const events = new EventSource("/events");
   events.addEventListener("core", (e) => {
     const { version } = JSON.parse((e as MessageEvent).data);
-    $("version").textContent = version + (callId && core && core.version !== version ? " (next call; this one runs " + core.version + ")" : "");
+    $("version").textContent = version + (callId && core && core.version !== version ? ` (next call; this one runs ${core.version})` : "");
+    $("build").textContent = `core ${version}`;
   });
-  events.addEventListener("app", () => { if (!callId) location.reload(); else $("reload").hidden = false; });
+  events.addEventListener("app", () => { if (!callId) location.reload(); else toast("The page changed: reload after this call"); });
   events.addEventListener("error", (e) => {
     const data = (e as MessageEvent).data;
-    if (data) setStatus(`Build failed: ${JSON.parse(data).message}`, "ended");
+    if (data) toast(`Build failed: ${JSON.parse(data).message}`);
   });
   new Replay($("replay"), loadCore);
+  void ping();
 }
 
 void main();

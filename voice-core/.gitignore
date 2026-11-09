@@ -4,3 +4,4 @@ web/dist/
 traces/
 hosts/python/.venv/
 .pytest_cache/
+!dist/

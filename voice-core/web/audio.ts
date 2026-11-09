@@ -119,8 +119,8 @@ export class CallAudio {
   level = 0;
 
   async open(): Promise<void> {
-    if (this.context) return;
-    this.context = new AudioContext();
+    if (this.context) { if (this.context.state === "suspended") await this.context.resume(); return; }
+    this.context = new AudioContext({ latencyHint: "interactive" });
     const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
     await this.context.audioWorklet.addModule(url);
     this.playback = new AudioWorkletNode(this.context, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
@@ -128,7 +128,13 @@ export class CallAudio {
     this.playback.connect(this.context.destination);
   }
 
-  async startMic(onFrame: (pcm64: string) => void, options: MicOptions): Promise<void> {
+  /** Seconds from a sample leaving the worklet to the speaker, as the browser reckons it. */
+  get outputLatency(): number | null {
+    if (!this.context) return null;
+    return this.context.baseLatency + ((this.context as AudioContext & { outputLatency?: number }).outputLatency ?? 0);
+  }
+
+  async startMic(onFrame: (pcm64: string, level: number) => void, options: MicOptions): Promise<void> {
     await this.open();
     this.stopMic();
     const context = this.context!;
@@ -140,7 +146,7 @@ export class CallAudio {
       let sum = 0;
       for (const s of frame) sum += s * s;
       this.level = Math.sqrt(sum / frame.length) / 32768;
-      onFrame(bytesToBase64(new Uint8Array(e.data as ArrayBuffer)));
+      onFrame(bytesToBase64(new Uint8Array(e.data as ArrayBuffer)), this.level);
     };
     this.source.connect(this.capture);
   }

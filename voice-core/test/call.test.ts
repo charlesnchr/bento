@@ -221,7 +221,7 @@ test("Gemini cancels one task and the others carry on", () => {
   s.toolCall("x1", "cancel_task", { task: "taxi" });
   s.advance(0.1);
   const cancels = s.commands.filter((c) => c.type === "tool.cancel");
-  assert.deepEqual(cancels, [{ type: "tool.cancel", run: s.hermes()[1].run }]);
+  assert.deepEqual(cancels, [{ type: "tool.cancel", run: s.hermes()[1].run, reason: "cancelled" }]);
   const messages = s.responses().map((r) => [r.id, r.response.status]);
   assert.deepEqual(messages.slice(-2), [["c2", "cancelled"], ["x1", "ok"]]);
   s.complete("Booked.", s.hermes()[0].run);

@@ -5,7 +5,7 @@
 
 import { codePoints } from "./bytes.ts";
 import { take } from "./kt.ts";
-import { CANCEL_TASK, CHECK_TASK, LIST_TASKS, TOOL, fullResult } from "./protocol.ts";
+import { CANCEL_TASK, CHECK_TASK, CODE_TOOL, LIST_TASKS, TOOL, fullResult } from "./protocol.ts";
 import { tidy } from "./taskNames.ts";
 
 export const MODEL = "models/gemini-3.8-live";
@@ -13,8 +13,10 @@ export const VOICE = "Charon";
 
 /** Android's instruction; other surfaces get it with their own name in place of Android's. */
 export const INSTRUCTION =
-  "You are Gemini Live, the continuous voice front end in Bento on Android. Be brief. Call ask_hermes for web search, " +
-  "tools, computer actions, memory, files and deeper reasoning. Bento sends the user's own transcribed words to Hermes, " +
+  "You are Gemini Live, the continuous voice front end in Bento on Android. Be brief. Answer yourself, at once, what " +
+  "you can from what you know and the conversation: stable facts, explanations, advice, jokes, stories, simple " +
+  "arithmetic and small talk. Call ask_hermes when a request needs web search or current information, tools, " +
+  "computer actions, the user's own data (email, calendar, files, notes, memory), or long, careful work. Bento sends the user's own transcribed words to Hermes, " +
   "which interprets them and uses its own tools; the request itself is never an argument. Hermes tasks are your sub-agents: " +
   "they run side by side while you keep talking, so the user can ask for something new while others run. Call ask_hermes " +
   "once per request. Bento names each task by what it is about; give a new one a label of two to four words. A follow-up " +
@@ -90,7 +92,25 @@ export interface Setup {
   instruction: string;
   vocabulary: string[];
   hostTools: HostTool[];
+  /** The coding agent's projects, when the call has one: ask_coding_agent is declared. */
+  codingProjects?: string[] | null;
 }
+
+/** What the instruction says of the coding agent, when the call has one. */
+export function codingInstruction(projects: string[]): string {
+  return " For work on code in one of the user's repositories (fix a bug, build or change a feature, investigate code, " +
+    "review or open a pull request), call ask_coding_agent instead of ask_hermes: it starts a coding agent in T3 Code, which " +
+    "works in its own branch and can take many minutes. Its tasks work like Hermes tasks, with continue_task, list_tasks, " +
+    "check_task and cancel_task, and its result arrives the same way. Pass the project when the user names one or it is " +
+    "clear from the conversation" + (projects.length > 0 ? `; the projects are ${projects.map((p) => `"${p}"`).join(", ")}` : "") + ". " +
+    "Everything else still goes to Hermes.";
+}
+
+const CODE_TOOL_DESCRIPTION =
+  "Hands the user's latest spoken request to a coding agent in T3 Code, for work on code in one of the user's " +
+  "repositories. The request is never an argument: Bento sends the transcript. Runs as a task while the conversation " +
+  "goes on, like ask_hermes: Bento answers at once with the task's name (status started), and the result follows later.";
+const PROJECT_DESCRIPTION = "The repository's project, when the user named it or it is clear.";
 
 export interface Resume {
   /** Appended to the call's system instruction. */
@@ -127,6 +147,23 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
       parameters: { type: "OBJECT", properties: { task: { type: "STRING", description: TASK_DESCRIPTION } }, required: ["task"] },
     });
   }
+  if (s.codingProjects != null) {
+    const project: Record<string, unknown> = { type: "STRING", description: PROJECT_DESCRIPTION };
+    if (s.codingProjects.length > 0) project.enum = s.codingProjects;
+    declarations.push({
+      name: CODE_TOOL,
+      description: CODE_TOOL_DESCRIPTION,
+      behavior: "NON_BLOCKING",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          continue_task: { type: "STRING", description: FOLLOW_UP_DESCRIPTION },
+          label: { type: "STRING", description: LABEL_DESCRIPTION },
+          project,
+        },
+      },
+    });
+  }
   for (const t of s.hostTools) {
     const d: Record<string, unknown> = { name: t.name, description: t.description, behavior: "BLOCKING" };
     if (t.parameters !== undefined) d.parameters = t.parameters;
@@ -154,6 +191,11 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
 
 function userTurn(text: string, turnComplete: boolean): string {
   return JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete } });
+}
+
+/** What the user typed to the model: a turn it answers, as if said. */
+export function typedFrame(text: string): string {
+  return userTurn(text, true);
 }
 
 /** The earlier conversation as the first user turn; turnComplete false, so Gemini doesn't answer it. */
@@ -250,5 +292,19 @@ export function voiceMessage(request: { task: string; context: string; followUp:
     `Today's date is ${today}. For current/latest information search the current year and verify dates, not old model knowledge. ` +
     "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
     `Bento displays your response directly as a Hermes chat reply on the user's ${surface.device}. Do not promise a separate document unless you actually create one. ` +
+    "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context;
+}
+
+/** What the coding agent gets for a spoken request. */
+export function codingMessage(request: { task: string; context: string; followUp: boolean }, today: string, surface: Surface): string {
+  return `Transcribed request from the user's voice call on ${surface.platform} (Bento's Gemini Live front end):\n` + request.task +
+    "\nYou are the coding agent this request asks for: do the work yourself in this thread, and don't start another " +
+    "agent, T3 session or thread for it, even if the user's words say to spin one up. " +
+    "The transcript may be imperfect: interpret it, and when it is ambiguous, stop and ask instead of guessing. " +
+    (request.followUp ? "It follows up your earlier work in this thread: continue from it. " : "") +
+    "Do only this request and don't broaden its scope. Commit your work on this thread's branch and open a pull request " +
+    "when the change is ready and verified; don't merge, release or deploy unless the request says so. " +
+    `Today's date is ${today}. ` +
+    "End with a brief spoken summary first, ideally under 60 words, that the voice call reads to the user, then any detail." +
     "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context;
 }

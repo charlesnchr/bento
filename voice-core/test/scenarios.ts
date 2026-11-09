@@ -122,4 +122,35 @@ export const scenarios: Record<string, () => Sim> = {
     s.advance(2);
     return s;
   },
+
+  /** Spoken stop and goodbye, the stop button, typing, tasks from the screen and the coding agent. */
+  controls: () => {
+    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: { limits: fast, codingAgent: { projects: ["Bento"] } } as any });
+    s.advance(0.1);
+    s.audio(24_000);
+    s.activity("ACTIVITY_START");
+    s.interrupted();
+    s.heard("Woodhouse, stop.");
+    s.activity("ACTIVITY_END");
+    s.audio(9_600);
+    s.turnComplete();
+    s.push({ type: "say", text: "Fix the flaky test in Bento" });
+    s.toolCall("c1", "ask_coding_agent", { project: "Bento", label: "flaky test" });
+    s.advance(0.3);
+    s.push({ type: "ask", text: "What's on my calendar today?" });
+    s.advance(0.2);
+    s.push({ type: "steer", task: "1", text: "Run the whole suite too" });
+    s.audio(24_000);
+    s.push({ type: "interrupt" });
+    s.audio(9_600);
+    s.turnComplete();
+    s.complete("Two meetings: standup at ten, review at three.", s.hermes()[1].run);
+    s.advance(2);
+    s.complete("Fixed; PR opened.", s.hermes()[0].run);
+    s.advance(0.5);
+    s.activity("ACTIVITY_START");
+    s.heard("Goodbye");
+    s.advance(2);
+    return s;
+  },
 };

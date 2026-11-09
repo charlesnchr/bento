@@ -34,6 +34,34 @@
    "gainDb": 12
   },
   "earcons": false,
+  "voiceCommands": {
+   "stop": [
+    "stop",
+    "stop it",
+    "stop talking",
+    "stop there",
+    "quiet",
+    "be quiet",
+    "hush",
+    "shush",
+    "shut up",
+    "enough",
+    "that's enough",
+    "pause"
+   ],
+   "hangUp": [
+    "hang up",
+    "end call",
+    "end the call",
+    "stop the call",
+    "goodbye",
+    "bye",
+    "bye bye",
+    "that's all",
+    "that's all for now"
+   ]
+  },
+  "codingAgent": null,
   "limits": {
    "connect": 25,
    "deadMic": 2,

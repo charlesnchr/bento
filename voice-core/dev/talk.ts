@@ -7,7 +7,7 @@
 //
 // A plain WAV is said once the call is quiet (the model's reply has played and 1.5 s passed);
 // "@<s>:" says it <s> seconds after the previous one started instead (talking over a reply).
-// Hermes is faked (an answer after 2 s) unless --hermes. The call ends --quiet seconds after the
+// Hermes (and T3, with --coding) is faked (an answer after 2 s) unless --hermes. The call ends --quiet seconds after the
 // last reply, or after --max seconds. --out writes what the model said as one WAV, gaps included.
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -23,6 +23,8 @@ const option = (name: string, fallback: string) => {
 const SERVER = option("server", "http://127.0.0.1:8770");
 const PRESET = option("preset", "web");
 const QUIET = Number(option("quiet", "4"));
+/** Tasks still running: the call waits for them before it hangs up. */
+const running = new Set<string>();
 const MAX = Number(option("max", "60"));
 const OUT = option("out", "");
 const optionValues = new Set(["--server", "--preset", "--quiet", "--max", "--out"].filter((o) => args.includes(o)).map((o) => args[args.indexOf(o) + 1]));
@@ -61,9 +63,16 @@ function wav16k(path: string): Int16Array {
   return out;
 }
 
-const config = await (await fetch(`${SERVER}/config`)).json();
+// Behind Cloudflare Access (https://voice.charlesnchr.com), a service token from the environment
+// (VOICE_CORE_ACCESS_ID and VOICE_CORE_ACCESS_SECRET; ~/.local/share/voice-core/access.env) lets it in.
+const ACCESS: Record<string, string> = process.env.VOICE_CORE_ACCESS_ID
+  ? { "CF-Access-Client-Id": process.env.VOICE_CORE_ACCESS_ID, "CF-Access-Client-Secret": process.env.VOICE_CORE_ACCESS_SECRET ?? "", "User-Agent": "Mozilla/5.0 voice-core-talk" }
+  : {};
+const get = (url: string, init: RequestInit = {}) => fetch(url, { ...init, headers: { ...ACCESS, ...(init.headers as Record<string, string> ?? {}) } });
+
+const config = await (await get(`${SERVER}/config`)).json();
 const context = vm.createContext({});
-vm.runInContext(await (await fetch(`${SERVER}/voice-core.js`)).text(), context);
+vm.runInContext(await (await get(`${SERVER}/voice-core.js`)).text(), context);
 const core = context.VoiceCore;
 console.log(`core ${core.version}, ${config.route} ${config.model.split("/").pop()}, preset ${PRESET}, Hermes ${flag("hermes") ? "real" : "fake"}`);
 
@@ -72,6 +81,8 @@ const now = () => performance.now() / 1000;
 const stamp = () => (now() - t0).toFixed(2).padStart(6);
 const sockets = new Map<number, WebSocket>();
 const reply: { at: number; pcm: Buffer }[] = [];
+const latencies: number[] = [];
+let timed = true;
 let callId = 0, ended = false, micOn = false, speechUntil = 0, lastReply = 0, spoken = 0;
 const say = (s: string) => console.log(`${stamp()}  ${s}`);
 const name = `${new Date().toISOString().replace(/[:.]/g, "-")}-talk-${core.version}`;
@@ -91,7 +102,7 @@ function run(commands: Record<string, any>[]) {
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": {
-        const ws = new WebSocket(`${SERVER.replace(/^http/, "ws")}/live`);
+        const ws = new WebSocket(`${SERVER.replace(/^http/, "ws")}/live`, { headers: ACCESS });
         sockets.set(c.sid, ws);
         ws.on("open", () => push({ type: "ws.open", sid: c.sid }));
         ws.on("message", (d) => push({ type: "ws.message", sid: c.sid, data: d.toString() }));
@@ -104,6 +115,12 @@ function run(commands: Record<string, any>[]) {
       case "mic.stop": micOn = false; break;
       case "play": {
         const pcm = Buffer.from(c.pcm, "base64");
+        // A reply starting after the user finished: how long they waited for its first sound.
+        if (saidUntil > 0 && now() - saidUntil < 10 && speechUntil < now() - 0.3 && !timed) {
+          timed = true;
+          latencies.push(now() - saidUntil);
+          say(`(first sound ${(now() - saidUntil).toFixed(2)} s after the user stopped)`);
+        }
         speechUntil = Math.max(speechUntil, now()) + pcm.length / 48000;
         lastReply = speechUntil;
         reply.push({ at: now() - t0, pcm });
@@ -114,36 +131,53 @@ function run(commands: Record<string, any>[]) {
       case "wakeword": say(`(wake word ${c.on ? "listening" : "off"})`); break;
       case "transcript": if (c.role === "user") { if (modelLine) flushLines(); userLine += c.text; } else { if (userLine) flushLines(); modelLine += c.text; } break;
       case "status": flushLines(); say(`[${c.status}${c.message ? ": " + c.message : ""}]`); if (c.status === "ended") finish(); break;
-      case "task": say(`task "${c.label}" ${c.state}${c.question ? ", asks: " + c.question : ""}`); break;
+      case "task": if (c.state === "running") running.add(c.id); else { running.delete(c.id); lastReply = now(); } say(`task "${c.label}" ${c.state}${c.question ? ", asks: " + c.question : ""}`); break;
       case "tool.call":
         flushLines();
         if (c.kind === "host") { say(`host tool ${c.name} ${JSON.stringify(c.args)}`); setTimeout(() => push({ type: "tool.result", run: c.run, text: "Done." }), 300); break; }
-        say(`Hermes ${c.followUp ? "follow-up" : "task"} "${c.label}": ${c.request}`);
-        if (flag("hermes")) void hermes(c); else setTimeout(() => push({ type: "tool.result", run: c.run, text: `(Fake Hermes) Done: ${c.request}. Nothing was actually run.` }), 2000);
+        say(`${c.agent === "t3" ? "T3" : "Hermes"} ${c.followUp ? "follow-up" : "task"} "${c.label}"${c.project ? ` in ${c.project}` : ""}: ${c.request}`);
+        if (flag("hermes")) void hermes(c); else setTimeout(() => push({ type: "tool.result", run: c.run, text: `(Fake ${c.agent === "t3" ? "T3" : "Hermes"}) Done: ${c.request}. Nothing was actually run.` }), 2000);
         break;
+      case "voiceCommand": say(`(voice command ${c.command}: ${c.heard})`); break;
       case "log": say(`(${c.level}: ${c.message})`); break;
     }
   }
 }
 
 async function hermes(c: Record<string, any>) {
-  const response = await fetch(`${SERVER}/hermes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call: name, taskId: c.taskId, followUp: c.followUp, message: c.message }) });
-  const text = await response.text();
-  for (const block of text.split("\n\n")) {
-    const event = block.match(/^event: (.*)$/m)?.[1];
-    const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
-    if (event === "result") { say(`Hermes: ${data.text.slice(0, 200)}`); push({ type: "tool.result", run: c.run, text: data.text, failed: data.failed }); }
-    if (event === "error") push({ type: "tool.error", run: c.run, message: data.message });
+  const who = c.agent === "t3" ? "T3" : "Hermes";
+  const response = await get(`${SERVER}/${c.agent === "t3" ? "agent" : "hermes"}`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ call: name, taskId: c.taskId, followUp: c.followUp, message: c.message, label: c.label, request: c.request, project: c.project }),
+  });
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      const event = block.match(/^event: (.*)$/m)?.[1];
+      if (!event) continue;
+      const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
+      if (event === "progress") { say(`(${who}: ${data.text.slice(0, 120)})`); push({ type: "task.progress", task: c.taskId, text: data.text }); }
+      if (event === "result") { say(`${who}: ${data.text.slice(0, 200)}`); push({ type: "tool.result", run: c.run, text: data.text, failed: data.failed }); }
+      if (event === "error") push({ type: "tool.error", run: c.run, message: data.message });
+    }
   }
 }
 
 function finish() {
   if (ended) return;
   ended = true;
+  if (latencies.length > 0) say(`(first sound after the user stopped: ${latencies.map((l) => l.toFixed(2)).join(", ")} s)`);
   for (const ws of sockets.values()) ws.close();
   const trace = JSON.parse(core.trace(callId));
   const lines = [JSON.stringify({ version: trace.version, config: trace.config, start: trace.start }), ...trace.events.map((e: unknown) => JSON.stringify(e))];
-  void fetch(`${SERVER}/traces?name=${name}.jsonl`, { method: "POST", body: lines.join("\n") + "\n" }).then(() => {
+  void get(`${SERVER}/traces?name=${name}.jsonl`, { method: "POST", body: lines.join("\n") + "\n" }).then(() => {
     say(`trace: traces/${name}.jsonl (replay it in the web surface)`);
     if (OUT) writeReply(OUT);
     setTimeout(() => process.exit(0), 100);
@@ -168,7 +202,8 @@ function writeReply(path: string) {
 
 // The microphone: room noise, with each WAV said when its time comes.
 
-const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, ...PRESETS[PRESET] }), now()));
+const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, ...PRESETS[PRESET],
+  ...(flag("coding") ? { codingAgent: { projects: config.t3 ?? [] } } : {}) }), now()));
 callId = created.id;
 run(created.commands);
 
@@ -186,8 +221,8 @@ setInterval(() => {
   }
   const frame = Buffer.alloc(640);
   for (let i = 0; i < 320; i++) frame.writeInt16LE(speaking && offset < speaking.length ? speaking[offset++] : noise(), 2 * i);
-  if (speaking && offset >= speaking.length) { speaking = null; spoken++; saidUntil = t; }
+  if (speaking && offset >= speaking.length) { speaking = null; spoken++; saidUntil = t; timed = false; }
   push({ type: "mic", pcm: frame.toString("base64") });
   const doneTalking = spoken === plan.length && !speaking;
-  if ((doneTalking && t - Math.max(lastReply, saidUntil) > QUIET) || t - t0 > MAX) push({ type: "stop" });
+  if ((doneTalking && running.size === 0 && t - Math.max(lastReply, saidUntil) > QUIET) || t - t0 > MAX) push({ type: "stop" });
 }, 20);

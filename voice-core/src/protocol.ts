@@ -43,6 +43,7 @@ class Turn {
 interface Fragment { role: string; at: number; text: string }
 
 export const TOOL = "ask_hermes";
+export const CODE_TOOL = "ask_coding_agent";
 export const LIST_TASKS = "list_tasks";
 export const CHECK_TASK = "check_task";
 export const CANCEL_TASK = "cancel_task";
@@ -89,9 +90,9 @@ export class CallProtocol {
     last.heard = at;
   }
 
-  /** A new call of the one tool, or null for anything else (unknown name, repeated or bad ID). */
-  delegation(name: string | null, id: string | null, at: number): Delegation | null {
-    if (name !== TOOL || !id || id.length >= 200 || this.seen.has(id) || this.seen.size >= 256 || !Number.isFinite(at) || at < 0) return null;
+  /** A new call of a delegating tool ([names]), or null for anything else (unknown name, repeated or bad ID). */
+  delegation(name: string | null, id: string | null, at: number, names: string[] = [TOOL]): Delegation | null {
+    if (name == null || !names.includes(name) || !id || id.length >= 200 || this.seen.has(id) || this.seen.size >= 256 || !Number.isFinite(at) || at < 0) return null;
     this.seen.add(id);
     const started = this.turns.filter((t) => t.started <= at);
     let turn: Turn | null = lastOrNull(started);
@@ -123,6 +124,11 @@ export class CallProtocol {
   discardRequest(d: Delegation): void {
     const turn = this.turns.find((t) => t.id === d.turn);
     if (turn) turn.consumed = true;
+  }
+
+  /** What was said lately, oldest first, as context for a request from the screen. */
+  context(): string {
+    return takeLast(this.history.map((f) => `${f.role}: ${f.text}`).join("\n"), 6000);
   }
 
   request(d: Delegation): HermesCall | null {

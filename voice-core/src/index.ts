@@ -32,6 +32,11 @@ export function defaults(): CallConfig {
     muted: false,
     mic: { whileSpeaking: "send", gainDb: 0 },
     earcons: true,
+    voiceCommands: {
+      stop: ["stop", "stop it", "stop talking", "stop there", "quiet", "be quiet", "hush", "shush", "shut up", "enough", "that's enough", "pause"],
+      hangUp: ["hang up", "end call", "end the call", "stop the call", "goodbye", "bye", "bye bye", "that's all", "that's all for now"],
+    },
+    codingAgent: null,
     limits: {
       connect: 25,
       deadMic: 2,
@@ -49,13 +54,14 @@ export function defaults(): CallConfig {
   };
 }
 
-/** [given] over the defaults; nested objects (mic, limits) merge a level deep. */
+/** [given] over the defaults; nested objects (mic, voiceCommands, limits) merge a level deep. */
 export function configFrom(given: Partial<CallConfig> & Record<string, unknown>): CallConfig {
   const base = defaults();
   return {
     ...base,
     ...given,
     mic: { ...base.mic, ...(given.mic ?? {}) },
+    voiceCommands: { ...base.voiceCommands, ...(given.voiceCommands ?? {}) },
     limits: { ...base.limits, ...(given.limits ?? {}) },
   } as CallConfig;
 }

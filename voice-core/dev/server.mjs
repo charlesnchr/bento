@@ -8,6 +8,9 @@
 //   GET  /config            the model and what's available (route, Hermes)
 //   WS   /live              a Gemini Live socket, relayed with the server's credentials
 //   POST /hermes            one Hermes request, streamed back as server-sent events
+//   POST /agent             one coding-agent (T3 Code) request, streamed back the same way
+//   POST /agent/cancel      interrupts a coding task's T3 thread
+//   GET  /ping              for the page's round-trip time
 //   POST /traces            a call's recording, appended in pieces; GET /traces lists them
 //
 //   node dev/server.mjs [--port 8770] [--host 127.0.0.1]
@@ -27,6 +30,7 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 import WebSocket, { WebSocketServer } from "ws";
 import { build, OUT } from "../scripts/build.mjs";
 import { envFile, serviceAccount } from "./google.mjs";
+import * as T3 from "./t3.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const arg = (name, fallback) => {
@@ -38,7 +42,7 @@ const HOST = arg("host", process.env.VOICE_CORE_HOST ?? "127.0.0.1");
 const hermesEnv = envFile(join(os.homedir(), ".hermes/.env"));
 const ROUTE = process.env.VOICE_CORE_ROUTE ?? (process.env.GEMINI_API_KEY ? "gemini" : "vertex");
 const SOCKS = process.env.VOICE_CORE_SOCKS ?? "socks5h://127.0.0.1:11080";
-const LOCATION = "us-central1"; // 3.8 Live has no global endpoint
+const LOCATION = process.env.VOICE_CORE_LOCATION ?? "us-central1"; // 3.8 Live has no global endpoint
 const LIVE_MODEL = "gemini-3.8-live";
 const TRACES = join(root, "traces");
 
@@ -77,9 +81,11 @@ const sessions = new Map();
 async function hermes(req, res) {
   const body = JSON.parse(await read(req));
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const abort = new AbortController();
   req.on("close", () => abort.abort());
+  const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 20_000);
+  res.on("close", () => clearInterval(ping));
   const headers = { Authorization: `Bearer ${HERMES_KEY}`, "content-type": "application/json" };
   try {
     if (!HERMES_URL) throw new Error("no Hermes API server in ~/.hermes/.env");
@@ -125,6 +131,26 @@ async function hermes(req, res) {
     else send("result", { text: "Hermes finished without a text result. Do not infer success." });
   } catch (err) {
     if (!abort.signal.aborted) send("error", { message: err.message });
+  }
+  res.end();
+}
+
+// The coding agent.
+
+async function agent(req, res) {
+  const body = JSON.parse(await read(req));
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+  const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+  // Proxies close a quiet stream: a comment every 20 s keeps a long run's stream open.
+  const ping = setInterval(() => { if (!res.writableEnded) res.write(": ping\n\n"); }, 20_000);
+  try {
+    await T3.runTask(body, send, abort.signal);
+  } catch (err) {
+    if (!abort.signal.aborted) send("error", { message: `T3: ${err.message}` });
+  } finally {
+    clearInterval(ping);
   }
   res.end();
 }
@@ -207,7 +233,8 @@ const server = createServer(async (req, res) => {
     if (path === "/voice-core.js") return file(res, OUT);
     if (path === "/config") {
       res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ route: ROUTE, model, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY) }));
+      const projects = T3.available() ? (await T3.projects().catch(() => [])).map((p) => p.title) : null;
+      return res.end(JSON.stringify({ route: ROUTE, model, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
     }
     if (path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -218,6 +245,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (path === "/hermes" && req.method === "POST") return hermes(req, res);
+    if (path === "/agent" && req.method === "POST") return agent(req, res);
+    if (path === "/agent/cancel" && req.method === "POST") {
+      const ok = await T3.cancel(JSON.parse(await read(req))).catch((err) => { console.error(`T3 cancel: ${err.message}`); return false; });
+      res.writeHead(ok ? 204 : 404);
+      return res.end();
+    }
+    if (path === "/ping") { res.writeHead(204, { "cache-control": "no-store" }); return res.end(); }
     if (path === "/traces" && req.method === "POST") {
       const name = (url.searchParams.get("name") ?? "").replace(/[^\w.-]/g, "");
       if (!name.endsWith(".jsonl")) { res.writeHead(400); return res.end(); }
@@ -233,7 +267,7 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify(list));
     }
-    for (const [prefix, dir] of [["/traces/", TRACES], ["/scenarios/", join(root, "scenarios")], ["/versions/", join(root, "dist/versions")], ["/web/", join(root, "web")]]) {
+    for (const [prefix, dir] of [["/traces/", TRACES], ["/scenarios/", join(root, "scenarios")], ["/versions/", join(root, "dist/versions")], ["/web/", join(root, "web")], ["/clips/", join(os.homedir(), ".local/share/voice-core/clips")]]) {
       if (!path.startsWith(prefix)) continue;
       const target = normalize(join(dir, decodeURIComponent(path.slice(prefix.length))));
       if (!target.startsWith(dir)) break;

@@ -29,15 +29,17 @@
 import { RESULT_ARRIVED, TASK_STARTED } from "./earcons.ts";
 import { base64Size, codePoints, decodeBase64, encodeBase64, gain, level, looksBase64, silent64 } from "./bytes.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
+import { commandIn } from "./commands.ts";
 import {
-  CANCEL_TASK, CHECK_TASK, CallProtocol, LIST_TASKS, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
+  CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, LIST_TASKS, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
   type Delegation, type HermesCall, type ResponseOptions,
 } from "./protocol.ts";
 import {
-  type Resume, instructionFor, recapFrame, resultFrame, resumeFrom, setupFrame, voiceMessage, withTasks, type Setup,
+  type Resume, codingInstruction, codingMessage, instructionFor, recapFrame, resultFrame, resumeFrom, setupFrame, typedFrame, voiceMessage,
+  withTasks, type Setup,
 } from "./setup.ts";
 import * as TaskNames from "./taskNames.ts";
-import type { CallConfig, ChatLine, Command, Event, Status } from "./types.ts";
+import type { Agent, CallConfig, ChatLine, Command, Event, Status } from "./types.ts";
 
 const OUTPUT_MIME = "audio/pcm;rate=24000";
 /** The words said before the call connected go to the model in 100 ms frames. */
@@ -58,6 +60,10 @@ const MAX_TASKS = 32;
 const PROGRESS_LIMIT = 300;
 /** User turns after hearing a task's question within which an answer the model doesn't place still goes to it. */
 const ANSWER_TURNS = 2;
+/** The longest a stop keeps the model quiet, in seconds, if it never answers. */
+const HUSH_MAX = 10;
+/** Seconds after "goodbye" with nothing more said before the call hangs up. */
+const HANG_UP_WAIT = 1.2;
 /** A user turn this many times deliverMax old, with nothing heard lately, no longer holds results back. */
 const STUCK_TURNS = 3;
 /** Timers due within this of an event's time run on it: ticks land on 0.1 s steps that floats miss by a hair. */
@@ -111,6 +117,10 @@ class Task {
   result: string | null = null;
   /** How it had ended before a follow-up brought it back, until one goes to Hermes. */
   revivedFrom: string | null = null;
+  /** Who works on it: Hermes, or the coding agent. */
+  agent: Agent = "hermes";
+  /** For the coding agent, the project the model named. */
+  project: string | null = null;
   readonly id: string;
   readonly label: string;
   constructor(id: string, label: string, first: Run) {
@@ -130,6 +140,8 @@ class Task {
 class Unheard {
   sending = false;
   told = false;
+  /** The model has been told it at least once, even if it goes again. */
+  toldOnce = false;
   /** Spoken in a turn that has ended, until that speech finishes playing. */
   playing: number | null = null;
   tries = 0;
@@ -249,6 +261,13 @@ export class Call {
   private readonly jobs = new Map<string, { task: Task; run: Run } | { hostCall: string; name: string }>();
   /** whileSpeaking: the reply was cut by the wake word; the rest of its turn isn't played. */
   private dropTurn = false;
+  /** After stop: the model's speech is dropped until it has answered the user's stop (or they speak again). */
+  private hush: { afterEnd: boolean; byVoice: boolean } | null = null;
+  /** What the user has said in their current turn, for spoken commands. */
+  private utterance = "";
+  /** Frames typed while the call was off the model, sent once it's back. */
+  private typedLater: string[] = [];
+  private nextScreen = 1;
   private wakewordOn = false;
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
@@ -262,9 +281,11 @@ export class Call {
       api: config.api,
       model: config.model,
       voice: config.voice,
-      instruction: config.instruction ?? instructionFor(config.platform, config.api),
+      instruction: (config.instruction ?? instructionFor(config.platform, config.api)) +
+        (config.codingAgent ? codingInstruction(config.codingAgent.projects) : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
+      codingProjects: config.codingAgent?.projects ?? null,
     };
   }
 
@@ -368,6 +389,10 @@ export class Call {
       case "resume": return this.defer(() => this.comeBack());
       case "wake": return this.wakeWord();
       case "cancelTask": return this.defer(() => { this.cancelNow(e.task); });
+      case "interrupt": return this.interrupt();
+      case "say": return this.typed(e.text);
+      case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
+      case "steer": return this.defer(() => this.steer(e.task, e.text));
       case "lend": this.lend(); return;
       case "reclaim": return this.reclaim();
       case "stop": return this.stop(e.message ?? null);
@@ -723,6 +748,7 @@ export class Call {
     this.speechUntil = 0;
     this.newSession();
     for (const pcm of this.held) this.send(audioFrame(pcm));
+    for (const frame of this.typedLater.splice(0)) this.send(frame);
     this.held = [];
     this.heldBytes = 0;
     this.voiced = 0;
@@ -802,7 +828,7 @@ export class Call {
     if (batch.length === 0) return;
     const calls = batch.map((item) => (item.call != null && item.session === this.session && !this.cancelledCalls.has(item.call) ? item.call : null));
     for (const item of batch) { item.sending = true; item.call = null; }
-    const told = (item: Unheard) => { item.sending = false; item.told = true; };
+    const told = (item: Unheard) => { item.sending = false; item.told = true; item.toldOnce = true; };
     try {
       if (batch.length === 1 && calls[0] != null) {
         const only = batch[0];
@@ -858,9 +884,11 @@ export class Call {
         this.protocol.transcript("user", input, this.t);
         this.heardWords("user", input);
         this.lastSpeech = this.t;
+        this.spoken(input);
       }
       const output = str(obj(source.outputTranscription), "text");
-      if (output) {
+      if (output && this.hush) this.hushed();
+      else if (output) {
         this.protocol.transcript("assistant", output, this.t);
         this.heardWords("assistant", output);
         this.lastSpeech = this.t;
@@ -885,6 +913,7 @@ export class Call {
       this.speaking(data64, size);
     }
     if (content.turnComplete === true) {
+      if (this.hush?.afterEnd) this.hush = null;
       this.turnAudio();
       if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
       else if (this.heardRelayed().length > 0 && !this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
@@ -912,6 +941,8 @@ export class Call {
 
   private activityStart(): void {
     const at = this.t;
+    this.utterance = "";
+    if (this.hush?.afterEnd) this.hush = null;
     this.protocol.activityStarted(at);
     this.lastSpeech = at;
     this.userTalking = true;
@@ -926,6 +957,7 @@ export class Call {
   }
 
   private activityEnd(): void {
+    if (this.hush) this.hush.afterEnd = true;
     this.protocol.activityEnded(this.t);
     this.lastSpeech = this.t;
     this.userTalking = false;
@@ -950,6 +982,7 @@ export class Call {
 
   /** The model's audio: played, unless the wake word cut its turn. */
   private speaking(data64: string, size: number): void {
+    if (this.hush) { this.hushed(); return; }
     if (this.dropTurn) return;
     this.emit({ type: "play", pcm: data64 });
     this.turnBytes += size;
@@ -989,6 +1022,7 @@ export class Call {
       for (let at = 0; at < before.length; at += OPENING_CHUNK) this.send(audioFrame(before.subarray(at, Math.min(before.length, at + OPENING_CHUNK))));
     }
     this.emit({ type: "mic.start" });
+    for (const frame of this.typedLater.splice(0)) this.send(frame);
     this.setStatus(this.running > 0 ? "working" : "listening");
   }
 
@@ -1035,15 +1069,140 @@ export class Call {
     this.updateWakeword();
   }
 
+  // Stopping, typing and the screen's tasks.
+
+  /** The model's speech while hushed: dropped, and the reply it was making counts as heard. */
+  private hushed(): void {
+    this.speechUntil = Math.min(this.speechUntil, this.t);
+  }
+
+  /** Stops the model's reply now, and keeps it quiet until it has answered the stop. */
+  private hushReply(why: string, byVoice: boolean): void {
+    this.log("info", why);
+    this.emit({ type: "flush" });
+    // The user stopped it on purpose: what it was saying isn't said again.
+    this.heardOut(this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting));
+    this.speechUntil = this.t;
+    this.hush = { afterEnd: !this.userTalking, byVoice };
+    const hush = this.hush;
+    this.sleep(HUSH_MAX, () => { if (this.hush === hush) this.hush = null; });
+    this.updateWakeword();
+  }
+
+  /** The stop button, or the host's stop word. */
+  private interrupt(): void {
+    if (!this.active) return;
+    this.hushReply("stopped by the user", false);
+  }
+
+  /** A fragment of what the user is saying: a whole utterance that's a command is carried out. */
+  private spoken(text: string): void {
+    this.utterance = take(this.utterance + text, 400);
+    const names = [...this.c.vocabulary, "Woodhouse"];
+    const command = commandIn(this.utterance, this.c.voiceCommands, names);
+    if (command === "stop") {
+      if (this.hush?.byVoice) return;
+      this.emit({ type: "voiceCommand", command, heard: collapse(this.utterance) });
+      this.hushReply(`the user said "${collapse(this.utterance)}": the reply stops`, true);
+      return;
+    }
+    // More words after a stop: it was the start of something else, so the model may answer it.
+    if (this.hush?.byVoice) { this.hush = null; this.log("info", "not a stop after all: the model may answer"); }
+    if (command === "hangUp") {
+      const turn = this.userTurns;
+      const heard = this.utterance;
+      this.sleep(HANG_UP_WAIT, () => {
+        if (!this.active || this.userTurns !== turn || this.utterance !== heard) return;
+        this.emit({ type: "voiceCommand", command: "hangUp", heard: collapse(heard) });
+        this.stop("You hung up.");
+      });
+    }
+  }
+
+  /** What the user typed: a turn of its own, as if said, with the call's tasks able to take it as a request. */
+  private typed(raw: string): void {
+    const text = collapse(String(raw ?? ""));
+    if (!this.active || text.length === 0 || text.length > 4000) return;
+    const t = this.t;
+    this.hush = null;
+    this.boundary = true;
+    this.protocol.activityStarted(t);
+    this.protocol.transcript("user", text, t);
+    this.protocol.activityEnded(t);
+    this.heardWords("user", text);
+    this.boundary = true;
+    this.userTurns++;
+    this.lastSpeech = t;
+    this.replyDue = t;
+    this.played();
+    this.lapseQuestions();
+    const frame = typedFrame(text);
+    if (this.standby || this.waking || !this.listening) {
+      this.typedLater.push(frame);
+      if (this.standby) this.defer(() => this.comeBack());
+      return;
+    }
+    this.send(frame);
+  }
+
+  /** A request that came from the screen, not a function call: nothing answers a call, and its result goes in as a turn. */
+  private screenRun(text: string, followUp: boolean): Run {
+    const run = new Run(`screen-${this.nextScreen++}`, { id: "", task: text, context: this.protocol.context(), taskId: "", followUp, label: "" }, this.session, null, followUp);
+    run.acknowledged = true;
+    run.answered = true;
+    return run;
+  }
+
+  private askFromScreen(raw: string, agent: Agent, project: string | null): void {
+    const text = collapse(String(raw ?? ""));
+    if (!this.active || text.length === 0 || text.length > 4000) return;
+    const run = this.screenRun(text, false);
+    const name = TaskNames.unique(TaskNames.fromRequest(text), text, [...this.tasks.values()].map((t) => t.label));
+    const task = new Task(String(this.nextTask++), name, run);
+    task.agent = agent;
+    task.project = project != null ? take(project.trim(), 120) || null : null;
+    this.tasks.set(task.id, task);
+    this.chat.push({ role: "user", text });
+    this.boundary = true;
+    this.log("info", `"${task.label}" started from the screen`);
+    this.showTask(task);
+    this.cue("taskStarted");
+    this.runIfStill(task, run);
+    this.settled();
+  }
+
+  private steer(taskId: string, raw: string): void {
+    const text = collapse(String(raw ?? ""));
+    const task = this.tasks.get(String(taskId));
+    if (!this.active || !task || text.length === 0 || text.length > 4000) return;
+    const run = this.screenRun(text, true);
+    task.runs++;
+    this.chat.push({ role: "user", text: `(to "${task.label}") ${text}` });
+    this.boundary = true;
+    if (task.state === RUNNING) task.queued.push(run);
+    else {
+      task.revivedFrom = task.state;
+      task.state = RUNNING;
+      task.current = run;
+      task.progress = null;
+    }
+    this.log("info", `a follow-up to "${task.label}" from the screen`);
+    this.showTask(task);
+    this.cue("taskStarted");
+    this.runIfStill(task, run);
+    this.settled();
+  }
+
   // Tasks.
 
   private delegate(call: Json): void {
     const name = str(call, "name");
     const id = str(call, "id");
-    const d = this.protocol.delegation(name, id, this.t);
+    const delegators = this.c.codingAgent ? [TOOL, CODE_TOOL] : [TOOL];
+    const d = this.protocol.delegation(name, id, this.t, delegators);
     if (d == null) {
-      if (id && id.length < 200 && name != null && name !== TOOL && name.length < 200) {
-        const known = ["ask_hermes", "list_tasks", "check_task", "cancel_task", ...this.setup.hostTools.map((t) => t.name)];
+      if (id && id.length < 200 && name != null && !delegators.includes(name) && name.length < 200) {
+        const known = [...delegators, "list_tasks", "check_task", "cancel_task", ...this.setup.hostTools.map((t) => t.name)];
         const list = known.slice(0, -1).join(", ") + " and " + known[known.length - 1];
         this.defer(() => this.respond(id, `Not executed: unknown tool. Only ${list} exist.`, false, { name }));
       }
@@ -1051,11 +1210,13 @@ export class Call {
     }
     const named = taskRef(call);
     const label = TaskNames.tidy(str(obj(call.args), "label"));
+    const agent: Agent = name === CODE_TOOL ? "t3" : "hermes";
+    const project = take((str(obj(call.args), "project") ?? "").trim(), 120) || null;
     this.settling++;
     let settledYet = false;
     const settledNow = () => { if (!settledYet) { settledYet = true; this.settling--; } };
     const body = () => {
-      try { this.delegated(d, named, label, settledNow); } finally { settledNow(); }
+      try { this.delegated(d, named, label, settledNow, agent, project); } finally { settledNow(); }
     };
     this.defer(() => {
       if (d.turn == null) { if (this.active) body(); else settledNow(); return; }
@@ -1070,7 +1231,7 @@ export class Call {
     });
   }
 
-  private delegated(d: Delegation, named: string | null, label: string | null, settledNow: () => void): void {
+  private delegated(d: Delegation, named: string | null, label: string | null, settledNow: () => void, agent: Agent = "hermes", project: string | null = null): void {
     settledNow();
     for (const same of this.tasks.values()) {
       if (!same.has(d.turn)) continue;
@@ -1098,7 +1259,10 @@ export class Call {
     if (task != null) this.followUp(task, run, found == null);
     else {
       const name = TaskNames.unique(label ?? TaskNames.fromRequest(request.task), request.task, [...this.tasks.values()].map((t) => t.label));
-      this.startTask(new Task(String(this.nextTask++), name, run), named);
+      const task = new Task(String(this.nextTask++), name, run);
+      task.agent = agent;
+      task.project = project;
+      this.startTask(task, named);
     }
   }
 
@@ -1136,7 +1300,8 @@ export class Call {
     }
     const prefix = unknown != null ? `There is no task called "${TaskNames.tidy(unknown) ?? "that"}", so this started a new one. ` : "";
     const first = task.current;
-    this.acknowledge(task, first, prefix + `Started "${task.label}". Hermes is working on it; ${this.follows(false)}.`);
+    const who = task.agent === "t3" ? "A coding agent in T3 Code is working on it and may take a while" : "Hermes is working on it";
+    this.acknowledge(task, first, prefix + `Started "${task.label}". ${who}; ${this.follows(false)}.`);
     this.runIfStill(task, first);
   }
 
@@ -1213,11 +1378,14 @@ export class Call {
     const request = { ...run.request, taskId: task.id, followUp: run.followUp, label: task.label };
     this.defer(() => {
       if (!this.jobs.has(key)) return;
-      this.emit({
-        type: "tool.call", run: key, kind: "hermes",
-        message: voiceMessage(request, this.c.today, { platform: this.c.platform, device: this.c.device }),
+      const surface = { platform: this.c.platform, device: this.c.device };
+      const call: Command = {
+        type: "tool.call", run: key, kind: "hermes", agent: task.agent,
+        message: task.agent === "t3" ? codingMessage(request, this.c.today, surface) : voiceMessage(request, this.c.today, surface),
         request: request.task, taskId: task.id, label: task.label, followUp: request.followUp,
-      });
+      };
+      if (task.project != null) call.project = task.project;
+      this.emit(call);
     });
   }
 
@@ -1281,7 +1449,7 @@ export class Call {
     const queued = task.queued.length;
     const message = `Cancelled "${task.label}". Hermes stopped; what it already did was not undone.` +
       (queued > 0 ? ` Its ${queued} follow-up${queued > 1 ? "s" : ""} waiting never ran.` : "");
-    if (task.job != null) { this.jobs.delete(task.job); this.emit({ type: "tool.cancel", run: task.job }); }
+    if (task.job != null) { this.jobs.delete(task.job); this.emit({ type: "tool.cancel", run: task.job, reason: "cancelled" }); }
     this.finished(task, CANCELLED, message);
     const runs = [task.current, ...task.queued];
     task.queued.length = 0;
@@ -1406,7 +1574,7 @@ export class Call {
     });
     for (const item of items) item.sending = false;
     if (this.userTurns !== turns || this.talking(this.t)) { this.again(items); return; }
-    for (const item of items) item.told = true;
+    for (const item of items) { item.told = true; item.toldOnce = true; }
     this.lastSpeech = this.t;
     this.unspokenSince = this.t;
     this.spokeSince = false;
@@ -1429,7 +1597,7 @@ export class Call {
   private showTask(task: Task): void {
     if (!this.tasks.has(task.id)) return;
     this.emit({
-      type: "task", id: task.id, label: task.label, request: task.request, state: this.stateOf(task),
+      type: "task", id: task.id, label: task.label, agent: task.agent, request: task.request, state: this.stateOf(task),
       progress: task.state === RUNNING ? task.progress : null,
       question: task.state === FINISHED && task.askedAt > 0 ? task.asked : null,
     });
@@ -1468,7 +1636,7 @@ export class Call {
     this.deferred = [];
     if (this.wakewordOn) { this.wakewordOn = false; this.emit({ type: "wakeword", on: false }); }
     if (this.listening) this.emit({ type: "mic.stop" });
-    for (const key of [...this.jobs.keys()]) this.emit({ type: "tool.cancel", run: key });
+    for (const key of [...this.jobs.keys()]) this.emit({ type: "tool.cancel", run: key, reason: "ended" });
     this.jobs.clear();
     this.closeSocket(this.rotation?.sock ?? null);
     this.rotation = null;
