@@ -150,6 +150,8 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
     return null;
   };
   const announcements: Announcement[] = [];
+  /** Segments that told a result: the model passing on its work, not reacting to ambient speech. */
+  const telling = new Set<Segment>();
   // From the end of the scenario's `retold` utterance ("what did I miss?") the user has asked to hear results again:
   // saying one there voices it if nothing did before, and is not a repeat.
   const retold = (scenario as { retold?: string }).retold;
@@ -163,6 +165,7 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
     const all = after.filter((s) => res.every((re) => re.test(s.text)) && (!s.cut || (s.end - s.start) / Math.max(0.1, s.audio) > 0.7));
     const before = all.filter((s) => s.start < retoldAt - 0.3);
     const said = before.length > 0 ? before : all.slice(0, 1);
+    for (const x of all) telling.add(x);
     const firstFact = res[0];
     const aborted = after.filter((s) => s.cut && !said.includes(s) && (firstFact.test(s.text) || /^\s*(by the way|also|oh,|quick update|update)/i.test(s.text)) && (said.length === 0 || s.start < said[0].start)).length;
     announcements.push({
@@ -184,7 +187,7 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
     const from = a.start + 0.5, to = a.end + 3;
     const clear = !users.some((u) => overlap(u.start, u.end + 4, from, to) > 0);
     if (!clear) continue;
-    for (const s of segs) if (s.start >= from && s.start < to) ambientSpeechSeconds += s.end - s.start;
+    for (const s of segs) if (s.start >= from && s.start < to && !telling.has(s)) ambientSpeechSeconds += s.end - s.start;
     ambientToolCalls += log.filter((r) => r.k === "model" && r.what === "toolCall" && r.t >= from && r.t < to).length;
   }
 

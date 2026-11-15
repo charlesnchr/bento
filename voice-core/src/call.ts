@@ -73,6 +73,15 @@ const EPSILON = 1e-6;
 /** The recap a session coming back from standby gets, in characters (AssistantTranscript.liveRecap). */
 const RECAP_CHARS = 6000;
 
+/** What the instruction adds with CallConfig.supervise: corrections, brevity and status. */
+const SUPERVISE =
+  " A correction or a change of mind is a follow-up, never a new request: when the user corrects or changes a request they " +
+  "have just made (\"no, I meant…\", \"actually, make that…\") or adds to it in a second breath, call ask_hermes with that " +
+  "task as continue_task, so the same task gets it, and when they take a request back (\"never mind\", \"forget that\") call " +
+  "cancel_task for it. Keep every reply to a sentence or two unless the user asks for more, and never close with an offer of " +
+  "more help. Asked what is going on or what they missed, call list_tasks and say each task's state or outcome in a few " +
+  "words: never only that everything is done.";
+
 /** One request a task works on: the ask_hermes call it answers, in the session that made it. */
 class Run {
   /** The model has heard it started, so the call waits for a last response. */
@@ -102,6 +111,10 @@ class Run {
 /** A sub-agent: one Hermes session, its first request and the follow-ups it was given since. */
 class Task {
   readonly request: string;
+  /** With CallConfig.supervise: when its current run started, when it last reported progress, and what the user was told of its result. */
+  startedAt = 0;
+  progressAt = 0;
+  told: string | null = null;
   /** What Hermes's latest reply asked the user, until a follow-up goes to Hermes. */
   asked: string | null = null;
   /** When the user heard [asked], in order (0 until then). */
@@ -291,6 +304,8 @@ export class Call {
   /** announce.by "host": the brief playing now, and what was said while the call was off the model. */
   private announcing: { item: Unheard; from: number; until: number } | null = null;
   private saidAway: string[] = [];
+  /** When a brief last finished playing, until someone else speaks: the next one ready follows it at once. */
+  private announcedAt: number | null = null;
   private nextBrief = 1;
   /** When the user last spoke, and whether the model's last turn was a spoken reply that has ended, and asked something. */
   private lastUserSpeech = -Infinity;
@@ -314,7 +329,7 @@ export class Call {
       model: config.model,
       voice: config.voice,
       instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host")) +
-        (config.codingAgent ? codingInstruction(config.codingAgent.projects) : ""),
+        (config.codingAgent ? codingInstruction(config.codingAgent.projects) : "") + (config.supervise ? SUPERVISE : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
       codingProjects: config.codingAgent?.projects ?? null,
@@ -763,6 +778,8 @@ export class Call {
     // At most a minute of 24 kHz PCM16, and some words.
     if (size <= 0 || size % 2 !== 0 || size > 2_880_000 || said.length === 0) { this.briefFailed(id, "the brief had no words or no audio"); return; }
     item.brief = { text: said, pcm, seconds: size / 48_000 };
+    const briefed = this.tasks.get(item.task);
+    if (briefed) briefed.told = said;
     item.briefAt = this.t;
     this.announce();
   }
@@ -788,8 +805,9 @@ export class Call {
     }
     if (this.rotating || this.lent) return;
     const ready = this.unheard.filter((u) => u.brief != null && !u.told && !u.sending && u.playing == null);
-    // A task's question first (it's waiting on the user), then in the order they finished.
-    const next = ready.find((u) => u.asked != null) ?? ready[0];
+    // In the order they finished, with a task's question after the plain results, so it is the last
+    // thing said and the user can answer it.
+    const next = ready.find((u) => u.asked == null) ?? ready[0];
     if (next && this.fits(next, t)) this.startAnnouncing(next);
   }
 
@@ -814,7 +832,10 @@ export class Call {
     // In a conversation while either side spoke lately: listening to a long answer is taking part too.
     if (t - Math.max(this.lastUserSpeech, this.speechUntil) >= a.engaged) return quiet >= this.c.limits.settleQuiet;
     const sinceReply = t - this.speechUntil;
-    if (this.replyEnded && !this.replyAsked && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
+    // Several results ready together are told one after another, as one announcement.
+    if (this.announcedAt != null && sinceReply >= 0.3 && sinceReply <= 1.5) return true;
+    // A reply that asked the user something leaves the floor to them, unless the result has waited long already.
+    if (this.replyEnded && (!this.replyAsked || waited) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
     return quiet >= a.lull * (1 + item.cuts);
   }
 
@@ -850,6 +871,9 @@ export class Call {
     item.told = true;
     item.toldOnce = true;
     this.lastSpeech = this.t;
+    // A question leaves the floor to the user: nothing follows it.
+    this.announcedAt = item.asked == null ? this.t : null;
+    if (item.asked != null) { this.replyEnded = true; this.replyAsked = true; }
     this.attendFor(item.asked != null ? this.c.attention.afterQuestion : this.c.attention.afterAnnouncement, this.t, "longer");
     this.heardOut([item]);
     this.updateWakeword();
@@ -1209,6 +1233,7 @@ export class Call {
 
   private activityStart(): void {
     const at = this.t;
+    this.announcedAt = null;
     this.lastUserSpeech = at;
     this.replyEnded = false;
     this.cutAnnouncement();
@@ -1258,6 +1283,7 @@ export class Call {
     if (this.hush) { this.hushed(); return; }
     if (this.dropTurn) return;
     this.emit({ type: "play", pcm: data64 });
+    this.announcedAt = null;
     this.turnBytes += size;
     if (!this.turnAudible && !silent64(data64)) this.turnAudible = true;
     this.geminiSpoke();
@@ -1730,6 +1756,9 @@ export class Call {
     task.state = RUNNING;
     task.current = run;
     task.progress = null;
+    task.startedAt = this.t;
+    task.progressAt = this.t;
+    task.told = null;
     const key = `r${this.nextRun++}`;
     task.job = key;
     this.jobs.set(key, { task, run });
@@ -1800,6 +1829,7 @@ export class Call {
     const task = this.tasks.get(taskId);
     if (task && task.state === RUNNING) {
       task.progress = take(collapse(text), PROGRESS_LIMIT);
+      task.progressAt = this.t;
       this.showTask(task);
     }
   }
@@ -1949,7 +1979,21 @@ export class Call {
       (task.runs > 1 ? `; latest follow-up: ${quote(task.latest)}` : "") + ")" + (withState ? `: ${task.state}` : "") +
       (task.queued.length > 0 ? `, ${task.queued.length} follow-up${task.queued.length > 1 ? "s" : ""} waiting` : "") +
       (task.progress != null && task.state === RUNNING ? `. Latest: ${task.progress}` : "") +
-      (task.asked != null && task.state === FINISHED ? `. Hermes asked: ${task.asked}` : "") + ".";
+      (task.asked != null && task.state === FINISHED ? `. Hermes asked: ${task.asked}` : "") + "." + this.detail(task);
+  }
+
+  /** With CallConfig.supervise: how long a running task has run and been quiet, and a finished one's outcome in a line. */
+  private detail(task: Task): string {
+    if (!this.c.supervise) return "";
+    if (task.state === RUNNING) {
+      const span = (s: number) => (s < 90 ? `${Math.max(1, Math.round(s))} seconds` : `${Math.round(s / 60)} minutes`);
+      const quiet = task.progressAt > 0 ? this.t - task.progressAt : 0;
+      return ` Running for ${span(this.t - task.startedAt)}` + (quiet >= 120 ? `, with nothing new from it for ${span(quiet)}` : "") + ".";
+    }
+    if (task.state !== FINISHED || task.result == null) return "";
+    const heard = !this.unheard.some((u) => u.task === task.id);
+    const outcome = task.told ?? (task.result.length > 240 ? take(collapse(task.result), 240) + "…" : collapse(task.result));
+    return ` Outcome${heard ? " (the user has heard it)" : ""}: ${outcome}`;
   }
 
   private stateOf(task: Task): string {

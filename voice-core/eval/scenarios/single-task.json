@@ -1,0 +1,33 @@
+{
+ "name": "single-task",
+ "about": "One lookup, then the user waits in silence. The agent answers 6 s after it starts. Good: the hand-off is silent apart from the tone (no 'I'll ask Hermes', no 'still checking'), the result is said once, within a few seconds of arriving, in one or two short sentences that give the outcome (rain this afternoon, take an umbrella) without a status preamble. The user's thanks gets a word or two, not the result again.",
+ "agents": [
+  { "id": "weather", "match": "umbrella|rain|weather|forecast", "after": 6,
+    "progress": [[2, "Using web_search"]],
+    "result": "Yes, take an umbrella. Light rain in London from about 3 pm until 7 pm, 12 degrees, clearing overnight.",
+    "facts": ["rain|umbrella", "\\b(3|three)\\b|afternoon"] }
+ ],
+ "steps": [
+  { "say": "Can you check if I'll need an umbrella in London this afternoon?", "id": "ask" },
+  { "until": "dispatch:weather", "timeout": 15 },
+  { "until": "result:weather", "timeout": 20 },
+  { "until": "quiet:4", "timeout": 30 },
+  { "say": "Great, thanks.", "id": "thanks" },
+  { "until": "quiet:5", "timeout": 20 }
+ ],
+ "checks": [
+  { "dispatch": "weather", "count": 1 },
+  { "request": "weather", "contains": ["umbrella|rain", "london"] },
+  { "voiced": "weather", "within": 6 },
+  { "maxModelWords": 35, "after": "ask", "before": "thanks" },
+  { "notSaid": "still (checking|looking|working)|let me (check|ask)|i'?ll (check|ask)|asking hermes|hermes is (on|checking|looking)", "after": "ask", "before": "thanks" },
+  { "maxModelWords": 8, "after": "thanks" },
+  { "notSaid": "rain|umbrella", "after": "thanks" }
+ ],
+ "judge": [
+  "Was the result said exactly once, soon after it arrived?",
+  "Was the result given in one or two short sentences, outcome first, without a status line such as 'the task has finished'?",
+  "Did the assistant stay quiet while the lookup ran, rather than announcing that it was checking?"
+ ],
+ "max": 70
+}

@@ -1,0 +1,221 @@
+{
+ "name": "multitask-interrupt",
+ "about": "The 2026-11-07 call in miniature. A task proposes a wake word name and asks before going on; the user says yes and adds a slow terminal command (sleep 45 s), which belongs to that same task. While it runs the user makes a long, rambling new request (days until Christmas, with talk about booking flights). Then another task asks whether to look up tomorrow's Copenhagen weather, and the user says yes while the slow task's result is due. Finally: what's going on? Good: every new request starts its own task and the long one reaches Hermes whole; each yes reaches the task that asked (wake word, then Copenhagen); the model never starts talking over the user; no task or session is ever given a number; each result is said once, briefly (Hey Juniper, the command finished, 40 days, the Copenhagen forecast); the last answer is a short overview.",
+ "agents": [
+  {
+   "id": "wakeword",
+   "match": "wake ?word|name for",
+   "after": 7,
+   "progress": [
+    [
+     2,
+     "Thinking about names"
+    ]
+   ],
+   "result": "How about 'Hey Juniper'? It's distinctive, two syllables after 'hey', and unlikely to come up in normal conversation. Shall I go ahead with it?",
+   "facts": [
+    "juniper",
+    "\\?|should i|shall i|should we|want me to|do you want|would you like|go ahead"
+   ],
+   "followUps": [
+    {
+     "id": "wakeword-sleep",
+     "match": "yes|go ahead|sleep|terminal|command",
+     "after": 48,
+     "progress": [
+      [
+       2,
+       "Running: sleep 45"
+      ]
+     ],
+     "result": "Done. I've noted 'Hey Juniper' as the new wake word, and the terminal command finished: it slept for 45 seconds.",
+     "facts": [
+      "sleep|slept|terminal|command|forty[- ]?five|45",
+      "done|finished|complete|over"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sleep",
+   "match": "sleep|terminal|command",
+   "after": 48,
+   "progress": [
+    [
+     2,
+     "Running: sleep 45"
+    ]
+   ],
+   "result": "The terminal command finished: it slept for 45 seconds.",
+   "facts": [
+    "sleep|slept|terminal|command|forty[- ]?five|45",
+    "done|finished|complete|over"
+   ]
+  },
+  {
+   "id": "christmas",
+   "match": "christmas|days until|holiday",
+   "after": 6,
+   "result": "It's 40 days until Christmas, counting from today, Sunday 15 November.",
+   "facts": [
+    "\\b(40|forty)\\b(?![- ]?five)"
+   ]
+  },
+  {
+   "id": "copenhagen",
+   "match": "copenhagen|weather",
+   "after": 6,
+   "result": "I can look up tomorrow's weather in Copenhagen for you. Shall I go ahead?",
+   "facts": [
+    "copenhagen",
+    "\\?|should i|shall i|want me to|do you want|would you like|go ahead"
+   ],
+   "followUps": [
+    {
+     "id": "copenhagen-weather",
+     "match": "yes|please|go ahead|do",
+     "after": 6,
+     "progress": [
+      [
+       2,
+       "Using web_search"
+      ]
+     ],
+     "result": "Copenhagen tomorrow: cloudy, 6 degrees, with showers likely in the afternoon.",
+     "facts": [
+      "cloud|shower|rain|\\b(6|six)\\b"
+     ]
+    }
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes to suggest one good name for a new wake word, and to ask me whether to go ahead before it does anything else.",
+   "id": "ask1"
+  },
+  {
+   "until": "dispatch:wakeword",
+   "timeout": 15
+  },
+  {
+   "until": "result:wakeword",
+   "timeout": 20
+  },
+  {
+   "until": "quiet:2",
+   "timeout": 30
+  },
+  {
+   "say": "Yes, go ahead with that one. Have Hermes run a terminal command that sleeps for forty five seconds, and then say it's done.",
+   "id": "yes1"
+  },
+  {
+   "wait": 4
+  },
+  {
+   "say": "And separately, while that's happening, can you ask Hermes how many days it is until Christmas? Take your time, there's no rush at all, I'm just thinking out loud about the holidays and when I should book my flights home this year, because last year I left it far too late and the prices were awful.",
+   "id": "long",
+   "patience": 4
+  },
+  {
+   "until": "quiet:6",
+   "timeout": 40
+  },
+  {
+   "say": "Ask Hermes whether it should look up the weather in Copenhagen for tomorrow, and have it ask me first before it does.",
+   "id": "ask3"
+  },
+  {
+   "until": "result:copenhagen",
+   "timeout": 25
+  },
+  {
+   "until": "said:copenhagen|weather",
+   "timeout": 25
+  },
+  {
+   "until": "quiet:1.5",
+   "timeout": 30
+  },
+  {
+   "say": "Yes, please do.",
+   "id": "yes2"
+  },
+  {
+   "until": "agents-done",
+   "timeout": 40
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  },
+  {
+   "say": "What's going on at the moment?",
+   "id": "status"
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "wakeword",
+   "count": 1
+  },
+  {
+   "dispatch": "christmas",
+   "count": 1
+  },
+  {
+   "dispatch": "copenhagen",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "followUp": "wakeword",
+   "match": "yes|go ahead"
+  },
+  {
+   "request": "christmas",
+   "contains": [
+    "christmas",
+    "flights"
+   ]
+  },
+  {
+   "followUp": "copenhagen",
+   "match": "yes|please"
+  },
+  {
+   "notSaid": "\\b(task|session|job)s? (number )?(#?\\d+|one|two|three|four|five)\\b|\\b(first|second|third|fourth) (task|session|job)\\b"
+  },
+  {
+   "voiced": "wakeword",
+   "within": 10
+  },
+  {
+   "voiced": "christmas",
+   "within": 20
+  },
+  {
+   "voiced": "copenhagen-weather",
+   "within": 20
+  },
+  {
+   "maxModelWords": 45,
+   "after": "status"
+  }
+ ],
+ "judge": [
+  "Did each 'yes' go to the task that had asked the question (the wake word, then Copenhagen)?",
+  "Did the long Christmas request start its own task, with all of what the user said?",
+  "Was every result said once, briefly, without talking over the user?",
+  "Was the final answer a short overview of what had happened and what was still going?"
+ ],
+ "max": 180
+}

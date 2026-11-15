@@ -1,0 +1,23 @@
+{
+ "name": "echo-wake-barge-in",
+ "about": "A smart speaker (the Echo) whose microphone the model does not hear while it speaks: the only way to cut in is the wake word. The user asks for a long answer (a bedtime story about a lighthouse keeper and a seal), then about two seconds in says the wake word, \"Woodhouse\", followed by a new question (the capital of Canada). Good: the reply stops within a second of the wake word, the new question is heard in full, and the assistant answers it (Ottawa) briefly without going back to the old answer.",
+ "config": { "platform": "Echo", "device": "speaker", "mic": { "whileSpeaking": "wake", "gainDb": 0 } },
+ "agents": [],
+ "steps": [
+  { "say": "Tell me a long bedtime story about a lighthouse keeper who makes friends with a seal.", "id": "long" },
+  { "say": "Woodhouse. What's the capital of Canada?", "id": "barge", "when": { "speaking": 2 }, "wake": 0.75, "timeout": 20 },
+  { "until": "quiet:5", "timeout": 40 }
+ ],
+ "checks": [
+  { "said": "lighthouse|keeper|seal|once", "after": "long", "before": "barge" },
+  { "yields": "barge", "within": 1 },
+  { "said": "ottawa", "after": "barge" },
+  { "maxModelWords": 40, "after": "barge" },
+  { "dispatch": "?", "count": 0 }
+ ],
+ "judge": [
+  "Did the long answer stop promptly when the user said the wake word?",
+  "Did the assistant hear and answer the new question (Ottawa) briefly?"
+ ],
+ "max": 75
+}

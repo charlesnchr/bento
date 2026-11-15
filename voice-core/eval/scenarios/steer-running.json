@@ -1,0 +1,125 @@
+{
+ "name": "steer-running",
+ "about": "A flight search to Lisbon runs. Partway through, the user adds a constraint: only direct flights. Good: the instruction goes into the running flights task (a steer, or a follow-up naming that task), not into a new task; the model acknowledges it in a few words at most; it answers the user's quick question about flight time (about two and a half hours) itself; the result the user hears is the direct one (TAP from Heathrow, £142), and the cheaper one-stop easyJet flight is never offered.",
+ "agents": [
+  {
+   "id": "flights",
+   "match": "flight|lisbon|fly",
+   "after": 34,
+   "steer": "accept",
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ],
+    [
+     9,
+     "Reading skyscanner.net"
+    ],
+    [
+     18,
+     "Comparing fares for 11 to 14 December"
+    ]
+   ],
+   "result": "Cheapest return to Lisbon for 11 to 14 December: easyJet from Gatwick, 96 pounds, one stop via Porto.",
+   "steeredResult": "Direct returns to Lisbon for 11 to 14 December: the cheapest is TAP from Heathrow at 142 pounds, leaving 7:10 am.",
+   "facts": [
+    "142|hundred (and )?forty[- ]two"
+   ],
+   "followUps": [
+    {
+     "id": "flights-direct",
+     "match": "direct|non-?stop",
+     "after": 6,
+     "result": "Direct returns to Lisbon for 11 to 14 December: the cheapest is TAP from Heathrow at 142 pounds, leaving 7:10 am.",
+     "facts": [
+      "142|hundred (and )?forty[- ]two"
+     ]
+    }
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Can you get Hermes to look for flights to Lisbon for the second weekend of December?",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:flights",
+   "timeout": 15
+  },
+  {
+   "until": "quiet:3",
+   "timeout": 20
+  },
+  {
+   "wait": 6
+  },
+  {
+   "say": "Oh, tell the one looking at flights to only include direct ones.",
+   "id": "steer",
+   "patience": 10
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 20
+  },
+  {
+   "say": "How long's the flight from London to Lisbon, roughly?",
+   "id": "q"
+  },
+  {
+   "until": "agents-done",
+   "timeout": 50
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  },
+  {
+   "say": "Nice, thanks.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 15
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "flights",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "followUp": "flights",
+   "match": "direct"
+  },
+  {
+   "voiced": "flights",
+   "within": 20
+  },
+  {
+   "notSaid": "\\b96\\b|ninety[- ]six|porto|easy ?jet|one stop"
+  },
+  {
+   "maxModelWords": 15,
+   "after": "steer",
+   "before": "q"
+  },
+  {
+   "said": "hour",
+   "after": "q",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Did the direct-only instruction reach the flight task that was already running, rather than starting a new search?",
+  "Was the acknowledgement of the instruction brief?",
+  "Was only the direct flight offered in the end?"
+ ],
+ "max": 110
+}

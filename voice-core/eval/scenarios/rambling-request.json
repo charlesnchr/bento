@@ -1,0 +1,40 @@
+{
+ "name": "rambling-request",
+ "about": "The user makes one long request the way people talk: they start, pause for about two seconds to think, carry on, then correct themselves (\"ideally Thursday afternoon, no wait, Friday morning, before ten\"). Good: the assistant waits for the whole thing and starts exactly one task, whose request has all of it including the correction to Friday morning. Jumping in during the pause, handing off half the request, or starting a second task for the correction are failures. The result is then told briefly.",
+ "agents": [
+  {
+   "id": "haircut",
+   "match": "hair|barber|green lanes",
+   "after": 10,
+   "progress": [[3, "Opening the booking page"]],
+   "result": "Booked a haircut at Green Lanes Barbers on Friday at 9:30 in the morning.",
+   "facts": ["friday", "9[:. ]?30|nine[- ]?thirty|half (past )?nine"],
+   "followUps": [
+    { "id": "haircut-more", "match": ".", "after": 6, "result": "Updated the booking with those details." }
+   ]
+  }
+ ],
+ "steps": [
+  { "say": "Can you ask Hermes to book me a haircut at the barber on Green Lanes,", "id": "r1" },
+  { "wait": 2 },
+  { "say": "um, sometime this week, ideally Thursday afternoon,", "id": "r2", "when": "now" },
+  { "wait": 0.5 },
+  { "say": "no wait, Friday morning. Before ten.", "id": "r3", "when": "now" },
+  { "until": "dispatch:haircut", "timeout": 15 },
+  { "until": "result:haircut", "timeout": 25 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "dispatch": "haircut", "count": 1 },
+  { "dispatch": "?", "count": 0 },
+  { "noSpeech": true, "after": "r1", "before": "r3" },
+  { "request": "haircut", "contains": ["hair|barber", "green lanes", "friday", "morning|before ten|10"] },
+  { "voiced": "haircut", "within": 20 }
+ ],
+ "judge": [
+  "Did the assistant wait for the user to finish instead of jumping in during the pause?",
+  "Did one task go to Hermes with the corrected day (Friday morning), not Thursday?",
+  "Was the booking result told correctly and briefly?"
+ ],
+ "max": 90
+}

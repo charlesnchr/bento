@@ -1,0 +1,130 @@
+{
+ "name": "burst-three",
+ "about": "Three quick requests in a row, each its own Hermes task. The three results land within about three seconds of each other while the line is quiet. Good: each request starts one task; the results are given together in one short reply (or back to back without pauses for the user to fill), each said once and in a few words: Arsenal kick off at 5:30, the Green Lanes post office is closed on Sundays, an off-peak return to Brighton is £19.40. No status lines, no repetition when the user thanks it. The results arrive within about a second of each other, so a combined reply starts within a few seconds of all three: an announcement that waits for another to finish first counts as late.",
+ "agents": [
+  {
+   "id": "arsenal",
+   "match": "arsenal|match|kick",
+   "after": 21,
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ]
+   ],
+   "result": "Arsenal play Chelsea at the Emirates on Saturday, kick-off 5:30 pm.",
+   "facts": [
+    "5[:. ]?30|five[- ]thirty|half (past )?five"
+   ]
+  },
+  {
+   "id": "post",
+   "match": "post office|green lanes|sunday",
+   "after": 14,
+   "progress": [
+    [
+     3,
+     "Reading postoffice.co.uk"
+    ]
+   ],
+   "result": "The Green Lanes post office is closed on Sundays. It opens Monday at 9 am.",
+   "facts": [
+    "clos|not open|shut"
+   ]
+  },
+  {
+   "id": "brighton",
+   "match": "brighton|return|ticket",
+   "after": 8,
+   "progress": [
+    [
+     3,
+     "Reading nationalrail.co.uk"
+    ]
+   ],
+   "result": "An off-peak day return from London Victoria to Brighton is £19.40.",
+   "facts": [
+    "19|nineteen"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes what time the Arsenal match kicks off on Saturday.",
+   "id": "r1"
+  },
+  {
+   "until": "dispatch:arsenal",
+   "timeout": 15
+  },
+  {
+   "say": "Can you also find out if the post office on Green Lanes is open on Sundays?",
+   "id": "r2"
+  },
+  {
+   "until": "dispatch:post",
+   "timeout": 15
+  },
+  {
+   "say": "And ask it how much a return to Brighton costs.",
+   "id": "r3"
+  },
+  {
+   "until": "dispatch:brighton",
+   "timeout": 15
+  },
+  {
+   "until": "agents-done",
+   "timeout": 40
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 40
+  },
+  {
+   "say": "Brilliant, thanks.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 20
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "arsenal",
+   "count": 1
+  },
+  {
+   "dispatch": "post",
+   "count": 1
+  },
+  {
+   "dispatch": "brighton",
+   "count": 1
+  },
+  {
+   "voiced": "arsenal",
+   "within": 6
+  },
+  {
+   "voiced": "post",
+   "within": 6
+  },
+  {
+   "voiced": "brighton",
+   "within": 6
+  },
+  {
+   "maxModelWords": 55,
+   "after": "r3",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Were the three results given together, in one short reply, rather than as separate interruptions?",
+  "Was each result said exactly once?",
+  "Was each result reduced to its outcome, without status lines such as 'that task has finished'?"
+ ],
+ "max": 100
+}

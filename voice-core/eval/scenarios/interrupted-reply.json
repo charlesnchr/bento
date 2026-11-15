@@ -1,0 +1,22 @@
+{
+ "name": "interrupted-reply",
+ "about": "The user asks for something that gets a long spoken answer (a bedtime story about a fox who sails across the sea), which it should tell itself, then about two seconds into the answer cuts in with a different question (the capital of Australia). Good: the long answer stops within a second of the user starting to speak, the assistant answers the new question (Canberra) briefly, and does not carry on with the story unasked.",
+ "agents": [],
+ "steps": [
+  { "say": "Tell me a long bedtime story about a fox who builds a boat and sails across the sea.", "id": "long" },
+  { "say": "Sorry, different question. What's the capital of Australia?", "id": "barge", "when": { "speaking": 2 }, "timeout": 20 },
+  { "until": "quiet:5", "timeout": 40 }
+ ],
+ "checks": [
+  { "said": "fox|boat|sea|once|sail", "after": "long", "before": "barge" },
+  { "yields": "barge", "within": 1 },
+  { "said": "canberra", "after": "barge" },
+  { "maxModelWords": 40, "after": "barge" },
+  { "dispatch": "?", "count": 0 }
+ ],
+ "judge": [
+  "Did the assistant stop the story promptly when the user cut in?",
+  "Did it answer the new question (Canberra) briefly, without going back to the old story unasked?"
+ ],
+ "max": 75
+}

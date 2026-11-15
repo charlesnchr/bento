@@ -1,0 +1,27 @@
+{
+ "name": "quick-chat",
+ "about": "Small talk and two everyday questions the model knows the answers to. Nothing here needs Hermes: good is answering each line itself, at once (under about a second), in one or two short spoken sentences, with no hand-off, no tone and no offer to look anything up. Baking powder is baking soda with an acid (cream of tartar) already mixed in; a quarter cup is four tablespoons.",
+ "agents": [],
+ "steps": [
+  { "say": "Morning! How's it going?", "id": "hi" },
+  { "say": "Quick one while I'm cooking. What's actually the difference between baking soda and baking powder?", "id": "q1" },
+  { "say": "Right. And roughly how many tablespoons are in a quarter of a cup?", "id": "q2" },
+  { "say": "Lovely, thanks, that's all I needed.", "id": "thanks" },
+  { "until": "quiet:5", "timeout": 20 }
+ ],
+ "checks": [
+  { "dispatch": "?", "count": 0 },
+  { "maxModelWords": 20, "after": "hi", "before": "q1" },
+  { "said": "acid|tartar", "after": "q1", "before": "q2" },
+  { "maxModelWords": 45, "after": "q1", "before": "q2" },
+  { "said": "\\b(4|four)\\b", "after": "q2", "before": "thanks" },
+  { "maxModelWords": 20, "after": "q2", "before": "thanks" },
+  { "maxModelWords": 12, "after": "thanks" }
+ ],
+ "judge": [
+  "Did the assistant answer every question itself, without handing anything to Hermes or offering to look it up?",
+  "Was every reply short enough for someone cooking to take in by ear (one or two sentences)?",
+  "Were both factual answers correct?"
+ ],
+ "max": 75
+}

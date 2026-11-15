@@ -1,0 +1,64 @@
+{
+ "name": "names-fidelity",
+ "about": "Four requests full of proper nouns from this user's world: Hermes, Woodhouse and Pennyworth; Lectio and Bento; Copenhagen and Wood Green; and a short one, Pennyworth and Lectio again. Hermes receives the user's transcribed words, so a misheard name sends it the wrong request (in a real call \"Give Hermes a ride\" was what the transcript made of one). Good: each request reaches Hermes as its own task with every name spelled as said, and each result is told briefly.",
+ "agents": [
+  {
+   "id": "woodhouse",
+   "match": "wood ?house|message|training",
+   "after": 6,
+   "result": "Sent Woodhouse the message that the Pennyworth training run finished.",
+   "facts": ["sent|message"]
+  },
+  {
+   "id": "logs",
+   "match": "\\blogs?\\b",
+   "after": 6,
+   "result": "Pennyworth sent the Lectio logs: 312 lines, no errors since Tuesday.",
+   "facts": ["312|three hundred (and )?twelve"]
+  },
+  {
+   "id": "lectio",
+   "match": "lecti|lexi|release|bento|bent|went out",
+   "after": 6,
+   "result": "Yes, the Lectio release went out in Bento at 9:12 this morning.",
+   "facts": ["9[:. ]?12|nine[- ]twelve"]
+  },
+  {
+   "id": "weather",
+   "match": "weather|copenhagen|wood ?green|forecast",
+   "after": 6,
+   "result": "Tomorrow Copenhagen will be 9 degrees and windy, and Wood Green 13 degrees and dry.",
+   "facts": ["\\b9\\b|nine", "13|thirteen"]
+  }
+ ],
+ "steps": [
+  { "say": "Tell Hermes to send Woodhouse a message saying the Pennyworth training run has finished.", "id": "a1" },
+  { "until": "dispatch:woodhouse", "timeout": 12 },
+  { "until": "quiet:2", "timeout": 20 },
+  { "say": "Next, ask Hermes whether the Lectio release went out in Bento this morning.", "id": "a2" },
+  { "until": "dispatch:lectio", "timeout": 12 },
+  { "until": "quiet:2", "timeout": 20 },
+  { "say": "And ask Hermes for tomorrow's weather in Copenhagen and in Wood Green.", "id": "a3" },
+  { "until": "dispatch:weather", "timeout": 12 },
+  { "until": "quiet:2", "timeout": 20 },
+  { "say": "Have Hermes ask Pennyworth for the Lectio logs.", "id": "a4" },
+  { "until": "dispatch:logs", "timeout": 12 },
+  { "until": "result:logs", "timeout": 15 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "dispatch": "woodhouse", "count": 1 },
+  { "dispatch": "lectio", "count": 1 },
+  { "dispatch": "weather", "count": 1 },
+  { "request": "woodhouse", "contains": ["hermes", "woodhouse", "pennyworth"] },
+  { "request": "lectio", "contains": ["lectio", "bento"] },
+  { "request": "weather", "contains": ["copenhagen", "wood ?green"] },
+  { "dispatch": "logs", "count": 1 },
+  { "request": "logs", "contains": ["hermes", "pennyworth", "lectio"] }
+ ],
+ "judge": [
+  "Did each of the four requests reach Hermes as its own task, with the names as the user said them?",
+  "Were the four results told correctly and briefly?"
+ ],
+ "max": 120
+}

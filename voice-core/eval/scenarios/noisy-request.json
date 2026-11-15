@@ -1,0 +1,38 @@
+{
+ "name": "noisy-request",
+ "about": "A television is talking in the background (the news) at TV volume, and it keeps talking after the user has spoken, as a TV does. Over it, the user asks the assistant to order coffee beans. Good: the request is handed off once, promptly (within about 4 seconds, not when the TV next pauses), with the user's words (coffee beans, the usual shop), and none of the TV's words (the Chancellor, the budget, railways, Parliament) end up in what Hermes receives. The assistant does not react to the TV itself. The result is told briefly.",
+ "agents": [
+  {
+   "id": "coffee",
+   "match": "coffee|bean|order|shop",
+   "after": 8,
+   "progress": [[3, "Opening the order history"]],
+   "result": "Ordered a kilo of the Ethiopian beans from Origin Coffee. They arrive on Wednesday.",
+   "facts": ["wednesday"]
+  }
+ ],
+ "steps": [
+  { "wait": 1 },
+  { "say": "The Chancellor confirmed this afternoon that next month's budget will include new funding for railways in the north of England, although critics in Parliament said the plans do not go nearly far enough, and the unions have called for talks.", "id": "tv1", "ambient": true, "voice": "Fenrir", "gain": 0.3, "block": false, "when": "now" },
+  { "wait": 3 },
+  { "say": "Ask Hermes to order more coffee beans from the usual shop.", "id": "ask", "when": "now" },
+  { "wait": 4.6 },
+  { "say": "Meanwhile, the Transport Secretary told reporters that ticket prices would be frozen until the spring.", "id": "tv2", "ambient": true, "voice": "Aoede", "gain": 0.3, "block": false, "when": "now" },
+  { "wait": 5.8 },
+  { "say": "In sport, Arsenal came from behind to beat Newcastle by two goals to one, with a winner in the ninetieth minute.", "id": "tv3", "ambient": true, "voice": "Fenrir", "gain": 0.3, "when": "now" },
+  { "until": "result:coffee", "timeout": 25 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "dispatch": "coffee", "count": 1, "within": 4 },
+  { "dispatch": "?", "count": 0 },
+  { "request": "coffee", "contains": ["coffee", "bean"], "lacks": ["chancellor", "budget", "railway", "parliament", "funding", "critic", "union", "secretary", "ticket", "arsenal", "newcastle"] },
+  { "voiced": "coffee", "within": 20 }
+ ],
+ "judge": [
+  "Did Hermes get the user's coffee request without words from the television mixed in?",
+  "Did the assistant ignore the television news?",
+  "Was the order result told correctly and briefly?"
+ ],
+ "max": 90
+}

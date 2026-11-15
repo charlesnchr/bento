@@ -1,0 +1,45 @@
+{
+ "name": "wake-from-standby-speech",
+ "about": "The user hands off a long backup task and goes quiet, so the call leaves the model (standby). While it is in standby the user speaks a new request without pressing anything: \"Book a table for two at Dishoom in Covent Garden on Saturday at eight.\" Good: the call comes back on the user's speech, the first words are not lost, and the whole request (from \"book a table\" to \"Saturday at eight\") reaches Hermes as one new task, whose result is then told briefly. The backup task is not touched.",
+ "agents": [
+  {
+   "id": "backup",
+   "match": "back ?up|photo|nas",
+   "after": 110,
+   "progress": [[5, "Running rsync"]],
+   "result": "The photos folder is backed up to the NAS: 4,212 files, 38 gigabytes.",
+   "facts": ["4[, ]?212|38"]
+  },
+  {
+   "id": "dinner",
+   "match": "dishoom|table|book|covent|restaurant|dinner|saturday",
+   "after": 7,
+   "progress": [[3, "Opening dishoom.com"]],
+   "result": "Booked a table for two at Dishoom Covent Garden on Saturday at 8 pm, under Charles.",
+   "facts": ["book", "8|eight"]
+  }
+ ],
+ "steps": [
+  { "say": "Ask Hermes to back up my photos folder to the NAS.", "id": "ask" },
+  { "until": "dispatch:backup", "timeout": 15 },
+  { "until": "status:standby", "timeout": 55 },
+  { "wait": 3 },
+  { "say": "Book a table for two at Dishoom in Covent Garden on Saturday at eight.", "id": "new", "when": "now" },
+  { "until": "dispatch:dinner", "timeout": 20 },
+  { "until": "result:dinner", "timeout": 20 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "status": "standby" },
+  { "dispatch": "dinner", "count": 1 },
+  { "request": "dinner", "contains": ["book", "table", "two|2", "saturday", "eight|8"] },
+  { "notCancelled": "backup" },
+  { "voiced": "dinner", "within": 20 }
+ ],
+ "judge": [
+  "Did the call come back from standby when the user spoke and act on the whole request?",
+  "Did Hermes get the complete booking request, including the time and day?",
+  "Was the booking result told correctly and briefly?"
+ ],
+ "max": 120
+}

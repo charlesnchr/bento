@@ -1,0 +1,146 @@
+{
+ "name": "question-while-busy",
+ "about": "Two tasks run: clear out old Downloads (Hermes must ask first) and the Manchester weekend weather. While the user is in the middle of asking the model about bikes, the Downloads task comes back with a question (214 old files, about 9 GB: move them to the bin?) and the weather finishes a second later. Good: the model lets the user finish, answers the bike question first, then gives the weather and puts the Downloads question in a few words, last, so that the user can answer it; the user's 'Yes, bin them' goes to the Downloads task as a follow-up, not to the weather and not as a new task; the outcome is said once.",
+ "agents": [
+  {
+   "id": "downloads",
+   "match": "download|files|folder|clear",
+   "after": 13,
+   "progress": [
+    [
+     3,
+     "Listing ~/Downloads"
+    ]
+   ],
+   "result": "I found 214 files in Downloads older than six months, about 9 GB in all, mostly installers and zip files. Should I move them to the bin?",
+   "facts": [
+    "214|two hundred (and )?fourteen|\\b(9|nine) ?(gb|gig)",
+    "\\?|should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead"
+   ],
+   "followUps": [
+    {
+     "id": "downloads-bin",
+     "match": "yes|yeah|go ahead|bin|do it|sure|okay|fine|please",
+     "after": 4,
+     "result": "Done: moved 214 old files from Downloads to the bin, freeing 9 GB.",
+     "facts": [
+      "\\b(9|nine)\\b|214|two hundred|bin|freed|moved|clear"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "manchester",
+   "match": "manchester|weather|weekend",
+   "after": 9,
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ]
+   ],
+   "result": "Manchester this weekend: rain most of Saturday, then dry and 9 degrees on Sunday.",
+   "facts": [
+    "rain|wet"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes to clear out the old stuff in my Downloads folder, but have it check with me before it deletes anything.",
+   "id": "ask1"
+  },
+  {
+   "until": "dispatch:downloads",
+   "timeout": 15
+  },
+  {
+   "say": "And ask it what the weather's doing in Manchester this weekend.",
+   "id": "ask2"
+  },
+  {
+   "until": "dispatch:manchester",
+   "timeout": 15
+  },
+  {
+   "say": "Meanwhile, I'm trying to decide between a road bike and a gravel bike for commuting. The roads round here are pretty rough, lots of potholes, and I sometimes cut through the park. What would you go for?",
+   "id": "bike"
+  },
+  {
+   "until": "said:214|two hundred|\\b(9|nine) ?(gb|gig)|bin|old files",
+   "timeout": 40
+  },
+  {
+   "say": "Yes, go ahead and bin them.",
+   "id": "yes"
+  },
+  {
+   "until": "result:downloads-bin",
+   "timeout": 20
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  },
+  {
+   "say": "Thanks.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 15
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "downloads",
+   "count": 1
+  },
+  {
+   "dispatch": "manchester",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "said": "gravel",
+   "after": "bike",
+   "before": "yes"
+  },
+  {
+   "voiced": "manchester",
+   "within": 30
+  },
+  {
+   "voiced": "downloads",
+   "within": 30
+  },
+  {
+   "said": "(should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead)[^.!?]*[.!?]?\\W*$",
+   "after": "bike",
+   "before": "yes"
+  },
+  {
+   "followUp": "downloads",
+   "match": "yes|go ahead|bin"
+  },
+  {
+   "voiced": "downloads-bin",
+   "within": 10
+  },
+  {
+   "maxModelWords": 25,
+   "after": "yes",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Did the assistant answer the bike question before turning to the results?",
+  "Was the Downloads question put to the user clearly, separately from the weather?",
+  "Did the user's yes go to the Downloads task?",
+  "Was each result said once?"
+ ],
+ "max": 110
+}

@@ -1,0 +1,41 @@
+{
+ "name": "standby-resume",
+ "about": "A short exchange (how many moons Mars has), then the user hands off a lookup that takes about 55 seconds and stays silent, so the call leaves the model (standby). The result arrives, the call comes back on a new session and tells it once, briefly. Then the user asks what the first thing they asked was, which was said before the standby. Good: the call stands by, comes back promptly with the result, and remembers the conversation from before the standby: the first question was about the moons of Mars, and \"which of them is bigger?\" means those moons (Phobos).",
+ "agents": [
+  {
+   "id": "dentist",
+   "match": "dentist|appointment|dental",
+   "after": 55,
+   "progress": [[4, "Searching calendar"]],
+   "result": "Your next dentist appointment is on Thursday the 26th of November at 8:45 in the morning, at Wood Green Dental.",
+   "facts": ["8[:. ]?45|eight[- ]forty[- ]five|quarter to nine"]
+  }
+ ],
+ "steps": [
+  { "say": "Quick question: how many moons does Mars have?", "id": "q1" },
+  { "until": "reply", "timeout": 15 },
+  { "say": "And ask Hermes when my next dentist appointment is.", "id": "ask" },
+  { "until": "dispatch:dentist", "timeout": 15 },
+  { "until": "status:standby", "timeout": 50 },
+  { "until": "result:dentist", "timeout": 60 },
+  { "until": "quiet:5", "timeout": 40 },
+  { "say": "Thanks. Remind me, what was the first thing I asked you today?", "id": "recall", "patience": 10 },
+  { "say": "Right. And which of them is bigger?", "id": "bigger", "patience": 10 },
+  { "until": "quiet:5", "timeout": 30 }
+ ],
+ "checks": [
+  { "said": "two|2|phobos|deimos", "after": "q1", "before": "ask" },
+  { "dispatch": "dentist", "count": 1 },
+  { "status": "standby" },
+  { "voiced": "dentist", "within": 15 },
+  { "said": "mars|moon|phobos|deimos", "after": "recall", "before": "bigger" },
+  { "said": "phobos", "after": "bigger" },
+  { "notSaid": "deimos is (the )?(bigger|larger)|phobos is (the )?smaller", "after": "bigger" }
+ ],
+ "judge": [
+  "After coming back from standby, did the assistant tell the dentist appointment once and correctly?",
+  "Did the assistant correctly recall that the first question was about the moons of Mars?",
+  "Did the conversation feel continuous across the pause, without the assistant re-introducing itself or losing track?"
+ ],
+ "max": 140
+}

@@ -1,0 +1,43 @@
+{
+ "name": "correction",
+ "about": "The user asks when Lidl on Seven Sisters Road closes, the task starts, and the user at once corrects it: 'No, no, I meant Tesco, not Lidl.' (From a real call where the model answered 'I'm still checking' to 'No, no'.) Good: the mistaken Lidl task is cancelled, or corrected in place (a steer or follow-up with the new words); the model acknowledges the correction in a few words, without 'still checking'; the user hears the Tesco answer (closes at midnight) and never the Lidl one (10 pm).",
+ "agents": [
+  { "id": "tesco", "match": "tesco", "after": 8,
+    "progress": [[2, "Using web_search"]],
+    "result": "Tesco Extra on Seven Sisters Road closes at midnight tonight and opens again at 6 am.",
+    "facts": ["midnight|\\b(12|twelve)\\b"] },
+  { "id": "lidl", "match": "lidl|seven sisters|close", "after": 12, "steer": "accept",
+    "progress": [[2, "Using web_search"], [6, "Reading lidl.co.uk store finder"]],
+    "result": "Lidl on Seven Sisters Road closes at 10 pm tonight.",
+    "steeredResult": "Tesco Extra on Seven Sisters Road closes at midnight tonight and opens again at 6 am.",
+    "followUps": [
+      { "id": "lidl-tesco", "match": "tesco", "after": 7,
+        "result": "Tesco Extra on Seven Sisters Road closes at midnight tonight and opens again at 6 am.",
+        "facts": ["midnight|\\b(12|twelve)\\b"] }
+    ] }
+ ],
+ "steps": [
+  { "say": "Ask Hermes what time the Lidl on Seven Sisters Road closes tonight.", "id": "ask" },
+  { "until": "dispatch:lidl", "timeout": 15 },
+  { "say": "No, no, I meant Tesco, not Lidl.", "id": "fix", "gap": 0.5 },
+  { "until": "quiet:4", "timeout": 20 },
+  { "until": "agents-done", "timeout": 30 },
+  { "until": "quiet:5", "timeout": 30 },
+  { "say": "Okay, thanks.", "id": "thanks" },
+  { "until": "quiet:4", "timeout": 15 }
+ ],
+ "checks": [
+  { "anyOf": [{ "cancel": "lidl" }, { "followUp": "lidl", "match": "tesco" }] },
+  { "notSaid": "still (checking|looking|working|on it)", "after": "fix" },
+  { "said": "midnight|\\b(12|twelve)\\b", "after": "fix", "before": "thanks" },
+  { "notSaid": "\\b(10|ten)\\b ?(pm|p\\.? ?m|o'clock|tonight)|lidl closes", "after": "fix" },
+  { "dispatch": "?", "count": 0 },
+  { "maxModelWords": 30, "after": "fix", "before": "thanks" }
+ ],
+ "judge": [
+  "Did the assistant take 'No, no, I meant Tesco' as a correction of the running request, rather than replying that it was still checking?",
+  "Was the mistaken Lidl request stopped or redirected?",
+  "Did the user hear the Tesco closing time and not the Lidl one?"
+ ],
+ "max": 80
+}

@@ -20,7 +20,7 @@ const LOCATION = process.env.VOICE_CORE_LOCATION ?? "us-central1";
 export const LIVE_MODEL = process.env.VOICE_EVAL_LIVE_MODEL ?? "gemini-3.8-live";
 export const TTS_MODEL = process.env.VOICE_EVAL_TTS_MODEL ?? "gemini-3.8-flash-tts";
 /** The voice for the core's own announcements: the lite model is the quicker one from here. */
-export const BRIEF_TTS_MODEL = process.env.VOICE_BRIEF_TTS_MODEL ?? "gemini-3.8-flash-lite-tts";
+export const BRIEF_TTS_MODEL = process.env.VOICE_BRIEF_TTS_MODEL ?? "chirp3-hd";
 export const JUDGE_MODEL = process.env.VOICE_EVAL_JUDGE_MODEL ?? "gemini-4-hydrogen";
 const PROJECT = env.VERTEX_PROJECT_ID;
 const account = serviceAccount((env.VERTEX_CREDENTIALS_PATH ?? "").replace(/^~/, os.homedir()));
@@ -36,10 +36,10 @@ export async function liveSocket(): Promise<WebSocket> {
   });
 }
 
-async function post(url: string, body: unknown, timeoutMs = 120_000): Promise<{ status: number; text: string }> {
+async function post(url: string, body: unknown, timeoutMs = 120_000, headers: Record<string, string> = {}): Promise<{ status: number; text: string }> {
   const token = await account.token();
   return new Promise((resolve, reject) => {
-    const req = https.request(url, { method: "POST", agent, timeout: timeoutMs, headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" } }, (r) => {
+    const req = https.request(url, { method: "POST", agent, timeout: timeoutMs, headers: { Authorization: `Bearer ${token}`, "content-type": "application/json", ...headers } }, (r) => {
       const chunks: Buffer[] = [];
       r.on("data", (c) => chunks.push(c));
       r.on("end", () => resolve({ status: r.statusCode ?? 0, text: Buffer.concat(chunks).toString() }));
@@ -102,6 +102,7 @@ export async function speech(text: string, voice = "Puck", style = ""): Promise<
 
 /** [text] spoken by [voice] as PCM16 mono at 24 kHz, as the call plays it, with leading and trailing silence trimmed. Not cached. */
 export async function tts(text: string, voice: string, model = BRIEF_TTS_MODEL): Promise<Buffer> {
+  if (model === "chirp3-hd") return chirp(text, voice);
   return retry(`TTS "${text.slice(0, 40)}"`, async () => {
     const res = await post(modelUrl(model), {
       contents: [{ role: "user", parts: [{ text }] }],
@@ -115,6 +116,22 @@ export async function tts(text: string, voice: string, model = BRIEF_TTS_MODEL):
     while (a < b && Math.abs(pcm.readInt16LE(2 * a)) < 300) a++;
     while (b > a && Math.abs(pcm.readInt16LE(2 * (b - 1))) < 300) b--;
     return pcm.subarray(2 * Math.max(0, a - 1200), 2 * Math.min(pcm.length >> 1, b + 2400));
+  }, 2);
+}
+
+/**
+ * Chirp 3 HD on Cloud Text-to-Speech, which has the Live model's voices by name and was the
+ * quickest route measured from here that needs no streaming client (about 0.8 s for a sentence).
+ */
+async function chirp(text: string, voice: string): Promise<Buffer> {
+  const language = process.env.VOICE_BRIEF_LANGUAGE ?? "en-GB";
+  return retry(`TTS "${text.slice(0, 40)}"`, async () => {
+    const res = await post("https://texttospeech.googleapis.com/v1/text:synthesize", {
+      input: { text }, voice: { languageCode: language, name: `${language}-Chirp3-HD-${voice}` },
+      audioConfig: { audioEncoding: "LINEAR16", sampleRateHertz: 24000 },
+    }, 60_000, { "x-goog-user-project": PROJECT });
+    if (res.status !== 200) throw new Error(`HTTP ${res.status} ${res.text.slice(0, 200)}`);
+    return Buffer.from(JSON.parse(res.text).audioContent, "base64").subarray(44);
   }, 2);
 }
 

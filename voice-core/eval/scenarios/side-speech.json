@@ -1,0 +1,39 @@
+{
+ "name": "side-speech",
+ "about": "The call is open and idle. The user, in their own voice and at full volume, calls out to someone else in the house: they'll be down in five minutes, it's the blue one, and they ask the other person whether they checked when the film starts and to put the kettle on. None of it is for the assistant. Good: the assistant says nothing at all and starts nothing, not even an acknowledgement. Then the user turns back to the assistant with a real request, which is handed off once and its result told briefly.",
+ "agents": [
+  {
+   "id": "cinema",
+   "match": "odeon|cinema|wood ?green|close",
+   "after": 8,
+   "progress": [[3, "Using web_search"]],
+   "result": "The Odeon in Wood Green closes at 11:30 tonight. The last film starts at 9:05.",
+   "facts": ["11[:. ]?30|eleven[- ]?thirty|half (past )?eleven"]
+  }
+ ],
+ "steps": [
+  { "wait": 2 },
+  { "say": "Yeah, I'll be down in five minutes, I'm just finishing something.", "id": "side1", "ambient": true, "voice": "Puck", "gain": 1, "when": "now" },
+  { "wait": 3 },
+  { "say": "No, the blue one. The blue one, it's on the chair.", "id": "side2", "ambient": true, "voice": "Puck", "gain": 1, "when": "now" },
+  { "wait": 2.5 },
+  { "say": "Did you check what time the film starts? And can you put the kettle on? Thanks.", "id": "side3", "ambient": true, "voice": "Puck", "gain": 1, "when": "now" },
+  { "until": "quiet:4", "timeout": 15 },
+  { "say": "Okay, sorry about that. Ask Hermes what time the Odeon in Wood Green closes tonight.", "id": "ask" },
+  { "until": "result:cinema", "timeout": 30 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "noSpeech": true, "before": "ask" },
+  { "dispatch": "?", "count": 0, "before": "ask" },
+  { "dispatch": "cinema", "count": 1 },
+  { "request": "cinema", "contains": ["odeon|cinema", "wood ?green"] },
+  { "voiced": "cinema", "within": 20 }
+ ],
+ "judge": [
+  "Did the assistant stay completely silent while the user was talking to someone else in the room?",
+  "Did the assistant avoid acting on the side conversation, such as the film time or the kettle?",
+  "Was the Odeon closing time told correctly and briefly?"
+ ],
+ "max": 120
+}

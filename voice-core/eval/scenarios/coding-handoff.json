@@ -1,0 +1,128 @@
+{
+ "name": "coding-handoff",
+ "about": "The call has a coding agent with the projects Bento and Lectio. The user asks for a bug fix in Bento. Good: it goes to the coding agent (ask_coding_agent) with the project Bento, not to Hermes; progress lines arrive; when the user asks whether it has opened a pull request yet, the model says not yet and what it is doing (it found the cause, it is running the tests), in a sentence, without inventing a PR; when the result says a PR is open, the model gives it as a headline in a sentence or two (fixed, tests pass, PR open), not the whole report.",
+ "config": {
+  "codingAgent": {
+   "projects": [
+    "Bento",
+    "Lectio"
+   ]
+  }
+ },
+ "agents": [
+  {
+   "id": "fix",
+   "agent": "t3",
+   "match": "clipboard|history|sleep|wake|bug|fix",
+   "after": 50,
+   "progress": [
+    [
+     4,
+     "Reading Sources/Clipboard/ClipboardMonitor.swift"
+    ],
+    [
+     12,
+     "Found it: the pasteboard poll timer isn't restarted after the Mac wakes"
+    ],
+    [
+     24,
+     "Running scripts/test ClipboardTests"
+    ]
+   ],
+   "result": "Fixed: clipboard history stopped updating after sleep because the pasteboard poll timer was never restarted on wake. ClipboardMonitor now restarts it on NSWorkspace.didWakeNotification, with a test that simulates a wake. All 48 ClipboardTests pass. I've opened pull request 77, 'Restart clipboard polling after wake', on the voice/clipboard-wake branch; it is not merged.",
+   "facts": [
+    "pull request|\\bPR\\b|P\\.? ?R\\b"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Can you get the coding agent to fix the bug in Bento where the clipboard history stops updating after the Mac wakes from sleep?",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:fix",
+   "timeout": 15
+  },
+  {
+   "until": "quiet:3",
+   "timeout": 20
+  },
+  {
+   "wait": 22
+  },
+  {
+   "say": "Has it opened a pull request yet?",
+   "id": "pr",
+   "patience": 12
+  },
+  {
+   "say": "Okay, let me know when it's done.",
+   "id": "later"
+  },
+  {
+   "until": "result:fix",
+   "timeout": 50
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 40
+  },
+  {
+   "say": "Nice one, thanks.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 15
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "fix",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "request": "fix",
+   "contains": [
+    "clipboard",
+    "sleep|wake"
+   ],
+   "project": "Bento"
+  },
+  {
+   "said": "not yet|hasn't|has not|no,|still|working|testing|running|found",
+   "after": "pr",
+   "before": "later"
+  },
+  {
+   "notSaid": "^\\W*(yes|yeah|yep)\\b|\\b(it|they)( ha|'|’)s opened|pull request (77|seventy)",
+   "after": "pr",
+   "before": "later"
+  },
+  {
+   "maxModelWords": 30,
+   "after": "pr",
+   "before": "later"
+  },
+  {
+   "voiced": "fix",
+   "within": 15
+  },
+  {
+   "maxModelWords": 25,
+   "after": "result:fix",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Did the request go to the coding agent, for the Bento project?",
+  "Did the answer about the pull request say truthfully that none was open yet, and briefly?",
+  "Was the finished result given as a short headline (fixed, tests pass, pull request open) rather than read out in full?"
+ ],
+ "max": 130
+}
