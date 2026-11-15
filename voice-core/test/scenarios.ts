@@ -154,4 +154,48 @@ export const scenarios: Record<string, () => Sim> = {
     s.advance(2);
     return s;
   },
+
+  /** The core tells results itself and listens in windows: a brief in a quiet room, one waiting on a
+   *  reply, a question, a brief that failed, dormant and woken. */
+  "announcements-and-attention": () => {
+    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: {
+      limits: fast, supervise: true,
+      announce: { by: "host", engaged: 6, lull: 3, attach: 0.4, briefWait: 2, maxWait: 8, maxWords: 28 },
+      attention: { mode: "window", afterWake: 4, window: 2, afterQuestion: 3, afterHandOff: 1, afterAnnouncement: 0 },
+    } as any });
+    const brief = () => s.commands.flatMap((c) => (c.type === "brief" ? [c.id] : [])).at(-1)!;
+    const ready = (text: string, seconds: number) => s.push({ type: "brief.ready", id: brief(), text, pcm: Buffer.alloc(Math.round(seconds * 24_000) * 2, 1).toString("base64") });
+    s.advance(0.1);
+    s.turn("Book a table at Dishoom");
+    s.toolCall("c1");
+    s.advance(0.3);
+    s.turn("And find me a taxi for eight");
+    s.toolCall("c2");
+    s.advance(0.3);
+    s.complete("Booked for 8pm at Dishoom.", s.hermes()[0].run);
+    s.advance(0.5);
+    ready("Your table at Dishoom is booked for 8pm.", 1);
+    s.advance(8);
+    s.push({ type: "wake" });
+    s.advance(0.3);
+    s.turn("What's two plus two?");
+    s.said("Four.");
+    s.audio(24_000);
+    s.generated();
+    s.turnComplete();
+    s.complete("There are two taxis. Shall I book the 8pm one?", s.hermes()[1].run);
+    s.advance(0.3);
+    ready("There are two taxis. Shall I book the 8pm one?", 1.5);
+    s.advance(3);
+    s.turn("Yes please");
+    s.toolCall("c3");
+    s.advance(0.3);
+    s.toolCall("k1", "check_task", { task: "taxi" });
+    s.advance(0.1);
+    s.complete("The 8pm taxi is booked.", s.hermes()[2].run);
+    s.advance(0.2);
+    s.push({ type: "brief.failed", id: brief(), message: "speech timed out" });
+    s.advance(6);
+    return s;
+  },
 };
