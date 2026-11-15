@@ -39,7 +39,10 @@ struct MouseSettingsView: View {
                     Text("No mouse or trackpad found.").foregroundStyle(.secondary)
                 }
                 ForEach(status.devices) { device in
-                    DeviceRow(device: device, model: model)
+                    DeviceRow(device: device, model: model, showsSerial: status.devices.contains {
+                        $0.id != device.id && $0.identity.name == device.identity.name
+                            && $0.identity.vendorID == device.identity.vendorID && $0.identity.productID == device.identity.productID
+                    })
                 }
             } header: {
                 Text("Connected Devices")
@@ -132,6 +135,9 @@ private struct DeviceLabel: View {
 private struct DeviceRow: View {
     let device: ConnectedDevice
     @ObservedObject var model: ConfigSection<MouseSettings>
+    /// Another connected device looks the same: the serial number tells the rows apart.
+    let showsSerial: Bool
+
     private var hasEntry: Bool { model.value.entryIndex(for: device.identity) != nil }
     private var isOwn: Bool { model.value.entryIsOwn(for: device.identity) }
 
@@ -157,6 +163,7 @@ private struct DeviceRow: View {
     private var detail: String {
         var parts = [device.kind.title]
         if device.identity.hasIDs { parts.append("\(hexID(device.identity.vendorID)):\(hexID(device.identity.productID))") }
+        if showsSerial { parts.append(device.identity.serialNumber.map { "serial \($0)" } ?? "no serial number") }
         parts.append(!hasEntry ? "\(device.kind.title.lowercased()) defaults"
             : isOwn ? "own settings" : "settings shared with other units")
         return parts.joined(separator: " · ")
