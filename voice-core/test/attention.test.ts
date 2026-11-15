@@ -508,3 +508,57 @@ test("a result that brings a dormant call back from standby for the model to tel
   assert.equal(audio(s, 2).length, 0, "no microphone audio reaches the model");
   assert.ok(s.sent(2).some((f) => f.includes("Booked for 8pm.")), "the result does");
 });
+
+/** The model goes on with a turn the wake word cut: its words and audio keep coming for a while. */
+function cutTurnGoesOn(s: Sim, given: () => number) {
+  s.advance(1);
+  assert.equal(given(), 1, "the result isn't given again into the turn that was cut");
+  const playsBefore = plays(s);
+  s.said(" is booked for 8pm at Dishoom tomorrow, and a confirmation email is on its way.");
+  s.audio(48_000);
+  assert.equal(plays(s), playsBefore, "the rest of the cut turn isn't played");
+  s.generated();
+  s.turnComplete();
+  s.advance(3);
+  assert.equal(given(), 2, "once the cut turn has ended the result goes to the model again");
+  // The model tells it, and this time the user hears it: nothing more to give.
+  s.said("Your table is booked for 8pm.");
+  s.audio(48_000);
+  s.generated();
+  s.turnComplete();
+  s.advance(8);
+  assert.equal(given(), 2);
+}
+
+test("a dormant call: what the model still says of a turn the wake word cut doesn't pass for the result's telling", () => {
+  const s = sim({ attention: { afterWake: 30 } });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(31);
+  assert.ok(dormant(s));
+  s.complete("Booked for 8pm.");
+  s.advance(0.5);
+  const given = () => s.finals().length + s.resultTurns().length;
+  assert.equal(given(), 1);
+  s.said("Your table");
+  s.audio(48_000 * 4);
+  s.advance(0.3);
+  s.push({ type: "wake" });
+  cutTurnGoesOn(s, given);
+});
+
+test("awake with whileSpeaking wake: what the model still says of a turn the wake word cut doesn't pass for the result's telling", () => {
+  const s = sim({ attention: { mode: "open" }, mic: { whileSpeaking: "wake", gainDb: 0 } });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(3);
+  s.complete("Booked for 8pm.");
+  s.advance(0.5);
+  const given = () => s.finals().length + s.resultTurns().length;
+  assert.equal(given(), 1);
+  s.said("Your table");
+  s.audio(48_000 * 4);
+  s.advance(0.3);
+  s.push({ type: "wake" });
+  cutTurnGoesOn(s, given);
+});

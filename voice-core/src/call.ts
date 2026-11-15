@@ -590,6 +590,7 @@ export class Call {
       this.again(this.unheard.filter((u) => u.playing != null || (this.geminiSpeaking && u.awaiting)));
       this.speechUntil = this.t;
       this.dropTurn = this.geminiSpeaking;
+      this.geminiSaid = "";
     }
     this.dormant = false;
     this.streamEnded = false;
@@ -958,9 +959,10 @@ export class Call {
   }
 
   private newSession(): void {
-    this.turnEnded(this.spokeSince && !this.skipTurn && (this.generated || !this.geminiSpeaking));
+    this.turnEnded(!this.dropTurn && this.spokeSince && !this.skipTurn && (this.generated || !this.geminiSpeaking));
     this.geminiSpeaking = false;
     this.skipTurn = false;
+    this.dropTurn = false;
     this.userTalking = false;
     this.replyDue = null;
     this.generated = false;
@@ -1134,7 +1136,8 @@ export class Call {
       const check = (): void => {
         if (!(this.active && !this.standby && !this.waking)) { this.delivering = false; return; }
         const t = this.t;
-        const ready = this.lineFree(t) && ((this.lineQuiet(t) && !this.unheard.some((u) => u.awaiting || u.sending)) || t - since >= this.c.limits.deliverMax);
+        // Not into a turn the wake word cut: what the model still says of it is dropped, and would pass for the result's telling.
+        const ready = this.lineFree(t) && ((!this.dropTurn && this.lineQuiet(t) && !this.unheard.some((u) => u.awaiting || u.sending)) || t - since >= this.c.limits.deliverMax);
         if (!ready) { this.sleep(0.1, check); return; }
         this.delivering = false;
         this.sendDeliveries();
@@ -1215,7 +1218,7 @@ export class Call {
         this.heardWords("assistant", output);
         this.lastSpeech = this.t;
         this.geminiSpoke();
-        if (this.geminiSaid.length < 8_000) this.geminiSaid += output;
+        if (this.geminiSaid.length < 8_000 && !this.dropTurn) this.geminiSaid += output;
       }
     }
     if (content.generationComplete === true) this.generated = true;
@@ -1242,7 +1245,9 @@ export class Call {
       if (this.windowed && this.replyEnded && this.replyAsked) this.attendFor(this.c.attention.afterQuestion, this.speechUntil);
       if (this.hush?.afterEnd) this.hush = null;
       this.turnAudio();
-      if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
+      // A turn the wake word cut wasn't heard, whatever it went on to say.
+      if (this.dropTurn) this.turnEnded(false);
+      else if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
       else if (this.heardRelayed().length > 0 && !this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
       if (this.spokeSince) this.unspokenSince = null;
       this.geminiSaid = "";
@@ -1304,7 +1309,7 @@ export class Call {
     this.emit({ type: "flush" });
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
-    if (!this.skipTurn) this.turnEnded(this.spokeSince && this.generated && this.speechUntil - this.t <= INTERRUPT_GRACE);
+    if (!this.skipTurn) this.turnEnded(!this.dropTurn && this.spokeSince && this.generated && this.speechUntil - this.t <= INTERRUPT_GRACE);
     this.geminiSaid = "";
     this.speechUntil = this.t;
     this.geminiSpeaking = false;
@@ -1418,6 +1423,7 @@ export class Call {
     this.again(this.unheard.filter((u) => u.playing != null || (this.geminiSpeaking && u.awaiting)));
     this.speechUntil = this.t;
     this.dropTurn = this.geminiSpeaking;
+    this.geminiSaid = "";
     this.updateWakeword();
   }
 
