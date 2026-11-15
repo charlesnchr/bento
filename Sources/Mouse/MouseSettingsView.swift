@@ -143,7 +143,7 @@ private struct DeviceRow: View {
             DeviceSettingsEditor(settings: Binding(
                 get: { model.value.settings(for: device.identity, kind: device.kind) },
                 set: { model.value.setSettings($0, for: device.identity, kind: device.kind, bySerial: hasTwin) }
-            ))
+            ), ownPointerSpeed: device.ownPointerSpeed)
             if hasEntry {
                 Button("Use the \(device.kind == .mouse ? "Mouse" : "Trackpad") Defaults") {
                     model.value.removeEntries(for: device.identity)
@@ -201,6 +201,9 @@ private struct SavedEntryRow: View {
 /// The controls for one set of values.
 struct DeviceSettingsEditor: View {
     @Binding var settings: DeviceSettings
+    /// The speed the device has by itself, where the speed slider starts so
+    /// that switching it on changes nothing. nil: the usual 400 counts per inch.
+    var ownPointerSpeed: Double?
 
     var body: some View {
         Toggle(isOn: $settings.reverseScrollVertical) {
@@ -219,7 +222,7 @@ struct DeviceSettingsEditor: View {
             Text("The pointer follows the device's raw movement. Pointer speed and acceleration then have no effect.")
         }
         OptionalSlider(title: "Pointer speed", value: $settings.pointerSpeed, range: 0...1, step: 0.01,
-                       initial: PointerMath.defaultSpeed, format: "%.2f")
+                       initial: ((ownPointerSpeed ?? PointerMath.defaultSpeed) * 100).rounded() / 100, format: "%.2f")
             .disabled(settings.disablePointerAcceleration)
         OptionalSlider(title: "Pointer acceleration", value: $settings.pointerAcceleration, range: 0...20, step: 0.05,
                        initial: PointerMath.systemDefaultAcceleration, format: "%.2f")

@@ -107,14 +107,19 @@ public struct ConnectedDevice: Identifiable, Equatable {
     /// What the device mainly is, for sorting the list: a keyboard that also
     /// has a pointer interface comes after the mice and trackpads.
     public var isPrimarilyPointer: Bool
+    /// The pointer speed the device has when Bento doesn't set one, from the
+    /// resolution macOS holds for it. nil when that can't be read.
+    public var ownPointerSpeed: Double?
 
     public var id: String { identity.key }
 
-    public init(identity: DeviceIdentity, kind: PointingKind, senderIDs: [UInt64] = [], isPrimarilyPointer: Bool = true) {
+    public init(identity: DeviceIdentity, kind: PointingKind, senderIDs: [UInt64] = [], isPrimarilyPointer: Bool = true,
+                ownPointerSpeed: Double? = nil) {
         self.identity = identity
         self.kind = kind
         self.senderIDs = senderIDs
         self.isPrimarilyPointer = isPrimarilyPointer
+        self.ownPointerSpeed = ownPointerSpeed
     }
 }
 

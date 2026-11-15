@@ -87,6 +87,8 @@ has no sending device:
 2. Reverse vertical scrolling for the mouse only. The wheel reverses, the trackpad doesn't.
    The state shows `tap` true, and after some scrolling `scroll.bySender` close to `scroll.seen`:
    events are matched to their device. If `bySender` stays 0, events are matched by kind only.
+   `scroll.synthetic` must stay near 0 while only the wheel is used: if it counts the wheel's
+   events, macOS no longer reports device events with source pid 0 and nothing is being changed.
 3. Scroll speed 2.0× and 0.5× on the wheel: distance doubles and halves; at 0.5× a line-based
    app (Terminal) moves every second notch.
 4. Start a scrolling capture (Shot) with the mouse reversed: it scrolls the usual way
@@ -97,6 +99,11 @@ has no sending device:
 6. Unplug and replug the mouse: its values apply again within a second or two. Sleep and wake
    the Mac with a Bluetooth mouse: the same.
 7. Without Accessibility, the pane says scrolling needs it; pointer settings still apply.
+8. Disable pointer acceleration on a mouse, then move it at pointer speed 0.2 and 0.9 (set in
+   the config, the sliders are disabled): the pointer must move the same, as the pane says. If
+   speed still has an effect, `PointerMath.resolution(for:)` should stop ignoring it.
+9. With Karabiner-Elements modifying a mouse, its events arrive from **Karabiner DriverKit
+   VirtualHIDPointing**: settings on that row apply, settings on the mouse's own row don't.
 
 To try pointer values without touching a device in use, give an entry to a pointer nobody
 holds (Karabiner's virtual pointer, `vendorID` 5824, `productID` 10202) in an isolated

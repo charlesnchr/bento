@@ -104,14 +104,24 @@ public final class MouseModule: BentoModule {
         defer { lastSyncSeconds = CFAbsoluteTimeGetCurrent() - began }
         let system = HIDSystem()
         let (services, siblings) = system.scan()
-        let devices = HIDSystem.devices(services, siblings: siblings)
+        var devices = HIDSystem.devices(services, siblings: siblings)
         hidClientIsFull = system.isFull
+        // A device is one kind for scrolling and pointer alike, whichever of its services is asked.
+        let kinds = Dictionary(devices.map { ($0.identity.key, $0.kind) }, uniquingKeysWith: { a, _ in a })
+
+        // The resolution a device had before Bento set one, or has now.
+        for i in devices.indices {
+            let key = devices[i].identity.key
+            let own = tuner.ledger.resolution[key]
+                ?? services.first { $0.identity.key == key }?.number(PointerMath.resolutionKey)
+            devices[i].ownPointerSpeed = own.map(PointerMath.speed(forResolution:))
+        }
 
         // Nothing to restore and nothing to set: don't touch any service.
         if started || !tuner.ledger.isEmpty {
             let settings = self.settings, started = self.started
             tuner.apply(to: services, system: system) { s in
-                started ? settings.settings(for: s.identity, kind: s.kind).pointerRule : .system
+                started ? settings.settings(for: s.identity, kind: kinds[s.identity.key] ?? s.kind).pointerRule : .system
             }
         }
 

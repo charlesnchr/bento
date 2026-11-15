@@ -73,8 +73,9 @@ trackpads; open one to change its values:
   Settings, for that device only. With Natural scrolling on and the mouse reversed, the wheel
   scrolls the traditional way and the trackpad stays natural.
 - **Scroll speed**: multiplies every scroll distance (1.0× leaves it alone).
-- **Pointer speed** (0 to 1) and **Pointer acceleration** (0 to 40; System Settings' Tracking
-  speed covers 0 to 3). Each is left to macOS until you switch it on.
+- **Pointer speed** (0 to 1) and **Pointer acceleration** (System Settings' Tracking speed
+  covers 0 to 3; the slider goes to 20 and the config file to 40). Each is left to macOS until
+  you switch it on.
 - **Disable pointer acceleration**: the pointer follows the device's raw movement, and the two
   values above have no effect.
 
@@ -108,8 +109,12 @@ Reversing and scaling scrolling needs Accessibility (an event tap, present only 
 setting changes scrolling). Pointer speed and acceleration are properties of the device's HID
 service: Bento sets them when the device connects and puts macOS's values back when the entry
 or the module goes away. Scroll events posted by other programs, Bento's scrolling capture
-among them, pass through untouched. Two-finger swipes between pages follow macOS's direction,
-not the reversed one. You don't need LinearMouse running beside it; quit it, or both will act
+among them, pass through untouched. The same goes for tools that
+re-send wheel events (Logi Options+ smooth scrolling, Mos, SteerMouse): what they post is not
+reversed or scaled. Two-finger swipes between pages follow macOS's direction, not the reversed
+one. A mouse that Karabiner-Elements modifies reaches macOS through Karabiner's virtual pointer,
+so its settings belong on the **Karabiner DriverKit VirtualHIDPointing** device, not on the
+mouse's own row. You don't need LinearMouse running beside it; quit it, or both will act
 on the same events.
 
 ## Install
