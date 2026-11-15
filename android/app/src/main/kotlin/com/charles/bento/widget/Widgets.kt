@@ -237,7 +237,10 @@ class TasksWidgetReceiver : GlanceAppWidgetReceiver() {
 private fun TasksContent(context: Context, appWidgetId: Int, view: String, list: TaskList) {
     // the title switches the list (Today, Inbox, Upcoming, a project or label), for this widget only
     val switchList = WidgetConfigActivity.intent(context, appWidgetId, WidgetConfigActivity.KIND_TASKS)
-    WidgetSurface {
+    // everything without an action of its own (a task's text, the header beside the title, the space around
+    // and under the tasks) opens Bento on its Tasks tab
+    val openTasks = actionStartActivity(open(context, MainActivity.ACTION_OPEN_TODO))
+    WidgetSurface(onClick = openTasks) {
         Header(
             title = list.title,
             menu = true,
@@ -252,9 +255,12 @@ private fun TasksContent(context: Context, appWidgetId: Int, view: String, list:
         if (list.tasks.isEmpty()) {
             Empty("All clear")
         } else {
-            LazyColumn(GlanceModifier.fillMaxSize()) {
+            // as tall as its tasks and no taller: a list swallows taps on its own empty space, so under a
+            // short list that space has to belong to the surface
+            LazyColumn(GlanceModifier.fillMaxWidth()) {
                 items(list.tasks, itemId = { it.id.hashCode().toLong() }) { t ->
-                    Row(GlanceModifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
+                    // a list item doesn't pass taps on to the surface: the row carries the action itself
+                    Row(GlanceModifier.fillMaxWidth().padding(vertical = 5.dp).clickable(openTasks), verticalAlignment = Alignment.Top) {
                         val color = PriorityColors[(t.priority - 1).coerceIn(0, 3)]
                         Image(
                             ImageProvider(if (t.completed) R.drawable.ic_w_check else R.drawable.ic_w_circle),
@@ -263,7 +269,7 @@ private fun TasksContent(context: Context, appWidgetId: Int, view: String, list:
                             colorFilter = ColorFilter.tint(ColorProvider(if (t.priority == 4) color.copy(alpha = 0.8f) else color)),
                         )
                         Spacer(GlanceModifier.width(10.dp))
-                        Column(GlanceModifier.defaultWeight().clickable(actionStartActivity(open(context, MainActivity.ACTION_OPEN_TASK, t.id)))) {
+                        Column(GlanceModifier.defaultWeight()) {
                             Text(t.title, maxLines = 2, style = TextStyle(
                                 color = if (t.completed) GlanceTheme.colors.onSurfaceVariant else GlanceTheme.colors.onSurface, fontSize = 14.sp,
                                 textDecoration = if (t.completed) TextDecoration.LineThrough else TextDecoration.None,
@@ -361,10 +367,9 @@ private fun HermesCallContent(context: Context) {
 // MARK: Shared pieces
 
 @Composable
-private fun WidgetSurface(content: @Composable () -> Unit) {
-    Column(
-        GlanceModifier.fillMaxSize().cornerRadius(24.dp).background(GlanceTheme.colors.widgetBackground).padding(12.dp),
-    ) { content() }
+private fun WidgetSurface(onClick: androidx.glance.action.Action? = null, content: @Composable () -> Unit) {
+    val surface = GlanceModifier.fillMaxSize().cornerRadius(24.dp).background(GlanceTheme.colors.widgetBackground).padding(12.dp)
+    Column(if (onClick != null) surface.clickable(onClick) else surface) { content() }
 }
 
 @Composable
@@ -373,11 +378,21 @@ private fun Header(
     buttons: List<Pair<Int, androidx.glance.action.Action>>,
 ) {
     Row(GlanceModifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Row(GlanceModifier.defaultWeight().clickable(onTitle), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, maxLines = 1, style = TextStyle(color = GlanceTheme.colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp))
+        // a plain title takes taps across its whole side of the header. A menu title is a button the size of
+        // its name and arrow, and the rest of that side is left to the surface behind it.
+        val side = GlanceModifier.defaultWeight()
+        Row(if (menu) side else side.clickable(onTitle), verticalAlignment = Alignment.CenterVertically) {
+            val name = @Composable {
+                Text(title, maxLines = 1, style = TextStyle(color = GlanceTheme.colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp))
+            }
             if (menu) {
-                Image(ImageProvider(R.drawable.ic_w_expand), "Switch list", GlanceModifier.size(20.dp),
-                      colorFilter = ColorFilter.tint(GlanceTheme.colors.onSurfaceVariant))
+                Row(GlanceModifier.height(36.dp).clickable(onTitle), verticalAlignment = Alignment.CenterVertically) {
+                    name()
+                    Image(ImageProvider(R.drawable.ic_w_expand), "Switch list", GlanceModifier.size(20.dp),
+                          colorFilter = ColorFilter.tint(GlanceTheme.colors.onSurfaceVariant))
+                }
+            } else {
+                name()
             }
             if (subtitle != null) {
                 Spacer(GlanceModifier.width(8.dp))
