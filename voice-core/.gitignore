@@ -7,3 +7,7 @@ hosts/python/.venv/
 !dist/
 eval/cache/
 eval/runs/
+eval/probe/local.env
+eval/probe/.venv/
+eval/probe/clips/
+eval/probe/out/

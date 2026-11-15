@@ -1,0 +1,550 @@
+{
+ "az-gpt-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.863,
+   "p90": 1.013,
+   "min": 0.778,
+   "max": 1.221
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.018,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-gpt-transcribe-stream|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.629,
+   "p90": 0.737,
+   "min": 0.566,
+   "max": 0.814
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 8,
+   "median": 0.556,
+   "p90": 0.668,
+   "min": 0.491,
+   "max": 0.742
+  },
+  "wer_mean": 0.018,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-4o-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.61,
+   "p90": 0.675,
+   "min": 0.538,
+   "max": 0.683
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-4o-mini-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.733,
+   "p90": 0.909,
+   "min": 0.556,
+   "max": 0.938
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.018,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-whisper|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.827,
+   "p90": 0.867,
+   "min": 0.586,
+   "max": 0.901
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-speech-fast|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.541,
+   "p90": 0.62,
+   "min": 0.513,
+   "max": 0.626
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.071,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "vx-3.5-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.607,
+   "p90": 0.75,
+   "min": 0.368,
+   "max": 0.777
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "vx-3.5-flash-lite-prompt|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.965,
+   "p90": 1.315,
+   "min": 0.884,
+   "max": 1.337
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "vx-3.8-flash-prompt|q3": {
+  "final": {
+   "n": 8,
+   "median": 1.672,
+   "p90": 2.456,
+   "min": 0.972,
+   "max": 2.606
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-az-gpt-live-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.65,
+   "p90": 0.686,
+   "min": 0.622,
+   "max": 0.735
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.0,
+   "p90": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-az-gpt-realtime-whisper|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.553,
+   "p90": 0.589,
+   "min": 0.522,
+   "max": 0.595
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.0,
+   "p90": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.143,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-az-gpt-transcribe|q3": {
+  "final": {
+   "n": 8,
+   "median": 1.217,
+   "p90": 1.528,
+   "min": 0.472,
+   "max": 1.702
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 1.151,
+   "p90": 1.367,
+   "min": 0.401,
+   "max": 1.375
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.143,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-vx-3.5-transcribe-live|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.298,
+   "p90": 0.32,
+   "min": 0.27,
+   "max": 0.326
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.298,
+   "p90": 0.32,
+   "min": 0.27,
+   "max": 0.326
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-vx-3.5-transcribe-live-smart|q3": {
+  "final": {
+   "n": 8,
+   "median": 0.293,
+   "p90": 0.321,
+   "min": 0.223,
+   "max": 0.338
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.293,
+   "p90": 0.321,
+   "min": 0.223,
+   "max": 0.338
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.0,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-gpt-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 1.218,
+   "p90": 1.432,
+   "min": 1.087,
+   "max": 1.444
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.034,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-gpt-transcribe-stream|q10": {
+  "final": {
+   "n": 8,
+   "median": 1.035,
+   "p90": 1.124,
+   "min": 0.949,
+   "max": 1.273
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 8,
+   "median": 0.747,
+   "p90": 0.869,
+   "min": 0.691,
+   "max": 0.997
+  },
+  "wer_mean": 0.034,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "az-4o-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.929,
+   "p90": 1.134,
+   "min": 0.866,
+   "max": 1.213
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.043,
+  "names_all_right": "7/8",
+  "errors": 0
+ },
+ "az-4o-mini-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.962,
+   "p90": 1.138,
+   "min": 0.838,
+   "max": 1.138
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.043,
+  "names_all_right": "7/8",
+  "errors": 0
+ },
+ "az-whisper|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.995,
+   "p90": 1.23,
+   "min": 0.842,
+   "max": 1.235
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.138,
+  "names_all_right": "0/8",
+  "errors": 0
+ },
+ "az-speech-fast|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.754,
+   "p90": 0.823,
+   "min": 0.65,
+   "max": 0.83
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.086,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "vx-3.5-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.805,
+   "p90": 0.913,
+   "min": 0.619,
+   "max": 0.953
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.12,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "vx-3.5-flash-lite-prompt|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.932,
+   "p90": 1.1,
+   "min": 0.668,
+   "max": 1.274
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.142,
+  "names_all_right": "6/8",
+  "errors": 0
+ },
+ "vx-3.8-flash-prompt|q10": {
+  "final": {
+   "n": 0
+  },
+  "first_after_end": {
+   "n": 0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": null,
+  "names_all_right": "0/0",
+  "errors": 8
+ },
+ "rt-az-gpt-live-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.653,
+   "p90": 0.716,
+   "min": 0.63,
+   "max": 0.737
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.0,
+   "p90": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.073,
+  "names_all_right": "4/8",
+  "errors": 0
+ },
+ "rt-az-gpt-realtime-whisper|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.552,
+   "p90": 0.587,
+   "min": 0.514,
+   "max": 0.633
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.0,
+   "p90": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.034,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-az-gpt-transcribe|q10": {
+  "final": {
+   "n": 8,
+   "median": 1.054,
+   "p90": 1.54,
+   "min": 0.695,
+   "max": 1.804
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.78,
+   "p90": 1.208,
+   "min": 0.373,
+   "max": 1.509
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.034,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-vx-3.5-transcribe-live|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.358,
+   "p90": 0.381,
+   "min": 0.321,
+   "max": 0.383
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.358,
+   "p90": 0.381,
+   "min": 0.321,
+   "max": 0.383
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.138,
+  "names_all_right": "8/8",
+  "errors": 0
+ },
+ "rt-vx-3.5-transcribe-live-smart|q10": {
+  "final": {
+   "n": 8,
+   "median": 0.355,
+   "p90": 0.399,
+   "min": 0.314,
+   "max": 0.476
+  },
+  "first_after_end": {
+   "n": 8,
+   "median": 0.355,
+   "p90": 0.399,
+   "min": 0.314,
+   "max": 0.476
+  },
+  "first": {
+   "n": 0
+  },
+  "wer_mean": 0.103,
+  "names_all_right": "8/8",
+  "errors": 0
+ }
+}

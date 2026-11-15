@@ -1,0 +1,252 @@
+{
+ "az-gpt-5.4-nano": {
+  "ttft": {
+   "n": 8,
+   "median": 0.792,
+   "p90": 0.842,
+   "min": 0.436,
+   "max": 0.858
+  },
+  "total": {
+   "n": 8,
+   "median": 0.8,
+   "p90": 0.843,
+   "min": 0.732,
+   "max": 0.859
+  },
+  "words": {
+   "n": 8,
+   "median": 34.5,
+   "p90": 36.3,
+   "min": 32,
+   "max": 37
+  },
+  "errors": 0,
+  "sample": "I checked Bento main and ran all Swift, server, and Android debug tests; only two AzureLiveProtocol tests failed due to a changed utterance gap, which I fixed, and the build succeeded with minor Android deprecation warnings."
+ },
+ "az-gpt-5.4-mini": {
+  "ttft": {
+   "n": 8,
+   "median": 0.647,
+   "p90": 0.808,
+   "min": 0.488,
+   "max": 0.999
+  },
+  "total": {
+   "n": 8,
+   "median": 0.719,
+   "p90": 0.857,
+   "min": 0.633,
+   "max": 0.999
+  },
+  "words": {
+   "n": 8,
+   "median": 27.5,
+   "p90": 28.0,
+   "min": 26,
+   "max": 28
+  },
+  "errors": 0,
+  "sample": "I ran the tests and builds, fixed two Azure live tests for the new 1200 millisecond gap, and everything now passes locally, with only Android deprecation warnings left."
+ },
+ "az-gpt-4.1-nano": {
+  "ttft": {
+   "n": 8,
+   "median": 0.606,
+   "p90": 0.758,
+   "min": 0.397,
+   "max": 0.819
+  },
+  "total": {
+   "n": 8,
+   "median": 0.619,
+   "p90": 0.761,
+   "min": 0.551,
+   "max": 0.819
+  },
+  "words": {
+   "n": 8,
+   "median": 30.0,
+   "p90": 31.3,
+   "min": 25,
+   "max": 32
+  },
+  "errors": 0,
+  "sample": "I checked the code and tests, made some updates, rebuilt the app, and committed the changes; now it's ready for you to install, push, and review the Android warnings."
+ },
+ "az-gpt-4.1-mini": {
+  "ttft": {
+   "n": 8,
+   "median": 1.094,
+   "p90": 1.337,
+   "min": 0.489,
+   "max": 1.59
+  },
+  "total": {
+   "n": 8,
+   "median": 1.167,
+   "p90": 1.502,
+   "min": 0.82,
+   "max": 1.591
+  },
+  "words": {
+   "n": 8,
+   "median": 35.0,
+   "p90": 39.3,
+   "min": 32,
+   "max": 40
+  },
+  "errors": 0,
+  "sample": "I ran all tests on the Bento project, fixed two timing test failures, rebuilt the app without installing it, confirmed the server is stable, and noted some Android warnings needing future attention."
+ },
+ "az-gpt-5-nano": {
+  "ttft": {
+   "n": 8,
+   "median": 0.972,
+   "p90": 1.172,
+   "min": 0.789,
+   "max": 1.251
+  },
+  "total": {
+   "n": 8,
+   "median": 1.189,
+   "p90": 1.356,
+   "min": 1.059,
+   "max": 1.409
+  },
+  "words": {
+   "n": 8,
+   "median": 35.0,
+   "p90": 40.9,
+   "min": 32,
+   "max": 43
+  },
+  "errors": 0,
+  "sample": "I checked the main Bento branch, ran all tests, fixed two AzureLiveProtocolTests by updating the utterance gap to 1200 milliseconds, and everything else builds and tests pass, with next steps including installing, pushing, and addressing Android warnings."
+ },
+ "az-gpt-6-luna": {
+  "ttft": {
+   "n": 8,
+   "median": 0.947,
+   "p90": 1.176,
+   "min": 0.794,
+   "max": 1.519
+  },
+  "total": {
+   "n": 8,
+   "median": 0.995,
+   "p90": 1.267,
+   "min": 0.878,
+   "max": 1.522
+  },
+  "words": {
+   "n": 8,
+   "median": 31.0,
+   "p90": 31.3,
+   "min": 30,
+   "max": 32
+  },
+  "errors": 0,
+  "sample": "All test suites and builds passed after two Azure test fixes; the new Mac build wasn\u2019t installed during your call, and the changes remain local with Android warnings to address."
+ },
+ "vx-3.5-flash-lite": {
+  "ttft": {
+   "n": 8,
+   "median": 0.396,
+   "p90": 0.646,
+   "min": 0.34,
+   "max": 0.768
+  },
+  "total": {
+   "n": 8,
+   "median": 0.584,
+   "p90": 0.886,
+   "min": 0.464,
+   "max": 1.042
+  },
+  "words": {
+   "n": 8,
+   "median": 31.0,
+   "p90": 35.0,
+   "min": 30,
+   "max": 35
+  },
+  "errors": 0,
+  "sample": "I ran the full test suite and fixed two failing Azure tests by updating the utterance gap. The release is built with a bumped version number, and everything else looks healthy."
+ },
+ "vx-3.1-flash-lite": {
+  "ttft": {
+   "n": 8,
+   "median": 0.458,
+   "p90": 0.544,
+   "min": 0.343,
+   "max": 0.558
+  },
+  "total": {
+   "n": 8,
+   "median": 0.66,
+   "p90": 0.742,
+   "min": 0.523,
+   "max": 0.806
+  },
+  "words": {
+   "n": 8,
+   "median": 30.0,
+   "p90": 31.0,
+   "min": 29,
+   "max": 31
+  },
+  "errors": 0,
+  "sample": "I have updated the failing Azure tests to match the new timing, successfully built the app, and confirmed the server is healthy, so let me know when to install the update."
+ },
+ "vx-3.8-flash": {
+  "ttft": {
+   "n": 8,
+   "median": 1.296,
+   "p90": 3.81,
+   "min": 0.714,
+   "max": 3.949
+  },
+  "total": {
+   "n": 8,
+   "median": 1.672,
+   "p90": 3.859,
+   "min": 0.953,
+   "max": 3.99
+  },
+  "words": {
+   "n": 8,
+   "median": 27.5,
+   "p90": 30.6,
+   "min": 10,
+   "max": 32
+  },
+  "errors": 0,
+  "sample": "All tests are now passing after I fixed two outdated tests on a local branch, the latest release build is ready to install whenever your call ends, and server builds look good."
+ },
+ "vx-2.5-flash-lite": {
+  "ttft": {
+   "n": 8,
+   "median": 0.392,
+   "p90": 0.433,
+   "min": 0.332,
+   "max": 0.434
+  },
+  "total": {
+   "n": 8,
+   "median": 0.575,
+   "p90": 0.707,
+   "min": 0.479,
+   "max": 0.756
+  },
+  "words": {
+   "n": 8,
+   "median": 21.0,
+   "p90": 26.2,
+   "min": 16,
+   "max": 29
+  },
+  "errors": 0,
+  "sample": "The Swift tests are passing after fixing two failures, and the Android build is clean but has deprecation warnings."
+ }
+}
