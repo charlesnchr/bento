@@ -2,8 +2,8 @@
 
 Bento is one native macOS menu-bar app (Swift, AppKit + SwiftUI) that replaces Shottr,
 Rectangle Pro, Raycast app hotkeys, a tiling window manager (AeroSpace-lite), a clipboard
-manager, Raycast Notes, Todoist and Jot (dictation, meeting notes, a Hermes assistant). It also
-shows and hides manually arranged menu bar sections. Third-party code is confined to the voice
+manager, Raycast Notes, Todoist, LinearMouse and Jot (dictation, meeting notes, a Hermes
+assistant). It also shows and hides manually arranged menu bar sections. Third-party code is confined to the voice
 targets (MarkdownUI, FluidAudio, vendored SwiftMath); no other module may add a dependency.
 
 Priorities, in order: **correct, low resource use, neat**. It runs all day:
@@ -37,7 +37,8 @@ docs/                 this file, SYNC_PROTOCOL.md
 
 Modules: `Shot` (capture), `ShotEditor` (annotation editor, history, pin),
 `Windows` (Rectangle Pro), `Tiling`, `Launcher` (app hotkeys), `Clipboard`, `Notes`, `Todo`,
-`MenuBar` (manually arranged hidden menu bar sections).
+`MenuBar` (manually arranged hidden menu bar sections), `Mouse` (per-device scroll direction,
+scroll speed and pointer speed).
 
 Voice: `VoiceCore` (UI-free: audio capture, transcription clients, formatting, insertion,
 hotkey engine, history index, settings, meetings) and `Voice` (the Dictation, Meetings and
@@ -125,7 +126,8 @@ documents are in `Voice/voice-sync.sqlite`.
    (≤ 2 Hz with tolerance), MenuBar's opt-in "show when the icon changes" check (0.5 Hz, only
    for the items picked, only while they're hidden), the dictation tap's health check while
    Dictation or the Assistant is on (every 5 s: macOS disables taps silently), and once a voice
-   module has run, a 6-hourly recording-retention sweep. The voice modules are off by default. Event taps only while their feature is
+   module has run, a 6-hourly recording-retention sweep. Mouse's scroll tap exists only while a
+   setting changes scrolling for a connected device or a kind's defaults. The voice modules are off by default. Event taps only while their feature is
    enabled. AX observers only while needed. Release big images when windows close.
 6. Look and feel: native macOS — SF Symbols, system materials (NSVisualEffectView / SwiftUI
    materials), system accent colour, light + dark mode, 8-pt spacing, no custom chrome unless the
@@ -151,6 +153,7 @@ documents are in `Voice/voice-sync.sqlite`.
 | Todo | `ctrl+cmd+t` toggle the todo window (Todoist's show/hide), `ctrl+opt+space` Quick Add; Todoist's single-key bindings are local to the window (`Sources/Todo/TodoKeys.swift`) |
 | Launcher | none by default (user-defined, typically `hyper+<letter>`) |
 | MenuBar | `ctrl+opt+cmd+m` show/hide hidden items, `ctrl+opt+cmd+s` search menu bar items; per-item Accessibility open shortcuts are user-defined |
+| Mouse | none (it has no actions) |
 | Dictation | the dictation key is a hold/tap gesture on the voice event tap (fn, right ⌘/⌥/⌃ or `opt+f17`, picked in its pane), not an action; with `opt+f17`, `opt+f18` edits or talks to the assistant; `meh+r` Retry Last Transcription (`ctrl+opt+r` is Windows' Center Two Thirds); Capture Thought to Note (`dictation.capture-note`) has none |
 | Meetings | `shift+opt+f17` record/stop |
 | Assistant | `shift+opt+f18` show/hide the window; `opt+f18` voice calls (tap gesture; with calls off it edits or talks to the assistant); `ctrl+opt+f18` Dictate to Assistant (`assistant.dictate`, hold or tap: the shortcut's key-up drives push-to-talk through `BentoAction.hold`; `VoiceModulesTests` fails if another literal takes it, and `yieldNewDefault` leaves it unbound for users who had already put it on something else); the window's own shortcuts are local (`Sources/Voice/Assistant/AssistantShortcuts.swift`) |
@@ -170,6 +173,52 @@ Search and Bento Bar reveal in place and request a cancellable, validated
 AXPress. There is no synthetic click fallback or temporary relocation. Crowded
 and notched displays can leave items inaccessible; the user must make space,
 click or reposition them manually. See QA.md for safe validation.
+
+## Mouse behavior
+
+Config section `mouse` (`MouseSettings`): `defaults.mouse` and `defaults.trackpad`
+(`DeviceSettings`) and `devices`, a list of `DeviceEntry` (identity and settings in one object).
+`MouseSettings.settings(for:kind:)` is the one place that decides what a device gets: the best
+matching entry (`DeviceEntry.matchScore`: ids when the entry has non-zero ones, else the name;
+a serial number outranks ids, ids outrank a name, ties go to the first), else its kind's
+defaults. Decoding is tolerant key by key and entry by entry. The pane writes an entry the first
+time a connected device's value changes (`setSettings`), with the serial number when the device
+reports one, and `removeEntry(for:)` removes the one entry that applies. An entry that covers
+more than the unit (no serial number although the device has one) is edited in place and shown
+as shared (`entryIsOwn`).
+
+Devices are the HID event system's services that conform to Generic Desktop Mouse or Pointer
+(`HIDSystem.scan`), grouped by identity (`HIDSystem.devices`): a device on USB and
+Bluetooth at once is one device with two services. Its other services (same ids, name and serial
+number) count as senders of its scroll events too, though only the pointing ones get pointer values. A service that conforms to Digitizer Touch
+Pad, or whose name contains "trackpad", is a trackpad. `DeviceWatcher` is an `IOHIDManager` that
+is scheduled but never opened: it reports devices arriving and leaving without reading input,
+so no Input Monitoring permission is involved. `MouseModule.sync()` runs at start, 0.15 s after a config
+change (a dragged slider changes it many times a second, and a sync takes about 70 ms), 0.7 s after the device list changes, on wake and when the pane appears; it lists the
+services with a fresh client each time, and is the only place that touches them.
+
+Scrolling (`ScrollTap`, its own thread): a session event tap on `scrollWheel`, created only
+while `ScrollTable.isIdentity` is false. For each event from a device (source pid 0; events
+posted by programs pass through) `EventSender` reads the registry id of the HID service behind
+the event (`CGEventCopyIOHIDEvent` and `IOHIDEventGetSenderID`, both looked up with `dlsym`),
+which is the id `IOHIDServiceClientGetRegistryID` gives for the service, so the rule is the
+sending device's own. An event with no known sender gets a rule by what it looks like: stepped
+events the rule the connected mice agree on, continuous ones the trackpads', and the kind's
+defaults when they disagree. `ScrollScaler` applies the rule to the three forms of each axis
+(whole lines, fixed-point lines, pixels); the whole-number forms carry their rounding remainder
+to the next event of the same direction, per sending service. `ScrollEventIO.write` sets the
+line deltas first because Core Graphics recomputes the other two from them.
+
+Pointer (`PointerTuner`, main thread): `HIDPointerAcceleration` and `HIDPointerResolution` on
+each service, 16.16 fixed point (`PointerMath`). Acceleration is the Tracking speed value;
+negative turns acceleration off. Speed 0 to 1 maps to an assumed resolution of 2000 down to 100
+counts per inch (400 is the default, speed 0.84). Reading and writing the resolution needs the
+full HID client (`IOHIDEventSystemClientCreate`, looked up with `dlsym`); the public simple
+client only sets acceleration, and the pane says so when that is all there is. macOS can't
+unset a service property, so `PointerLedger` (`mouse/pointer-state.json` in Application Support)
+records the resolution each device had and which devices had their acceleration set, and
+restoring writes the original resolution and the system-wide tracking speed for the service's
+type. The ledger is on disk so a later launch can restore after a crash.
 
 ## Collapsible headings and thought capture
 
@@ -241,6 +290,10 @@ skip hidden text, `J` on a collapsed heading beeps, and a search match inside on
 in insert mode goes through the editor as usual (input rules, list continuation, the "/" menu).
 
 ## Sync
+
+`config.json` is not synced by Bento. `ConfigStore` writes through a symlink and watches the
+file, so a config kept in a dotfiles repository reaches another Mac when that repository is
+pulled there. That is how every module's settings travel, `mouse` included.
 
 See `docs/SYNC_PROTOCOL.md`. Self-hosted `bento-sync` (`server/`); no server by default, set
 `notes.sync.server` / `todo.sync.server` in the config. Token in `~/.config/bento/sync-token`.

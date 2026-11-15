@@ -73,6 +73,48 @@ enable case also checks that disabling restores the original icon length.
 Optional captures include the test's own Settings window; inspect the smaller
 Bento glyph as well as the distinct solid and dashed dividers.
 
+## Mouse checks
+
+`scripts/test MouseTests` is desktop-free: the config model, device matching, the scroll
+transform, which rule an event gets, the pointer values and the restore ledger. Two tests write
+a transformed event into a real `CGEvent` and read it back; they post nothing.
+
+The rest needs hardware and a person, because a posted scroll event is by design left alone and
+has no sending device:
+
+1. With the module on and nothing configured, `bento://debug/state` shows `mouse.state.tap`
+   false: no event tap exists.
+2. Reverse vertical scrolling for the mouse only. The wheel reverses, the trackpad doesn't.
+   The state shows `tap` true, and after some scrolling `scroll.bySender` close to `scroll.seen`:
+   events are matched to their device. If `bySender` stays 0, events are matched by kind only.
+   `scroll.synthetic` must stay near 0 while only the wheel is used: if it counts the wheel's
+   events, macOS no longer reports device events with source pid 0 and nothing is being changed.
+3. Scroll speed 2.0× and 0.5× on the wheel: distance doubles and halves; at 0.5× a line-based
+   app (Terminal) moves every second notch.
+4. Start a scrolling capture (Shot) with the mouse reversed: it scrolls the usual way
+   (`scroll.synthetic` counts its events).
+5. Pointer speed and acceleration on one device change that device only; switching either off,
+   removing the entry or turning the module off puts macOS's value back, and
+   `mouse/pointer-state.json` in Application Support is gone once nothing is changed.
+6. Unplug and replug the mouse: its values apply again within a second or two. Sleep and wake
+   the Mac with a Bluetooth mouse: the same.
+7. Without Accessibility, the pane says scrolling needs it; pointer settings still apply.
+8. Disable pointer acceleration on a mouse, then move it at pointer speed 0.2 and 0.9 (set in
+   the config, the sliders are disabled): the pointer must move the same, as the pane says. If
+   speed still has an effect, `PointerMath.resolution(for:)` should stop ignoring it.
+9. With Karabiner-Elements modifying a mouse, its events arrive from **Karabiner DriverKit
+   VirtualHIDPointing**: settings on that row apply, settings on the mouse's own row don't.
+
+10. Crash recovery: set a pointer value, `kill -9` Bento, turn the module off in the config and
+    relaunch. About 3 s later the value is macOS's again and `pointer-state.json` is gone. Then,
+    with Bento running and a value set, `open -n` the same app: the running instance's values
+    and its ledger file are untouched.
+
+To try pointer values without touching a device in use, give an entry to a pointer nobody
+holds (Karabiner's virtual pointer, `vendorID` 5824, `productID` 10202) in an isolated
+DevMouse config and read its `HIDPointerAcceleration` and `HIDPointerResolution` back with the
+full HID client.
+
 ## MenuBar corrective regression checks
 
 `swift build --scratch-path .build-menubar --target MenuBar` and

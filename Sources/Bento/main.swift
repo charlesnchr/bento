@@ -8,6 +8,7 @@ import Clipboard
 import Notes
 import Todo
 import MenuBar
+import Mouse
 import Voice
 
 StatusItemSizing.shared.configure()
@@ -27,4 +28,5 @@ BentoApp.run(modules: [
     notes,
     TodoModule(),
     MenuBarModule(),
+    MouseModule(),
 ] + VoiceModules.all())
