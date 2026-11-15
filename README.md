@@ -80,7 +80,7 @@ trackpads; open one to change its values:
   values above have no effect.
 
 A device uses the defaults for its kind (**Mice**, **Trackpads**) until you change one of its
-values; it then gets its own entry, which **Use the Mouse Defaults** removes again. In the
+values; it then gets its own entry, which **Remove Its Own Settings** removes again. In the
 config it is the `mouse` section:
 
 ```json
@@ -100,7 +100,11 @@ config it is the `mouse` section:
 
 An entry with a `vendorID` or `productID` matches devices with those ids (a number, or a string
 such as `"0x1532"`), whatever they are called. Without ids, as for the built-in trackpad of an
-Apple silicon Mac, it matches by `name`. A `serialNumber` narrows either to one unit. An entry
+Apple silicon Mac, it matches by `name`. A `serialNumber` narrows either to one unit, and
+the settings page writes it whenever the device reports one, so two mice of one model keep
+separate values. Take the key out to make an entry cover every unit of the model, or both
+connections of a device that reports different serial numbers over USB and Bluetooth; the page
+then calls those settings shared. An entry
 holds every value itself: a key it leaves out takes the built-in default (nothing changed), not
 the default of its kind. Entries for devices that aren't connected stay in the file and show
 under **Saved for Other Devices**, so one config serves several Macs.

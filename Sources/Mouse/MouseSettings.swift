@@ -121,14 +121,16 @@ public struct DeviceEntry: Codable, Equatable {
         self.settings = settings
     }
 
-    /// The entry a device gets when its settings are first changed. It names
-    /// the serial number only when asked to: a serial number can differ
-    /// between a device's USB and Bluetooth connections, and an entry without
-    /// one covers both.
-    public init(device: DeviceIdentity, kind: PointingKind, settings: DeviceSettings, bySerial: Bool = false) {
+    /// The entry a device gets when its settings are first changed: its ids
+    /// (or its name, without ids) and its serial number when it reports one,
+    /// so another unit of the same model keeps its own values. Taking the
+    /// `serialNumber` out of the file makes the entry cover every unit, and
+    /// every connection of one that reports different serial numbers over USB
+    /// and Bluetooth.
+    public init(device: DeviceIdentity, kind: PointingKind, settings: DeviceSettings) {
         self.init(name: device.name, vendorID: device.hasIDs ? device.vendorID : nil,
                   productID: device.hasIDs ? device.productID : nil,
-                  serialNumber: bySerial ? device.serialNumber : nil, kind: kind, settings: settings)
+                  serialNumber: device.serialNumber, kind: kind, settings: settings)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -248,33 +250,29 @@ public struct MouseSettings: Codable, Equatable {
         entryIndex(for: device).map { devices[$0].settings } ?? defaults[kind]
     }
 
-    /// Gives a device its own settings: changes the entry that applies to it
-    /// (which, for a hand-written entry naming only a vendor or a name, also
-    /// applies to the other devices it matches), or adds one.
-    ///
-    /// `bySerial` is for a device that has a twin connected (same ids,
-    /// another serial number): its entry then names its serial number, and an
-    /// entry the twins share is left as it is, so each keeps its own values.
-    public mutating func setSettings(_ settings: DeviceSettings, for device: DeviceIdentity, kind: PointingKind,
-                                     bySerial: Bool = false) {
-        let own = bySerial && device.serialNumber != nil
-        if let i = entryIndex(for: device), !own || devices[i].serialNumber != nil {
+    /// Changes a device's settings: those of the entry that applies to it,
+    /// or of a new entry for it alone. An entry that applies to it and to
+    /// other devices (one without a serial number, or naming only a vendor)
+    /// is changed for all of them: that is what such an entry is for.
+    public mutating func setSettings(_ settings: DeviceSettings, for device: DeviceIdentity, kind: PointingKind) {
+        if let i = entryIndex(for: device) {
             devices[i].settings = settings
         } else {
-            devices.append(DeviceEntry(device: device, kind: kind, settings: settings, bySerial: own))
+            devices.append(DeviceEntry(device: device, kind: kind, settings: settings))
         }
     }
 
-    /// Whether a device needs its serial number to be told apart: another of
-    /// the given devices matches the entry it would get without one.
-    public static func hasTwin(_ device: DeviceIdentity, among devices: [DeviceIdentity]) -> Bool {
-        let shared = DeviceEntry(device: device, kind: .mouse, settings: DeviceSettings())
-        return devices.contains { $0 != device && shared.matches($0) }
+    /// Removes the entry that applies to a device, and only that one: a less
+    /// specific entry that also matches it then applies, else its kind's defaults.
+    public mutating func removeEntry(for device: DeviceIdentity) {
+        if let i = entryIndex(for: device) { devices.remove(at: i) }
     }
 
-    /// Puts a device back on its kind's defaults by removing every entry that matches it.
-    public mutating func removeEntries(for device: DeviceIdentity) {
-        devices.removeAll { $0.matches(device) }
+    /// Whether the entry that applies to a device is for that unit alone
+    /// (named by serial number, or the device reports none to tell units by).
+    public func entryIsOwn(for device: DeviceIdentity) -> Bool {
+        guard let i = entryIndex(for: device) else { return false }
+        return devices[i].serialNumber != nil || device.serialNumber == nil
     }
 }
 

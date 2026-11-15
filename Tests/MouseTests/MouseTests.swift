@@ -96,6 +96,8 @@ private func reversed(_ speed: Double = 1) -> DeviceSettings {
     #expect(o["reverseScrollVertical"] as? Bool == true)
     #expect(o["scrollSpeed"] as? Double == 2)
     #expect(o["serialNumber"] == nil)
+    // A device that reports a serial number is entered with it.
+    #expect(try object(DeviceEntry(device: magicTrackpad, kind: .trackpad, settings: DeviceSettings()))["serialNumber"] as? String == "CC21")
 }
 
 // MARK: - Matching
@@ -158,50 +160,60 @@ private func reversed(_ speed: Double = 1) -> DeviceSettings {
     #expect(m.devices.count == 1)
     #expect(m.devices[0].vendorID == 0x1532 && m.devices[0].name == "Razer DeathAdder V3")
     #expect(m.settings(for: razer, kind: .mouse).scrollSpeed == 3)
-    m.removeEntries(for: razer)
+    m.removeEntry(for: razer)
     #expect(m.devices.isEmpty)
     #expect(m.settings(for: razer, kind: .mouse) == m.defaults.mouse)
 }
 
+private let unitA = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "AAA")
+private let unitB = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "BBB")
+
 @Test func twoUnitsOfOneModelKeepTheirOwnSettings() {
-    let a = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "AAA")
-    let b = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "BBB")
-    #expect(MouseSettings.hasTwin(a, among: [a, b, razer]))
-    #expect(!MouseSettings.hasTwin(razer, among: [a, b, razer]))
-    #expect(!MouseSettings.hasTwin(a, among: [a]))
-
+    // One after the other, as when a mouse is replaced or each sits at a different Mac.
     var m = MouseSettings()
-    m.setSettings(reversed(2), for: a, kind: .mouse, bySerial: true)
-    m.setSettings(reversed(3), for: b, kind: .mouse, bySerial: true)
+    m.setSettings(reversed(2), for: unitA, kind: .mouse)
+    m.setSettings(reversed(3), for: unitB, kind: .mouse)
     #expect(m.devices.map(\.serialNumber) == ["AAA", "BBB"])
-    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 2)
-    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
-    m.setSettings(reversed(4), for: a, kind: .mouse, bySerial: true)
+    m.setSettings(reversed(4), for: unitA, kind: .mouse)
     #expect(m.devices.count == 2)
-    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 4)
-    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
+    #expect(m.settings(for: unitA, kind: .mouse).scrollSpeed == 4)
+    #expect(m.settings(for: unitB, kind: .mouse).scrollSpeed == 3)
+    #expect(m.entryIsOwn(for: unitA) && m.entryIsOwn(for: unitB))
 }
 
-@Test func aTwinLeavesTheEntryTheyShareAlone() {
-    let a = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "AAA")
-    let b = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "BBB")
+@Test func removingOneUnitsEntryLeavesTheOtherUnitAlone() {
     var m = MouseSettings()
-    m.setSettings(reversed(2), for: a, kind: .mouse)   // while it was the only one: no serial number
-    #expect(m.devices[0].serialNumber == nil)
-    m.setSettings(reversed(3), for: b, kind: .mouse, bySerial: true)
-    #expect(m.devices.count == 2)
-    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 2)
-    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
+    m.setSettings(reversed(2), for: unitA, kind: .mouse)
+    m.setSettings(reversed(3), for: unitB, kind: .mouse)
+    m.removeEntry(for: unitB)
+    #expect(m.settings(for: unitA, kind: .mouse).scrollSpeed == 2)
+    #expect(m.settings(for: unitB, kind: .mouse) == m.defaults.mouse)
 }
 
-@Test func withoutATwinAnEntryCoversEveryConnectionOfTheDevice() {
-    // The same keyboard on USB (with a serial number) and Bluetooth (without).
-    let usb = DeviceIdentity(vendorID: 7504, productID: 24926, name: "haili58", serialNumber: "66AD")
-    let bluetooth = DeviceIdentity(vendorID: 7504, productID: 24926, name: "haili58")
+@Test func anEntryWithoutASerialNumberIsSharedAndSaysSo() {
     var m = MouseSettings()
-    m.setSettings(reversed(2), for: usb, kind: .mouse)
+    m.devices = [DeviceEntry(vendorID: 0x046D, productID: 0xC08B, settings: reversed(2))]   // written by hand
+    #expect(!m.entryIsOwn(for: unitA))
+    // Editing through one unit changes the entry they share, and adds none.
+    m.setSettings(reversed(3), for: unitB, kind: .mouse)
+    #expect(m.devices.count == 1)
+    #expect(m.settings(for: unitA, kind: .mouse).scrollSpeed == 3)
+
+    // A unit's own entry outranks it; removing that entry falls back to the shared one, which stays.
+    m.devices.append(DeviceEntry(device: unitB, kind: .mouse, settings: reversed(5)))
+    #expect(m.settings(for: unitB, kind: .mouse).scrollSpeed == 5)
+    #expect(m.entryIsOwn(for: unitB))
+    m.removeEntry(for: unitB)
+    #expect(m.devices.count == 1)
+    #expect(m.settings(for: unitB, kind: .mouse).scrollSpeed == 3)
+    #expect(m.settings(for: unitA, kind: .mouse).scrollSpeed == 3)
+}
+
+@Test func aDeviceWithoutASerialNumberOwnsItsEntry() {
+    var m = MouseSettings()
+    m.setSettings(reversed(2), for: razer, kind: .mouse)
     #expect(m.devices[0].serialNumber == nil)
-    #expect(m.settings(for: bluetooth, kind: .mouse).scrollSpeed == 2)
+    #expect(m.entryIsOwn(for: razer))
 }
 
 @Test func kindComesFromTheUsageOrTheName() {

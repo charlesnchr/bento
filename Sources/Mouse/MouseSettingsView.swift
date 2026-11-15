@@ -39,13 +39,12 @@ struct MouseSettingsView: View {
                     Text("No mouse or trackpad found.").foregroundStyle(.secondary)
                 }
                 ForEach(status.devices) { device in
-                    DeviceRow(device: device, model: model,
-                              hasTwin: MouseSettings.hasTwin(device.identity, among: status.devices.map(\.identity)))
+                    DeviceRow(device: device, model: model)
                 }
             } header: {
                 Text("Connected Devices")
             } footer: {
-                Text("A device uses the defaults below until you change one of its values. It is then recognised by its vendor and product id, or by its name if it has none, on every Mac that shares this config.")
+                Text("A device uses the defaults below until you change one of its values. It is then recognised by its vendor and product id (or its name, if it has none) and its serial number, on every Mac that shares this config.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -133,22 +132,21 @@ private struct DeviceLabel: View {
 private struct DeviceRow: View {
     let device: ConnectedDevice
     @ObservedObject var model: ConfigSection<MouseSettings>
-    /// Another connected device has the same ids: tell them apart by serial number.
-    let hasTwin: Bool
-
     private var hasEntry: Bool { model.value.entryIndex(for: device.identity) != nil }
+    private var isOwn: Bool { model.value.entryIsOwn(for: device.identity) }
 
     var body: some View {
         DisclosureGroup {
             DeviceSettingsEditor(settings: Binding(
                 get: { model.value.settings(for: device.identity, kind: device.kind) },
-                set: { model.value.setSettings($0, for: device.identity, kind: device.kind, bySerial: hasTwin) }
+                set: { model.value.setSettings($0, for: device.identity, kind: device.kind) }
             ), ownPointerSpeed: device.ownPointerSpeed)
             if hasEntry {
-                Button("Use the \(device.kind == .mouse ? "Mouse" : "Trackpad") Defaults") {
-                    model.value.removeEntries(for: device.identity)
+                // A shared entry goes for every device it covers, and the button says so.
+                Button(isOwn ? "Remove Its Own Settings" : "Remove the Shared Settings") {
+                    model.value.removeEntry(for: device.identity)
                 }
-                .accessibilityIdentifier("mouse-use-defaults:\(device.id)")
+                .accessibilityIdentifier("mouse-remove-entry:\(device.id)")
             }
         } label: {
             DeviceLabel(symbol: device.kind.symbol, title: device.identity.name, detail: detail)
@@ -159,8 +157,8 @@ private struct DeviceRow: View {
     private var detail: String {
         var parts = [device.kind.title]
         if device.identity.hasIDs { parts.append("\(hexID(device.identity.vendorID)):\(hexID(device.identity.productID))") }
-        if hasTwin, let serial = device.identity.serialNumber { parts.append("serial \(serial)") }
-        parts.append(hasEntry ? "own settings" : "\(device.kind.title.lowercased()) defaults")
+        parts.append(!hasEntry ? "\(device.kind.title.lowercased()) defaults"
+            : isOwn ? "own settings" : "settings shared with other units")
         return parts.joined(separator: " · ")
     }
 }

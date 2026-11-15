@@ -182,8 +182,10 @@ Config section `mouse` (`MouseSettings`): `defaults.mouse` and `defaults.trackpa
 matching entry (`DeviceEntry.matchScore`: ids when the entry has non-zero ones, else the name;
 a serial number outranks ids, ids outrank a name, ties go to the first), else its kind's
 defaults. Decoding is tolerant key by key and entry by entry. The pane writes an entry the first
-time a connected device's value changes (`setSettings`), and removes it with
-`removeEntries(for:)`.
+time a connected device's value changes (`setSettings`), with the serial number when the device
+reports one, and `removeEntry(for:)` removes the one entry that applies. An entry that covers
+more than the unit (no serial number although the device has one) is edited in place and shown
+as shared (`entryIsOwn`).
 
 Devices are the HID event system's services that conform to Generic Desktop Mouse or Pointer
 (`HIDSystem.scan`), grouped by identity (`HIDSystem.devices`): a device on USB and
