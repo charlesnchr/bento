@@ -49,6 +49,12 @@ export const CHECK_TASK = "check_task";
 export const CANCEL_TASK = "cancel_task";
 
 export class CallProtocol {
+  /**
+   * Seconds between two user turns under which the earlier, if the model neither answered it nor
+   * acted on it, is part of the request the later one finishes (0 = never). The model's activity
+   * detection ends a turn at a pause for thought, so a request said in two breaths is two turns.
+   */
+  join = 0;
   private seen = new Set<string>();
   private turns: Turn[] = [];
   private history: Fragment[] = [];
@@ -139,9 +145,23 @@ export class CallProtocol {
     const ended = turn.ended;
     if (ended == null) return null;
     if (ended < d.at - 8 || turn.ambiguous || turn.text.length > 4000) return null;
-    const task = turn.text.trim();
+    let task = turn.text.trim();
     if (task.length === 0) return null;
-    const context = this.history.filter((f) => f.at < turn.started).map((f) => `${f.role}: ${f.text}`).join("\n");
+    // Earlier breaths of the same request: turns just before it that the model let pass without a word or a call.
+    let first = turn;
+    if (this.join > 0) {
+      for (let i = this.turns.indexOf(turn) - 1; i >= 0; i--) {
+        const earlier = this.turns[i];
+        const end = earlier.ended;
+        if (earlier.consumed || end == null || earlier.text.trim().length === 0 || first.started - end > this.join) break;
+        if (this.history.some((f) => f.role === "assistant" && f.at >= earlier.started && f.at < first.started)) break;
+        if (earlier.text.length + task.length > 4000) break;
+        earlier.consumed = true;
+        task = earlier.text.trim() + " " + task;
+        first = earlier;
+      }
+    }
+    const context = this.history.filter((f) => f.at < first.started).map((f) => `${f.role}: ${f.text}`).join("\n");
     return { id: d.id, task, context: takeLast(context, 6000), taskId: "", followUp: false, label: "" };
   }
 }

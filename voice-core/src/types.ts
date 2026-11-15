@@ -166,7 +166,8 @@ export interface CallConfig {
   /**
    * Closer supervision: the instruction says how to take corrections and changes of mind (to the
    * same task), to keep replies short and what a status answer holds; list_tasks and check_task
-   * say how long a task has run, how long it has been quiet, and each finished task's outcome.
+   * say how long a task has run, how long it has been quiet, and each finished task's outcome; and
+   * a request said in two breaths reaches its agent whole (CallProtocol.join).
    */
   supervise: boolean;
   limits: Limits;

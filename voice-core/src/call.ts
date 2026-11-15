@@ -325,6 +325,7 @@ export class Call {
   constructor(config: CallConfig) {
     this.c = config;
     this.mutedNow = config.muted;
+    if (config.supervise) this.protocol.join = 4;
     this.chat = config.history.map((l) => ({ ...l }));
     this.setup = {
       api: config.api,
@@ -552,7 +553,13 @@ export class Call {
       }
       return;
     }
-    if (this.standby || this.waking || this.rotating || t < this.attendUntil) return;
+    if (this.waking || this.rotating || t < this.attendUntil) return;
+    if (this.standby) {
+      // Stood by with its window still open: once that ends it is dormant too, so only the wake word brings it back.
+      this.dormant = true;
+      this.updateWakeword();
+      return;
+    }
     if (this.talking(t) || this.geminiSpeaking || t < this.speechUntil || this.settling > 0 || this.announcing != null) return;
     if (this.replyDue != null && t - this.replyDue < this.c.limits.settleMax) return;
     // The microphone is loud as the window runs out: the user may have begun to speak, and the model's word that they
@@ -840,7 +847,8 @@ export class Call {
     // Several results ready together are told one after another, as one announcement.
     if (this.announcedAt != null && sinceReply >= 0.3 && sinceReply <= 1.5) return true;
     // A reply that asked the user something leaves the floor to them, unless the result has waited long already.
-    if (this.replyEnded && (!this.replyAsked || waited) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
+    const long = item.briefAt != null && t - item.briefAt >= 30;
+    if (this.replyEnded && (!this.replyAsked || long) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
     return quiet >= a.lull * (1 + item.cuts);
   }
 
@@ -1493,7 +1501,7 @@ export class Call {
     this.played();
     this.lapseQuestions();
     const frame = typedFrame(text);
-    if (this.dormant) { this.dormant = false; this.streamEnded = false; this.updateWakeword(); }
+    if (this.dormant) { this.dormant = false; this.streamEnded = false; this.updateWakeword(); this.settled(); }
     this.attendFor(this.c.attention.afterWake);
     if (this.standby || this.waking || !this.listening || this.rotating) {
       this.typedLater.push(frame);
@@ -1746,7 +1754,11 @@ export class Call {
     if (!task.holds(run)) { this.closeCancelled(task, run); return; }
     if (this.cancelledCalls.has(run.callId)) this.skip(task, run); else this.cue("taskStarted");
     // A hand-off is silent but for its tone: from the tone the user has afterHandOff seconds to add something.
-    if (this.windowed && !this.dormant) this.attendFor(this.c.attention.afterHandOff);
+    if (this.windowed && !this.dormant) {
+      this.attendFor(this.c.attention.afterHandOff);
+      // A hand-off the model also spoke about keeps the window its words opened.
+      if (this.speechUntil > this.t - 1) this.attendFor(this.c.attention.window, this.speechUntil, "longer");
+    }
     this.settled();
   }
 

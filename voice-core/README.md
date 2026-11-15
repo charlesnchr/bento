@@ -102,6 +102,55 @@ journalctl --user -u voice-core-dev -f
 tailscale serve --https=8770 off            # take it off the tailnet (needs sudo here)
 ```
 
+## Who tells results, when the model listens, and closer supervision
+
+Three settings in `CallConfig` (`src/types.ts`), all off by default, so a host that sets none
+behaves as before. `eval/` measures them (see below).
+
+**`announce.by: "host"`**: the core tells the user each task's result itself, instead of handing
+the full reply to the speech model to word and time. For each result it sends the host a `brief`
+command; the host answers `brief.ready` with one spoken sentence and its audio (a fast text model
+and TTS: `eval/brief.ts` is a reference, about 1 to 2 s with Gemini Flash Lite and Chirp 3 HD), or
+`brief.failed`, after which the model tells that result the old way. The core plays the audio with
+an ordinary `play` (tagged `source: "announcer"`):
+
+- at once when nobody has spoken for `engaged` seconds;
+- in a conversation, `attach` seconds after the model's next reply ends, unless that reply asked
+  the user something, or at a lull of `lull` seconds;
+- never while the user is speaking or the model owes them a reply, and not while the microphone
+  is loud, for up to `maxWait` seconds;
+- several ready together one after another, a task's question last with nothing after it;
+- in standby without reconnecting the model.
+
+The user speaking over a brief stops it and it goes again later; saying "stop" drops it (it stays
+available through `check_task`). The model gets a note of the words said and the full reply, so it
+answers follow-up questions and doesn't repeat the result.
+
+**`attention.mode: "window"`**: the model hears the microphone only for a while after something
+that makes the user's next words likely to be for it: `afterWake` seconds after the call starts,
+the `wake` event or `resume`; `window` after a spoken reply; `afterQuestion` after a question to
+the user; `afterHandOff` after the tone of a silent hand-off; `afterAnnouncement` after a result
+told unprompted. Speech that began inside a window is heard to its end. Otherwise the call is
+`dormant`: nothing reaches the model, the host is asked to listen for its wake word (`wakeword`
+on, as with `mic.whileSpeaking: "wake"`), the last `limits.wakePreRoll` seconds are kept and sent
+on waking, loud sound no longer brings a call back from standby, and a dormant call may stand by
+with nothing running. A host without a wake word detector should leave this on "open" or give the
+user a button that sends `resume`.
+
+**`supervise: true`**: the instruction says a correction or change of mind goes to the same task,
+replies stay short and a status answer names each task's state or outcome; `list_tasks` and
+`check_task` add how long a task has run, how long it has been quiet and each finished task's
+outcome in a line; and a request said in two breaths (two turns with a pause the model let pass)
+reaches its agent whole.
+
+## Measuring a change
+
+`eval/` runs scripted calls against the real model and scores them: 28 scenarios of real use
+(results landing mid-conversation, several tasks at once, corrections, status checks, a television
+in the room, standby and coming back), a simulated user, scripted agents, metrics from the trace
+and a judge. See `eval/README.md`. Run the suite on the build before and after a change, three
+times each, before believing a difference.
+
 ## Change the logic
 
 ```sh
