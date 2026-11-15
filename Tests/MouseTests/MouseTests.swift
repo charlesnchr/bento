@@ -163,6 +163,47 @@ private func reversed(_ speed: Double = 1) -> DeviceSettings {
     #expect(m.settings(for: razer, kind: .mouse) == m.defaults.mouse)
 }
 
+@Test func twoUnitsOfOneModelKeepTheirOwnSettings() {
+    let a = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "AAA")
+    let b = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "BBB")
+    #expect(MouseSettings.hasTwin(a, among: [a, b, razer]))
+    #expect(!MouseSettings.hasTwin(razer, among: [a, b, razer]))
+    #expect(!MouseSettings.hasTwin(a, among: [a]))
+
+    var m = MouseSettings()
+    m.setSettings(reversed(2), for: a, kind: .mouse, bySerial: true)
+    m.setSettings(reversed(3), for: b, kind: .mouse, bySerial: true)
+    #expect(m.devices.map(\.serialNumber) == ["AAA", "BBB"])
+    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 2)
+    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
+    m.setSettings(reversed(4), for: a, kind: .mouse, bySerial: true)
+    #expect(m.devices.count == 2)
+    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 4)
+    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
+}
+
+@Test func aTwinLeavesTheEntryTheyShareAlone() {
+    let a = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "AAA")
+    let b = DeviceIdentity(vendorID: 0x046D, productID: 0xC08B, name: "G502", serialNumber: "BBB")
+    var m = MouseSettings()
+    m.setSettings(reversed(2), for: a, kind: .mouse)   // while it was the only one: no serial number
+    #expect(m.devices[0].serialNumber == nil)
+    m.setSettings(reversed(3), for: b, kind: .mouse, bySerial: true)
+    #expect(m.devices.count == 2)
+    #expect(m.settings(for: a, kind: .mouse).scrollSpeed == 2)
+    #expect(m.settings(for: b, kind: .mouse).scrollSpeed == 3)
+}
+
+@Test func withoutATwinAnEntryCoversEveryConnectionOfTheDevice() {
+    // The same keyboard on USB (with a serial number) and Bluetooth (without).
+    let usb = DeviceIdentity(vendorID: 7504, productID: 24926, name: "haili58", serialNumber: "66AD")
+    let bluetooth = DeviceIdentity(vendorID: 7504, productID: 24926, name: "haili58")
+    var m = MouseSettings()
+    m.setSettings(reversed(2), for: usb, kind: .mouse)
+    #expect(m.devices[0].serialNumber == nil)
+    #expect(m.settings(for: bluetooth, kind: .mouse).scrollSpeed == 2)
+}
+
 @Test func kindComesFromTheUsageOrTheName() {
     #expect(PointingKind.detect(isTouchPad: true, name: "Anything") == .trackpad)
     #expect(PointingKind.detect(isTouchPad: false, name: "Magic Trackpad") == .trackpad)
@@ -352,36 +393,72 @@ private func wheel(_ lines: Int64) -> ScrollValues {
     #expect(PointerMath.resolution(for: rule(2, off: true)) == nil)
 }
 
+/// Plans for one device and reports every write as done, as `apply` does when macOS takes them.
+private func planned(_ rule: PointerRule, key: String, current: Int?, system: Int, _ ledger: inout PointerLedger,
+                     accelerationWritten: Bool = true, resolutionWritten: Bool = true) -> PointerPlan {
+    let plan = PointerTuner.plan(rule: rule, key: key, currentResolution: current, systemAcceleration: system, ledger: &ledger)
+    PointerTuner.settle(plan, key: key, accelerationWritten: accelerationWritten, resolutionWritten: resolutionWritten, ledger: &ledger)
+    return plan
+}
+
 @Test func thePlanRemembersWhatItChangedAndPutsItBack() {
     var ledger = PointerLedger()
     let key = razer.key
     let system = 45056
     // Nothing asked, nothing changed before: nothing to write.
-    #expect(PointerTuner.plan(rule: .system, key: key, currentResolution: 400 << 16, systemAcceleration: system, ledger: &ledger) == PointerPlan())
+    #expect(planned(.system, key: key, current: 400 << 16, system: system, &ledger) == PointerPlan())
     #expect(ledger.isEmpty)
 
     let fast = PointerRule(speed: 1, acceleration: 2, disableAcceleration: false)
-    var plan = PointerTuner.plan(rule: fast, key: key, currentResolution: 400 << 16, systemAcceleration: system, ledger: &ledger)
+    var plan = planned(fast, key: key, current: 400 << 16, system: system, &ledger)
     #expect(plan == PointerPlan(acceleration: 2 << 16, resolution: 100 << 16))
     #expect(ledger.resolution[key] == 400 << 16)
     #expect(ledger.acceleration == [key])
 
     // Applied again (a later launch reads Bento's own value back): the original is kept.
-    plan = PointerTuner.plan(rule: fast, key: key, currentResolution: 100 << 16, systemAcceleration: system, ledger: &ledger)
+    plan = planned(fast, key: key, current: 100 << 16, system: system, &ledger)
     #expect(ledger.resolution[key] == 400 << 16)
 
     // Acceleration off: the resolution goes back, the acceleration goes negative.
-    plan = PointerTuner.plan(rule: PointerRule(speed: 1, acceleration: 2, disableAcceleration: true), key: key,
-                             currentResolution: 100 << 16, systemAcceleration: system, ledger: &ledger)
-    #expect(plan == PointerPlan(acceleration: -65536, resolution: 400 << 16))
+    plan = planned(PointerRule(speed: 1, acceleration: 2, disableAcceleration: true), key: key, current: 100 << 16, system: system, &ledger)
+    #expect(plan == PointerPlan(acceleration: -65536, resolution: 400 << 16, restoresResolution: true))
     #expect(ledger.resolution.isEmpty)
 
     // Back to macOS: the system's tracking speed, once.
-    plan = PointerTuner.plan(rule: .system, key: key, currentResolution: 400 << 16, systemAcceleration: system, ledger: &ledger)
-    #expect(plan == PointerPlan(acceleration: system, resolution: nil))
+    plan = planned(.system, key: key, current: 400 << 16, system: system, &ledger)
+    #expect(plan == PointerPlan(acceleration: system, restoresAcceleration: true))
     #expect(ledger.isEmpty)
-    plan = PointerTuner.plan(rule: .system, key: key, currentResolution: 400 << 16, systemAcceleration: system, ledger: &ledger)
-    #expect(plan == PointerPlan())
+    #expect(planned(.system, key: key, current: 400 << 16, system: system, &ledger) == PointerPlan())
+}
+
+@Test func theLedgerHoldsWhatIsAboutToChangeBeforeAnythingIsWritten() {
+    var ledger = PointerLedger()
+    _ = PointerTuner.plan(rule: PointerRule(speed: 1, acceleration: 2, disableAcceleration: false), key: "a",
+                          currentResolution: 400 << 16, systemAcceleration: 45056, ledger: &ledger)
+    #expect(ledger.resolution["a"] == 400 << 16)
+    #expect(ledger.acceleration == ["a"])
+}
+
+@Test func aRefusedRestoreStaysInTheLedgerAndIsTriedAgain() {
+    var ledger = PointerLedger()
+    _ = planned(PointerRule(speed: 1, acceleration: 2, disableAcceleration: false), key: "a", current: 400 << 16, system: 45056, &ledger)
+    let restore = PointerPlan(acceleration: 45056, resolution: 400 << 16, restoresAcceleration: true, restoresResolution: true)
+
+    // macOS refuses both writes: nothing is forgotten.
+    #expect(planned(.system, key: "a", current: 100 << 16, system: 45056, &ledger,
+                    accelerationWritten: false, resolutionWritten: false) == restore)
+    #expect(ledger.resolution["a"] == 400 << 16)
+    #expect(ledger.acceleration == ["a"])
+
+    // Only the acceleration goes through: the resolution is still owed.
+    #expect(planned(.system, key: "a", current: 100 << 16, system: 45056, &ledger, resolutionWritten: false) == restore)
+    #expect(ledger.acceleration.isEmpty)
+    #expect(ledger.resolution["a"] == 400 << 16)
+
+    // The next pass asks for it again, and then the ledger is empty.
+    #expect(planned(.system, key: "a", current: 100 << 16, system: 45056, &ledger)
+        == PointerPlan(resolution: 400 << 16, restoresResolution: true))
+    #expect(ledger.isEmpty)
 }
 
 @Test func theLedgerSurvivesARestart() throws {

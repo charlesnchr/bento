@@ -39,7 +39,8 @@ struct MouseSettingsView: View {
                     Text("No mouse or trackpad found.").foregroundStyle(.secondary)
                 }
                 ForEach(status.devices) { device in
-                    DeviceRow(device: device, model: model)
+                    DeviceRow(device: device, model: model,
+                              hasTwin: MouseSettings.hasTwin(device.identity, among: status.devices.map(\.identity)))
                 }
             } header: {
                 Text("Connected Devices")
@@ -132,6 +133,8 @@ private struct DeviceLabel: View {
 private struct DeviceRow: View {
     let device: ConnectedDevice
     @ObservedObject var model: ConfigSection<MouseSettings>
+    /// Another connected device has the same ids: tell them apart by serial number.
+    let hasTwin: Bool
 
     private var hasEntry: Bool { model.value.entryIndex(for: device.identity) != nil }
 
@@ -139,7 +142,7 @@ private struct DeviceRow: View {
         DisclosureGroup {
             DeviceSettingsEditor(settings: Binding(
                 get: { model.value.settings(for: device.identity, kind: device.kind) },
-                set: { model.value.setSettings($0, for: device.identity, kind: device.kind) }
+                set: { model.value.setSettings($0, for: device.identity, kind: device.kind, bySerial: hasTwin) }
             ))
             if hasEntry {
                 Button("Use the \(device.kind == .mouse ? "Mouse" : "Trackpad") Defaults") {
@@ -156,6 +159,7 @@ private struct DeviceRow: View {
     private var detail: String {
         var parts = [device.kind.title]
         if device.identity.hasIDs { parts.append("\(hexID(device.identity.vendorID)):\(hexID(device.identity.productID))") }
+        if hasTwin, let serial = device.identity.serialNumber { parts.append("serial \(serial)") }
         parts.append(hasEntry ? "own settings" : "\(device.kind.title.lowercased()) defaults")
         return parts.joined(separator: " · ")
     }

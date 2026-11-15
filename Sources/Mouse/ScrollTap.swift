@@ -127,7 +127,12 @@ final class ScrollTap {
             stopRequested = true
             return runLoop
         }
-        if let rl { CFRunLoopStop(rl) }
+        guard let rl else { return } // not running yet: run() sees the flag and never enables the tap
+        // Stopped from a block on the loop itself, not directly: a direct stop
+        // that lands between run() publishing the loop and the loop starting
+        // would be lost and leave the tap running. The block waits for the loop.
+        CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) { CFRunLoopStop(rl) }
+        CFRunLoopWakeUp(rl)
     }
 
     private func run() {
@@ -178,6 +183,8 @@ final class ScrollTap {
         default:
             return
         }
+        // Stopping: the settings this tap was made for no longer hold.
+        if locked({ stopRequested }) { return }
         if ScrollEventIO.isSynthetic(event) {
             locked { stats.synthetic += 1 }
             return

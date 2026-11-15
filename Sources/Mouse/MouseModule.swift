@@ -40,7 +40,14 @@ public final class MouseModule: BentoModule {
     private var lastSyncSeconds = 0.0
     private var hidClientIsFull = true
 
-    public init() {}
+    public init() {
+        // Pointer values a crash left changed are put back even if the module
+        // is off at this launch (when it is on, start() has done it by then).
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.started, !self.tuner.ledger.isEmpty else { return }
+            self.sync()
+        }
+    }
 
     // MARK: Lifecycle
 
