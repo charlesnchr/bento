@@ -104,6 +104,33 @@ what happened from the end of one to the start of the other.
 | `{"request": "id", "contains": ["word"]}` | the agent received those words |
 | `{"status": "standby"}` | the call reached that status |
 | `{"voiced": "id", "within": 20}` | the result's facts were said, within so many seconds |
+| `{"dispatch": "?", "count": 0}` | no task started that no script expected |
+| `{"dispatch": "id", "within": 4}` | each such task started within so many seconds of the utterance before it |
+| `{"request": "id", "lacks": ["word"], "project": "Bento"}` | none of those words reached the agent; every such task had that project |
+| `{"yields": "u3", "within": 1}` | the sound playing when the user cut in with that utterance stopped within so many seconds (from the wake word, if the clip has one) |
+| `{"connected": "id", "max": 40}` | at most so many seconds on a model socket between that task's start and its result |
+| `{"anyOf": [check, …]}` | any of its checks passes |
+
+`after` and `before` also take `start:<utterance>`, `result:<agent>`, `dispatch:<agent>` and
+`mark:<name>`. A scenario's `retold: "<utterance>"` names the point where the user asks to hear
+results again ("what did I miss?"): results said after it count as voiced if nothing said them
+earlier, and never as repeats.
+
+Things that went wrong while the scenarios were written:
+
+- Facts must match only their own result. "7:45" or "Copenhagen" in two results scores a false
+  repeat, and a loose pattern like `sent|message` matches another task's. A result that asks a
+  question needs a question cue among its facts.
+- Ambient clips need `"when": "now"`: with the default a television waits for the model to stop.
+- `style` does nothing: a delivery prompt in front of the text gets read aloud by the TTS model.
+- With `standbyAfter` at 30, a scripted silence of 30 s or more changes the scenario.
+- `replyLatency` leaves out a request that was handed off before the model's first sound: that
+  sound is the result, not a reply.
+
+When the call is dormant (attention "window"), the simulated user's clips trip the wake word 0.3 s
+in, as a user who sees the light is off would say it first. The clip does not contain the word, and
+ambient clips never trip it: the bench tests what the core does with a wake word, not how well a
+detector hears one.
 
 ## Metrics
 

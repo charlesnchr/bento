@@ -306,6 +306,8 @@ export class Call {
   private saidAway: string[] = [];
   /** When a brief last finished playing, until someone else speaks: the next one ready follows it at once. */
   private announcedAt: number | null = null;
+  /** The brief the user last spoke over, and when: a "stop" in that speech drops it for good. */
+  private lastCut: { item: Unheard; at: number } | null = null;
   private nextBrief = 1;
   /** When the user last spoke, and whether the model's last turn was a spoken reply that has ended, and asked something. */
   private lastUserSpeech = -Infinity;
@@ -553,6 +555,9 @@ export class Call {
     if (this.standby || this.waking || this.rotating || t < this.attendUntil) return;
     if (this.talking(t) || this.geminiSpeaking || t < this.speechUntil || this.settling > 0 || this.announcing != null) return;
     if (this.replyDue != null && t - this.replyDue < this.c.limits.settleMax) return;
+    // The microphone is loud as the window runs out: the user may have begun to speak, and the model's word that they
+    // have comes some tenths of a second late. It gets a moment to say so; sound that isn't speech doesn't hold it longer.
+    if (t - this.micLoudAt < 0.8 && t < this.attendUntil + 1.5) return;
     this.dormant = true;
     this.held = [];
     this.heldBytes = 0;
@@ -888,6 +893,7 @@ export class Call {
     this.speechUntil = Math.min(this.speechUntil, this.t);
     if (played >= 0.8) { this.announced(a.item); return; }
     this.announcing = null;
+    this.lastCut = { item: a.item, at: this.t };
     // Cut as it began, the two only collided: it may follow the next reply. Cut partway, the user chose to talk: it waits for longer lulls.
     if (this.t - a.from >= 1) a.item.cuts++;
     a.item.notBefore = this.t + 1;
@@ -1334,7 +1340,8 @@ export class Call {
     if (!looksBase64(pcm64) || base64Size(pcm64) < 2) return;
     if (!silent64(pcm64)) this.heardAt = this.t;
     if (this.mutedNow) return;
-    if (this.byHost && this.unheard.length > 0 && this.announcing == null && level(decodeBase64(pcm64)!) >= this.c.limits.speechLevel) this.micLoudAt = this.t;
+    const watched = (this.byHost && this.unheard.length > 0 && this.announcing == null) || (this.windowed && !this.dormant && !this.standby);
+    if (watched && level(decodeBase64(pcm64)!) >= this.c.limits.speechLevel) this.micLoudAt = this.t;
     if (this.standby || this.rejoining) { this.hold(decodeBase64(pcm64)!); return; }
     if (this.dormant) {
       // Unheard, but the last moments are kept: the wake word's own audio and the words right after it.
@@ -1396,8 +1403,11 @@ export class Call {
     this.emit({ type: "flush" });
     // The user stopped it on purpose: what it was saying isn't said again, unless the stop turns
     // out to be the start of something else (see spoken).
-    const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting || this.announcing?.item === u);
+    // The brief being said goes too, and one the user's "stop" itself cut a moment ago: their speech stopped it before the word was known.
+    const cut = this.lastCut != null && this.t - this.lastCut.at < 6 ? this.lastCut.item : null;
+    const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting || this.announcing?.item === u || u === cut);
     this.announcing = null;
+    this.lastCut = null;
     for (const item of stopped) this.unheard.splice(this.unheard.indexOf(item), 1);
     this.speechUntil = this.t;
     // A turn the model has finished needs no hush: only what was still to play goes.
@@ -1585,8 +1595,6 @@ export class Call {
       }
       return;
     }
-    // A hand-off is silent: the user has what they asked for, so the window closes unless set otherwise.
-    if (this.windowed && !this.dormant) this.attendFor(this.c.attention.afterHandOff);
     const named = taskRef(call);
     const label = TaskNames.tidy(str(obj(call.args), "label"));
     const agent: Agent = name === CODE_TOOL ? "t3" : "hermes";
@@ -1737,6 +1745,8 @@ export class Call {
     this.showTask(task);
     if (!task.holds(run)) { this.closeCancelled(task, run); return; }
     if (this.cancelledCalls.has(run.callId)) this.skip(task, run); else this.cue("taskStarted");
+    // A hand-off is silent but for its tone: from the tone the user has afterHandOff seconds to add something.
+    if (this.windowed && !this.dormant) this.attendFor(this.c.attention.afterHandOff);
     this.settled();
   }
 
@@ -1837,7 +1847,10 @@ export class Call {
   private cancelNow(taskId: string): string {
     const task = this.tasks.get(taskId);
     if (!task) return "Not executed: that task is gone. Call list_tasks for what's in flight.";
-    if (task.state !== RUNNING) return `Not executed: "${task.label}" is already ${task.state}. Nothing was cancelled.`;
+    if (task.state !== RUNNING) {
+      const failed = task.state === FINISHED && (task.result ?? "").startsWith("Task failed.");
+      return `Not executed: "${task.label}" ${failed ? "has already failed" : `is already ${task.state}`}. Nothing was cancelled.`;
+    }
     const queued = task.queued.length;
     const message = `Cancelled "${task.label}". Hermes stopped; what it already did was not undone.` +
       (queued > 0 ? ` Its ${queued} follow-up${queued > 1 ? "s" : ""} waiting never ran.` : "");

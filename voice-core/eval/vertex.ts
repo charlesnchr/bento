@@ -69,7 +69,9 @@ export async function speech(text: string, voice = "Puck", style = ""): Promise<
   const key = createHash("sha256").update(JSON.stringify([TTS_MODEL, voice, style, text])).digest("hex").slice(0, 20);
   const path = join(CACHE, `${key}.pcm`);
   if (existsSync(path)) { const b = readFileSync(path); return new Int16Array(b.buffer, b.byteOffset, b.length / 2); }
-  const prompt = style ? `${style}: ${text}` : text;
+  // A delivery prompt in front of the text gets read aloud by the TTS model (seen in the clips), so [style] only
+  // names a different cached take of the same words.
+  const prompt = text;
   const pcm24 = await retry(`TTS "${text.slice(0, 40)}"`, async () => {
     const res = await post(modelUrl(TTS_MODEL), {
       contents: [{ role: "user", parts: [{ text: prompt }] }],

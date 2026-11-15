@@ -126,8 +126,8 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
   const replyLatency: number[] = [];
   users.forEach((u, i) => {
     const next = users[i + 1]?.start ?? Infinity;
-    const first = log.find((r) => r.k === "play" && r.t >= u.end - 0.05 && r.t < next);
-    const handedOff = first != null && log.some((r) => r.k === "agent.start" && r.t >= u.end - 0.05 && r.t < first.t);
+    const first = log.find((r) => r.k === "play" && (r.source ?? "model") === "model" && r.t >= u.end - 0.05 && r.t < next);
+    const handedOff = first != null && log.some((r) => (r.k === "agent.start" || r.k === "agent.steer") && r.t >= u.end - 0.05 && r.t < first.t);
     if (first && !handedOff && first.t - u.end < 10 && !segs.some((s) => s.start < u.end - 0.3 && s.end > u.end + 0.2)) replyLatency.push(+(first.t - u.end).toFixed(2));
   });
 

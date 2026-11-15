@@ -7,7 +7,7 @@
    "match": "wood ?house|message|training",
    "after": 6,
    "result": "Sent Woodhouse the message that the Pennyworth training run finished.",
-   "facts": ["sent|message"]
+   "facts": ["wood ?house"]
   },
   {
    "id": "logs",

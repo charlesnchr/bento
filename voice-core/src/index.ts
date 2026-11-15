@@ -41,7 +41,7 @@ export function defaults(): CallConfig {
     steering: [],
     announce: { by: "model", engaged: 12, lull: 4, attach: 0.4, briefWait: 8, maxWait: 30, maxWords: 28 },
     supervise: false,
-    attention: { mode: "open", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 0, afterAnnouncement: 0 },
+    attention: { mode: "open", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 3, afterAnnouncement: 0 },
     limits: {
       connect: 25,
       deadMic: 2,
