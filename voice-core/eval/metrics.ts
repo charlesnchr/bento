@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import type { Rec, Scenario } from "./run.ts";
 
 export interface Utterance { id: string; text: string; start: number; end: number; ambient: boolean; when: string }
-export interface Segment { start: number; end: number; text: string; cut: boolean; audio: number; source: string }
+/** A stretch of continuous sound; [turn] counts the model's turns that had ended when it began. */
+export interface Segment { start: number; end: number; text: string; cut: boolean; audio: number; source: string; turn: number }
 
 export interface Announcement {
   agent: string;
@@ -86,18 +87,16 @@ export function segments(log: Rec[]): Segment[] {
   const out: Segment[] = [];
   let cur: Segment | null = null;
   let until = -1;
-  // Which of the model's turns each stretch is from: a new reply is a new stretch, however soon it follows.
-  const turnOf = new Map<Segment, number>();
+  // A new reply of the model's is a new stretch, however soon it follows.
   let turn = 0;
   for (const r of log) {
     if (r.k === "model" && r.what === "turnComplete") turn++;
     if (r.k === "play") {
       const source = (r.source as string) ?? "model";
       // A headline is one clip and a stretch of its own, however closely the core spaces two of them.
-      if (cur == null || r.t > until + 0.35 || source === "announcer" || cur.source !== source || turnOf.get(cur) !== turn) {
-        cur = { start: Math.max(r.t, until), end: r.t, text: "", cut: false, audio: 0, source };
+      if (cur == null || r.t > until + 0.35 || source === "announcer" || cur.source !== source || cur.turn !== turn) {
+        cur = { start: Math.max(r.t, until), end: r.t, text: "", cut: false, audio: 0, source, turn };
         out.push(cur);
-        turnOf.set(cur, turn);
         until = Math.max(until, r.t);
       }
       until = Math.max(until, r.t) + (r.dur as number);
@@ -119,7 +118,7 @@ export function segments(log: Rec[]): Segment[] {
     const headline = r.source != null ? r.source === "announcer" : clip != null;
     let best: Segment | null = headline ? clip ?? null : null;
     if (!headline) {
-      const mine = out.filter((s) => s.source !== "announcer" && turnOf.get(s) === turn);
+      const mine = out.filter((s) => s.source !== "announcer" && s.turn === turn);
       for (const s of mine) if (s.start <= r.t + 0.6) best = s;
       best ??= mine[0] ?? null;
       // A turn with no sound of its own (its audio was dropped): the stretch before, as it was heard.
@@ -185,12 +184,12 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
   // result's facts either side of a pause are found together and said once. A headline is always a telling of its own.
   interface Telling { start: number; end: number; text: string; cut: boolean; audio: number; played: number; parts: Segment[] }
   const tellings: Telling[] = [];
-  const turnEnds = log.filter((r) => r.k === "model" && r.what === "turnComplete").map((r) => r.t);
   for (const s of segs) {
     const last = tellings[tellings.length - 1];
     const prev = last?.parts[last.parts.length - 1];
     // Within one turn of the model's only: a second reply, or anything the user said in between, starts a new telling.
-    const apart = prev != null && (turnEnds.some((t) => t > prev.start && t <= s.start) || utts.some((u) => u.start >= prev.start && u.start < s.start));
+    // By the turn each stretch came from, not by when it played: sound buffered behind other sound plays late.
+    const apart = prev != null && (prev.turn !== s.turn || utts.some((u) => u.start >= prev.start && u.start < s.start));
     if (last && !apart && !last.cut && s.source === "model" && last.parts[0].source === "model" && s.start - last.end < 1) {
       last.end = s.end; last.text += " " + s.text; last.cut = s.cut; last.audio += s.audio; last.played += s.end - s.start; last.parts.push(s);
     } else tellings.push({ start: s.start, end: s.end, text: s.text, cut: s.cut, audio: s.audio, played: s.end - s.start, parts: [s] });

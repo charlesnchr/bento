@@ -168,6 +168,8 @@ class Unheard {
   briefAt: number | null = null;
   /** Times the user spoke over the brief, and the earliest it may be tried again. */
   cuts = 0;
+  /** Its brief was spoken over after a long wait and it went to the model instead: the model is told so with the result. */
+  missed = false;
   notBefore = 0;
   id = "";
   failed = false;
@@ -921,9 +923,9 @@ export class Call {
       a.item.brief = null;
       a.item.briefFailed = true;
       this.log("info", `"${a.item.label}"'s result was spoken over after a long wait: the model tells it`);
-      // The model was told Bento said it: it didn't get through, and the result comes for the model to tell.
+      // The model was told Bento said it: it didn't get through, which the model learns with the result (sendDeliveries).
       this.saidAway = this.saidAway.filter((said) => said.item !== a.item);
-      if (!this.standby) this.send(noteFrame(`From Bento, not the user's words: the user spoke over Bento and did not hear "${a.item.label}"'s outcome. Bento won't say it again: its result follows for you to tell.`), true);
+      a.item.missed = true;
       // Deferred: the cut may come from within a comeback, which then brings the model back itself.
       if (this.standby) this.defer(() => this.comeBack());
       else if (!this.waking) this.deliverWhenIdle();
@@ -1171,10 +1173,17 @@ export class Call {
     const calls = batch.map((item) => (item.call != null && item.session === this.session && !this.cancelledCalls.has(item.call) ? item.call : null));
     for (const item of batch) { item.sending = true; item.call = null; }
     const told = (item: Unheard) => { item.sending = false; item.told = true; item.toldOnce = true; };
+    // With the result itself, so nothing is promised that a "stop" then takes back: Bento's own words for it went unheard.
+    const missed = (): void => {
+      const labels = batch.filter((i) => i.missed).map((i) => `"${i.label}"`);
+      for (const item of batch) item.missed = false;
+      if (labels.length > 0) this.send(noteFrame(`From Bento, not the user's words: the user spoke over Bento and did not hear what it said about ${labels.join(" and ")}. Bento won't say it again: tell them the outcome yourself.`), true);
+    };
     try {
       if (batch.length === 1 && calls[0] != null) {
         const only = batch[0];
         told(only);
+        missed();
         this.toldResults(batch);
         this.respond(calls[0], taskResult(only.label, only.result, only.asked), true, { task: only.label }, false);
         return;
@@ -1185,6 +1194,7 @@ export class Call {
       });
       if (this.talking(this.t)) { this.defer(() => this.deliverWhenIdle()); return; }
       batch.forEach(told);
+      missed();
       this.toldResults(batch);
       this.send(resultFrame(batch.map((i): [string, string] => [i.label, i.result]), batch.filter((i) => i.asked != null).map((i) => i.label)), true);
     } finally {

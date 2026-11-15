@@ -87,3 +87,19 @@ test("two replies less than 0.35 s apart are two stretches, each with its own wo
   assert.equal(m.announcements[0].times, 2);
   assert.equal(m.repeatedResults, 1);
 });
+
+test("replies generated faster than they play are still told apart: three tellings, two repeats", () => {
+  const model = (t: number, dur: number) => ({ t, k: "play", dur, source: "model" });
+  const ends = (t: number) => ({ t, k: "model", what: "turnComplete" });
+  // Audio arrives at 10.0, 10.4 and 10.8 and plays back to back from 10 to 16; each turn ends before the next arrives.
+  const log = [
+    tx(9.9, "Your table is booked for eight."), model(10, 2), ends(10.2),
+    tx(10.3, "Your table is booked for eight."), model(10.4, 2), ends(10.6),
+    tx(10.7, "Your table is booked for eight."), model(10.8, 2), ends(11),
+  ];
+  assert.deepEqual(segments(log).map((s) => [s.start, s.end]), [[10, 12], [12, 14], [14, 16]]);
+  const scenario = { name: "t", steps: [], agents: [{ id: "dinner", match: "x", result: "Booked for 8.", facts: ["book", "\\b(8|eight)\\b"] }] };
+  const m = score([{ t: 0, k: "run" }, { t: 9, k: "agent.result", run: "r", id: "dinner", text: "done" }, ...log, { t: 20, k: "script.end" }] as any, scenario as any);
+  assert.equal(m.announcements[0].times, 3);
+  assert.equal(m.repeatedResults, 2);
+});

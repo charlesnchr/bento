@@ -562,3 +562,35 @@ test("awake with whileSpeaking wake: what the model still says of a turn the wak
   s.push({ type: "wake" });
   cutTurnGoesOn(s, given);
 });
+
+// Found in the fourth review.
+
+test("the wake word over a long-waited brief in dormant standby: the new session gets the pre-roll and the result", () => {
+  const s = sim({ announce: host, standbyAfter: 3, limits: { deliverMax: 10 }, attention: { afterHandOff: 0, afterAnnouncement: 0 } });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(0.3);
+  s.turn("Find a taxi");
+  s.toolCall("c2");
+  assert.ok(until(s, () => status(s) === "standby", 8) != null);
+  assert.ok(s.statuses().includes("dormant"));
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  s.push({ type: "lend" });
+  s.push({ type: "brief.ready", id: "b1", text: "Your table is booked for 8pm.", pcm: Buffer.alloc(3 * 48_000, 1).toString("base64") });
+  s.advance(12);
+  s.push({ type: "reclaim" });
+  assert.ok(until(s, () => plays(s, "announcer") > 0, 5) != null);
+  s.mic = "loud";
+  s.advance(0.5);
+  s.autoSetup = false;
+  s.push({ type: "wake" });
+  s.advance(0.4);
+  assert.equal(s.sockets.size, 2);
+  s.gemini({ setupComplete: {} });
+  s.advance(0.1);
+  // 0.5 s of pre-roll and the 0.4 s since the wake word, at 50 frames a second.
+  const frames = audio(s, 2).length;
+  assert.ok(frames >= 43 && frames <= 52, `the pre-roll and what followed reach the new session (${frames} frames)`);
+  s.advance(3);
+  assert.ok(s.sent(2).some((f) => f.includes("Booked for 8pm.") && f.includes('"turnComplete":true')));
+});

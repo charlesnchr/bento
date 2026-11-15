@@ -681,7 +681,7 @@ test("a brief spoken over after its long wait goes to the model: it isn't starte
   assert.equal(played(s).length, 1, "tried once, at the first pause after deliverMax");
   assert.ok(s.finals().length + s.resultTurns().length >= 1, "then the model has the result to tell");
   assert.equal(notes(s).filter((n) => n.includes("Bento says it again later")).length, 0, "no note says Bento will say it again");
-  assert.equal(notes(s).filter((n) => n.includes("Bento won't say it again: its result follows for you to tell")).length, 1);
+  assert.equal(notes(s).filter((n) => n.includes("did not hear what it said about \"book a table\". Bento won't say it again: tell them the outcome yourself.")).length, 1);
 });
 
 test("audio held while a brief plays in standby is silenced as live audio would be", () => {
@@ -766,4 +766,43 @@ test("the stop button before that session is up drops the result: the model isn'
   s.advance(3);
   assert.ok(!s.sent(2).some((f) => f.includes("Booked for 8pm.") && f.includes('"turnComplete":true')));
   assert.equal(played(s).length, 1);
+});
+
+// Found in the fourth review.
+
+test("a long-waited brief the user stops: the model is told nothing about it and given nothing", () => {
+  const s = quietRoom({ limits: { deliverMax: 0.4 } }, 3);
+  s.advance(0.5);
+  const before = notes(s).length;
+  s.activity("ACTIVITY_START");
+  s.heard("Stop.");
+  s.activity("ACTIVITY_END");
+  assert.ok(s.commands.some((c) => c.type === "voiceCommand" && c.command === "stop"));
+  s.turnComplete();
+  s.advance(30);
+  assert.equal(played(s).length, 1);
+  assert.deepEqual(notes(s).slice(before), [], "no note promises a result");
+  assert.equal(s.resultTurns().length, 0);
+});
+
+test("the user's voice wakes a standby call over a long-waited brief: one new session, with what they said and the result", () => {
+  const s = sim({ standbyAfter: 0.5, limits: { deliverMax: 10 } });
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  s.push({ type: "lend" });
+  ready(s, "Your table is booked for 8pm.", 3);
+  s.advance(12);
+  s.push({ type: "reclaim" });
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  s.mic = "loud"; // echo cancellation on (whileSpeaking "send"): this is the user
+  assert.ok(until(s, () => s.sockets.size > 1, 3) != null);
+  s.advance(0.3);
+  s.mic = "quiet";
+  s.advance(3);
+  assert.equal(s.sockets.size, 2, "the cut inside the comeback doesn't start a second one");
+  assert.ok(s.sent(2).some((f) => f.startsWith('{"realtimeInput":{"audio"')), "what the user said reaches the session");
+  assert.ok(s.sent(2).some((f) => f.includes("Booked for 8pm.") && f.includes('"turnComplete":true')), "and the result, for the model to tell");
 });
