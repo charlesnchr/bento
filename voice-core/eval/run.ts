@@ -13,6 +13,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import type WebSocket from "ws";
+import { brief } from "./brief.ts";
 import { liveModelPath, liveSocket, speech } from "./vertex.ts";
 
 export interface AgentScript {
@@ -202,6 +203,13 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
           const run = runs.get(c.run);
           if (run) { for (const timer of run.timers) clearTimeout(timer); runs.delete(c.run); }
           rec("agent.cancel", { run: c.run, id: run?.id ?? "?", reason: c.reason });
+          break;
+        }
+        case "brief": {
+          // announce.by "host": the summary and its speech, as a host would make them.
+          const asked = now();
+          void brief(c as any).then((b) => { rec("brief", { id: c.id, label: c.label, text: b.text, ms: b.ms, after: +(now() - asked).toFixed(2) }); push({ type: "brief.ready", id: c.id, text: b.text, pcm: b.pcm }); })
+            .catch((err) => { rec("brief", { id: c.id, label: c.label, error: (err as Error).message }); push({ type: "brief.failed", id: c.id, message: (err as Error).message }); });
           break;
         }
         case "voiceCommand": rec("voiceCommand", { command: c.command, heard: c.heard }); break;

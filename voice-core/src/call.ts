@@ -35,7 +35,7 @@ import {
   type Delegation, type HermesCall, type ResponseOptions,
 } from "./protocol.ts";
 import {
-  type Resume, codingInstruction, codingMessage, instructionFor, noteFrame, recapFrame, resultFrame, resumeFrom, setupFrame, typedFrame, voiceMessage,
+  type Resume, announcedNote, codingInstruction, codingMessage, instructionFor, noteFrame, recapFrame, resultFrame, resumeFrom, setupFrame, typedFrame, voiceMessage,
   withTasks, type Setup,
 } from "./setup.ts";
 import * as TaskNames from "./taskNames.ts";
@@ -148,6 +148,15 @@ class Unheard {
   playing: number | null = null;
   tries = 0;
   questionSaid = true;
+  /** announce.by "host": when the host was asked for a brief, the brief once it came, and whether it failed. */
+  briefAsked: number | null = null;
+  brief: { text: string; pcm: string; seconds: number } | null = null;
+  briefFailed = false;
+  /** Times the user spoke over the brief, and the earliest it may be tried again. */
+  cuts = 0;
+  notBefore = 0;
+  id = "";
+  failed = false;
   readonly task: string;
   readonly label: string;
   readonly result: string;
@@ -278,6 +287,16 @@ export class Call {
   /** Runs a follow-up was steered into, by job, to the task: where it goes if the agent refuses it. */
   private readonly steered = new Map<string, string>();
   private wakewordOn = false;
+  /** announce.by "host": the brief playing now, and what was said while the call was off the model. */
+  private announcing: { item: Unheard; from: number; until: number } | null = null;
+  private saidAway: string[] = [];
+  private nextBrief = 1;
+  /** When the user last spoke, and whether the model's last turn was a spoken reply that has ended, and asked something. */
+  private lastUserSpeech = -Infinity;
+  /** When the microphone last had sound at speaking level, watched while a brief waits to be said. */
+  private micLoudAt = -Infinity;
+  private replyEnded = false;
+  private replyAsked = false;
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
   private boundary = true;
@@ -290,7 +309,7 @@ export class Call {
       api: config.api,
       model: config.model,
       voice: config.voice,
-      instruction: (config.instruction ?? instructionFor(config.platform, config.api)) +
+      instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host")) +
         (config.codingAgent ? codingInstruction(config.codingAgent.projects) : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
@@ -404,6 +423,8 @@ export class Call {
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
       case "steer": return this.defer(() => this.steer(e.task, e.text));
       case "tool.steerFailed": return this.defer(() => this.steerFailed(e.run, e.text));
+      case "brief.ready": return this.briefReady(e.id, e.text, e.pcm);
+      case "brief.failed": return this.briefFailed(e.id, e.message ?? "the host couldn't make it");
       case "lend": this.lend(); return;
       case "reclaim": return this.reclaim();
       case "stop": return this.stop(e.message ?? null);
@@ -488,6 +509,7 @@ export class Call {
     // Timers run in drain(); a rotation that never set up runs out here.
     if (this.rotation && this.t >= this.rotation.deadline - EPSILON) this.rotated(false);
     if (this.c.mic.whileSpeaking === "wake") this.updateWakeword();
+    this.announce();
   }
 
   /** Moves the call to a new socket that resumes the session; the old one carries audio until it's set up. */
@@ -652,8 +674,139 @@ export class Call {
     if (changed) this.questionsChanged();
   }
 
+  /** Results still to tell the model; with announce.by "host" only those the host couldn't brief. */
   private waiting(): Unheard[] {
-    return this.unheard.filter((u) => !u.told && !u.sending && u.tries < MAX_TRIES);
+    return this.unheard.filter((u) => !u.told && !u.sending && u.tries < MAX_TRIES && (!this.byHost || u.briefFailed) && this.announcing?.item !== u);
+  }
+
+  private get byHost(): boolean {
+    return this.c.announce.by === "host";
+  }
+
+  // The core's own announcements (announce.by "host").
+
+  private askBrief(item: Unheard, failed: boolean): void {
+    const task = this.tasks.get(item.task);
+    item.id = `b${this.nextBrief++}`;
+    item.briefAsked = this.t;
+    item.failed = failed;
+    this.emit({
+      type: "brief", id: item.id, label: item.label, agent: task?.agent ?? "hermes", request: task?.latest ?? "", result: fullResult(item.result),
+      question: item.asked, failed, voice: this.c.voice, maxWords: this.c.announce.maxWords,
+    });
+  }
+
+  private briefReady(id: string, text: string, pcm: string): void {
+    const item = this.unheard.find((u) => u.id === id);
+    if (!item || item.brief != null || item.briefFailed) return;
+    const size = typeof pcm === "string" && looksBase64(pcm) ? base64Size(pcm) : -1;
+    const said = collapse(String(text ?? ""));
+    // At most a minute of 24 kHz PCM16, and some words.
+    if (size <= 0 || size % 2 !== 0 || size > 2_880_000 || said.length === 0) { this.briefFailed(id, "the brief had no words or no audio"); return; }
+    item.brief = { text: said, pcm, seconds: size / 48_000 };
+    this.announce();
+  }
+
+  /** No brief for it: the speech model tells the result, as with announce.by "model". */
+  private briefFailed(id: string, why: string): void {
+    const item = this.unheard.find((u) => u.id === id);
+    if (!item || item.brief != null || item.briefFailed) return;
+    item.briefFailed = true;
+    this.log("warn", `no brief for "${item.label}" (${why}): the model tells it`);
+    if (this.waking) return;
+    if (this.standby) this.comeBack(); else this.deliverWhenIdle();
+  }
+
+  /** Plays the next brief if this is a moment for it; ends the one playing when its audio has. */
+  private announce(): void {
+    if (!this.byHost || !this.active) return;
+    const t = this.t;
+    const now = this.announcing;
+    if (now) { if (t >= now.until - EPSILON) this.announced(now.item); return; }
+    for (const u of this.unheard) {
+      if (u.briefAsked != null && u.brief == null && !u.briefFailed && t - u.briefAsked >= this.c.announce.briefWait) this.briefFailed(u.id, "it took too long");
+    }
+    if (this.rotating || this.lent) return;
+    const ready = this.unheard.filter((u) => u.brief != null && !u.told && !u.sending && u.playing == null);
+    // A task's question first (it's waiting on the user), then in the order they finished.
+    const next = ready.find((u) => u.asked != null) ?? ready[0];
+    if (next && this.fits(next, t)) this.startAnnouncing(next);
+  }
+
+  /**
+   * Whether [item]'s brief may start now. Never over anyone's speech or while the model owes the
+   * user a reply. With the user quiet for a while it goes as soon as the line is; in a conversation
+   * it follows the model's reply straight away (unless that asked the user something), or waits for
+   * a lull, longer each time the user spoke over it.
+   */
+  private fits(item: Unheard, t: number): boolean {
+    const a = this.c.announce;
+    if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null) return false;
+    // Off the model the microphone's level is all there is to go by.
+    if (this.standby) return this.voiced === 0;
+    if (!this.listening || this.settling > 0 || this.talking(t) || this.geminiSpeaking) return false;
+    if (this.replyDue != null && t - this.replyDue < this.c.limits.settleMax) return false;
+    // The microphone is loud right now: the user may be starting to speak, before the model's activity says so.
+    if (t - this.micLoudAt < 0.5) return false;
+    const quiet = t - Math.max(this.lastSpeech, this.speechUntil);
+    // In a conversation while either side spoke lately: listening to a long answer is taking part too.
+    if (t - Math.max(this.lastUserSpeech, this.speechUntil) >= a.engaged) return quiet >= this.c.limits.settleQuiet;
+    const sinceReply = t - this.speechUntil;
+    if (this.replyEnded && !this.replyAsked && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
+    return quiet >= a.lull * (1 + item.cuts);
+  }
+
+  private startAnnouncing(item: Unheard): void {
+    const brief = item.brief!;
+    const t = this.t;
+    this.emit({ type: "play", pcm: brief.pcm, source: "announcer" });
+    this.speechUntil = Math.max(this.speechUntil, t) + brief.seconds;
+    this.announcing = { item, from: t, until: this.speechUntil };
+    this.lastSpeech = t;
+    this.replyEnded = false;
+    this.emit({ type: "transcript", role: "assistant", text: brief.text, source: "announcer" });
+    this.chat.push({ role: "assistant", speaker: "Bento", text: brief.text });
+    this.boundary = true;
+    this.tellModel(item);
+    this.updateWakeword();
+  }
+
+  /** The model learns what Bento is saying: on its call while that's open, otherwise as a note. */
+  private tellModel(item: Unheard): void {
+    const brief = item.brief!;
+    if (this.standby) { this.saidAway.push(`"${item.label}": ${brief.text}`); return; }
+    const call = item.call != null && item.session === this.session && !this.cancelledCalls.has(item.call) ? item.call : null;
+    item.call = null;
+    const note = announcedNote(item.label, brief.text, item.result, item.asked);
+    if (call != null) this.respond(call, note, true, { task: item.label, scheduling: "SILENT" });
+    else this.send(noteFrame(note), true);
+  }
+
+  /** The brief has played: the user has heard the result. */
+  private announced(item: Unheard): void {
+    this.announcing = null;
+    item.told = true;
+    item.toldOnce = true;
+    this.lastSpeech = this.t;
+    this.heardOut([item]);
+    this.updateWakeword();
+  }
+
+  /** The user spoke over the brief (or the wake word cut it): it stops, and unless most of it had played it goes again later. */
+  private cutAnnouncement(): void {
+    const a = this.announcing;
+    if (!a) return;
+    this.emit({ type: "flush" });
+    const played = (this.t - a.from) / Math.max(0.1, a.until - a.from);
+    this.speechUntil = Math.min(this.speechUntil, this.t);
+    if (played >= 0.8) { this.announced(a.item); return; }
+    this.announcing = null;
+    // Cut as it began, the two only collided: it may follow the next reply. Cut partway, the user chose to talk: it waits for longer lulls.
+    if (this.t - a.from >= 1) a.item.cuts++;
+    a.item.notBefore = this.t + 1;
+    this.log("info", `the user spoke over "${a.item.label}"'s result: it goes again later`);
+    if (!this.standby) this.send(noteFrame(`From Bento, not the user's words: the user spoke over Bento and did not hear "${a.item.label}"'s outcome. Bento says it again later; don't say it yourself unless the user asks.`), true);
+    this.updateWakeword();
   }
 
   /** Results whose speech has (all but) played are heard. */
@@ -766,6 +919,7 @@ export class Call {
   private comeBack(): void {
     if (!this.active || !this.standby || this.waking || !this.c.reconnect) return;
     if (this.lent) { this.wakeHeld = true; this.voiceWoke = false; return; }
+    if (this.voiceWoke) this.cutAnnouncement();
     this.waking = true;
     // Only the words that woke it keep the audio before; otherwise the new session hears from now.
     if (!this.voiceWoke) { this.held = []; this.heldBytes = 0; }
@@ -786,6 +940,11 @@ export class Call {
     this.newSession();
     for (const pcm of this.held) this.send(audioFrame(pcm));
     for (const frame of this.typedLater.splice(0)) this.send(frame);
+    const away = this.saidAway.splice(0);
+    if (away.length > 0) {
+      this.send(noteFrame("From Bento, not the user's words: while this call was paused Bento told the user these results aloud, so " +
+        "don't say them again; their full replies are in the earlier conversation above:\n" + away.join("\n")), true);
+    }
     this.held = [];
     this.heldBytes = 0;
     this.voiced = 0;
@@ -818,8 +977,9 @@ export class Call {
 
   // Delivering results.
 
-  private deliver(item: Unheard): void {
+  private deliver(item: Unheard, failed = false): void {
     this.unheard.push(item);
+    if (this.byHost) { this.askBrief(item, failed); return; }
     if (this.waking) return;
     if (this.standby) this.comeBack();
     else this.deliverWhenIdle();
@@ -921,6 +1081,8 @@ export class Call {
         this.protocol.transcript("user", input, this.t);
         this.heardWords("user", input);
         this.lastSpeech = this.t;
+        this.lastUserSpeech = this.t;
+        this.replyEnded = false;
         this.spoken(input);
       }
       const output = str(obj(source.outputTranscription), "text");
@@ -950,6 +1112,9 @@ export class Call {
       this.speaking(data64, size);
     }
     if (content.turnComplete === true) {
+      // A spoken reply that has ended, and whether it left the user with a question: a brief may follow it straight away.
+      this.replyEnded = this.geminiSpeaking && this.turnBytes > 0;
+      this.replyAsked = /\?["')\s]*$/.test(this.geminiSaid.trim());
       if (this.hush?.afterEnd) this.hush = null;
       this.turnAudio();
       if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
@@ -978,6 +1143,9 @@ export class Call {
 
   private activityStart(): void {
     const at = this.t;
+    this.lastUserSpeech = at;
+    this.replyEnded = false;
+    this.cutAnnouncement();
     this.utterance = "";
     this.cancelledAll = false;
     if (this.hush?.afterEnd) this.hush = null;
@@ -995,6 +1163,7 @@ export class Call {
   }
 
   private activityEnd(): void {
+    this.lastUserSpeech = this.t;
     if (this.hush) this.hush.afterEnd = true;
     this.protocol.activityEnded(this.t);
     this.lastSpeech = this.t;
@@ -1069,6 +1238,7 @@ export class Call {
     if (!looksBase64(pcm64) || base64Size(pcm64) < 2) return;
     if (!silent64(pcm64)) this.heardAt = this.t;
     if (this.mutedNow) return;
+    if (this.byHost && this.unheard.length > 0 && this.announcing == null && level(decodeBase64(pcm64)!) >= this.c.limits.speechLevel) this.micLoudAt = this.t;
     if (this.standby || this.rejoining) { this.hold(decodeBase64(pcm64)!); return; }
     this.send(this.forModel(pcm64));
   }
@@ -1099,6 +1269,7 @@ export class Call {
   private wakeWord(): void {
     if (!this.active || !this.replyAudible()) return;
     this.log("info", "the wake word cut the reply");
+    if (this.announcing) { this.cutAnnouncement(); return; }
     this.emit({ type: "flush" });
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
@@ -1120,7 +1291,8 @@ export class Call {
     this.emit({ type: "flush" });
     // The user stopped it on purpose: what it was saying isn't said again, unless the stop turns
     // out to be the start of something else (see spoken).
-    const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting);
+    const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting || this.announcing?.item === u);
+    this.announcing = null;
     for (const item of stopped) this.unheard.splice(this.unheard.indexOf(item), 1);
     this.speechUntil = this.t;
     // A turn the model has finished needs no hush: only what was still to play goes.
@@ -1200,6 +1372,8 @@ export class Call {
     this.boundary = true;
     this.userTurns++;
     this.lastSpeech = t;
+    this.lastUserSpeech = t;
+    this.replyEnded = false;
     this.replyDue = t;
     this.played();
     this.lapseQuestions();
@@ -1514,7 +1688,7 @@ export class Call {
     task.askedAt = 0;
     if (asked != null) this.questionsChanged();
     const open = !run.answered && !this.cancelledCalls.has(run.callId) && run.session === this.session && !this.standby && !this.waking;
-    this.deliver(new Unheard(task.id, task.label, text, asked, open ? run.callId : null, this.session));
+    this.deliver(new Unheard(task.id, task.label, text, asked, open ? run.callId : null, this.session), failed);
     this.cue("resultArrived");
     if (!this.active || task.state !== RUNNING || task.current !== run) return;
     if (this.advance(task)) this.settled(); else { this.finished(task, FINISHED, text); this.afterTask(); }

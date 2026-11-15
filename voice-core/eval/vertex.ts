@@ -98,11 +98,29 @@ export async function speech(text: string, voice = "Puck", style = ""): Promise<
   return trimmed;
 }
 
-/** A text model's answer to [prompt]; with [json], parsed. */
-export async function generate(prompt: string, o: { model?: string; json?: boolean; system?: string } = {}): Promise<string> {
+/** [text] spoken by [voice] as PCM16 mono at 24 kHz, as the call plays it, with leading and trailing silence trimmed. Not cached. */
+export async function tts(text: string, voice: string): Promise<Buffer> {
+  return retry(`TTS "${text.slice(0, 40)}"`, async () => {
+    const res = await post(modelUrl(TTS_MODEL), {
+      contents: [{ role: "user", parts: [{ text }] }],
+      generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
+    });
+    if (res.status !== 200) throw new Error(`HTTP ${res.status} ${res.text.slice(0, 200)}`);
+    const part = JSON.parse(res.text).candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
+    if (!part) throw new Error("no audio in the reply");
+    const pcm = Buffer.from(part.inlineData.data, "base64");
+    let a = 0, b = pcm.length >> 1;
+    while (a < b && Math.abs(pcm.readInt16LE(2 * a)) < 300) a++;
+    while (b > a && Math.abs(pcm.readInt16LE(2 * (b - 1))) < 300) b--;
+    return pcm.subarray(2 * Math.max(0, a - 1200), 2 * Math.min(pcm.length >> 1, b + 2400));
+  }, 2);
+}
+
+/** A text model's answer to [prompt]; with [json], parsed. [fast] turns thinking down. */
+export async function generate(prompt: string, o: { model?: string; json?: boolean; system?: string; fast?: boolean } = {}): Promise<string> {
   const body: Record<string, unknown> = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0, ...(o.json ? { responseMimeType: "application/json" } : {}) },
+    generationConfig: { temperature: 0, ...(o.json ? { responseMimeType: "application/json" } : {}), ...(o.fast ? { thinkingConfig: { thinkingBudget: 0 } } : {}) },
   };
   if (o.system) body.systemInstruction = { parts: [{ text: o.system }] };
   return retry("generate", async () => {

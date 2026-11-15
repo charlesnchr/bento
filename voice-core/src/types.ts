@@ -22,6 +22,8 @@ export interface Limits {
   deliverMax: number;
   /** In standby, microphone frames this loud (RMS, fraction of full scale) count as speech; 0 never wakes. */
   wakeLevel: number;
+  /** Microphone frames this loud (RMS, fraction of full scale) hold back a brief that was about to start. */
+  speechLevel: number;
   /** Seconds of speech in standby that bring the call back. */
   wakeSpeech: number;
   /** Seconds of audio before the wake kept for the model, so the first words aren't lost. */
@@ -75,6 +77,27 @@ export interface CodingAgent {
   projects: string[];
 }
 
+/**
+ * Who tells the user a task's result, and when.
+ * - "model": the speech model gets the full reply as a turn once the line is quiet and words it itself.
+ * - "host": the core keeps a queue. For each result it asks the host for a brief (`brief`: a spoken
+ *   headline and its audio, from a text model and TTS), and plays it itself at a moment that fits:
+ *   at once when the user has been quiet for `engaged` seconds, otherwise straight after the
+ *   model's next reply (`attach` seconds after it ends, unless that reply asked the user
+ *   something) or at a lull of `lull` seconds. The model is told what was said and gets the full
+ *   reply for follow-up questions. A brief the host can't make goes the "model" way.
+ */
+export interface Announce {
+  by: "model" | "host";
+  engaged: number;
+  lull: number;
+  attach: number;
+  /** Seconds the host has to make a brief before the result goes the "model" way. */
+  briefWait: number;
+  /** The most words a brief should have, as the host is told. */
+  maxWords: number;
+}
+
 export interface CallConfig {
   api: Api;
   /** The surface, for the instruction and the words Hermes gets: "Android", "macOS", "web", "Echo". */
@@ -113,6 +136,7 @@ export interface CallConfig {
    * goes into its current run instead of waiting for it to finish.
    */
   steering: Agent[];
+  announce: Announce;
   limits: Limits;
 }
 
@@ -149,6 +173,10 @@ export type Event =
   | { t: number; type: "steer"; task: string; text: string }
   /** The agent wouldn't take a steer (its run was ending): the follow-up waits for the next run instead. */
   | { t: number; type: "tool.steerFailed"; run: string; text: string }
+  /** The host's brief for a result (`brief`): what to say, and that as PCM16 mono at 24 kHz, base64. */
+  | { t: number; type: "brief.ready"; id: string; text: string; pcm: string }
+  /** The host couldn't make the brief: the speech model tells the result instead. */
+  | { t: number; type: "brief.failed"; id: string; message?: string }
   /** Lends the microphone to a dictation while in standby; `reclaim` takes it back. */
   | { t: number; type: "lend" }
   | { t: number; type: "reclaim" }
@@ -168,7 +196,13 @@ export type Command =
   | { type: "mic.restart" }
   | { type: "mic.stop" }
   /** Play PCM16 mono at 24 kHz, base64, after what's queued. */
-  | { type: "play"; pcm: string }
+  | { type: "play"; pcm: string; source?: "announcer" }
+  /**
+   * Make a brief of a task's result for the core to say (announce.by "host"): a headline of at
+   * most `maxWords` words for the ear, naming what the task was about, and its audio in `voice`.
+   * Answer with `brief.ready` or `brief.failed`. `question` is what the reply asks the user, if anything.
+   */
+  | { type: "brief"; id: string; label: string; agent: Agent; request: string; result: string; question: string | null; failed: boolean; voice: string; maxWords: number }
   /** Drop what hasn't played yet. */
   | { type: "flush" }
   /** A short tone over whatever is playing, at once: PCM16 mono at 24 kHz, base64. */
@@ -187,7 +221,7 @@ export type Command =
   /** Stop a tool run: the task was cancelled, or the call ended (a host may leave a long agent running then). */
   | { type: "tool.cancel"; run: string; reason: "cancelled" | "ended" }
   | { type: "status"; status: Status; message?: string | null }
-  | { type: "transcript"; role: "user" | "assistant"; text: string }
+  | { type: "transcript"; role: "user" | "assistant"; text: string; source?: "announcer" }
   /** A task's state for the screen. */
   | { type: "task"; id: string; label: string; agent: Agent; request: string; state: string; progress: string | null; question: string | null }
   /** Tasks waiting for the user's answer, by key, with what Hermes asked. */
