@@ -4,7 +4,7 @@ Scripted calls against the real model, scored from what happened. A simulated us
 synthesized clips into the call's microphone on a script that reacts to the call, scripted fake
 agents stand in for Hermes and T3, and every event and command is logged with its time.
 
-Everything runs on GSK Vertex (`vertex.ts`): the Live model the call talks to, Gemini TTS for the
+Everything runs on Vertex (`vertex.ts`): the Live model the call talks to, Gemini TTS for the
 user's voice, and a text model for the judge. Nothing here can reach the public Gemini API.
 
 ```sh

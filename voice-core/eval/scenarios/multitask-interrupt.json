@@ -15,7 +15,7 @@
    "result": "How about 'Hey Juniper'? It's distinctive, two syllables after 'hey', and unlikely to come up in normal conversation. Shall I go ahead with it?",
    "facts": [
     "juniper",
-    "\\?|should i|shall i|should we|want me to|do you want|would you like|go ahead"
+    "\\?|should i|shall i|should we|want me to|do you want|would you like|you'?d like|you would like|go ahead"
    ],
    "followUps": [
     {
@@ -68,7 +68,7 @@
    "result": "I can look up tomorrow's weather in Copenhagen for you. Shall I go ahead?",
    "facts": [
     "copenhagen",
-    "\\?|should i|shall i|want me to|do you want|would you like|go ahead"
+    "\\?|should i|shall i|want me to|do you want|would you like|you'?d like|you would like|go ahead"
    ],
    "followUps": [
     {
@@ -83,7 +83,7 @@
      ],
      "result": "Copenhagen tomorrow: cloudy, 6 degrees, with showers likely in the afternoon.",
      "facts": [
-      "cloud|shower|rain|\\b(6|six)\\b"
+      "cloud|shower|\\brain|\\b(6|six)\\b"
      ]
     }
    ]

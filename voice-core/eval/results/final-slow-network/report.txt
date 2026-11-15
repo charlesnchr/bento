@@ -1,21 +1,21 @@
 == eval/runs/s6-slow
 scenario                    n  score   ±  collide  lost  repeat  stray     checks  ambient s  reply s  announce s  brief s  words  judge
-agent-question              2     93  15      0.0   0.0     0.0    0.0      7.5/8        0.0     1.01         8.9      6.6     56    6.0
-ambient-during-task         2     50  20      0.0   1.0     0.0    0.0      5.0/6        4.0        -           -      3.0     12    6.5
+agent-question              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0     1.01         8.8      6.6     56    6.0
+ambient-during-task         2     80  40      0.0   0.5     0.0    0.0      5.5/6        0.0        -         3.0      3.0     12    6.5
 ambient-tv                  2     55   0      0.0   0.0     0.0    1.0      3.0/4        0.0        -         5.0      4.7     33    2.5
 away-and-back               2     65   4      0.0   0.0     0.0    0.0      3.0/5        0.0     1.89         4.2      4.2     59    4.5
-burst-three                 2     85  30      0.0   0.0     0.0    0.0      6.0/7        0.0     0.79         5.2      6.3     44    9.0
+burst-three                 2     70   0      0.0   0.0     0.0    0.0      5.0/7        0.0     0.79        10.6      6.3     44    9.0
 cancel-one                  2     98   0      0.0   0.0     0.0    0.0      8.0/8        0.0     1.40         5.0      5.0     34    8.5
-coding-handoff              2     90  10      0.0   0.0     0.0    0.0      7.5/8        0.0     0.81        14.2      9.3     53    7.0
+coding-handoff              2     90  10      0.0   0.0     0.0    0.0      7.5/8        0.0     0.81        11.7      9.3     53    7.0
 correction                  2    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.72           -      5.9     18    8.0
 echo-wake-barge-in          2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.88           -        -     17   10.0
 failed-task                 2     89   2      0.0   0.0     0.0    0.0      7.0/7        0.0     2.37           -      3.9     21    8.0
 interrupted-reply           2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.95           -        -     17    9.0
 long-result                 2     41   2      0.0   0.5     0.0    0.0      4.0/7        0.0     1.52        13.4      9.0     39    4.0
 multitask-interrupt         2     41  10      0.0   0.0     0.5    0.0     9.0/12        0.0     1.57        10.3      4.2     87    5.5
-names-fidelity              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -        13.9      5.1     49    8.5
+names-fidelity              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -        18.1      5.1     49    8.5
 noisy-request               2     75  30      0.0   0.5     0.0    0.0      3.5/4        0.9        -        10.8      3.9      7    6.0
-question-while-busy         2     95  10      0.0   0.0     0.5    0.0    10.0/10        0.0     1.01        13.3      6.0     81    8.5
+question-while-busy         2    100   0      0.0   0.0     0.0    0.0    10.0/10        0.0     1.01        13.3      6.0     81    8.5
 quick-chat                  2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.86           -        -     53    9.0
 rambling-request            2     85   0      0.0   0.0     0.0    0.0      4.0/5        0.0        -         4.0      2.7     21    3.0
 result-during-dialogue      2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.92        17.3      6.0    123    8.5
@@ -25,14 +25,12 @@ silence-then-continue       2    100   0      0.0   0.0     0.0    0.0      6.0/
 single-task                 2     78  45      0.0   0.0     0.0    0.0      5.5/7        0.0     0.82         8.0      5.3     22    7.5
 standby-resume              2     93  15      0.0   0.0     0.0    0.0      6.5/7        0.0     0.93        16.3      5.5     48    7.5
 status-check                2     16   2      0.0   2.0     0.0    0.0     9.0/11        0.0     1.66           -        -     44    4.0
-steer-running               2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.85        12.8      9.9     43    7.5
+steer-running               2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.85        10.4      9.9     43    7.5
 stop-mid-announcement       2     88  25      0.5   0.0     0.0    0.0      5.5/6        0.0     1.18           -     21.2     31    7.0
 wake-from-standby-speech    2     80  40      0.0   0.5     0.0    0.0      4.5/5        0.0        -         3.8      3.8      8    7.0
-ALL                        56   79.6          0.5   5.0     1.0    2.0  166.0/187        7.5     0.95        10.3      5.1   1135    6.9
+ALL                        56   80.6          0.5   4.5     0.5    2.0  166.0/187        3.6     0.95        10.4      5.1   1135    6.9
 
 failed checks:
-  agent-question-3: {"voiced":"table","within":10} (said 1x, delay 11.9)
-  ambient-during-task-2: {"voiced":"tariffs","within":20} (said 0x, delay null)
   ambient-during-task-3: {"voiced":"tariffs","within":20} (said 0x, delay null)
   ambient-tv-2: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
   ambient-tv-3: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
@@ -42,6 +40,8 @@ failed checks:
   away-and-back-3: {"said":"tuesday","after":"back"} (the model said: Both your sleep score and the electrician's reply have been taken care  of.)
   burst-three-2: {"voiced":"arsenal","within":6} (said 1x, delay 12.54)
   burst-three-2: {"voiced":"post","within":6} (said 1x, delay 7.84)
+  burst-three-3: {"voiced":"arsenal","within":6} (said 1x, delay 15.83)
+  burst-three-3: {"voiced":"brighton","within":6} (said 1x, delay 10.61)
   coding-handoff-2: {"maxModelWords":25,"after":"result:fix","before":"thanks"} (29 words)
   long-result-2: {"voiced":"packing","within":8} (said 1x, delay 13.45)
   long-result-2: {"said":"screen|app|chat|full list","after":"ask","before":"socks"} (the model said: )

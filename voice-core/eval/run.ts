@@ -184,7 +184,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
         case "flush": rec("flush", { cut: +Math.max(0, speechUntil - now()).toFixed(2) }); speechUntil = Math.min(speechUntil, now()); modelSpeakingSince = null; break;
         case "cue": rec("cue", { earcon: c.earcon }); break;
         case "wakeword": wakewordOn = c.on; rec("wakeword", { on: c.on }); break;
-        case "transcript": rec("tx", { role: c.role, text: c.text }); if (c.role === "assistant") { modelText += c.text; repliedSince = true; } break;
+        case "transcript": rec("tx", { role: c.role, text: c.text, ...(c.source ? { source: c.source } : {}) }); if (c.role === "assistant") { modelText += c.text; repliedSince = true; } break;
         case "status": status = c.status; rec("status", { status: c.status, message: c.message ?? null }); if (c.status === "ended") ended = true; break;
         case "task": rec("task", { id: c.id, label: c.label, agent: c.agent, state: c.state, progress: c.progress, question: c.question }); break;
         case "tool.call":

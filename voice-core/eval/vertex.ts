@@ -1,6 +1,6 @@
-// GSK Vertex for the bench: the Live socket the call talks to, Gemini TTS for the simulated
+// Vertex for the bench: the Live socket the call talks to, Gemini TTS for the simulated
 // user's voice, and a text model for the judge. Credentials are the service account the dev
-// server uses (VERTEX_* in ~/.hermes/.env), through the GSK SOCKS route. Nothing here can reach
+// server uses (VERTEX_* in ~/.hermes/.env), through its SOCKS route. Nothing here can reach
 // the public Gemini API, so a bench run never bills a personal key.
 
 import { createHash } from "node:crypto";

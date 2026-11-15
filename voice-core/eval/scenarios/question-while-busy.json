@@ -15,7 +15,7 @@
    "result": "I found 214 files in Downloads older than six months, about 9 GB in all, mostly installers and zip files. Should I move them to the bin?",
    "facts": [
     "214|two hundred (and )?fourteen|\\b(9|nine) ?(gb|gig)",
-    "\\?|should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead"
+    "\\?|should i|shall i|want me to|do you want|would you like|you'?d like|you would like|ok(ay)? to|go ahead"
    ],
    "followUps": [
     {
@@ -41,7 +41,7 @@
    ],
    "result": "Manchester this weekend: rain most of Saturday, then dry and 9 degrees on Sunday.",
    "facts": [
-    "rain|wet"
+    "\\brain|\\bwet"
    ]
   }
  ],

@@ -5,7 +5,7 @@
   { "id": "weather", "match": "umbrella|rain|weather|forecast", "after": 6,
     "progress": [[2, "Using web_search"]],
     "result": "Yes, take an umbrella. Light rain in London from about 3 pm until 7 pm, 12 degrees, clearing overnight.",
-    "facts": ["rain|umbrella", "\\b(3|three)\\b|afternoon"] }
+    "facts": ["\\brain|umbrella", "\\b(3|three)\\b|afternoon"] }
  ],
  "steps": [
   { "say": "Can you check if I'll need an umbrella in London this afternoon?", "id": "ask" },

@@ -88,7 +88,13 @@ export function segments(log: Rec[]): Segment[] {
   let until = -1;
   for (const r of log) {
     if (r.k === "play") {
-      if (cur == null || r.t > until + 0.35) { cur = { start: Math.max(r.t, until), end: r.t, text: "", cut: false, audio: 0, source: (r.source as string) ?? "model" }; out.push(cur); until = r.t; }
+      const source = (r.source as string) ?? "model";
+      // A headline is one clip and a stretch of its own, however closely the core spaces two of them.
+      if (cur == null || r.t > until + 0.35 || source === "announcer" || cur.source !== source) {
+        cur = { start: Math.max(r.t, until), end: r.t, text: "", cut: false, audio: 0, source };
+        out.push(cur);
+        until = Math.max(until, r.t);
+      }
       until = Math.max(until, r.t) + (r.dur as number);
       cur.end = until;
       cur.audio += r.dur as number;
@@ -98,11 +104,15 @@ export function segments(log: Rec[]): Segment[] {
       cur = null;
     }
   }
-  // Each transcript fragment belongs to the segment being generated when it came.
+  // A headline's words come with its clip. The model's come as it generates, a little before their
+  // sound: each fragment belongs to the stretch of the model's being generated when it came.
   for (const r of log) {
     if (r.k !== "tx" || r.role !== "assistant") continue;
-    let best: Segment | null = null;
-    for (const s of out) if (s.start <= r.t + 0.6) best = s; else break;
+    const clip = out.find((s) => s.source === "announcer" && Math.abs(s.start - r.t) < 0.05);
+    const headline = r.source != null ? r.source === "announcer" : clip != null;
+    let best: Segment | null = headline ? clip ?? null : null;
+    if (!headline) for (const s of out) { if (s.start > r.t + 0.6) break; if (s.source !== "announcer") best = s; }
+    if (best == null) for (const s of out) if (s.start <= r.t + 0.6) best = s; else break;
     if (best) best.text += r.text as string;
   }
   return out.filter((s) => s.audio > 0.05);
@@ -158,16 +168,26 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
   // saying one there voices it if nothing did before, and is not a repeat.
   const retold = (scenario as { retold?: string }).retold;
   const retoldAt = retold ? utts.find((u) => u.id === retold)?.end ?? Infinity : Infinity;
+  // The model pauses mid-sentence: its stretches less than a second apart are one telling, so a result's facts
+  // either side of a pause are found together and said once. A headline is always a telling of its own.
+  interface Telling { start: number; end: number; text: string; cut: boolean; audio: number; played: number; parts: Segment[] }
+  const tellings: Telling[] = [];
+  for (const s of segs) {
+    const last = tellings[tellings.length - 1];
+    if (last && !last.cut && s.source === "model" && last.parts[0].source === "model" && s.start - last.end < 1) {
+      last.end = s.end; last.text += " " + s.text; last.cut = s.cut; last.audio += s.audio; last.played += s.end - s.start; last.parts.push(s);
+    } else tellings.push({ start: s.start, end: s.end, text: s.text, cut: s.cut, audio: s.audio, played: s.end - s.start, parts: [s] });
+  }
   for (const r of results) {
     const facts = expectOf(r.id as string)?.facts;
     if (!facts || facts.length === 0) continue;
     const res = facts.map((f) => new RegExp(f, "i"));
-    const after = segs.filter((s) => s.end > r.t);
-    // A cut segment only counts if most of it played.
-    const all = after.filter((s) => res.every((re) => re.test(s.text)) && (!s.cut || (s.end - s.start) / Math.max(0.1, s.audio) > 0.7));
+    const after = tellings.filter((s) => s.end > r.t);
+    // A cut telling only counts if most of it played.
+    const all = after.filter((s) => res.every((re) => re.test(s.text)) && (!s.cut || s.played / Math.max(0.1, s.audio) > 0.7));
     const before = all.filter((s) => s.start < retoldAt - 0.3);
     const said = before.length > 0 ? before : all.slice(0, 1);
-    for (const x of all) telling.add(x);
+    for (const x of all) for (const part of x.parts) telling.add(part);
     const firstFact = res[0];
     const aborted = after.filter((s) => s.cut && !said.includes(s) && (firstFact.test(s.text) || /^\s*(by the way|also|oh,|quick update|update)/i.test(s.text)) && (said.length === 0 || s.start < said[0].start)).length;
     announcements.push({

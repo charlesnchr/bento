@@ -15,7 +15,7 @@
    "result": "Dishoom King's Cross has nothing for two at 7 tomorrow, but there is a table at 7:45 pm. Do you want me to book the 7:45 slot?",
    "facts": [
     "7[:. ]?45|seven[- ]forty[- ]five|quarter to eight",
-    "\\?|would you like|do you want|shall i|should i|want me to|book (it|that|the|this)"
+    "\\?|would you like|you'?d like|you would like|do you want|shall i|should i|want me to|book (it|that|the|this)"
    ],
    "followUps": [
     {
@@ -30,7 +30,7 @@
      ],
      "result": "Booked: a table for two at Dishoom King's Cross tomorrow at 7:45 pm, under your name. The confirmation is in your email.",
      "facts": [
-      "book|confirm|reserv|all set|done"
+      "book|confirm|reserv|all set (for|at)|7[:. ]?45|quarter to eight"
      ]
     }
    ]

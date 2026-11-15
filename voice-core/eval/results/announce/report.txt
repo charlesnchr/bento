@@ -4,7 +4,7 @@ agent-question              3    100   0      0.0   0.0     0.0    0.0      8.0/
 ambient-during-task         3     32   5      0.0   0.3     0.0    0.0      3.0/6        4.9        -         4.3      1.9     34    2.7
 ambient-tv                  3     62  20      0.0   0.0     0.0    0.7      3.0/4        0.9        -         5.3      1.0     30    4.3
 away-and-back               3     68   0      0.0   0.0     0.0    0.0      3.0/5        0.0     1.39         1.2      1.2     62    4.7
-burst-three                 3     75  15      0.0   0.0     0.0    0.0      5.3/7        0.0     0.77         6.3      1.0     43    8.3
+burst-three                 3     70   0      0.0   0.0     0.0    0.0      5.0/7        0.0     0.77         7.1      1.0     43    8.3
 cancel-one                  3     98   1      0.0   0.0     0.0    0.0      8.0/8        0.0     1.38         2.0      2.0     37    9.3
 coding-handoff              3    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0     0.77         2.2      2.2     55    8.3
 correction                  3    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.64           -      1.1     18    8.7
@@ -13,9 +13,9 @@ failed-task                 3     92  15      0.0   0.0     0.0    0.0      6.7/
 interrupted-reply           3     99   3      0.0   0.0     0.0    0.0      5.0/5        0.0     0.91           -        -     18    9.7
 long-result                 3    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.59         2.1      2.1     52   10.0
 multitask-interrupt         3     66  34      0.0   0.0     0.3    0.0    10.3/12        0.0     1.55         6.0      1.0     92    7.3
-names-fidelity              3    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -        13.8      0.9     49    8.7
+names-fidelity              3    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -        17.6      0.9     49    8.7
 noisy-request               3     77  20      0.0   0.0     0.0    0.0      3.3/4        0.2        -         1.1      1.1     14    6.3
-question-while-busy         3     97  10      0.0   0.0     0.3    0.0    10.0/10        0.0     0.81        10.3      1.1     82    9.0
+question-while-busy         3    100   0      0.0   0.0     0.0    0.0    10.0/10        0.0     0.81        11.4      1.1     82    9.0
 quick-chat                  3    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.81           -        -     50   10.0
 rambling-request            3     85   0      0.0   0.0     0.0    0.0      4.0/5        0.0        -         4.0      0.8     21    4.0
 result-during-dialogue      3    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.84         2.8      1.7    136   10.0
@@ -24,11 +24,11 @@ side-speech                 3     30   0      0.0   0.0     0.0    1.0      3.0/
 silence-then-continue       3    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.86           -        -     63   10.0
 single-task                 3    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.85         1.1      1.1     21   10.0
 standby-resume              3    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.82         1.8      1.0     43   10.0
-status-check                3     99   2      0.0   0.0     0.0    0.0    11.0/11        0.0     0.86         1.4      1.4     97    7.3
+status-check                3     99   2      0.0   0.0     0.0    0.0    11.0/11        0.0     0.86        11.0      1.4     97    7.3
 steer-running               3    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.78         2.4      1.4     38    9.0
 stop-mid-announcement       3    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     1.00           -      1.5     49    9.0
 wake-from-standby-speech    3    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0        -         0.9      0.9     16   10.0
-ALL                        84   87.8          0.0   0.3     0.7    2.0  172.7/187        8.5     0.82         2.4      1.1   1293    7.9
+ALL                        84   87.7          0.0   0.3     0.3    2.0  172.3/187        8.5     0.82         2.8      1.1   1293    7.9
 
 failed checks:
   ambient-during-task-1: {"noSpeech":true,"after":"start:tv1","before":"result:tariffs"} (2 segment(s):  Parboil them first, then let them steam dry before tossing in hot oil or fat  )
@@ -49,10 +49,11 @@ failed checks:
   away-and-back-2: {"said":"tuesday","after":"back"} (the model said: Both of your updates have just come in, regarding your sleep score and the electrician's email.)
   away-and-back-3: {"said":"78|seventy[- ]eight","after":"back"} (the model said: The results for your sleep score and the electrician's email reply are both in.)
   away-and-back-3: {"said":"tuesday","after":"back"} (the model said: The results for your sleep score and the electrician's email reply are both in.)
-  burst-three-1: {"voiced":"arsenal","within":6} (said 1x, delay 6.32)
+  burst-three-1: {"voiced":"arsenal","within":6} (said 1x, delay 11.73)
   burst-three-1: {"voiced":"post","within":6} (said 1x, delay 6.87)
   burst-three-2: {"voiced":"arsenal","within":6} (said 1x, delay 12.63)
-  burst-three-3: {"voiced":"arsenal","within":6} (said 1x, delay 6.54)
+  burst-three-2: {"voiced":"post","within":6} (said 1x, delay 7.57)
+  burst-three-3: {"voiced":"arsenal","within":6} (said 1x, delay 11.94)
   burst-three-3: {"voiced":"post","within":6} (said 1x, delay 7.12)
   failed-task-2: {"maxModelWords":10,"after":"ok"} (14 words)
   multitask-interrupt-1: {"request":"christmas","contains":["christmas","flights"]} (missing: flights in "And separately, while that's happening, can you ask Hermes how many days it is until Christmas?")

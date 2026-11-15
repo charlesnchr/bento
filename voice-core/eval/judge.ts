@@ -1,5 +1,5 @@
 // A text model reads the call as a person would have heard it and grades it against a rubric.
-// The judge is on GSK Vertex (vertex.ts). Its grades sit beside the trace metrics, never in them:
+// The judge is on Vertex (vertex.ts). Its grades sit beside the trace metrics, never in them:
 // the metrics say what happened, the judge says how it came across.
 
 import type { Rec, Scenario } from "./run.ts";

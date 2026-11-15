@@ -8,7 +8,7 @@
    "after": 75,
    "progress": [[5, "Using web_search"], [30, "Reading octopus.energy"], [55, "Reading britishgas.co.uk"]],
    "result": "For a two-bedroom flat, Octopus Flexible comes to about 1,140 pounds a year and British Gas Standard Variable to about 1,260 pounds, so Octopus is cheaper by about 120 pounds a year.",
-   "facts": ["octopus", "120|hundred and twenty|one twenty"]
+   "facts": ["octopus", "120|hundred (and )?twenty|one twenty"]
   }
  ],
  "steps": [

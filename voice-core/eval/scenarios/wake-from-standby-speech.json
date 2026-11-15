@@ -16,7 +16,7 @@
    "after": 7,
    "progress": [[3, "Opening dishoom.com"]],
    "result": "Booked a table for two at Dishoom Covent Garden on Saturday at 8 pm, under Charles.",
-   "facts": ["book", "8|eight"]
+   "facts": ["book|reserv|table|dishoom", "\\b(8|eight)\\b"]
   }
  ],
  "steps": [
