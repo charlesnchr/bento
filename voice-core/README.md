@@ -111,8 +111,9 @@ behaves as before. `eval/` measures them (see below).
 the full reply to the speech model to word and time. For each result it sends the host a `brief`
 command; the host answers `brief.ready` with one spoken sentence and its audio (a fast text model
 and TTS: `eval/brief.ts` is a reference, about 1 to 2 s with Gemini Flash Lite and Chirp 3 HD), or
-`brief.failed`, after which the model tells that result the old way. The core plays the audio with
-an ordinary `play` (tagged `source: "announcer"`):
+`brief.failed`, after which the model tells that result the old way. It does the same when no
+answer has come in `briefWait` seconds (3): a slow headline costs more than it saves. The core
+plays the audio with an ordinary `play` (tagged `source: "announcer"`):
 
 - at once when nobody has spoken for `engaged` seconds;
 - in a conversation, `attach` seconds after the model's next reply ends, unless that reply asked

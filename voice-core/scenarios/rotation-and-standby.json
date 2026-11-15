@@ -69,7 +69,7 @@
    "engaged": 12,
    "lull": 4,
    "attach": 0.4,
-   "briefWait": 8,
+   "briefWait": 3,
    "maxWait": 6,
    "maxWords": 28
   },
