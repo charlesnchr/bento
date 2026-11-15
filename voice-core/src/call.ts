@@ -916,6 +916,15 @@ export class Call {
     // Cut as it began, the two only collided: it may follow the next reply. Cut partway, the user chose to talk: it waits for longer lulls.
     if (this.t - a.from >= 1) a.item.cuts++;
     a.item.notBefore = this.t + 1;
+    if (a.item.briefAt != null && this.t - a.item.briefAt >= this.c.limits.deliverMax) {
+      // It has waited long and is talked over still: Bento stops trying, and the model tells it in the conversation.
+      a.item.brief = null;
+      a.item.briefFailed = true;
+      this.log("info", `"${a.item.label}"'s result was spoken over after a long wait: the model tells it`);
+      if (!this.standby && !this.waking) this.deliverWhenIdle();
+      this.updateWakeword();
+      return;
+    }
     this.log("info", `the user spoke over "${a.item.label}"'s result: it goes again later`);
     if (!this.standby) this.send(noteFrame(`From Bento, not the user's words: the user spoke over Bento and did not hear "${a.item.label}"'s outcome. Bento says it again later; don't say it yourself unless the user asks.`), true);
     this.updateWakeword();
@@ -1077,7 +1086,7 @@ export class Call {
   /** Microphone audio while the call is off the model: in standby it listens for speech; coming back it keeps it all. */
   private hold(pcm: Uint8Array): void {
     if (this.lent) { this.held = []; this.heldBytes = 0; this.voiced = 0; return; }
-    this.held.push(pcm);
+    this.held.push(this.kept(pcm));
     this.heldBytes += pcm.length;
     // Coming back for the user, all they say meanwhile is kept; dormant, only what a wake word would need.
     const keep = (this.waking || this.rejoining) && !this.dormant ? this.c.limits.holdMax : this.c.limits.wakePreRoll;
@@ -1093,6 +1102,11 @@ export class Call {
       this.voiceWoke = true;
       this.comeBack();
     }
+  }
+
+  /** A frame as it is held for later: silence over Bento's own speech where the model wouldn't hear the microphone live either. */
+  private kept(pcm: Uint8Array): Uint8Array {
+    return this.c.mic.whileSpeaking !== "send" && this.replyAudible() ? new Uint8Array(pcm.length) : pcm;
   }
 
   private settled(): void {
@@ -1304,12 +1318,14 @@ export class Call {
 
   private interrupted(): void {
     this.turnAudio();
+    // Whether the model's own turn had played out, judged before a brief's end is taken off speechUntil.
+    const playedOut = !this.dropTurn && this.spokeSince && this.generated && this.speechUntil - this.t <= INTERRUPT_GRACE;
     // The flush stops a brief that was playing as well: it is cut, not heard.
     this.cutAnnouncement();
     this.emit({ type: "flush" });
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
-    if (!this.skipTurn) this.turnEnded(!this.dropTurn && this.spokeSince && this.generated && this.speechUntil - this.t <= INTERRUPT_GRACE);
+    if (!this.skipTurn) this.turnEnded(playedOut);
     this.geminiSaid = "";
     this.speechUntil = this.t;
     this.geminiSpeaking = false;
@@ -1382,7 +1398,7 @@ export class Call {
     if (this.dormant) {
       // Unheard, but the last moments are kept: the wake word's own audio and the words right after it.
       const pcm = decodeBase64(pcm64)!;
-      this.held.push(pcm);
+      this.held.push(this.kept(pcm));
       this.heldBytes += pcm.length;
       while (this.heldBytes > this.c.limits.wakePreRoll * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
       return;
@@ -1406,7 +1422,8 @@ export class Call {
 
   private updateWakeword(): void {
     if (this.c.mic.whileSpeaking !== "wake" && !this.windowed) return;
-    const on = this.active && this.listening && (this.dormant || (this.c.mic.whileSpeaking === "wake" && !this.standby && this.replyAudible()));
+    // Over a reply, and over a brief in standby, where the microphone's level can't tell the user from the loudspeaker.
+    const on = this.active && this.listening && (this.dormant || (this.c.mic.whileSpeaking === "wake" && this.replyAudible() && (!this.standby || this.announcing != null)));
     if (on === this.wakewordOn) return;
     this.wakewordOn = on;
     this.emit({ type: "wakeword", on });

@@ -427,3 +427,19 @@ test("a turn whose words may be another's is never joined onto the next request"
   const d = p.delegation("ask_hermes", "c1", 3.2)!;
   assert.equal(p.request(d)?.task, "List my calendar.");
 });
+
+test("cancelling a task that failed: 'already finished' as before, 'already failed' with supervise", () => {
+  for (const supervise of [false, true]) {
+    const s = new Sim({ config: { supervise, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    s.advance(0.1);
+    s.turn("Book a table");
+    s.toolCall("c1");
+    s.advance(0.3);
+    s.push({ type: "tool.error", run: s.hermes()[0].run, message: "the site was down" });
+    s.advance(0.2);
+    s.toolCall("x1", "cancel_task", { task: "table" });
+    s.advance(0.1);
+    const message: string = s.responses().find((r) => r.id === "x1").response.message;
+    assert.ok(message.includes(supervise ? "has already failed" : "is already finished"), message);
+  }
+});

@@ -662,3 +662,63 @@ test("a brief that never comes is given up on time even while another is playing
   const gaveUp = until(s, () => s.commands.some((c) => c.type === "log" && c.message.includes("no brief for \"taxi\"")), 8);
   assert.ok(gaveUp != null && gaveUp < ends - 1, `given up at ${gaveUp}, the first brief ends at ${ends}`);
 });
+
+// Found in the second review.
+
+test("a brief spoken over after its long wait goes to the model: it isn't started at every pause", () => {
+  const s = sim({ limits: { deliverMax: 10 } });
+  task(s);
+  s.complete("Booked for 8pm at Dishoom.");
+  const at = s.t;
+  ready(s, "Your table at Dishoom is booked for 8pm.", 3);
+  while (s.t < at + 60) {
+    s.activity("ACTIVITY_START");
+    s.advance(2);
+    s.heard("and then they went to the shops");
+    s.activity("ACTIVITY_END");
+    s.advance(2);
+  }
+  assert.equal(played(s).length, 1, "tried once, at the first pause after deliverMax");
+  assert.ok(s.finals().length + s.resultTurns().length >= 1, "then the model has the result to tell");
+  assert.equal(notes(s).filter((n) => n.includes("did not hear")).length, 0, "and no note says Bento will say it again");
+});
+
+test("audio held while a brief plays in standby is silenced as live audio would be", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "silence", gainDb: 0 } });
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  ready(s, "Your table is booked for 8pm.", 5, "b1");
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  s.mic = "loud"; // the loudspeaker, in the microphone
+  s.autoSetup = false;
+  s.complete("A taxi comes at 7.", s.hermes()[1].run);
+  s.push({ type: "brief.failed", id: "b2" }); // the last task is done and its result needs the model: the call comes back
+  s.advance(0.8);
+  assert.equal(s.sockets.size, 2);
+  s.gemini({ setupComplete: {} });
+  s.advance(0.2);
+  const frames = s.sent(2).filter((f) => f.startsWith('{"realtimeInput":{"audio"')).map((f) => Buffer.from(JSON.parse(f).realtimeInput.audio.data, "base64"));
+  assert.ok(frames.length > 20, `the held audio is sent (${frames.length} frames)`);
+  assert.ok(frames.every((f) => f.every((b) => b === 0)), "all of it silence: the model doesn't hear the brief as the user");
+});
+
+test("with whileSpeaking wake, the wake word is on over a brief in standby and cuts it", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "wake", gainDb: 0 } });
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  ready(s, "Your table is booked for 8pm.", 3);
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  const wakeword = () => s.commands.flatMap((c) => (c.type === "wakeword" ? [c.on] : [])).at(-1);
+  assert.equal(wakeword(), true);
+  s.advance(0.5);
+  s.push({ type: "wake" });
+  assert.equal(flushes(s), 1);
+  assert.equal(wakeword(), false);
+  assert.equal(s.statuses().at(-1), "standby");
+});
