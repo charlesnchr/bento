@@ -1,0 +1,109 @@
+{
+ "name": "result-during-user-speech",
+ "about": "The user asks where a parcel is, then at once starts a long, rambling utterance that carries a second request (move the dentist appointment from Thursday to Friday morning, before ten). The parcel result arrives about five seconds into that utterance. Good: the model does not start talking over the user; the dentist request goes to Hermes whole (dentist, Friday, before ten), as its own task; the parcel result is said once, after the user has finished, briefly. Both results are heard: parcel out for delivery, arriving between two and four; dentist moved to Friday at 9:20.",
+ "agents": [
+  {
+   "id": "parcel",
+   "match": "parcel|amazon|delivery|package",
+   "after": 6,
+   "progress": [
+    [
+     2,
+     "Checking Amazon orders"
+    ]
+   ],
+   "result": "Your Amazon parcel is out for delivery and should arrive between 2 and 4 pm today.",
+   "facts": [
+    "\\b(2|two)\\b",
+    "\\b(4|four)\\b"
+   ]
+  },
+  {
+   "id": "dentist",
+   "match": "dentist|appointment",
+   "after": 10,
+   "progress": [
+    [
+     3,
+     "Using the browser on the practice's booking page"
+    ]
+   ],
+   "result": "Done: your dentist appointment has moved from Thursday to Friday at 9:20 am.",
+   "facts": [
+    "9[:. ]?20|nine[- ]twenty"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes where my Amazon parcel is.",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:parcel",
+   "timeout": 15
+  },
+  {
+   "say": "Oh, and while I think of it, I need to move my dentist appointment. It's on Thursday at the moment, but I've got a work thing that day that I really can't move, so could you get Hermes to find me something on Friday morning instead, ideally before ten if they've got anything.",
+   "id": "long",
+   "when": {
+    "after": "dispatch:parcel",
+    "delay": 0.8
+   }
+  },
+  {
+   "until": "dispatch:dentist",
+   "timeout": 15
+  },
+  {
+   "until": "agents-done & quiet:6",
+   "timeout": 45
+  },
+  {
+   "say": "Perfect, thank you.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 20
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "parcel",
+   "count": 1
+  },
+  {
+   "dispatch": "dentist",
+   "count": 1
+  },
+  {
+   "request": "dentist",
+   "contains": [
+    "dentist",
+    "thursday",
+    "friday",
+    "before ten|before 10"
+   ]
+  },
+  {
+   "voiced": "parcel",
+   "within": 25
+  },
+  {
+   "voiced": "dentist",
+   "within": 20
+  },
+  {
+   "maxModelWords": 60,
+   "after": "long",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Did the assistant let the user finish the long utterance without talking over it?",
+  "Was the parcel result said exactly once, after the user finished?",
+  "Did the dentist request reach Hermes with all of its details (Thursday, Friday morning, before ten)?"
+ ],
+ "max": 100
+}

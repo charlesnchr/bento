@@ -1,0 +1,81 @@
+{
+ "name": "stop-mid-announcement",
+ "about": "Hermes returns tonight's films at the Everyman in Crouch End. A second and a half into the model reading it out, the user says 'Stop.' Good: the model's audio stops within about a second and it stays quiet (no 'okay, stopping'); a few seconds later the user asks what was on after eight, and the model answers from the result it already has (8:45 Wicked: For Good, 9:15 Paddington in Peru), briefly, with no new task.",
+ "agents": [
+  {
+   "id": "cinema",
+   "match": "everyman|cinema|crouch end|film|on tonight",
+   "after": 7,
+   "progress": [
+    [
+     2,
+     "Reading everymancinema.com"
+    ]
+   ],
+   "result": "Tonight at the Everyman Crouch End: Wicked: For Good at 6:10 and 8:45, The Running Man at 7:30, and a late showing of Paddington in Peru at 9:15."
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes what's on at the Everyman in Crouch End tonight.",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:cinema",
+   "timeout": 15
+  },
+  {
+   "say": "Stop.",
+   "id": "stop",
+   "when": {
+    "after": "result:cinema & speaking",
+    "delay": 1.5
+   },
+   "timeout": 30
+  },
+  {
+   "wait": 6
+  },
+  {
+   "say": "Sorry, go on, what was on after eight?",
+   "id": "after8",
+   "patience": 0.5
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "cinema",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "yields": "stop",
+   "within": 1.2
+  },
+  {
+   "noSpeech": true,
+   "after": "stop",
+   "before": "after8"
+  },
+  {
+   "said": "8[:. ]?45|eight forty[- ]five|quarter to nine|9[:. ]?15|nine fifteen|quarter past nine",
+   "after": "after8"
+  },
+  {
+   "maxModelWords": 35,
+   "after": "after8"
+  }
+ ],
+ "judge": [
+  "Did the assistant stop as soon as the user said stop, and stay quiet until asked again?",
+  "Did it answer the follow-up question from the result it already had, briefly?"
+ ],
+ "max": 70
+}

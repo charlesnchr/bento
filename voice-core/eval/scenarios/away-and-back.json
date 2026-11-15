@@ -1,0 +1,47 @@
+{
+ "name": "away-and-back",
+ "about": "The user hands off two lookups, then walks away and is silent for about 50 seconds. Both results arrive while nobody is there. The user comes back and says \"I'm back, what did I miss?\". Good: while the user is away, each result is said at most once (or held), never repeated over and over into the empty room. When asked, the assistant gives a short digest of both results, each told correctly (sleep score 78, the electrician can come on Tuesday). Retelling them in reply to \"what did I miss\" is what the user asked for, not a repeat.",
+ "retold": "back",
+ "agents": [
+  {
+   "id": "sleep",
+   "match": "sleep|garmin",
+   "after": 18,
+   "progress": [[4, "Reading Garmin Connect"]],
+   "result": "Your Garmin sleep score last night was 78, with 7 hours 12 minutes asleep and a resting heart rate of 48.",
+   "facts": ["78|seventy[- ]eight"]
+  },
+  {
+   "id": "email",
+   "match": "electrician|email|mail|repl",
+   "after": 32,
+   "progress": [[4, "Searching Gmail"]],
+   "result": "Yes, Dave the electrician replied at 10:15. He can come on Tuesday morning to replace the consumer unit and will confirm the price by Monday.",
+   "facts": ["tuesday"]
+  }
+ ],
+ "steps": [
+  { "say": "Ask Hermes what my Garmin sleep score was last night.", "id": "ask1" },
+  { "until": "dispatch:sleep", "timeout": 15 },
+  { "say": "And ask Hermes whether the electrician has replied to my email.", "id": "ask2" },
+  { "until": "dispatch:email", "timeout": 15 },
+  { "mark": "away" },
+  { "wait": 50 },
+  { "until": "quiet:3", "timeout": 30 },
+  { "say": "Okay, I'm back. What did I miss?", "id": "back" },
+  { "until": "quiet:6", "timeout": 40 }
+ ],
+ "checks": [
+  { "dispatch": "sleep", "count": 1 },
+  { "dispatch": "email", "count": 1 },
+  { "said": "78|seventy[- ]eight", "after": "back" },
+  { "said": "tuesday", "after": "back" },
+  { "maxModelWords": 70, "after": "back" }
+ ],
+ "judge": [
+  "While the user was away, was each result said at most once rather than repeated?",
+  "After the user said they were back, did the assistant give a short digest covering both the sleep score and the electrician's reply?",
+  "Were both results told correctly?"
+ ],
+ "max": 140
+}

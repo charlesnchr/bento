@@ -1,0 +1,124 @@
+{
+ "name": "agent-question",
+ "about": "Hermes can't get the time the user asked for and comes back with a question: 7:45 instead of 7, shall it book that? Good: the model puts the question to the user briefly (7:45, book it?); the user's 'Yes, go ahead' goes to that same task as a follow-up (continue_task), not as a new task; the confirmation (booked) is then said once, in a few words.",
+ "agents": [
+  {
+   "id": "table",
+   "match": "dishoom|table|restaurant|book",
+   "after": 7,
+   "progress": [
+    [
+     2,
+     "Using the browser on dishoom.com"
+    ]
+   ],
+   "result": "Dishoom King's Cross has nothing for two at 7 tomorrow, but there is a table at 7:45 pm. Do you want me to book the 7:45 slot?",
+   "facts": [
+    "7[:. ]?45|seven[- ]forty[- ]five|quarter to eight",
+    "\\?|would you like|you'?d like|you would like|do you want|shall i|should i|want me to|book (it|that|the|this)"
+   ],
+   "followUps": [
+    {
+     "id": "table-book",
+     "match": "yes|yeah|go ahead|book|please|sure|okay|fine",
+     "after": 5,
+     "progress": [
+      [
+       2,
+       "Filling in the booking form"
+      ]
+     ],
+     "result": "Booked: a table for two at Dishoom King's Cross tomorrow at 7:45 pm, under your name. The confirmation is in your email.",
+     "facts": [
+      "book|confirm|reserv|all set (for|at)|7[:. ]?45|quarter to eight"
+     ]
+    }
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes to book a table for two at Dishoom in King's Cross tomorrow at seven.",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:table",
+   "timeout": 15
+  },
+  {
+   "until": "result:table",
+   "timeout": 20
+  },
+  {
+   "until": "said:7[:. ]?45|seven[- ]forty|quarter to eight",
+   "timeout": 25
+  },
+  {
+   "say": "Yes, go ahead.",
+   "id": "yes"
+  },
+  {
+   "until": "dispatch:table-book",
+   "timeout": 15
+  },
+  {
+   "until": "result:table-book",
+   "timeout": 20
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 30
+  },
+  {
+   "say": "Cheers.",
+   "id": "thanks"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 15
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "table",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "voiced": "table",
+   "within": 10
+  },
+  {
+   "said": "\\?|want|shall|should|like",
+   "after": "ask",
+   "before": "yes"
+  },
+  {
+   "maxModelWords": 35,
+   "after": "ask",
+   "before": "yes"
+  },
+  {
+   "followUp": "table",
+   "match": "yes|go ahead"
+  },
+  {
+   "voiced": "table-book",
+   "within": 10
+  },
+  {
+   "maxModelWords": 30,
+   "after": "yes",
+   "before": "thanks"
+  }
+ ],
+ "judge": [
+  "Did the assistant put Hermes's question to the user clearly and briefly?",
+  "Did the user's 'yes' go to the booking task rather than start something new?",
+  "Was the booking confirmation said once, in a few words?"
+ ],
+ "max": 90
+}

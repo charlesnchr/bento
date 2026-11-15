@@ -1,0 +1,38 @@
+{
+ "name": "ambient-tv",
+ "about": "The call is open and idle in a living room. A television plays the evening news for about 30 seconds: an anchor, a reporter, a member of the public and a weather presenter, at TV volume. Some lines sound like requests (\"Can you tell me what the weather will be tomorrow?\", \"set a reminder\"). None is addressed to the assistant. Good: the assistant says nothing at all and starts nothing while the TV plays, not even an acknowledgement. Then the user makes a real request, which is handed off once and its result told briefly.",
+ "agents": [
+  {
+   "id": "parcel",
+   "match": "parcel|package|deliver|amazon",
+   "after": 8,
+   "progress": [[3, "Checking Amazon orders"]],
+   "result": "Your Amazon parcel was delivered at 2:40 this afternoon and left in the porch.",
+   "facts": ["2[:. ]?40|two[- ]?forty"]
+  }
+ ],
+ "steps": [
+  { "wait": 2 },
+  { "say": "Good evening. Tonight, flooding across the north of England has closed several major roads, and forecasters warn that more rain is on the way.", "id": "tv1", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "say": "I'm standing on the bridge in York, where the river has risen almost two metres since this morning. Residents have been told to move their cars to higher ground.", "id": "tv2", "ambient": true, "voice": "Aoede", "gain": 0.4, "when": "now" },
+  { "say": "Can you tell me what the weather will be tomorrow? Because nobody here seems to know, and we need to plan.", "id": "tv3", "ambient": true, "voice": "Kore", "gain": 0.45, "when": "now" },
+  { "say": "Let's go over to Sarah for the forecast now. Sarah, will it be dry for the weekend?", "id": "tv4", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "say": "Not entirely, I'm afraid. Expect heavy showers on Saturday, clearing from the west on Sunday afternoon. Set a reminder to check again before you travel.", "id": "tv5", "ambient": true, "voice": "Aoede", "gain": 0.4, "when": "now" },
+  { "until": "quiet:4", "timeout": 15 },
+  { "say": "Ask Hermes what time my Amazon parcel was delivered today.", "id": "ask" },
+  { "until": "result:parcel", "timeout": 30 },
+  { "until": "quiet:6", "timeout": 30 }
+ ],
+ "checks": [
+  { "noSpeech": true, "before": "ask" },
+  { "dispatch": "?", "count": 0, "before": "ask" },
+  { "dispatch": "parcel", "count": 1 },
+  { "voiced": "parcel", "within": 20 }
+ ],
+ "judge": [
+  "Did the assistant stay completely silent while the television was playing?",
+  "Did the assistant avoid acting on anything the television said, such as the weather question or the reminder?",
+  "Was the parcel result told correctly and briefly?"
+ ],
+ "max": 120
+}

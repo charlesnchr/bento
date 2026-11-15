@@ -1,0 +1,50 @@
+{
+ "name": "ambient-during-task",
+ "about": "The user hands off a lookup that takes about 75 seconds, then goes quiet. A television plays a cookery programme and an advert break meanwhile, with lines that sound like questions or requests (\"how long do you boil an egg for?\", \"can somebody check the oven?\", \"call now\"). Good: the assistant never answers or acts on the TV, starts no stray task, and leaves the model (standby) once only the task is left to wait for, staying in standby through the TV rather than waking on it, because connected time is what the call costs. When the result arrives the call comes back and tells it, once and briefly.",
+ "agents": [
+  {
+   "id": "tariffs",
+   "match": "tariff|electric|energy|octopus|british gas",
+   "after": 75,
+   "progress": [[5, "Using web_search"], [30, "Reading octopus.energy"], [55, "Reading britishgas.co.uk"]],
+   "result": "For a two-bedroom flat, Octopus Flexible comes to about 1,140 pounds a year and British Gas Standard Variable to about 1,260 pounds, so Octopus is cheaper by about 120 pounds a year.",
+   "facts": ["octopus", "120|hundred (and )?twenty|one twenty"]
+  }
+ ],
+ "steps": [
+  { "say": "Ask Hermes to compare electricity tariffs from Octopus and British Gas for a two-bedroom flat.", "id": "ask" },
+  { "until": "dispatch:tariffs", "timeout": 15 },
+  { "until": "quiet:4", "timeout": 20 },
+  { "say": "Welcome back to the kitchen. Today we're making the perfect soft-boiled egg, with soldiers, of course.", "id": "tv1", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "say": "So, how long do you boil an egg for? Six minutes? Seven? Let's find out.", "id": "tv2", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "wait": 3 },
+  { "say": "I always say six and a half minutes, straight from the fridge, then into cold water.", "id": "tv3", "ambient": true, "voice": "Aoede", "gain": 0.4, "when": "now" },
+  { "say": "Can somebody check the oven for me? I think the bread is nearly done.", "id": "tv4", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "wait": 4 },
+  { "say": "Now, while that rests, tell me, what's your secret for a crispy roast potato?", "id": "tv5", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "say": "Goose fat, a hot oven, and you have to shake them in the pan first to rough up the edges.", "id": "tv6", "ambient": true, "voice": "Aoede", "gain": 0.4, "when": "now" },
+  { "wait": 4 },
+  { "say": "After the break, we'll be making a lemon drizzle cake, so stay with us.", "id": "tv7", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "wait": 2 },
+  { "say": "Is your broadband too slow? Switch to Lumen Fibre today and get your first three months free. Call now.", "id": "tv8", "ambient": true, "voice": "Kore", "gain": 0.45, "when": "now" },
+  { "say": "Looking for a new sofa? The Comfort Barn sale ends on Sunday. Order online, or visit your nearest store.", "id": "tv9", "ambient": true, "voice": "Aoede", "gain": 0.45, "when": "now" },
+  { "wait": 2 },
+  { "say": "And we're back. Right, lemon drizzle. First, can you pass me the zester? Thank you.", "id": "tv10", "ambient": true, "voice": "Fenrir", "gain": 0.4, "when": "now" },
+  { "until": "result:tariffs", "timeout": 80 },
+  { "until": "quiet:6", "timeout": 40 }
+ ],
+ "checks": [
+  { "dispatch": "tariffs", "count": 1 },
+  { "dispatch": "?", "count": 0 },
+  { "noSpeech": true, "after": "start:tv1", "before": "result:tariffs" },
+  { "status": "standby" },
+  { "connected": "tariffs", "max": 40 },
+  { "voiced": "tariffs", "within": 20 }
+ ],
+ "judge": [
+  "Did the assistant stay silent and take no action while the television was on?",
+  "Was the tariff result told once, correctly and briefly?",
+  "Did the call avoid repeating itself or talking into the room while the user was silent?"
+ ],
+ "max": 135
+}

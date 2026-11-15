@@ -1,0 +1,240 @@
+{"ttfb": 0.31220832595136017, "total": 0.9704173320205882, "audio_s": 4.85, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 1.5202578739263117, "total": 1.5287682049674913, "audio_s": 4.35, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 0, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.3375518888933584, "total": 0.4619085229933262, "audio_s": 4.974, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.8123255829559639, "total": 0.9370750439120457, "audio_s": 4.188, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.2281039620283991, "total": 0.9688730839407071, "audio_s": 4.45, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.1346219830447808, "total": 0.23387244204059243, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.5793987759388983, "total": 1.363192087970674, "audio_s": 4.32, "sr": 24000, "note": "58 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.39403368602506816, "total": 1.066124745993875, "audio_s": 4.52, "sr": 24000, "note": "52 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.8344526290893555, "total": 2.442737160017714, "audio_s": 5.591541666666667, "sr": 24000, "note": "140 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 1.164107364951633, "total": 3.5208757439395413, "audio_s": 5.871541666666666, "sr": 24000, "note": "147 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.7962489549536258, "total": 2.2462402189848945, "audio_s": 5.4, "sr": 24000, "note": "135 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.7189149139449, "total": 0.7189396739704534, "audio_s": 4.52, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.18418116692919284, "total": 0.7275286039803177, "audio_s": 4.76, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.30209915607701987, "total": 0.7094235700787976, "audio_s": 4.32, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.5901774209924042, "total": 4.299478692933917, "audio_s": 6.111541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 0, "tag": "full"}
+{"ttfb": 0.331880668993108, "total": 2.1272783679887652, "audio_s": 15.0, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 3.3415301321074367, "total": 3.379089121008292, "audio_s": 15.15, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 0, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.3107111059362069, "total": 0.7208808199502528, "audio_s": 16.028, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.8511206539114937, "total": 1.2751873409142718, "audio_s": 15.9, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.19840239896439016, "total": 3.2087912569986656, "audio_s": 16.05, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.20950561098288745, "total": 0.5270390999503434, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.712655158014968, "total": 3.723346394021064, "audio_s": 14.52, "sr": 24000, "note": "202 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.35717920295428485, "total": 2.5824829769553617, "audio_s": 14.52, "sr": 24000, "note": "171 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.68876181403175, "total": 6.626849096035585, "audio_s": 18.311541666666667, "sr": 24000, "note": "458 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 1.1537941650021821, "total": 12.528550870949402, "audio_s": 22.471541666666667, "sr": 24000, "note": "562 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.8124033228959888, "total": 4.768543264945038, "audio_s": 15.72, "sr": 24000, "note": "393 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 2.0447933020768687, "total": 2.0450026410399005, "audio_s": 15.16, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.1838817399693653, "total": 1.9403143590316176, "audio_s": 14.08, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.1643979559885338, "total": 1.7942542269593105, "audio_s": 15.2, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.7000545560149476, "total": 7.351974267046899, "audio_s": 20.151541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 0, "tag": "full"}
+{"ttfb": 0.3269592330325395, "total": 0.9514807050582021, "audio_s": 5.15, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 1.3681415229802951, "total": 1.3751345539931208, "audio_s": 4.15, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 1, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.2907728860154748, "total": 0.35162203200161457, "audio_s": 5.1, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.8298444809624925, "total": 1.00862031604629, "audio_s": 4.428, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.1745277550071478, "total": 1.0194064719835296, "audio_s": 4.5, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.13919514999724925, "total": 0.19894988392479718, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.5306360460817814, "total": 1.4248728490201756, "audio_s": 3.96, "sr": 24000, "note": "55 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.41562218591570854, "total": 1.1058355799177662, "audio_s": 4.12, "sr": 24000, "note": "48 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.7777913239551708, "total": 5.037404612987302, "audio_s": 5.551541666666667, "sr": 24000, "note": "139 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 1.1362100390251726, "total": 7.9549238689942285, "audio_s": 5.231541666666667, "sr": 24000, "note": "131 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.8044823480304331, "total": 2.222973969997838, "audio_s": 5.52, "sr": 24000, "note": "138 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.8335345060331747, "total": 0.8335584659362212, "audio_s": 4.0, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.21649375197011977, "total": 0.7150913709774613, "audio_s": 4.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.2372465180233121, "total": 0.6316060619428754, "audio_s": 4.68, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.6602757630171254, "total": 3.0056214419892058, "audio_s": 6.231541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 1, "tag": "full"}
+{"ttfb": 0.3097288029966876, "total": 2.1573700570734218, "audio_s": 15.2, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 3.7857594329398125, "total": 3.8214902819599956, "audio_s": 17.05, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 1, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.3053101450204849, "total": 0.6020205300301313, "audio_s": 15.868, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.8579993430757895, "total": 1.2531649760203436, "audio_s": 15.662, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.22222665906883776, "total": 3.110193511005491, "audio_s": 15.45, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.18506438995245844, "total": 0.8328310890356079, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.736653444939293, "total": 3.8976856879889965, "audio_s": 14.2, "sr": 24000, "note": "208 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.3697161820018664, "total": 2.6639029959915206, "audio_s": 15.08, "sr": 24000, "note": "194 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.7180011060554534, "total": 8.123863419052213, "audio_s": 17.191541666666666, "sr": 24000, "note": "430 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 1.1783759020036086, "total": 14.873440301977098, "audio_s": 21.271541666666668, "sr": 24000, "note": "532 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.7976835659937933, "total": 4.561406134977005, "audio_s": 15.68, "sr": 24000, "note": "392 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 2.009146695025265, "total": 2.0092068050289527, "audio_s": 14.08, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.10727550706360489, "total": 1.6767724010860547, "audio_s": 13.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.2281578469555825, "total": 1.6947971628978848, "audio_s": 13.92, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.6903814800316468, "total": 6.114879001979716, "audio_s": 19.031541666666666, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 1, "tag": "full"}
+{"ttfb": 0.3687618189724162, "total": 0.9337019110098481, "audio_s": 4.7, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 1.4776390189072117, "total": 1.4864477469818667, "audio_s": 4.4, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 2, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.3316360500175506, "total": 1.7138624399667606, "audio_s": 4.7, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.8116005179472268, "total": 1.057452970999293, "audio_s": 4.38, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.19783556007314473, "total": 0.9384219370549545, "audio_s": 4.55, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.17050311202183366, "total": 0.27380451699718833, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.6921282570110634, "total": 1.7061157339485362, "audio_s": 4.32, "sr": 24000, "note": "58 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.40205436607357115, "total": 1.1790724369930103, "audio_s": 4.52, "sr": 24000, "note": "49 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.7468027240829542, "total": 2.956000663107261, "audio_s": 5.711541666666666, "sr": 24000, "note": "143 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 1.2907890720525756, "total": 4.872115273028612, "audio_s": 5.671541666666666, "sr": 24000, "note": "142 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.6700814130017534, "total": 1.8444739819969982, "audio_s": 4.92, "sr": 24000, "note": "123 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.6382064359495416, "total": 0.6382394059328362, "audio_s": 4.0, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.2101837630616501, "total": 0.6857389620272443, "audio_s": 4.68, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.18606956291478127, "total": 0.618176826974377, "audio_s": 4.48, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.6766482660314068, "total": 5.643615162931383, "audio_s": 6.271541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 2, "tag": "full"}
+{"ttfb": 0.3117287700297311, "total": 2.132923166034743, "audio_s": 14.75, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 3.5087977099465206, "total": 3.536118948017247, "audio_s": 15.5, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 2, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.3338295239955187, "total": 0.6750495369778946, "audio_s": 14.252, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.8944892060244456, "total": 1.2535242129815742, "audio_s": 15.228, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.20497773005627096, "total": 3.0608644570456818, "audio_s": 16.35, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.2030014240881428, "total": 0.5411509990226477, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.5996812069788575, "total": 5.190681205014698, "audio_s": 15.2, "sr": 24000, "note": "216 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.39191268698778003, "total": 2.8340887600788847, "audio_s": 15.92, "sr": 24000, "note": "190 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.7078766870545223, "total": 7.102230466087349, "audio_s": 17.751541666666668, "sr": 24000, "note": "444 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 1.2118015360319987, "total": 19.28948192705866, "audio_s": 20.231541666666665, "sr": 24000, "note": "506 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.8195488719502464, "total": 4.700675740954466, "audio_s": 16.68, "sr": 24000, "note": "417 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 2.008363895933144, "total": 2.0084042359376326, "audio_s": 14.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.2307873029494658, "total": 1.9115136039908975, "audio_s": 14.44, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.25507381302304566, "total": 1.8485690969973803, "audio_s": 14.12, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.7433720899280161, "total": 7.260617394931614, "audio_s": 20.991541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 2, "tag": "full"}
+{"ttfb": 0.33234020799864084, "total": 0.9585440049413592, "audio_s": 5.0, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 1.6055108599830419, "total": 1.6149125659139827, "audio_s": 4.05, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 3, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.3215842420468107, "total": 0.3806221999693662, "audio_s": 4.78, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.9362321700900793, "total": 1.1681582540040836, "audio_s": 5.038, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.19663424999453127, "total": 1.0555562060326338, "audio_s": 4.55, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.17591976199764758, "total": 0.36901766096707433, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.6867944229161367, "total": 1.7474297989392653, "audio_s": 4.32, "sr": 24000, "note": "66 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.5674169069388881, "total": 1.2833793519530445, "audio_s": 3.92, "sr": 24000, "note": "45 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.7546013820683584, "total": 2.586288011050783, "audio_s": 5.671541666666666, "sr": 24000, "note": "142 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 1.1660828999010846, "total": 4.323526159976609, "audio_s": 6.391541666666667, "sr": 24000, "note": "160 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.7885435569332913, "total": 2.243132187984884, "audio_s": 5.24, "sr": 24000, "note": "131 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.729406489059329, "total": 0.7294343590037897, "audio_s": 4.48, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.1925846920348704, "total": 0.6298689090181142, "audio_s": 3.96, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.16549436503555626, "total": 0.6184217189438641, "audio_s": 4.48, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 3, "tag": "full"}
+{"ttfb": 0.580794112989679, "total": 2.257054198998958, "audio_s": 5.9915416666666665, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 3, "tag": "full"}
+{"route": "az-4o-mini-tts", "line": "long", "i": 3, "error": "HTTPSConnectionPool(host='<resource>.openai.azure.com', port=443): Read timed out. (read timeout=60)", "tag": "full"}
+{"ttfb": 4.1874014949426055, "total": 13.326049115974456, "audio_s": 15.3, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 3, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.35157934797462076, "total": 0.7233006570022553, "audio_s": 14.974, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 1.196236714022234, "total": 1.6685171769931912, "audio_s": 15.308, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.22596173093188554, "total": 2.9610242769122124, "audio_s": 16.1, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.168497480917722, "total": 0.6213091058889404, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.696309188962914, "total": 4.147604127996601, "audio_s": 15.0, "sr": 24000, "note": "217 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.4505598630057648, "total": 3.07743649603799, "audio_s": 16.6, "sr": 24000, "note": "184 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.742919243988581, "total": 7.538354904972948, "audio_s": 17.511541666666666, "sr": 24000, "note": "438 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 1.2746675979578868, "total": 21.034922579070553, "audio_s": 21.231541666666665, "sr": 24000, "note": "531 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.7771525470307097, "total": 4.783394624013454, "audio_s": 16.0, "sr": 24000, "note": "400 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 1.942043007002212, "total": 1.9423306540120393, "audio_s": 14.32, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.1366216130554676, "total": 1.8318371430505067, "audio_s": 15.72, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.14230162603780627, "total": 1.7704887730069458, "audio_s": 13.92, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.7048312569968402, "total": 6.386677548056468, "audio_s": 19.311541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 3, "tag": "full"}
+{"ttfb": 0.321880282019265, "total": 1.067121383966878, "audio_s": 4.6, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 1.4697049049427733, "total": 1.5657829259289429, "audio_s": 4.1, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 4, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.3292835709871724, "total": 0.4134771600365639, "audio_s": 5.804, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.8443248069379479, "total": 1.0220377889927477, "audio_s": 4.764, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.21479155297856778, "total": 1.0054800070356578, "audio_s": 4.6, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.17877109302207828, "total": 0.24737932300195098, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.7526049510343, "total": 1.819067980046384, "audio_s": 4.64, "sr": 24000, "note": "69 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.5502599130850285, "total": 1.1678064271109179, "audio_s": 4.0, "sr": 24000, "note": "49 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.7683629400562495, "total": 2.7447374609764665, "audio_s": 5.711541666666666, "sr": 24000, "note": "143 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 1.194464966072701, "total": 6.261893916991539, "audio_s": 6.071541666666667, "sr": 24000, "note": "152 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.7224661019863561, "total": 1.853788771899417, "audio_s": 4.72, "sr": 24000, "note": "118 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.9927240730030462, "total": 0.9928533119382337, "audio_s": 4.72, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.21370259299874306, "total": 0.8237900390522555, "audio_s": 4.68, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.17321430903393775, "total": 0.5985481920652092, "audio_s": 3.96, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.6456502189394087, "total": 5.985504103940912, "audio_s": 6.551541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 4, "tag": "full"}
+{"ttfb": 0.34223349392414093, "total": 2.1565595329739153, "audio_s": 14.9, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 3.418439107015729, "total": 3.543918393086642, "audio_s": 15.25, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 4, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.33736414404120296, "total": 0.7532099749660119, "audio_s": 15.742, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.9112650009337813, "total": 1.25333092501387, "audio_s": 15.676, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.20016130502335727, "total": 3.1694648480042815, "audio_s": 15.85, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.18637828005012125, "total": 0.5441090940730646, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.8845124929212034, "total": 4.0641954459715635, "audio_s": 15.28, "sr": 24000, "note": "209 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.38642297696787864, "total": 2.8254329100018367, "audio_s": 15.56, "sr": 24000, "note": "190 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.7564078379655257, "total": 6.660169352893718, "audio_s": 18.551541666666665, "sr": 24000, "note": "464 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 1.1775268650380895, "total": 16.54544822999742, "audio_s": 23.551541666666665, "sr": 24000, "note": "589 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.7958773800637573, "total": 4.541730183060281, "audio_s": 16.32, "sr": 24000, "note": "408 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 2.234807741944678, "total": 2.2350768899777904, "audio_s": 14.32, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.29673731105867773, "total": 2.089793137041852, "audio_s": 14.4, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.18627924099564552, "total": 2.037050846964121, "audio_s": 15.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.7108328780159354, "total": 8.911153941066004, "audio_s": 19.711541666666665, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 4, "tag": "full"}
+{"ttfb": 0.3454274369869381, "total": 0.9464343279832974, "audio_s": 4.45, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 1.3878115669358522, "total": 1.3986774469958618, "audio_s": 4.05, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 5, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.6004585160408169, "total": 0.725947842001915, "audio_s": 4.668, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.8567499819910154, "total": 1.3514313960913569, "audio_s": 4.044, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.23933049093466252, "total": 1.0265626299660653, "audio_s": 4.35, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.1648335640784353, "total": 0.24102222709916532, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.5998045749729499, "total": 1.6443452519597486, "audio_s": 4.52, "sr": 24000, "note": "67 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.4094267539912835, "total": 1.1579647019971162, "audio_s": 4.68, "sr": 24000, "note": "58 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.7809570099925622, "total": 2.421759960008785, "audio_s": 5.191541666666667, "sr": 24000, "note": "130 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 1.1769520400557667, "total": 6.400159960030578, "audio_s": 6.391541666666667, "sr": 24000, "note": "160 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.7235434680478647, "total": 2.2301882080500945, "audio_s": 5.2, "sr": 24000, "note": "130 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.8420285220490769, "total": 0.8421264310600236, "audio_s": 4.72, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.20734029600862414, "total": 0.8150617870269343, "audio_s": 4.76, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.1716610910370946, "total": 0.6318661900004372, "audio_s": 3.96, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.7109925969270989, "total": 6.3053720749448985, "audio_s": 6.471541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 5, "tag": "full"}
+{"ttfb": 0.42938970506656915, "total": 2.1525408580200747, "audio_s": 14.05, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 3.880741019034758, "total": 4.000712980981916, "audio_s": 15.95, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 5, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.34522775607183576, "total": 1.2117992230923846, "audio_s": 16.588, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 1.1547838770784438, "total": 1.466132982983254, "audio_s": 15.9, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.2517026620917022, "total": 3.0734061209950596, "audio_s": 15.9, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.15286340995226055, "total": 1.030901256017387, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.7622196989832446, "total": 4.1436204420169815, "audio_s": 15.16, "sr": 24000, "note": "217 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.3809712810907513, "total": 2.8920804270310327, "audio_s": 15.6, "sr": 24000, "note": "176 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.7609736289596185, "total": 11.134505609050393, "audio_s": 17.91154166666667, "sr": 24000, "note": "448 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 1.2517475930508226, "total": 11.39536974800285, "audio_s": 19.511541666666666, "sr": 24000, "note": "488 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.7569783309008926, "total": 4.566184420953505, "audio_s": 16.08, "sr": 24000, "note": "402 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 2.0602918330114335, "total": 2.060558740980923, "audio_s": 15.16, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.19140296301338822, "total": 1.748846367932856, "audio_s": 13.8, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.20250957401003689, "total": 2.0071483670035377, "audio_s": 14.76, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.6762936150189489, "total": 10.55465493502561, "audio_s": 20.391541666666665, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 5, "tag": "full"}
+{"ttfb": 0.3293674420565367, "total": 0.8978680970612913, "audio_s": 4.6, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 1.4506929359631613, "total": 1.4578792989486828, "audio_s": 4.35, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 6, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.28931885096244514, "total": 0.38851243001408875, "audio_s": 5.374, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.8768653139704838, "total": 1.034858233993873, "audio_s": 4.572, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.22984087700024247, "total": 1.2216118449578062, "audio_s": 4.5, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.15927380905486643, "total": 0.9309169730404392, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.7626181460218504, "total": 2.041011277004145, "audio_s": 4.4, "sr": 24000, "note": "70 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.4025562680326402, "total": 1.3790994179435074, "audio_s": 4.08, "sr": 24000, "note": "52 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.9723574019735679, "total": 4.652827669982798, "audio_s": 5.431541666666667, "sr": 24000, "note": "136 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 1.3238157191080973, "total": 4.9937163210706785, "audio_s": 5.511541666666667, "sr": 24000, "note": "138 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 1.0167338589672, "total": 2.7918844459345564, "audio_s": 4.96, "sr": 24000, "note": "124 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 2.011222915025428, "total": 2.0113710339646786, "audio_s": 4.32, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.2101898529799655, "total": 0.7077332939952612, "audio_s": 4.32, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.228458087076433, "total": 0.7029962120577693, "audio_s": 4.52, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.6646043580258265, "total": 3.2515798789681867, "audio_s": 6.271541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 6, "tag": "full"}
+{"ttfb": 0.424952688976191, "total": 2.26531013706699, "audio_s": 14.1, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 3.2621474439511076, "total": 3.6100797879043967, "audio_s": 14.75, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 6, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.34904740611091256, "total": 2.5459809890016913, "audio_s": 14.572, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 1.0777586520416662, "total": 7.757938027032651, "audio_s": 15.196, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.22077416896354407, "total": 8.588518931996077, "audio_s": 16.15, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.5260347329312935, "total": 7.574417290976271, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.7830562620656565, "total": 5.120033091981895, "audio_s": 15.52, "sr": 24000, "note": "214 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.41596314194612205, "total": 3.6368861549999565, "audio_s": 15.68, "sr": 24000, "note": "175 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.8530522839864716, "total": 9.650270199985243, "audio_s": 17.91154166666667, "sr": 24000, "note": "448 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 1.6593178920447826, "total": 18.56443099398166, "audio_s": 24.191541666666666, "sr": 24000, "note": "605 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 1.61804392200429, "total": 6.127217667992227, "audio_s": 15.88, "sr": 24000, "note": "397 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 4.369364092010073, "total": 4.3696095700142905, "audio_s": 14.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.2593897010665387, "total": 4.466650826041587, "audio_s": 13.92, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.18161806103307754, "total": 2.7412736009573564, "audio_s": 14.08, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.7050492549315095, "total": 16.939368908992037, "audio_s": 20.07154166666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 6, "tag": "full"}
+{"ttfb": 0.34376570698805153, "total": 0.8963565690210089, "audio_s": 4.5, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.6760025059338659, "total": 1.5232925369637087, "audio_s": 4.55, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "short", "i": 7, "tag": "full", "transcript": "Hermes finished the Bento build, and Woodhouse says the tests all passed."}
+{"ttfb": 0.3346822198946029, "total": 0.7757902009179816, "audio_s": 4.686, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.8552949370350689, "total": 1.2384218000806868, "audio_s": 4.332, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.22384988400153816, "total": 1.0499881439609453, "audio_s": 4.5, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.1548649949254468, "total": 0.24362561700399965, "audio_s": 4.825, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.5323003040393814, "total": 1.3998112530680373, "audio_s": 4.2, "sr": 24000, "note": "61 chunks", "route": "vx-3.8-flash-tts", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.4702102979645133, "total": 1.4851226209430024, "audio_s": 4.36, "sr": 24000, "note": "45 chunks", "route": "vx-3.8-flash-lite-tts", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.9311054819263518, "total": 3.6284381919540465, "audio_s": 5.9915416666666665, "sr": 24000, "note": "150 chunks", "route": "vx-2.5-flash-tts", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 1.2063019170891494, "total": 3.4929751630406827, "audio_s": 5.631541666666666, "sr": 24000, "note": "141 chunks", "route": "vx-2.5-pro-tts", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.8221364519558847, "total": 1.881588360061869, "audio_s": 4.8, "sr": 24000, "note": "120 chunks", "route": "vx-3.1-flash-tts-preview", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.9624001019401476, "total": 0.9625115019734949, "audio_s": 4.48, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.24018100404646248, "total": 0.7531868000514805, "audio_s": 4.64, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.2365054030669853, "total": 0.622061888105236, "audio_s": 4.48, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.6277151430258527, "total": 3.085929131018929, "audio_s": 6.111541666666667, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "short", "i": 7, "tag": "full"}
+{"ttfb": 0.33176951308269054, "total": 2.104198932996951, "audio_s": 14.4, "sr": 24000, "note": "", "route": "az-4o-mini-tts", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 3.3479988999897614, "total": 3.3857085600029677, "audio_s": 14.9, "sr": 24000, "note": "", "route": "az-gpt-audio-1.5", "line": "long", "i": 7, "tag": "full", "transcript": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."}
+{"ttfb": 0.35579500102903694, "total": 0.8381797920446843, "audio_s": 16.252, "sr": 24000, "note": "", "route": "az-speech-mai-2.1-flash", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.9124674299964681, "total": 1.419405116001144, "audio_s": 16.572, "sr": 24000, "note": "", "route": "az-speech-mai-2.1", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.21066668897401541, "total": 2.9630492499563843, "audio_s": 15.7, "sr": 24000, "note": "", "route": "az-speech-dragonhd", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.1711945339338854, "total": 0.6837815749458969, "audio_s": 16.7875, "sr": 24000, "note": "", "route": "az-speech-neural", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.7450469259638339, "total": 4.4803329249843955, "audio_s": 15.32, "sr": 24000, "note": "225 chunks", "route": "vx-3.8-flash-tts", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.5958277069730684, "total": 2.876700749970041, "audio_s": 14.56, "sr": 24000, "note": "165 chunks", "route": "vx-3.8-flash-lite-tts", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.6771365739405155, "total": 7.907111749984324, "audio_s": 18.91154166666667, "sr": 24000, "note": "473 chunks", "route": "vx-2.5-flash-tts", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 1.1875588030088693, "total": 16.19552314991597, "audio_s": 18.07154166666667, "sr": 24000, "note": "452 chunks", "route": "vx-2.5-pro-tts", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.9392569030169398, "total": 4.622331385035068, "audio_s": 15.88, "sr": 24000, "note": "397 chunks", "route": "vx-3.1-flash-tts-preview", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 2.2004078100435436, "total": 2.2006355080520734, "audio_s": 14.08, "sr": 24000, "note": "", "route": "vx-chirp3hd-rest", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.21258964098524302, "total": 1.7970744899939746, "audio_s": 14.4, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.16423722298350185, "total": 1.783587169018574, "audio_s": 13.44, "sr": 24000, "note": "", "route": "vx-chirp3hd-stream-chunked", "line": "long", "i": 7, "tag": "full"}
+{"ttfb": 0.7209390749922022, "total": 71.89316424401477, "audio_s": 20.031541666666666, "sr": 24000, "note": "", "route": "vx-cloudtts-2.5-flash-tts-stream-chunked", "line": "long", "i": 7, "tag": "full"}

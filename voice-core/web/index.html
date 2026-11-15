@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f1f1d">
+<title>Voice</title>
+<link rel="manifest" href="/web/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/web/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/web/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg: #f6f5f1; --panel: #fff; --ink: #1d1d1b; --mute: #6b6a65; --line: #e2e0d8; --accent: #2f5d50; --warn: #a2561b; --bad: #a12d2d; --you: #e6eef5; --gem: #f1eee6; --her: #e9f2ea; --t3: #ece9f6; --t3ink: #5a4a9c; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --panel: #1f1f1d; --ink: #ecebe6; --mute: #9b9a94; --line: #34332f; --accent: #7fb8a4; --warn: #e0a06a; --bad: #e07a7a; --you: #1f2a33; --gem: #2a2722; --her: #1f2b22; --t3: #262236; --t3ink: #b4a7ef; } }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); display: flex; flex-direction: column; height: 100dvh; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; padding-top: max(8px, env(safe-area-inset-top)); border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+  .meta { color: var(--mute); font-size: 12px; }
+  nav { display: flex; gap: 2px; margin-left: auto; }
+  nav button { border: 0; background: none; padding: 5px 10px; color: var(--mute); cursor: pointer; border-radius: 6px; font: inherit; font-size: 13px; }
+  nav button.on { background: var(--bg); color: var(--ink); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 10px; padding: 7px 12px; cursor: pointer; touch-action: manipulation; }
+  button:disabled { opacity: .4; cursor: default; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--mute); }
+
+  /* Talk view */
+  #talk { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
+  #convo { min-height: 0; display: flex; flex-direction: column; }
+  #transcript { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  #empty { margin: auto; text-align: center; color: var(--mute); max-width: 440px; line-height: 1.6; }
+  #empty b { color: var(--ink); }
+  .line { padding: 8px 12px; border-radius: 14px; max-width: min(720px, 90%); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .line .who { display: block; font-size: 11px; color: var(--mute); margin-bottom: 1px; }
+  .line.user { background: var(--you); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .line.assistant { background: var(--gem); border-bottom-left-radius: 4px; }
+  .line.result { background: var(--her); white-space: normal; font-size: 14px; }
+  .line.result.t3 { background: var(--t3); }
+  .line.result .body { max-height: 260px; overflow: hidden; position: relative; }
+  .line.result.open .body { max-height: none; }
+  .line.result .more { margin-top: 4px; font-size: 12px; padding: 2px 8px; }
+  .line.result pre { white-space: pre-wrap; background: color-mix(in srgb, var(--ink) 6%, transparent); padding: 6px 8px; border-radius: 6px; font-size: 12.5px; }
+  .line.result code { font: 12.5px ui-monospace, monospace; }
+  .line.result ul, .line.result ol { margin: 4px 0; padding-left: 20px; }
+  .line.result a { color: var(--accent); }
+  .line.note { align-self: center; background: none; color: var(--mute); font-size: 12px; padding: 2px; }
+  .line.dropped { opacity: .45; }
+
+  #side { border-left: 1px solid var(--line); background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
+  #side h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--mute); margin: 0; font-weight: 650; padding: 12px 14px 6px; display: flex; justify-content: space-between; align-items: center; }
+  #tasks { overflow: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+  #cancelall { padding: 2px 8px; font-size: 11px; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+  #notasks { color: var(--mute); font-size: 13px; padding: 4px 4px; }
+  .task { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; font-size: 13.5px; background: var(--bg); }
+  .task .top { display: flex; gap: 6px; align-items: baseline; }
+  .task .label { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 10.5px; font-weight: 650; border-radius: 5px; padding: 1px 5px; background: var(--her); color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+  .badge.t3 { background: var(--t3); color: var(--t3ink); }
+  .task .state { font-size: 12px; color: var(--mute); }
+  .task.running .state { color: var(--accent); }
+  .task.waiting .state { color: var(--warn); font-weight: 600; }
+  .task.cancelled { opacity: .6; }
+  .task .p { color: var(--mute); font-size: 12.5px; margin-top: 3px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+  .task .q { color: var(--warn); font-size: 12.5px; margin-top: 3px; }
+  .task .acts { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+  .task .acts button { padding: 3px 9px; font-size: 12px; border-radius: 7px; }
+  .task form { display: flex; gap: 6px; margin-top: 7px; }
+  .approval { margin-top: 8px; border: 1px solid var(--warn); border-radius: 9px; padding: 7px 9px; font-size: 12.5px; color: var(--warn); }
+  .approval code { display: block; color: var(--ink); font: 12px ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 3px 0; max-height: 120px; overflow: auto; }
+  .approval button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .task form input { flex: 1; min-width: 0; }
+  #earlier { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+  #earlier .task a { color: var(--accent); }
+  .spin { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  #dock { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; }
+  #bar { display: flex; gap: 8px; align-items: center; }
+  #call { background: var(--accent); color: #fff; border: 0; font-weight: 650; padding: 11px 20px; font-size: 15px; border-radius: 999px; white-space: nowrap; }
+  #call.live { background: var(--bad); }
+  #resume { border-radius: 999px; padding: 10px 14px; white-space: nowrap; }
+  .round { width: 44px; height: 44px; border-radius: 50%; padding: 0; display: grid; place-items: center; flex: none; position: relative; }
+  .round svg { width: 20px; height: 20px; }
+  #mic.muted { background: var(--warn); color: #fff; border-color: var(--warn); }
+  #mic .ring { position: absolute; inset: -3px; border-radius: 50%; border: 3px solid var(--accent); opacity: 0; transition: opacity .08s; pointer-events: none; }
+  #hush.live { border-color: var(--bad); color: var(--bad); }
+  #say { flex: 1; min-width: 0; display: flex; gap: 6px; }
+  input[type=text], select, input[type=number] { font: inherit; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+  #text { flex: 1; min-width: 0; }
+  #mode { max-width: 150px; }
+  #statusline { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--mute); flex-wrap: wrap; }
+  #status { font-weight: 650; color: var(--ink); display: flex; gap: 6px; align-items: center; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); }
+  #status.listening .dot, #status.working .dot { background: var(--accent); }
+  #status.speaking .dot { background: var(--accent); animation: pulse .8s infinite; }
+  #status.standby .dot, #status.waking .dot, #status.connecting .dot { background: var(--warn); }
+  #status.ended .dot { background: var(--bad); }
+  #micwarn { color: var(--bad); }
+  #toast { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+  #toast.on { opacity: .92; }
+  .keys { margin-left: auto; display: flex; gap: 10px; }
+
+  /* Settings */
+  #settings { position: fixed; inset: 0; background: color-mix(in srgb, #000 35%, transparent); display: grid; place-items: center; z-index: 5; }
+  #settings .card { background: var(--panel); border-radius: 14px; padding: 18px; width: min(460px, 94vw); max-height: 90dvh; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+  #settings h3 { margin: 0; font-size: 15px; }
+  #settings label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; }
+  #settings label small { display: block; color: var(--mute); font-size: 12px; }
+  #settings .row2 { display: flex; gap: 8px; align-items: center; }
+
+  /* Developer view */
+  #dev { flex: 1; min-height: 0; display: grid; grid-template-columns: 360px 1fr; gap: 12px; padding: 12px; }
+  #dev section, #replaymain section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  #dev h2, #replaymain h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); margin: 0; }
+  textarea { font: 12px/1.4 ui-monospace, monospace; width: 100%; flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); color: var(--ink); resize: none; }
+  #counts, #tracename { color: var(--mute); font-size: 12px; }
+  #log, .timeline { flex: 1; overflow: auto; font: 11.5px/1.45 ui-monospace, monospace; }
+  .row { display: flex; gap: 8px; padding: 1px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+  .row .t { color: var(--mute); min-width: 48px; text-align: right; }
+  .row .k { min-width: 46px; color: var(--mute); }
+  .row .b { white-space: pre-wrap; word-break: break-all; }
+  .row.out .b { color: var(--accent); }
+  .row.status .b { font-weight: 600; }
+  .row.warn .b { color: var(--warn); }
+  .row.err .b { color: var(--bad); }
+  .row.gone { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .row.new { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  #replaymain { flex: 1; min-height: 0; padding: 12px; }
+  #replay { height: 100%; }
+  #replay .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #replay .summary { color: var(--mute); font-size: 13px; }
+  #replay .pick { max-width: 520px; }
+  #defaultsview { font: 11px/1.4 ui-monospace, monospace; max-height: 240px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; margin: 0; }
+
+  @media (max-width: 860px) {
+    #talk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; min-width: 0; }
+    #side:has(#notasks):has(#earlierbox[hidden]) { display: none; }
+    #earlier { flex-direction: row; overflow-x: auto; }
+    header { gap: 6px 12px; }
+    #bar { flex-wrap: wrap; }
+    #say { order: -1; flex-basis: 100%; }
+    #call { margin-left: auto; }
+    #call { padding: 11px 16px; }
+    #side h2 { padding: 8px 12px 4px; }
+    #tasks { flex-direction: row; overflow-x: auto; padding-bottom: 8px; }
+    .task { min-width: 260px; max-width: 300px; }
+    #dev { grid-template-columns: 1fr; overflow: auto; }
+    .keys, .wide { display: none !important; }
+    #mode { max-width: 110px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice</h1>
+  <span class="meta wide" id="route"></span>
+  <span class="meta" id="metrics"></span>
+  <nav>
+    <button id="tab-talk" class="on">Talk</button>
+    <button id="tab-dev">Developer</button>
+    <button id="tab-replay">Replay</button>
+    <button id="gear" title="Settings">Settings</button>
+  </nav>
+</header>
+
+<main id="talk">
+  <div id="convo">
+    <div id="transcript">
+      <div id="empty">
+        <p><b>Press Call and talk.</b> Ask anything; work goes to Hermes, and code changes to a coding agent in T3, while you keep talking.</p>
+        <p>Say <b>“stop”</b> to cut a reply short, <b>“stop everything”</b> to cancel every task too, and <b>“goodbye”</b> to hang up. You can also type, start a task without saying it, or follow one up from its card.</p>
+      </div>
+    </div>
+    <div id="dock">
+      <div id="statusline">
+        <span id="status" class="idle"><span class="dot"></span><span id="statustext">Idle</span></span>
+        <span id="micwarn" hidden>The microphone hears nothing.</span>
+        <span id="heard"></span>
+        <span class="keys"><span><kbd>Esc</kbd> stop talking</span><span><kbd>M</kbd> mute</span><span><kbd>Space</kbd> hold to talk while muted</span><span><kbd>/</kbd> type</span></span>
+      </div>
+      <div id="bar">
+        <button id="mic" class="round" title="Mute (M)" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          <span class="ring" id="ring"></span>
+        </button>
+        <button id="hush" class="round" title="Stop talking (Esc)" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <form id="say">
+          <input type="text" id="text" placeholder="Type to the call… (/h for Hermes, /t3 for code)" autocomplete="off" enterkeyhint="send">
+          <select id="mode" title="Where a typed message goes">
+            <option value="say">Say it</option>
+            <option value="hermes">New Hermes task</option>
+            <option value="t3">New coding task</option>
+          </select>
+        </form>
+        <button id="resume" hidden title="Call again, carrying on the last conversation">Continue</button>
+        <button id="call">Call</button>
+      </div>
+    </div>
+  </div>
+  <aside id="side">
+    <h2><span>Tasks</span><span><span id="taskcount"></span> <button id="cancelall" hidden title="Cancel every running task">Cancel all</button></span></h2>
+    <div id="tasks"><div id="notasks">No tasks yet. Ask for something that takes work and it appears here.</div></div>
+    <div id="earlierbox" hidden>
+      <h2><span>Coding agents from earlier calls</span></h2>
+      <div id="earlier"></div>
+    </div>
+  </aside>
+</main>
+
+<main id="dev" hidden>
+  <section>
+    <h2>Surface</h2>
+    <label class="meta">Preset <select id="preset"></select></label>
+    <textarea id="config" spellcheck="false"></textarea>
+    <div><button id="defaults">Show every setting</button> <span class="meta">core <code id="version"></code></span></div>
+    <pre id="defaultsview" hidden></pre>
+    <div id="counts"></div>
+    <div id="tracename"></div>
+  </section>
+  <section>
+    <h2>What the core heard and did</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<main id="replaymain" hidden>
+  <section id="replay"></section>
+</main>
+
+<div id="settings" hidden>
+  <div class="card">
+    <h3>Settings</h3>
+    <label><input type="checkbox" id="aec" checked><span>Echo cancellation<small>The browser keeps the reply out of the microphone. Leave on with speakers.</small></span></label>
+    <label><input type="checkbox" id="stopword"><span>Hear “stop” locally<small>The browser's speech recognition listens for stop and goodbye too, which is quicker than the model's transcript. Chrome and Safari only.</small></span></label>
+    <label><input type="checkbox" id="ptt"><span>Start muted<small>Tap to talk: hold Space, or tap the microphone, to be heard.</small></span></label>
+    <label><input type="checkbox" id="coding" checked><span>Coding agent in T3<small id="codinghelp">Code changes go to a T3 Code thread in the project you name.</small></span></label>
+    <label><input type="checkbox" id="fakehermes"><span>Fake Hermes and T3<small class="row2">Answer after <input type="number" id="fakedelay" value="4" min="0" max="120" style="width:64px;padding:3px 6px"> s without running anything.</small></span></label>
+    <label><span>Voice<small class="row2"><select id="voice">
+      <option>Charon</option><option>Puck</option><option>Kore</option><option>Fenrir</option><option>Aoede</option>
+      <option>Orus</option><option>Leda</option><option>Zephyr</option><option>Iapetus</option><option>Algenib</option>
+    </select> from the next call</small></span></label>
+    <label><input type="checkbox" id="trace" checked><span>Keep a trace for replay</span></label>
+    <div class="row2"><button id="closesettings">Done</button><span class="meta" id="build"></span></div>
+  </div>
+</div>
+<div id="toast"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

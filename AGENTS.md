@@ -34,6 +34,14 @@ and setup; SPEC.md and QA.md go deeper.
   (its own state in `/tmp/bento-dev/voice`), driven with `scripts/voice-dev <command>`. The
   installed app only accepts these commands when started with `BENTO_DEV` set.
 
+## The shared voice core
+
+`voice-core/` is the voice call logic every surface runs (TypeScript, built to
+`voice-core/dist/voice-core.js`, run by QuickJS on Android and JavaScriptCore on the Mac). See
+voice-core/README.md: change it there, try it on the web surface, and keep `scenarios/` passing
+on every engine. The web surface is https://voice.charlesnchr.com (the dev server on homelab, user
+unit `voice-core-dev`, behind Cloudflare Access); `voice-core/dev/talk.ts` makes scripted calls.
+
 ## Off macOS
 
 The Swift app only builds on macOS. Elsewhere:

@@ -1,0 +1,131 @@
+{
+ "name": "cancel-one",
+ "about": "Two tasks run: find a plumber for the boiler this week, and how to bleed a radiator. Then the user cancels the plumber one by description (the landlord is sorting it). Good: cancel_task on the plumber task only, confirmed in a few words; the radiator task keeps running and its answer is said once, as a short gist (heating off, bleed key on the valve a quarter turn until water comes out, check the boiler pressure); nothing from the plumber task is offered later.",
+ "agents": [
+  {
+   "id": "plumber",
+   "match": "plumber|boiler",
+   "after": 45,
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ],
+    [
+     12,
+     "Reading checkatrade.com"
+    ]
+   ],
+   "result": "Two plumbers can come this week: Harringay Heating on Wednesday morning, 85 pounds call-out, and N8 Plumbing on Thursday afternoon, 70 pounds.",
+   "facts": [
+    "harringay|n8 plumbing|wednesday|thursday"
+   ]
+  },
+  {
+   "id": "radiator",
+   "match": "radiator|bleed",
+   "after": 24,
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ]
+   ],
+   "result": "To bleed a radiator: turn the heating off and let it cool, hold a cloth under the bleed valve, turn the radiator key a quarter turn anticlockwise until water comes out instead of air, close it, then check the boiler pressure is back around 1.5 bar.",
+   "facts": [
+    "valve|key"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes to find a plumber who can come round this week to look at the boiler.",
+   "id": "ask1"
+  },
+  {
+   "until": "dispatch:plumber",
+   "timeout": 15
+  },
+  {
+   "say": "And can it also look up how to bleed a radiator?",
+   "id": "ask2"
+  },
+  {
+   "until": "dispatch:radiator",
+   "timeout": 15
+  },
+  {
+   "until": "quiet:3",
+   "timeout": 20
+  },
+  {
+   "wait": 3
+  },
+  {
+   "say": "Actually, cancel the plumber one, my landlord's sorting it.",
+   "id": "cancel",
+   "patience": 10
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 20
+  },
+  {
+   "until": "result:radiator",
+   "timeout": 40
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 40
+  },
+  {
+   "say": "Great, thanks.",
+   "id": "thanks"
+  },
+  {
+   "wait": 25
+  },
+  {
+   "until": "quiet:3",
+   "timeout": 20
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "plumber",
+   "count": 1
+  },
+  {
+   "dispatch": "radiator",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "cancel": "plumber"
+  },
+  {
+   "notCancelled": "radiator"
+  },
+  {
+   "maxModelWords": 50,
+   "after": "cancel",
+   "before": "thanks"
+  },
+  {
+   "voiced": "radiator",
+   "within": 20
+  },
+  {
+   "notSaid": "harringay|n8 plumbing|call-?out|85|70|eighty|seventy"
+  }
+ ],
+ "judge": [
+  "Was only the plumber task cancelled, and the cancel confirmed briefly?",
+  "Was the radiator answer said once, as a short gist?",
+  "Was nothing from the plumber task offered after the cancel?"
+ ],
+ "max": 110
+}

@@ -15,6 +15,7 @@ codeScanner = "16.1.0"
 zxing = "3.5.4"
 splash = "1.2.0"
 onnxruntime = "1.29.0"
+zipline = "1.20.1"
 junit5 = "6.1.3"
 androidxJunit = "1.3.0"
 uiautomator = "2.4.0"
@@ -52,6 +53,9 @@ gms-code-scanner = { module = "com.google.android.gms:play-services-code-scanner
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 onnxruntime-jvm = { module = "com.microsoft.onnxruntime:onnxruntime", version.ref = "onnxruntime" }
+# QuickJS for the shared voice core (voice-core/): the app brings the Android build, the tests the desktop one
+zipline-android = { module = "app.cash.zipline:zipline-android", version.ref = "zipline" }
+zipline-jvm = { module = "app.cash.zipline:zipline-jvm", version.ref = "zipline" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit5" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 androidx-test-junit = { module = "androidx.test.ext:junit", version.ref = "androidxJunit" }

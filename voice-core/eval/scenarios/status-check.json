@@ -1,0 +1,46 @@
+{
+ "name": "status-check",
+ "about": "Two slow tasks run with distinct progress: an energy tariff comparison (searching, then reading uswitch, then comparing Octopus, British Gas and EDF) and a search of the inbox for the letting agent's deposit email (found three emails from Foxtons, reading the latest). About twenty seconds in, the user asks what is going on, then how the energy one is going. Good: one or two short sentences naming both as still running with what each is doing; then the energy task's latest step (comparing Octopus, British Gas and EDF). Never a claimed result, price or winner before the results arrive. When the results do arrive, each is said once, briefly.",
+ "agents": [
+  { "id": "energy", "match": "energy|tariff|electric|gas", "after": 62,
+    "progress": [[3, "Using web_search"], [10, "Reading uswitch.com"], [20, "Comparing Octopus, British Gas and EDF tariffs"]],
+    "result": "The cheapest of the three is Octopus Tracker at about 1,050 pounds a year for your usage, then EDF at 1,120 and British Gas at 1,190.",
+    "facts": ["octopus"] },
+  { "id": "deposit", "match": "deposit|letting|inbox|email", "after": 56,
+    "progress": [[3, "Searching Gmail for the letting agent"], [14, "Found 3 emails from Foxtons, reading the latest"]],
+    "result": "Foxtons emailed on 3 November: your deposit of 1,800 pounds is protected with the DPS and will be returned within ten days of the checkout inspection.",
+    "facts": ["1,?800|eighteen hundred|thousand eight hundred|ten days|10 days|dps|protected"] }
+ ],
+ "steps": [
+  { "say": "Ask Hermes to compare the three cheapest energy tariffs for our flat.", "id": "ask1" },
+  { "until": "dispatch:energy", "timeout": 15 },
+  { "say": "And get it to go through my inbox and find the email from the letting agent about the deposit.", "id": "ask2" },
+  { "until": "dispatch:deposit", "timeout": 15 },
+  { "until": "quiet:3", "timeout": 20 },
+  { "wait": 15 },
+  { "say": "What's going on at the moment?", "id": "status1", "patience": 12 },
+  { "say": "How's the energy one going?", "id": "status2", "patience": 12 },
+  { "say": "Okay, no rush.", "id": "ok" },
+  { "until": "agents-done", "timeout": 70 },
+  { "until": "quiet:6", "timeout": 40 }
+ ],
+ "checks": [
+  { "dispatch": "energy", "count": 1 },
+  { "dispatch": "deposit", "count": 1 },
+  { "said": "energy|tariff", "after": "status1", "before": "status2" },
+  { "said": "deposit|letting|foxtons|email|inbox", "after": "status1", "before": "status2" },
+  { "said": "still|running|working|going|in progress|looking|searching|reading|comparing", "after": "status1", "before": "status2" },
+  { "maxModelWords": 45, "after": "status1", "before": "status2" },
+  { "said": "compar|octopus|british gas|edf", "after": "status2", "before": "ok" },
+  { "maxModelWords": 30, "after": "status2", "before": "ok" },
+  { "notSaid": "cheapest (one |tariff )?(is|was)|pounds|£|\\d+ ?p\\b|pence|per year|a year|1,?800|returned", "after": "status1", "before": "ok" },
+  { "voiced": "energy", "within": 25 },
+  { "voiced": "deposit", "within": 25 }
+ ],
+ "judge": [
+  "Did the overview say correctly that both tasks were still running, in a sentence or two?",
+  "Did the answer about the energy task give its latest progress without claiming a result?",
+  "Were both results said once each when they arrived?"
+ ],
+ "max": 140
+}

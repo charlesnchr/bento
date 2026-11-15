@@ -1,0 +1,87 @@
+{
+ "gemini-3.8-live": {
+  "latency": {
+   "n": 8,
+   "median": 1.279,
+   "p90": 1.31,
+   "min": 1.26,
+   "max": 1.331
+  },
+  "setup": {
+   "n": 8,
+   "median": 1.001,
+   "p90": 1.033,
+   "min": 0.6,
+   "max": 1.046
+  },
+  "errors": 0
+ },
+ "gemini-live-2.5-flash-native-audio": {
+  "latency": {
+   "n": 8,
+   "median": 1.384,
+   "p90": 1.446,
+   "min": 1.299,
+   "max": 1.5
+  },
+  "setup": {
+   "n": 8,
+   "median": 1.018,
+   "p90": 1.08,
+   "min": 0.485,
+   "max": 1.126
+  },
+  "errors": 0
+ },
+ "gpt-realtime-2.1": {
+  "latency": {
+   "n": 8,
+   "median": 1.327,
+   "p90": 2.271,
+   "min": 1.086,
+   "max": 2.995
+  },
+  "setup": {
+   "n": 8,
+   "median": 0.807,
+   "p90": 1.01,
+   "min": 0.625,
+   "max": 1.017
+  },
+  "errors": 0
+ },
+ "gpt-realtime-2.1-mini": {
+  "latency": {
+   "n": 8,
+   "median": 1.568,
+   "p90": 2.064,
+   "min": 1.288,
+   "max": 2.126
+  },
+  "setup": {
+   "n": 8,
+   "median": 0.87,
+   "p90": 0.941,
+   "min": 0.61,
+   "max": 1.01
+  },
+  "errors": 0
+ },
+ "gpt-live-1": {
+  "latency": {
+   "n": 8,
+   "median": 0.736,
+   "p90": 1.164,
+   "min": 0.596,
+   "max": 1.175
+  },
+  "setup": {
+   "n": 8,
+   "median": 1.037,
+   "p90": 1.366,
+   "min": 0.761,
+   "max": 1.986
+  },
+  "errors": 0
+ }
+}

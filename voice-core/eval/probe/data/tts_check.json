@@ -1,0 +1,122 @@
+{
+ "az-4o-mini-tts|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "az-4o-mini-tts|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build and Woodhouse says the tests all passed."
+ },
+ "az-gpt-audio-1.5|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "az-gpt-audio-1.5|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "az-speech-dragonhd|long": {
+  "wer": 0.05,
+  "heard": "Aemenz has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon, so Tuesday stays manageable."
+ },
+ "az-speech-dragonhd|short": {
+  "wer": 0.083,
+  "heard": "Amens finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "az-speech-mai-2.1-flash|long": {
+  "wer": 0.075,
+  "heard": "Herm\u00e8s has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "az-speech-mai-2.1-flash|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "az-speech-mai-2.1|long": {
+  "wer": 0.075,
+  "heard": "Herm\u00e8s has finished checking your calendar for next week. You have three meetings on Tuesday, including the bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "az-speech-mai-2.1|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build and Woodhouse says the tests all passed."
+ },
+ "az-speech-neural|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10 and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "az-speech-neural|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "vx-2.5-flash-tts|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-2.5-flash-tts|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build and Woodhouse says the tests all passed."
+ },
+ "vx-2.5-pro-tts|long": {
+  "wer": 0.075,
+  "heard": "Herm\u00e8s has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-2.5-pro-tts|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build and Woodhouse says the tests all passed."
+ },
+ "vx-3.1-flash-tts-preview|long": {
+  "wer": 0.0,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento Design Review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-3.1-flash-tts-preview|short": {
+  "wer": 0.083,
+  "heard": "Hermes finished the bento build, and Wodehouse says the tests all passed."
+ },
+ "vx-3.8-flash-lite-tts|long": {
+  "wer": 0.05,
+  "heard": "Ermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-3.8-flash-lite-tts|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build and Woodhouse says the tests all passed."
+ },
+ "vx-3.8-flash-tts|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-3.8-flash-tts|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "vx-chirp3hd-rest|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-chirp3hd-rest|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "vx-chirp3hd-stream-chunked|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon, so Tuesday stays manageable."
+ },
+ "vx-chirp3hd-stream-chunked|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "vx-chirp3hd-stream|long": {
+  "wer": 0.0,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the bento design review at ten, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-chirp3hd-stream|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ },
+ "vx-cloudtts-2.5-flash-tts-stream-chunked|long": {
+  "wer": 0.025,
+  "heard": "Hermes has finished checking your calendar for next week. You have three meetings on Tuesday, including the Bento design review at 10, and Thursday is completely free. Woodhouse suggests moving the dentist appointment to Thursday afternoon so Tuesday stays manageable."
+ },
+ "vx-cloudtts-2.5-flash-tts-stream-chunked|short": {
+  "wer": 0.0,
+  "heard": "Hermes finished the bento build, and Woodhouse says the tests all passed."
+ }
+}

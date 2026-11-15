@@ -1,0 +1,13 @@
+node_modules/
+dist/versions/
+web/dist/
+traces/
+hosts/python/.venv/
+.pytest_cache/
+!dist/
+eval/cache
+eval/runs/
+eval/probe/local.env
+eval/probe/.venv/
+eval/probe/clips/
+eval/probe/out/

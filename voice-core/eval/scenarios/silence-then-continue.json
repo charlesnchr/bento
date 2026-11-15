@@ -1,0 +1,74 @@
+{
+ "name": "silence-then-continue",
+ "about": "The user chats about cooking mushroom risotto (which wine, how long the rice cooks), then goes quiet for 45 seconds with nothing running, as people do while they cook. Then they carry on without restating the topic: \"Sorry, I was stirring. How long did you say again?\" Good: the call is still there, answers at once, and understands that \"how long\" means the rice cooking time it gave earlier (about 18 to 20 minutes). It does not ask what the user means, re-introduce itself or talk during the silence.",
+ "agents": [],
+ "steps": [
+  {
+   "say": "I'm making mushroom risotto tonight. What kind of wine goes well with it?",
+   "id": "q1"
+  },
+  {
+   "until": "reply",
+   "timeout": 15
+  },
+  {
+   "say": "Nice. And how long does the rice need to cook?",
+   "id": "q2"
+  },
+  {
+   "until": "reply",
+   "timeout": 15
+  },
+  {
+   "until": "quiet:2",
+   "timeout": 20
+  },
+  {
+   "mark": "silence"
+  },
+  {
+   "wait": 45
+  },
+  {
+   "say": "Sorry, I was stirring. How long did you say again?",
+   "id": "q3"
+  },
+  {
+   "until": "quiet:5",
+   "timeout": 25
+  }
+ ],
+ "checks": [
+  {
+   "said": "minute",
+   "after": "q2",
+   "before": "q3"
+  },
+  {
+   "noSpeech": true,
+   "after": "mark:silence",
+   "before": "q3"
+  },
+  {
+   "said": "minute",
+   "after": "q3"
+  },
+  {
+   "said": "\\b(1[2-9]|2[0-5]|twelve|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\\b",
+   "after": "q3"
+  },
+  {
+   "notSaid": "what do you mean|which (one|thing)|could you clarify|can you clarify|how long (did|for) what",
+   "after": "q3"
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  }
+ ],
+ "judge": [
+  "After the silence, did the assistant understand that the user was asking about the rice cooking time?",
+  "Did the call stay quiet during the silence and answer promptly afterwards?"
+ ],
+ "max": 120
+}

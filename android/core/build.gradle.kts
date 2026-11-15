@@ -23,12 +23,15 @@ dependencies {
     api(libs.okhttp)
     // the wake word model's Java API; the app brings ONNX Runtime for Android, the tests the desktop build
     compileOnly(libs.onnxruntime.jvm)
+    // QuickJS for the shared voice core: the same split, the app brings Zipline's Android build
+    compileOnly(libs.zipline.jvm)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.onnxruntime.jvm)
+    testImplementation(libs.zipline.jvm)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -37,5 +40,9 @@ tasks.test {
     // The live Gemini tests run only with a key: its presence (never its value) is an
     // input, so a cached run without the key can't stand in for one with it.
     inputs.property("geminiKeyPresent", providers.environmentVariable("GEMINI_API_KEY").map { it.isNotBlank() }.orElse(false))
+    // The voice core's bundle and recorded scenarios, which the conformance test replays.
+    systemProperty("voiceCore.dir", rootProject.projectDir.resolve("../voice-core").absolutePath)
+    inputs.dir(rootProject.projectDir.resolve("../voice-core/scenarios"))
+    inputs.file(rootProject.projectDir.resolve("../voice-core/dist/voice-core.js"))
     testLogging { events("failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }

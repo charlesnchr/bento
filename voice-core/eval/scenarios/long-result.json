@@ -1,0 +1,32 @@
+{
+ "name": "long-result",
+ "about": "Hermes returns a long packing list (about 400 words, ten numbered points). Good: the model gives the gist in at most about 45 words (waterproofs, layers, boots and the like) and says the full list is on the screen; it does not read the list out. Then the user asks what it said about socks: the model answers from the result (three pairs of merino socks plus liners, spares in a dry bag) in a sentence, with no new task.",
+ "agents": [
+  { "id": "packing", "match": "pack|hiking|lake district|list", "after": 8,
+    "progress": [[2, "Using web_search"], [5, "Reading the Met Office mountain forecast"]],
+    "result": "Here is a packing list for a week of hiking in the Lake District in October. Expect rain on most days, temperatures between 4 and 12 degrees on the fells, and short daylight, with sunset around 6 pm.\n\n1. Waterproofs: a proper waterproof jacket with a hood and waterproof over-trousers. Cheap ponchos don't survive the wind on the tops.\n2. Layers: two merino or synthetic base layers, a fleece mid layer and a light insulated jacket for stops and summits. Avoid cotton, which stays wet.\n3. Socks: three pairs of merino hiking socks plus one pair of thin liner socks per day of walking you plan back to back. Pack the spares in a dry bag so they stay dry.\n4. Boots: waterproof walking boots that are already broken in, with good ankle support. Bring gaiters for the boggy paths around Langdale and Borrowdale.\n5. Navigation: OS Explorer maps OL4, OL5, OL6 and OL7 in a map case, a compass, and the OS Maps app with the area downloaded for offline use, since signal is patchy in the valleys.\n6. Light: a head torch with spare batteries. Days are short and descents take longer than you think.\n7. Food and water: a one litre bottle or bladder, a flask for a hot drink, and lunch plus snacks such as flapjacks and nuts for each day.\n8. Safety: a small first aid kit with blister plasters, a foil survival bag, a whistle and a fully charged power bank. Tell someone your route each morning.\n9. Comfort: a warm hat, gloves (two pairs, as one will get wet), a buff, sunglasses and sun cream for the odd clear day.\n10. Evenings: dry clothes and shoes to change into, a midge net in case it is mild, and a book, since most pubs and B&Bs have poor Wi-Fi.\n\nIf you tell me which valley you are staying in, I can suggest routes for each day that suit the forecast.",
+    "facts": ["waterproof|\\brain|layer|boot"] }
+ ],
+ "steps": [
+  { "say": "Ask Hermes to put together a packing list for a week of hiking in the Lake District in October.", "id": "ask" },
+  { "until": "dispatch:packing", "timeout": 15 },
+  { "until": "result:packing", "timeout": 20 },
+  { "until": "quiet:4", "timeout": 60 },
+  { "say": "What did it say about socks?", "id": "socks" },
+  { "until": "quiet:5", "timeout": 30 }
+ ],
+ "checks": [
+  { "dispatch": "packing", "count": 1 },
+  { "dispatch": "?", "count": 0 },
+  { "voiced": "packing", "within": 8 },
+  { "maxModelWords": 45, "after": "ask", "before": "socks" },
+  { "said": "screen|app|chat|full list", "after": "ask", "before": "socks" },
+  { "said": "merino|liner|three pairs|3 pairs|dry bag", "after": "socks" },
+  { "maxModelWords": 35, "after": "socks" }
+ ],
+ "judge": [
+  "Did the assistant give a short gist of the packing list and point to the screen, rather than reading the list out?",
+  "Did it answer the socks question from the result, correctly and briefly, without starting a new task?"
+ ],
+ "max": 80
+}
