@@ -1,7 +1,7 @@
 // swift-tools-version:5.10
 // Bento: one menu-bar app for capture, window management, tiling, app hotkeys,
 // clipboard history, floating notes, a todo list, menu bar item management,
-// dictation, meeting notes and a voice assistant.
+// per-device mouse and trackpad settings, dictation, meeting notes and a voice assistant.
 // Built with SwiftPM only (no Xcode); scripts/build.sh assembles and signs the .app bundle.
 import PackageDescription
 import Foundation
@@ -16,7 +16,7 @@ let testSwiftSettings: [SwiftSetting] = testingFix
 let testLinkerSettings: [LinkerSetting] = testingFix
     ? [.unsafeFlags(["-F", cltFrameworks, "-Xlinker", "-rpath", "-Xlinker", cltFrameworks])] : []
 
-let modules = ["Shot", "ShotEditor", "Windows", "Tiling", "Launcher", "Clipboard", "Notes", "Todo", "MenuBar"]
+let modules = ["Shot", "ShotEditor", "Windows", "Tiling", "Launcher", "Clipboard", "Notes", "Todo", "MenuBar", "Mouse"]
 
 let package = Package(
     name: "Bento",
@@ -46,6 +46,7 @@ let package = Package(
         .target(name: "Notes", dependencies: ["BentoCore"]),
         .target(name: "Todo", dependencies: ["BentoCore"]),
         .target(name: "MenuBar", dependencies: ["BentoCore"]),
+        .target(name: "Mouse", dependencies: ["BentoCore"]),
         // Dictation, meetings and the assistant: three modules sharing one
         // engine, so they live in one target. VoiceCore is the UI-free part.
         .target(name: "VoiceCore", dependencies: ["BentoCore"]),
@@ -72,6 +73,7 @@ let package = Package(
         .executableTarget(name: "DevNotes", dependencies: ["BentoShell", "Notes"], path: "Dev/DevNotes"),
         .executableTarget(name: "DevTodo", dependencies: ["BentoShell", "Todo"], path: "Dev/DevTodo"),
         .executableTarget(name: "DevMenuBar", dependencies: ["BentoShell", "MenuBar"], path: "Dev/DevMenuBar"),
+        .executableTarget(name: "DevMouse", dependencies: ["BentoShell", "Mouse"], path: "Dev/DevMouse"),
         .executableTarget(name: "DevVoice", dependencies: ["BentoShell", "Voice"], path: "Dev/DevVoice"),
 
         .testTarget(name: "BentoCoreTests", dependencies: ["BentoCore"],
