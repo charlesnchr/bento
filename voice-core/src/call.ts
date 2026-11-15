@@ -303,7 +303,7 @@ export class Call {
   private wakewordOn = false;
   /** announce.by "host": the brief playing now, and what was said while the call was off the model. */
   private announcing: { item: Unheard; from: number; until: number } | null = null;
-  private saidAway: string[] = [];
+  private saidAway: { item: Unheard; line: string }[] = [];
   /** When a brief last finished playing, until someone else speaks: the next one ready follows it at once. */
   private announcedAt: number | null = null;
   /** The brief the user last spoke over, and when: a "stop" in that speech drops it for good. */
@@ -881,7 +881,7 @@ export class Call {
   /** The model learns what Bento is saying: on its call while that's open, otherwise as a note. */
   private tellModel(item: Unheard): void {
     const brief = item.brief!;
-    if (this.standby) { this.saidAway.push(`"${item.label}": ${brief.text}`); return; }
+    if (this.standby) { this.saidAway.push({ item, line: `"${item.label}": ${brief.text}` }); return; }
     const call = item.call != null && item.session === this.session && !this.cancelledCalls.has(item.call) ? item.call : null;
     item.call = null;
     const note = announcedNote(item.label, brief.text, item.result, item.asked);
@@ -921,7 +921,12 @@ export class Call {
       a.item.brief = null;
       a.item.briefFailed = true;
       this.log("info", `"${a.item.label}"'s result was spoken over after a long wait: the model tells it`);
-      if (!this.standby && !this.waking) this.deliverWhenIdle();
+      // The model was told Bento said it: it didn't get through, and the result comes for the model to tell.
+      this.saidAway = this.saidAway.filter((said) => said.item !== a.item);
+      if (!this.standby) this.send(noteFrame(`From Bento, not the user's words: the user spoke over Bento and did not hear "${a.item.label}"'s outcome. Bento won't say it again: its result follows for you to tell.`), true);
+      // Deferred: the cut may come from within a comeback, which then brings the model back itself.
+      if (this.standby) this.defer(() => this.comeBack());
+      else if (!this.waking) this.deliverWhenIdle();
       this.updateWakeword();
       return;
     }
@@ -1064,7 +1069,7 @@ export class Call {
     // Back for a result while dormant, not for the user: the model still hears nothing of the room.
     if (!this.dormant) for (const pcm of this.held) this.send(audioFrame(pcm));
     for (const frame of this.typedLater.splice(0)) this.send(frame);
-    const away = this.saidAway.splice(0);
+    const away = this.saidAway.splice(0).map((a) => a.line);
     if (away.length > 0) {
       this.send(noteFrame("From Bento, not the user's words: while this call was paused Bento told the user these results aloud, so " +
         "don't say them again; their full replies are in the earlier conversation above:\n" + away.join("\n")), true);

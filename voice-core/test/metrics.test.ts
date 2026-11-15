@@ -73,3 +73,17 @@ test("the same result in two replies is two tellings, however close: a repeat", 
   const quiet = log.filter((r) => !String(r.k).startsWith("say."));
   assert.equal(score(quiet as any, scenario as any).repeatedResults, 1);
 });
+
+test("two replies less than 0.35 s apart are two stretches, each with its own words", () => {
+  const model = (t: number, dur: number) => ({ t, k: "play", dur, source: "model" });
+  const ends = (t: number) => ({ t, k: "model", what: "turnComplete" });
+  const log = [
+    tx(9.9, "Your table is booked for eight."), model(10, 2), ends(10.6),
+    tx(12.1, "Your table is booked for eight."), model(12.2, 2), ends(12.8),
+  ];
+  assert.deepEqual(segments(log).map((s) => [s.start, s.end, s.text]), [[10, 12, "Your table is booked for eight."], [12.2, 14.2, "Your table is booked for eight."]]);
+  const scenario = { name: "t", steps: [], agents: [{ id: "dinner", match: "x", result: "Booked for 8.", facts: ["book", "\\b(8|eight)\\b"] }] };
+  const m = score([{ t: 0, k: "run" }, { t: 9, k: "agent.result", run: "r", id: "dinner", text: "done" }, ...log, { t: 20, k: "script.end" }] as any, scenario as any);
+  assert.equal(m.announcements[0].times, 2);
+  assert.equal(m.repeatedResults, 1);
+});

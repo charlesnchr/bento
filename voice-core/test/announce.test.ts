@@ -680,7 +680,8 @@ test("a brief spoken over after its long wait goes to the model: it isn't starte
   }
   assert.equal(played(s).length, 1, "tried once, at the first pause after deliverMax");
   assert.ok(s.finals().length + s.resultTurns().length >= 1, "then the model has the result to tell");
-  assert.equal(notes(s).filter((n) => n.includes("did not hear")).length, 0, "and no note says Bento will say it again");
+  assert.equal(notes(s).filter((n) => n.includes("Bento says it again later")).length, 0, "no note says Bento will say it again");
+  assert.equal(notes(s).filter((n) => n.includes("Bento won't say it again: its result follows for you to tell")).length, 1);
 });
 
 test("audio held while a brief plays in standby is silenced as live audio would be", () => {
@@ -721,4 +722,48 @@ test("with whileSpeaking wake, the wake word is on over a brief in standby and c
   assert.equal(flushes(s), 1);
   assert.equal(wakeword(), false);
   assert.equal(s.statuses().at(-1), "standby");
+});
+
+// Found in the third review.
+
+/** Two tasks, the call in standby, the first's brief ready after a long wait (the microphone was lent), playing, and cut by the wake word. */
+function cutInStandbyAfterLongWait(s: Sim) {
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  s.push({ type: "lend" });
+  ready(s, "Your table is booked for 8pm.", 3);
+  s.advance(12);
+  s.push({ type: "reclaim" });
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  s.advance(0.5);
+  s.push({ type: "wake" });
+  assert.equal(flushes(s), 1);
+}
+
+test("a brief cut in standby after its long wait brings the model back to tell the result", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "wake", gainDb: 0 }, limits: { deliverMax: 10 } });
+  cutInStandbyAfterLongWait(s);
+  s.advance(3);
+  assert.equal(s.sockets.size, 2, "one new session");
+  assert.equal(played(s).length, 1, "the brief isn't played again");
+  assert.ok(s.sent(2).some((f) => f.includes("Booked for 8pm.") && f.includes('"turnComplete":true')), "the model is given the result to tell");
+  assert.ok(!s.sent(2).some((f) => f.includes("while this call was paused Bento told the user these results aloud")), "and isn't told Bento said it");
+});
+
+test("the stop button before that session is up drops the result: the model isn't given it", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "wake", gainDb: 0 }, limits: { deliverMax: 10 } });
+  s.autoSetup = false;
+  // The first session was set up by hand below; from here setups wait.
+  s.gemini({ setupComplete: {} });
+  cutInStandbyAfterLongWait(s);
+  s.advance(0.3);
+  assert.equal(s.sockets.size, 2);
+  s.push({ type: "interrupt" });
+  s.gemini({ setupComplete: {} });
+  s.advance(3);
+  assert.ok(!s.sent(2).some((f) => f.includes("Booked for 8pm.") && f.includes('"turnComplete":true')));
+  assert.equal(played(s).length, 1);
 });

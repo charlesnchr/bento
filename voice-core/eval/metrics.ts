@@ -86,13 +86,18 @@ export function segments(log: Rec[]): Segment[] {
   const out: Segment[] = [];
   let cur: Segment | null = null;
   let until = -1;
+  // Which of the model's turns each stretch is from: a new reply is a new stretch, however soon it follows.
+  const turnOf = new Map<Segment, number>();
+  let turn = 0;
   for (const r of log) {
+    if (r.k === "model" && r.what === "turnComplete") turn++;
     if (r.k === "play") {
       const source = (r.source as string) ?? "model";
       // A headline is one clip and a stretch of its own, however closely the core spaces two of them.
-      if (cur == null || r.t > until + 0.35 || source === "announcer" || cur.source !== source) {
+      if (cur == null || r.t > until + 0.35 || source === "announcer" || cur.source !== source || turnOf.get(cur) !== turn) {
         cur = { start: Math.max(r.t, until), end: r.t, text: "", cut: false, audio: 0, source };
         out.push(cur);
+        turnOf.set(cur, turn);
         until = Math.max(until, r.t);
       }
       until = Math.max(until, r.t) + (r.dur as number);
@@ -105,13 +110,21 @@ export function segments(log: Rec[]): Segment[] {
     }
   }
   // A headline's words come with its clip. The model's come as it generates, a little before their
-  // sound: each fragment belongs to the stretch of the model's being generated when it came.
+  // sound: each fragment belongs to the stretch of its own turn being generated when it came.
+  turn = 0;
   for (const r of log) {
+    if (r.k === "model" && r.what === "turnComplete") turn++;
     if (r.k !== "tx" || r.role !== "assistant") continue;
     const clip = out.find((s) => s.source === "announcer" && Math.abs(s.start - r.t) < 0.05);
     const headline = r.source != null ? r.source === "announcer" : clip != null;
     let best: Segment | null = headline ? clip ?? null : null;
-    if (!headline) for (const s of out) { if (s.start > r.t + 0.6) break; if (s.source !== "announcer") best = s; }
+    if (!headline) {
+      const mine = out.filter((s) => s.source !== "announcer" && turnOf.get(s) === turn);
+      for (const s of mine) if (s.start <= r.t + 0.6) best = s;
+      best ??= mine[0] ?? null;
+      // A turn with no sound of its own (its audio was dropped): the stretch before, as it was heard.
+      if (best == null) for (const s of out) { if (s.start > r.t + 0.6) break; if (s.source !== "announcer") best = s; }
+    }
     if (best == null) for (const s of out) if (s.start <= r.t + 0.6) best = s; else break;
     if (best) best.text += r.text as string;
   }
