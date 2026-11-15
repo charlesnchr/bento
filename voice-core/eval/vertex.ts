@@ -19,6 +19,8 @@ const SOCKS = process.env.VOICE_CORE_SOCKS ?? "socks5h://127.0.0.1:11080";
 const LOCATION = process.env.VOICE_CORE_LOCATION ?? "us-central1";
 export const LIVE_MODEL = process.env.VOICE_EVAL_LIVE_MODEL ?? "gemini-3.8-live";
 export const TTS_MODEL = process.env.VOICE_EVAL_TTS_MODEL ?? "gemini-3.8-flash-tts";
+/** The voice for the core's own announcements: the lite model is the quicker one from here. */
+export const BRIEF_TTS_MODEL = process.env.VOICE_BRIEF_TTS_MODEL ?? "gemini-3.8-flash-lite-tts";
 export const JUDGE_MODEL = process.env.VOICE_EVAL_JUDGE_MODEL ?? "gemini-4-hydrogen";
 const PROJECT = env.VERTEX_PROJECT_ID;
 const account = serviceAccount((env.VERTEX_CREDENTIALS_PATH ?? "").replace(/^~/, os.homedir()));
@@ -99,9 +101,9 @@ export async function speech(text: string, voice = "Puck", style = ""): Promise<
 }
 
 /** [text] spoken by [voice] as PCM16 mono at 24 kHz, as the call plays it, with leading and trailing silence trimmed. Not cached. */
-export async function tts(text: string, voice: string): Promise<Buffer> {
+export async function tts(text: string, voice: string, model = BRIEF_TTS_MODEL): Promise<Buffer> {
   return retry(`TTS "${text.slice(0, 40)}"`, async () => {
-    const res = await post(modelUrl(TTS_MODEL), {
+    const res = await post(modelUrl(model), {
       contents: [{ role: "user", parts: [{ text }] }],
       generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
     });

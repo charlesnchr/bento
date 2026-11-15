@@ -120,12 +120,15 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
   const ambient = utts.filter((u) => u.ambient);
   const callSeconds = log.length ? log[log.length - 1].t : 0;
 
-  // Reply latency: the first sound after an utterance, before the next one starts.
+  // Reply latency: the first sound after an utterance, before the next one starts. An utterance
+  // handed to an agent before that sound was answered by the hand-off (its tone): the sound is a
+  // result, not a reply, and its wait is the agent's.
   const replyLatency: number[] = [];
   users.forEach((u, i) => {
     const next = users[i + 1]?.start ?? Infinity;
     const first = log.find((r) => r.k === "play" && r.t >= u.end - 0.05 && r.t < next);
-    if (first && first.t - u.end < 10 && !segs.some((s) => s.start < u.end - 0.3 && s.end > u.end + 0.2)) replyLatency.push(+(first.t - u.end).toFixed(2));
+    const handedOff = first != null && log.some((r) => r.k === "agent.start" && r.t >= u.end - 0.05 && r.t < first.t);
+    if (first && !handedOff && first.t - u.end < 10 && !segs.some((s) => s.start < u.end - 0.3 && s.end > u.end + 0.2)) replyLatency.push(+(first.t - u.end).toFixed(2));
   });
 
   // Turn collisions: the user waited for a quiet line (the script's "turn"), and the model started as they did.
@@ -147,13 +150,19 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
     return null;
   };
   const announcements: Announcement[] = [];
+  // From the end of the scenario's `retold` utterance ("what did I miss?") the user has asked to hear results again:
+  // saying one there voices it if nothing did before, and is not a repeat.
+  const retold = (scenario as { retold?: string }).retold;
+  const retoldAt = retold ? utts.find((u) => u.id === retold)?.end ?? Infinity : Infinity;
   for (const r of results) {
     const facts = expectOf(r.id as string)?.facts;
     if (!facts || facts.length === 0) continue;
     const res = facts.map((f) => new RegExp(f, "i"));
     const after = segs.filter((s) => s.end > r.t);
     // A cut segment only counts if most of it played.
-    const said = after.filter((s) => res.every((re) => re.test(s.text)) && (!s.cut || (s.end - s.start) / Math.max(0.1, s.audio) > 0.7));
+    const all = after.filter((s) => res.every((re) => re.test(s.text)) && (!s.cut || (s.end - s.start) / Math.max(0.1, s.audio) > 0.7));
+    const before = all.filter((s) => s.start < retoldAt - 0.3);
+    const said = before.length > 0 ? before : all.slice(0, 1);
     const firstFact = res[0];
     const aborted = after.filter((s) => s.cut && !said.includes(s) && (firstFact.test(s.text) || /^\s*(by the way|also|oh,|quick update|update)/i.test(s.text)) && (said.length === 0 || s.start < said[0].start)).length;
     announcements.push({
@@ -242,30 +251,51 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
  * A scripted check. `after` and `before` name user utterances by id (from the end of one to the
  * start of the other); without them the whole call counts.
  *   {said: "regex"} / {notSaid: "regex"}    the model's words in the window
- *   {dispatch: "id", count: 1}              new tasks started for that agent script
+ *   {dispatch: "id", count: 1, within: 4}   new tasks started for that agent script (each within so many seconds of the request)
  *   {followUp: "id", match: "regex"}        a follow-up or steer reached that task, with these words
  *   {steer: "id", match: "regex"}           a steer into the running task
  *   {cancel: "id"}                          that task's run was cancelled
  *   {notCancelled: "id"}
- *   {request: "id", contains: ["word"]}     the agent got these words
+ *   {request: "id", contains: ["word"], lacks: ["word"]}   the agent got these words, and not those
  *   {status: "standby"}                     the call reached this status
  *   {voiced: "id", within: 20}              the result was said, within so many seconds
  *   {maxModelWords: 40, after, before}      the model's words in the window, at most
  *   {noSpeech: true, after, before}         the model said nothing in the window
+ *   {yields: "utteranceId", within: 1}      the model's sound stopped within so many seconds of the user cutting in
+ *   {connected: "id", max: 40}              seconds on a model socket while that task ran, at most
+ * `after` and `before` may also be "start:<utterance>", "result:<agent>", "dispatch:<agent>" or "mark:<name>".
  */
 function check(c: Record<string, any>, log: Rec[], utts: Utterance[], segs: Segment[], anns: Announcement[]): CheckResult {
-  const from = c.after ? utts.find((u) => u.id === c.after)?.end ?? Infinity : -Infinity;
-  const to = c.before ? utts.find((u) => u.id === c.before)?.start ?? Infinity : Infinity;
+  // An utterance id, or "start:<utterance>", "result:<agent>", "dispatch:<agent>", "mark:<name>".
+  const edge = (name: string, side: "after" | "before"): number => {
+    const m = /^(start|result|dispatch|mark):(.+)$/.exec(name);
+    if (!m) { const u = utts.find((x) => x.id === name); return u ? (side === "after" ? u.end : u.start) : Infinity; }
+    const [, kind, arg] = m;
+    if (kind === "start") return utts.find((u) => u.id === arg)?.start ?? Infinity;
+    const k = kind === "result" ? "agent.result" : kind === "dispatch" ? "agent.start" : "mark";
+    return log.find((r) => r.k === k && (kind === "mark" ? r.name === arg : r.id === arg))?.t ?? Infinity;
+  };
+  const from = c.after ? edge(c.after, "after") : -Infinity;
+  const to = c.before ? edge(c.before, "before") : Infinity;
   const within = segs.filter((s) => s.start >= from - 0.3 && s.start < to);
   const text = within.map((s) => s.text).join(" ");
   const starts = log.filter((r) => r.k === "agent.start" && r.t >= from && r.t < to);
   const steers = log.filter((r) => r.k === "agent.steer" && r.t >= from && r.t < to);
   const res = (pass: boolean, why: string): CheckResult => ({ check: c, pass, why });
+  if (Array.isArray(c.anyOf)) {
+    // Passes when any of its checks does (each with its own window).
+    const rs = (c.anyOf as Record<string, any>[]).map((x) => check(x, log, utts, segs, anns));
+    return res(rs.some((r) => r.pass), rs.map((r) => `${r.pass ? "pass" : "fail"}: ${r.why}`).join(" | "));
+  }
   if (c.said != null) return res(new RegExp(c.said, "i").test(text), `the model said: ${text.slice(0, 200)}`);
   if (c.notSaid != null) return res(!new RegExp(c.notSaid, "i").test(text), `the model said: ${text.slice(0, 200)}`);
   if (c.dispatch != null) {
-    const n = starts.filter((r) => r.id === c.dispatch && !r.followUp).length;
-    return res(n === (c.count ?? 1), `${n} task(s) started for ${c.dispatch}`);
+    const got = starts.filter((r) => r.id === c.dispatch && !r.followUp);
+    const n = got.length;
+    if (c.within == null || n !== (c.count ?? 1)) return res(n === (c.count ?? 1), `${n} task(s) started for ${c.dispatch}`);
+    // With `within`: each started that soon after the end of the user's utterance before it.
+    const late = got.map((r) => { const u = [...utts].reverse().find((x) => !x.ambient && x.start < r.t); return u ? r.t - u.end : Infinity; });
+    return res(late.every((d) => d <= c.within), `${n} task(s) started for ${c.dispatch}, ${late.map((d) => d.toFixed(1)).join(", ")} s after the request`);
   }
   if (c.followUp != null) {
     const re = new RegExp(c.match ?? ".", "i");
@@ -281,8 +311,39 @@ function check(c: Record<string, any>, log: Rec[], utts: Utterance[], segs: Segm
   if (c.notCancelled != null) return res(!log.some((r) => r.k === "agent.cancel" && r.id === c.notCancelled && r.reason === "cancelled"), `${c.notCancelled} kept running`);
   if (c.request != null) {
     const got = starts.filter((r) => r.id === c.request).map((r) => String(r.request)).join(" ");
-    const missing = (c.contains as string[]).filter((w) => !new RegExp(w, "i").test(got));
-    return res(got.length > 0 && missing.length === 0, missing.length ? `missing: ${missing.join(", ")} in "${got.slice(0, 160)}"` : "all there");
+    const missing = (c.contains as string[] ?? []).filter((w) => !new RegExp(w, "i").test(got));
+    const extra = (c.lacks as string[] ?? []).filter((w) => new RegExp(w, "i").test(got));
+    // With project, every task started for it got that project.
+    const projects = starts.filter((r) => r.id === c.request).map((r) => String(r.project ?? ""));
+    const wrongProject = c.project != null && !projects.every((p) => p.toLowerCase() === String(c.project).toLowerCase());
+    const why = [missing.length ? `missing: ${missing.join(", ")}` : "", extra.length ? `should lack: ${extra.join(", ")}` : "", wrongProject ? `project ${projects.join(", ") || "none"}` : ""].filter(Boolean).join("; ");
+    return res(got.length > 0 && missing.length === 0 && extra.length === 0 && !wrongProject, why ? `${why} in "${got.slice(0, 160)}"` : "all there");
+  }
+  if (c.yields != null) {
+    // The model's sound playing when the user cut in (at the wake word, if the utterance has one) stops within so many seconds.
+    const u = utts.find((x) => x.id === c.yields);
+    if (!u) return res(false, `no utterance ${c.yields}`);
+    const at = (log.find((r) => r.k === "wake" && r.id === c.yields)?.t as number | undefined) ?? u.start;
+    let stop: number | null = null;
+    for (const s of segs) {
+      if (stop == null && s.start <= at && s.end >= at - 0.05) stop = s.end;
+      else if (stop != null && s.start < stop + 0.5 && s.start < u.end) stop = Math.max(stop, s.end);
+    }
+    if (stop == null) return res(false, "the model wasn't speaking when the user cut in");
+    return res(stop - at <= (c.within ?? 1), `stopped ${(stop - at).toFixed(2)} s after the user cut in`);
+  }
+  if (c.connected != null) {
+    // Seconds on a model socket while that agent's first task ran (its start to its result, or the end of the call).
+    const start = log.find((r) => r.k === "agent.start" && r.id === c.connected && !r.followUp);
+    if (!start) return res(false, `no task for ${c.connected}`);
+    const end = (log.find((r) => r.k === "agent.result" && r.run === start.run)?.t as number | undefined) ?? log[log.length - 1].t;
+    let secs = 0, open: number | null = null;
+    for (const r of log) {
+      if (r.k === "ws.connect" && open == null) open = r.t;
+      if (r.k === "ws.close" && open != null) { secs += overlap(open, r.t, start.t, end); open = null; }
+    }
+    if (open != null) secs += overlap(open, log[log.length - 1].t, start.t, end);
+    return res(secs <= c.max, `connected ${secs.toFixed(1)} s of the task's ${(end - start.t).toFixed(1)} s`);
   }
   if (c.status != null) return res(log.some((r) => r.k === "status" && r.status === c.status), `status ${c.status}`);
   if (c.voiced != null) {

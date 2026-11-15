@@ -106,7 +106,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
   const sockets = new Map<number, WebSocket>();
   let callId = 0, ended = false, micOn = false;
   let speechUntil = 0, modelSpeakingSince: number | null = null, lastUserEnd = 0, lastPlay = -1, status = "";
-  let modelText = "", repliedSince = false, dispatchedSince = false;
+  let modelText = "", repliedSince = false, dispatchedSince = false, wakewordOn = false;
   const dispatched = new Map<string, number>(), resulted = new Map<string, number>();
   const speaking: { step: Step; pcm: Int16Array; offset: number; gain: number; id: string; waked: boolean; done: () => void }[] = [];
   const playLog: { at: number; pcm: Buffer }[] = [];
@@ -183,7 +183,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
         }
         case "flush": rec("flush", { cut: +Math.max(0, speechUntil - now()).toFixed(2) }); speechUntil = Math.min(speechUntil, now()); modelSpeakingSince = null; break;
         case "cue": rec("cue", { earcon: c.earcon }); break;
-        case "wakeword": rec("wakeword", { on: c.on }); break;
+        case "wakeword": wakewordOn = c.on; rec("wakeword", { on: c.on }); break;
         case "transcript": rec("tx", { role: c.role, text: c.text }); if (c.role === "assistant") { modelText += c.text; repliedSince = true; } break;
         case "status": status = c.status; rec("status", { status: c.status, message: c.message ?? null }); if (c.status === "ended") ended = true; break;
         case "task": rec("task", { id: c.id, label: c.label, agent: c.agent, state: c.state, progress: c.progress, question: c.question }); break;
@@ -344,6 +344,11 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
     const overModel = modelSpeaking();
     rec("say.start", { id, text: step.say, ambient: !!step.ambient, dur: +(pcm.length / 16000).toFixed(2), overModel });
     const finished = new Promise<void>((done) => speaking.push({ step, pcm, offset: 0, gain: step.gain ?? (step.ambient ? 0.35 : 1), id, waked: false, done }));
+    // A user who knows the call is dormant (its light is off) says the wake word first. The clip doesn't
+    // contain it: the detector firing just after the clip starts stands in for it, and the core's
+    // pre-roll keeps the clip's first words. Ambient speech never trips it: the detector's own false
+    // accepts are measured elsewhere.
+    if (!step.ambient && wakewordOn && step.wake == null) setTimeout(() => { if (wakewordOn && !ended) { rec("wake", { id, auto: true }); push({ type: "wake" }); } }, 300);
     if (step.block !== false) await finished;
   }
 

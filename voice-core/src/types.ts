@@ -94,8 +94,33 @@ export interface Announce {
   attach: number;
   /** Seconds the host has to make a brief before the result goes the "model" way. */
   briefWait: number;
+  /** Seconds a brief waits for a quiet room before it plays over one that never is (speech the model hears still holds it). */
+  maxWait: number;
   /** The most words a brief should have, as the host is told. */
   maxWords: number;
+}
+
+/**
+ * When the model hears the microphone.
+ * - "open": throughout the call.
+ * - "window": only for a while after something that makes the user's next words likely to be for
+ *   it. The wake word, `resume` or the start of the call gives `afterWake` seconds to start
+ *   speaking; a spoken reply leaves `window` seconds; a reply or a task's result that asks the user
+ *   something leaves `afterQuestion`; a silent hand-off leaves `afterHandOff`; a result told
+ *   unprompted leaves `afterAnnouncement`. Speech that began inside a window is heard to its end
+ *   and answered. Otherwise the call is dormant: the model hears nothing, the host listens for its
+ *   wake word (`wakeword` on), loud sound no longer brings a call back from standby, and a dormant
+ *   call may stand by with nothing running. Any of these may be 0. An open window lets in whatever
+ *   is said in the room, and a model that answers a television keeps its own window open, so short
+ *   is safer.
+ */
+export interface Attention {
+  mode: "open" | "window";
+  afterWake: number;
+  window: number;
+  afterQuestion: number;
+  afterHandOff: number;
+  afterAnnouncement: number;
 }
 
 export interface CallConfig {
@@ -137,6 +162,7 @@ export interface CallConfig {
    */
   steering: Agent[];
   announce: Announce;
+  attention: Attention;
   limits: Limits;
 }
 
@@ -158,7 +184,7 @@ export type Event =
   | { t: number; type: "unmute" }
   /** Back from standby now, to talk before Hermes finishes. */
   | { t: number; type: "resume" }
-  /** The host heard its wake word (whileSpeaking "wake"). */
+  /** The host heard its wake word: over a reply it cuts it; dormant, the call listens again. */
   | { t: number; type: "wake" }
   | { t: number; type: "cancelTask"; task: string }
   /** Cancels every running task. */
@@ -185,7 +211,8 @@ export type Event =
 /** Who works on a task: Hermes, or the coding agent (T3 Code). */
 export type Agent = "hermes" | "t3";
 
-export type Status = "connecting" | "listening" | "working" | "standby" | "waking" | "ended";
+/** "dormant": the call is up but not listening until the wake word (attention "window"). */
+export type Status = "connecting" | "listening" | "working" | "dormant" | "standby" | "waking" | "ended";
 
 export type Command =
   /** Open a socket to the model; `sid` names it in later commands and events. The host owns the URL and credentials. */
@@ -207,7 +234,7 @@ export type Command =
   | { type: "flush" }
   /** A short tone over whatever is playing, at once: PCM16 mono at 24 kHz, base64. */
   | { type: "cue"; earcon: "taskStarted" | "resultArrived"; pcm: string }
-  /** whileSpeaking "wake": listen for the wake word (on) or stop (off). */
+  /** Listen for the wake word (on) or stop (off): over a reply with whileSpeaking "wake", and while dormant. */
   | { type: "wakeword"; on: boolean }
   /**
    * Run a tool and answer with `tool.result` or `tool.error` for `run`. A task carries the message

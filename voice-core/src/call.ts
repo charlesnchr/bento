@@ -152,6 +152,7 @@ class Unheard {
   briefAsked: number | null = null;
   brief: { text: string; pcm: string; seconds: number } | null = null;
   briefFailed = false;
+  briefAt: number | null = null;
   /** Times the user spoke over the brief, and the earliest it may be tried again. */
   cuts = 0;
   notBefore = 0;
@@ -295,6 +296,9 @@ export class Call {
   private lastUserSpeech = -Infinity;
   /** When the microphone last had sound at speaking level, watched while a brief waits to be said. */
   private micLoudAt = -Infinity;
+  /** attention "window": the model hears nothing until the wake word, and until when it listens otherwise. */
+  private dormant = false;
+  private attendUntil = 0;
   private replyEnded = false;
   private replyAsked = false;
   /** The conversation for a recap: the history the call started on, and what was said since. */
@@ -414,7 +418,7 @@ export class Call {
       case "task.progress": return this.progress(e.task, e.text);
       case "mute": return this.setMuted(true);
       case "unmute": return this.setMuted(false);
-      case "resume": return this.defer(() => this.comeBack());
+      case "resume": return this.defer(() => { if (this.dormant) this.wakeUp(); else this.comeBack(); });
       case "wake": return this.wakeWord();
       case "cancelTask": return this.defer(() => { this.cancelNow(e.task); });
       case "cancelAll": return this.defer(() => this.cancelAll());
@@ -510,6 +514,61 @@ export class Call {
     if (this.rotation && this.t >= this.rotation.deadline - EPSILON) this.rotated(false);
     if (this.c.mic.whileSpeaking === "wake") this.updateWakeword();
     this.announce();
+    this.attend();
+  }
+
+  private get windowed(): boolean {
+    return this.c.attention.mode === "window";
+  }
+
+  /** attention "window": dormant once the window has run out with nobody mid-turn, and listening again while one is open. */
+  private attend(): void {
+    if (!this.windowed || !this.active || !this.listening || this.mutedNow) return;
+    const t = this.t;
+    if (this.dormant) {
+      if (t < this.attendUntil && t >= this.speechUntil && !this.waking) {
+        // A result just told asked the user something, or leaves them a moment to answer.
+        this.dormant = false;
+        this.streamEnded = false;
+        if (this.standby) this.comeBack(); else this.settled();
+        this.updateWakeword();
+      }
+      return;
+    }
+    if (this.standby || this.waking || this.rotating || t < this.attendUntil) return;
+    if (this.talking(t) || this.geminiSpeaking || t < this.speechUntil || this.settling > 0 || this.announcing != null) return;
+    if (this.replyDue != null && t - this.replyDue < this.c.limits.settleMax) return;
+    this.dormant = true;
+    this.held = [];
+    this.heldBytes = 0;
+    if (!this.streamEnded) { this.streamEnded = true; this.send(STREAM_END); }
+    this.setStatus("dormant");
+    this.updateWakeword();
+  }
+
+  /** The window now ends [seconds] after [from]; with [only] "longer", unless it's open for longer already. */
+  private attendFor(seconds: number, from = this.t, only: "longer" | null = null): void {
+    this.attendUntil = only === "longer" ? Math.max(this.attendUntil, from + seconds) : from + seconds;
+  }
+
+  /** The wake word or the button while dormant: the model hears the user again, from just before it. */
+  private wakeUp(): void {
+    if (!this.active || !this.dormant) return;
+    this.cutAnnouncement();
+    // The model was telling a result to a dormant call: the wake word stops that too.
+    if (this.replyAudible()) { this.emit({ type: "flush" }); this.speechUntil = this.t; this.dropTurn = this.geminiSpeaking; }
+    this.dormant = false;
+    this.streamEnded = false;
+    this.attendFor(this.c.attention.afterWake);
+    this.log("info", "listening again");
+    if (this.standby) { this.voiceWoke = true; this.comeBack(); }
+    else {
+      for (const pcm of this.held) this.send(audioFrame(pcm));
+      this.held = [];
+      this.heldBytes = 0;
+      this.settled();
+    }
+    this.updateWakeword();
   }
 
   /** Moves the call to a new socket that resumes the session; the old one carries audio until it's set up. */
@@ -612,14 +671,14 @@ export class Call {
   /** Nobody has spoken for hangUpAfter, no task is running or about to, and every result has been heard. */
   private nothingLeft(t: number): boolean {
     const after = this.c.hangUpAfter;
-    return after > 0 && this.listening && !this.standby && !this.waking && !this.rotating && this.running === 0 && this.settling === 0 &&
+    return after > 0 && this.listening && (!this.standby || this.dormant) && !this.waking && !this.rotating && this.running === 0 && this.settling === 0 &&
       this.unheard.length === 0 && !this.userTalking && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after;
   }
 
   /** Only Hermes is left to wait for and nobody has spoken for the standby time. */
   private idleWhileHermesWorks(t: number): boolean {
     const after = this.c.standbyAfter;
-    return after > 0 && this.running > 0 && this.settling === 0 && this.waiting().length === 0 && this.listening && !this.standby &&
+    return after > 0 && (this.running > 0 || this.dormant) && this.settling === 0 && this.waiting().length === 0 && this.listening && !this.standby &&
       !this.waking && !this.rotating && this.c.reconnect && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after &&
       (this.unspokenSince == null || t - this.unspokenSince >= after * 3);
   }
@@ -704,6 +763,7 @@ export class Call {
     // At most a minute of 24 kHz PCM16, and some words.
     if (size <= 0 || size % 2 !== 0 || size > 2_880_000 || said.length === 0) { this.briefFailed(id, "the brief had no words or no audio"); return; }
     item.brief = { text: said, pcm, seconds: size / 48_000 };
+    item.briefAt = this.t;
     this.announce();
   }
 
@@ -742,12 +802,14 @@ export class Call {
   private fits(item: Unheard, t: number): boolean {
     const a = this.c.announce;
     if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null) return false;
+    // A room that is never quiet (a television) holds a brief back only so long.
+    const waited = item.briefAt != null && t - item.briefAt >= a.maxWait;
     // Off the model the microphone's level is all there is to go by.
-    if (this.standby) return this.voiced === 0;
+    if (this.standby) return this.voiced === 0 || waited;
     if (!this.listening || this.settling > 0 || this.talking(t) || this.geminiSpeaking) return false;
     if (this.replyDue != null && t - this.replyDue < this.c.limits.settleMax) return false;
     // The microphone is loud right now: the user may be starting to speak, before the model's activity says so.
-    if (t - this.micLoudAt < 0.5) return false;
+    if (t - this.micLoudAt < 0.5 && !waited) return false;
     const quiet = t - Math.max(this.lastSpeech, this.speechUntil);
     // In a conversation while either side spoke lately: listening to a long answer is taking part too.
     if (t - Math.max(this.lastUserSpeech, this.speechUntil) >= a.engaged) return quiet >= this.c.limits.settleQuiet;
@@ -788,6 +850,7 @@ export class Call {
     item.told = true;
     item.toldOnce = true;
     this.lastSpeech = this.t;
+    this.attendFor(item.asked != null ? this.c.attention.afterQuestion : this.c.attention.afterAnnouncement, this.t, "longer");
     this.heardOut([item]);
     this.updateWakeword();
   }
@@ -964,6 +1027,8 @@ export class Call {
     if (this.waking || this.rejoining || this.c.limits.wakeLevel <= 0) return;
     const seconds = pcm.length / 32_000;
     this.voiced = level(pcm) >= this.c.limits.wakeLevel ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
+    // Dormant, only the wake word brings the call back: a television is loud too.
+    if (this.dormant) { this.voiced = Math.min(this.voiced, this.c.limits.wakeSpeech); return; }
     if (this.voiced >= this.c.limits.wakeSpeech) {
       this.voiceWoke = true;
       this.comeBack();
@@ -972,7 +1037,7 @@ export class Call {
 
   private settled(): void {
     if (!this.active || !this.listening || this.standby || this.waking) return;
-    this.setStatus(this.running > 0 ? "working" : "listening");
+    this.setStatus(this.dormant ? "dormant" : this.running > 0 ? "working" : "listening");
   }
 
   // Delivering results.
@@ -1115,6 +1180,7 @@ export class Call {
       // A spoken reply that has ended, and whether it left the user with a question: a brief may follow it straight away.
       this.replyEnded = this.geminiSpeaking && this.turnBytes > 0;
       this.replyAsked = /\?["')\s]*$/.test(this.geminiSaid.trim());
+      if (this.windowed && !this.dormant && this.replyEnded && this.replyAsked) this.attendFor(this.c.attention.afterQuestion, this.speechUntil);
       if (this.hush?.afterEnd) this.hush = null;
       this.turnAudio();
       if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
@@ -1197,6 +1263,9 @@ export class Call {
     this.geminiSpoke();
     // 24 kHz 16-bit mono: the model is still speaking until this has played.
     this.speechUntil = Math.max(this.speechUntil, this.t) + size / 48_000;
+    // A reply leaves the window open for the user's next words; a result the model tells a dormant call only afterAnnouncement.
+    if (this.windowed && !this.dormant) this.attendFor(this.c.attention.window, this.speechUntil);
+    else if (this.windowed && this.c.attention.afterAnnouncement > 0) this.attendFor(this.c.attention.afterAnnouncement, this.speechUntil);
     this.updateWakeword();
   }
 
@@ -1223,6 +1292,7 @@ export class Call {
     this.listening = true;
     this.micWatchFrom = this.t;
     this.lastSpeech = this.t;
+    this.attendFor(this.c.attention.afterWake);
     const before = this.c.opening ? decodeBase64(this.c.opening) : null;
     if (before != null && before.length > 0 && !this.mutedNow) {
       this.log("info", `the call starts with ${Math.trunc(before.length / 32)} ms said before it connected`);
@@ -1240,6 +1310,14 @@ export class Call {
     if (this.mutedNow) return;
     if (this.byHost && this.unheard.length > 0 && this.announcing == null && level(decodeBase64(pcm64)!) >= this.c.limits.speechLevel) this.micLoudAt = this.t;
     if (this.standby || this.rejoining) { this.hold(decodeBase64(pcm64)!); return; }
+    if (this.dormant) {
+      // Unheard, but the last moments are kept: the wake word's own audio and the words right after it.
+      const pcm = decodeBase64(pcm64)!;
+      this.held.push(pcm);
+      this.heldBytes += pcm.length;
+      while (this.heldBytes > this.c.limits.wakePreRoll * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
+      return;
+    }
     this.send(this.forModel(pcm64));
   }
 
@@ -1258,8 +1336,8 @@ export class Call {
   }
 
   private updateWakeword(): void {
-    if (this.c.mic.whileSpeaking !== "wake") return;
-    const on = this.active && this.listening && !this.standby && this.replyAudible();
+    if (this.c.mic.whileSpeaking !== "wake" && !this.windowed) return;
+    const on = this.active && this.listening && (this.dormant || (this.c.mic.whileSpeaking === "wake" && !this.standby && this.replyAudible()));
     if (on === this.wakewordOn) return;
     this.wakewordOn = on;
     this.emit({ type: "wakeword", on });
@@ -1267,6 +1345,7 @@ export class Call {
 
   /** The host heard its wake word over the model's reply: the reply stops, and the model hears the user again. */
   private wakeWord(): void {
+    if (this.dormant) { this.wakeUp(); return; }
     if (!this.active || !this.replyAudible()) return;
     this.log("info", "the wake word cut the reply");
     if (this.announcing) { this.cutAnnouncement(); return; }
@@ -1378,6 +1457,8 @@ export class Call {
     this.played();
     this.lapseQuestions();
     const frame = typedFrame(text);
+    if (this.dormant) { this.dormant = false; this.streamEnded = false; this.updateWakeword(); }
+    this.attendFor(this.c.attention.afterWake);
     if (this.standby || this.waking || !this.listening || this.rotating) {
       this.typedLater.push(frame);
       if (this.standby) this.defer(() => this.comeBack());
@@ -1478,6 +1559,8 @@ export class Call {
       }
       return;
     }
+    // A hand-off is silent: the user has what they asked for, so the window closes unless set otherwise.
+    if (this.windowed && !this.dormant) this.attendFor(this.c.attention.afterHandOff);
     const named = taskRef(call);
     const label = TaskNames.tidy(str(obj(call.args), "label"));
     const agent: Agent = name === CODE_TOOL ? "t3" : "hermes";
@@ -1695,7 +1778,8 @@ export class Call {
   }
 
   private cue(earcon: "taskStarted" | "resultArrived"): void {
-    if (this.lent || (this.standby && !this.waking)) return;
+    // In standby the model's comeback used to say it; a result the core tells itself still gets its tone.
+    if (this.lent || (this.standby && !this.waking && !(this.byHost && earcon === "resultArrived"))) return;
     if (this.c.earcons) this.emit({ type: "cue", earcon, pcm: earcon === "taskStarted" ? TASK_STARTED : RESULT_ARRIVED });
     this.toneAt = this.t;
   }
@@ -1708,7 +1792,8 @@ export class Call {
   }
 
   private afterTask(): void {
-    if (this.standby && this.running === 0) this.comeBack(); else this.settled();
+    // A dormant call whose results the core tells itself has no need of the model for them.
+    if (this.standby && this.running === 0 && !(this.dormant && this.byHost)) this.comeBack(); else this.settled();
   }
 
   private progress(taskId: string, text: string): void {

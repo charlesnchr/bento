@@ -39,7 +39,8 @@ export function defaults(): CallConfig {
     },
     codingAgent: null,
     steering: [],
-    announce: { by: "model", engaged: 12, lull: 4, attach: 0.4, briefWait: 8, maxWords: 35 },
+    announce: { by: "model", engaged: 12, lull: 4, attach: 0.4, briefWait: 8, maxWait: 30, maxWords: 28 },
+    attention: { mode: "open", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 0, afterAnnouncement: 0 },
     limits: {
       connect: 25,
       deadMic: 2,
@@ -67,6 +68,7 @@ export function configFrom(given: Partial<CallConfig> & Record<string, unknown>)
     mic: { ...base.mic, ...(given.mic ?? {}) },
     voiceCommands: { ...base.voiceCommands, ...(given.voiceCommands ?? {}) },
     announce: { ...base.announce, ...(given.announce ?? {}) },
+    attention: { ...base.attention, ...(given.attention ?? {}) },
     limits: { ...base.limits, ...(given.limits ?? {}) },
   } as CallConfig;
 }
