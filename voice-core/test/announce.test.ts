@@ -246,8 +246,7 @@ test("cut within its first second, the brief goes again straight after the next 
   near(until(s, () => played(s).length > 1, 10), replyEnds + 0.4);
 });
 
-test("cut later, the user chose to talk: it isn't attached to the next reply but waits for a longer lull",
-  { todo: "fits() returns true on the attach path (call.ts:838) without looking at item.cuts" }, () => {
+test("cut later, the user chose to talk: it isn't attached to the next reply but waits for a longer lull", () => {
     const s = quietRoom({}, 3);
     s.advance(1.5);
     s.activity("ACTIVITY_START");
@@ -296,8 +295,7 @@ test("the stop button over a brief drops it, and check_task still has the result
   assert.ok(!message.includes("hasn't heard"));
 });
 
-test("saying stop over a brief drops it, as the stop button does",
-  { todo: "activityStart cuts the brief (call.ts:1239) before the words arrive, so hushReply (call.ts:1399) no longer sees it and it plays again" }, () => {
+test("saying stop over a brief drops it, as the stop button does", () => {
     const s = quietRoom({}, 3);
     s.advance(0.5);
     s.activity("ACTIVITY_START");
@@ -507,8 +505,7 @@ test("check_task reading a result out while its brief waits for a moment: not pl
   assert.equal(played(s).length, 0);
 });
 
-test("check_task while a brief is playing doesn't ask the model to say it too",
-  { todo: "unheardOf (call.ts:1938) doesn't skip the item being announced, so the model is told to tell it now" }, () => {
+test("check_task while a brief is playing doesn't ask the model to say it too", () => {
     const s = quietRoom({}, 3);
     s.advance(0.5);
     const message = checkTask(s, "k1");

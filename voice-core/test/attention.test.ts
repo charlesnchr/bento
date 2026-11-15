@@ -86,7 +86,8 @@ test("the wake word sends the pre-roll, reopens the microphone for afterWake, an
   const before = audio(s).length;
   s.advance(0.5);
   assert.ok(audio(s).length - before >= 24, "the microphone flows again");
-  near(until(s, () => dormant(s), 5), woke + 2, 0.08, "afterWake");
+  // The microphone is still loud as the window runs out, so the model gets 1.5 s more to say whether it's speech.
+  near(until(s, () => dormant(s), 5), woke + 2 + 1.5, 0.1, "afterWake, and the moment a loud microphone holds it");
   assert.deepEqual(wakewords(s), [true, false, true]);
 });
 
@@ -121,8 +122,7 @@ test("a silent hand-off leaves afterHandOff", () => {
   assert.equal(s.hermes().length, 1);
 });
 
-test("a hand-off the model also spoke leaves the reply's window",
-  { todo: "delegate() sets afterHandOff for every hand-off (call.ts:1589), cutting the window a spoken reply just opened" }, () => {
+test("a hand-off the model also spoke leaves the reply's window", () => {
     const s = sim({ attention: { afterHandOff: 0 } });
     s.turn("Book a table");
     s.said("I'll get Hermes on it.");
@@ -155,8 +155,7 @@ test("speech that began inside a window is heard to its end and answered", () =>
   near(until(s, () => dormant(s), 5), ends + 1.5, 0.08, "window after the answer");
 });
 
-test("speech that began just before the window closed, which the model's VAD reports late, is still heard",
-  { todo: "attend() (call.ts:554) only knows the user is talking from ACTIVITY_START; it ignores the microphone's level, so a VAD delay truncates the utterance" }, () => {
+test("speech that began just before the window closed, which the model's VAD reports late, is still heard", () => {
     const s = sim();
     s.advance(1.7);
     s.mic = "loud"; // the user starts at 1.8, inside the window
@@ -179,8 +178,7 @@ test("typed text wakes a dormant call", () => {
   assert.ok(audio(s).length - before >= 24, "the microphone flows again");
 });
 
-test("typed text that wakes a dormant call says so in the status",
-  { todo: "typed() clears dormant (call.ts:1486) without settled(), so the host's status stays \"dormant\"" }, () => {
+test("typed text that wakes a dormant call says so in the status", () => {
     const s = asleep();
     s.push({ type: "say", text: "What's the weather?" });
     s.advance(0.1);
@@ -213,8 +211,7 @@ test("typed text brings a dormant call back from standby", () => {
   assert.ok(s.sent(2).some((f) => f.includes("What's the weather?")));
 });
 
-test("a call that stood by while its window was open goes dormant when the window ends",
-  { todo: "attend() returns on standby (call.ts:553) before the dormant check, so the call stays a non-dormant standby: no wake word, and loudness brings it back" }, () => {
+test("a call that stood by while its window was open goes dormant when the window ends", () => {
     const s = sim({ standbyAfter: 1 });
     s.turn("Book a table");
     s.toolCall("c1");
@@ -339,8 +336,7 @@ test("a result the model tells a dormant call (announce \"model\") leaves afterA
   near(until(s, () => dormant(s), 5), ends + 1, 0.08, "afterAnnouncement");
 });
 
-test("a result with a question the model tells a dormant call leaves afterQuestion",
-  { todo: "turnComplete opens afterQuestion only when not dormant (call.ts:1207); speaking() gave it afterAnnouncement" }, () => {
+test("a result with a question the model tells a dormant call leaves afterQuestion", () => {
     const s = sim();
     s.turn("Find a taxi");
     s.toolCall("c1");
@@ -387,7 +383,7 @@ test("with whileSpeaking wake the wake word is on over a reply, off after it, an
   assert.ok(Buffer.from(last, "base64").every((b: number) => b === 0), "silence over the reply");
   until(s, () => s.t >= ends + 0.1, 2);
   assert.deepEqual(wakewords(s), [true, false], "off once it has played: the window is open");
-  near(until(s, () => dormant(s), 5), ends + 1.5);
+  near(until(s, () => dormant(s), 5), ends + 1.5 + 1.5, 0.1);
   assert.deepEqual(wakewords(s), [true, false, true]);
 });
 

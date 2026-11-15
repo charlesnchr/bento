@@ -845,10 +845,11 @@ export class Call {
     if (t - Math.max(this.lastUserSpeech, this.speechUntil) >= a.engaged) return quiet >= this.c.limits.settleQuiet;
     const sinceReply = t - this.speechUntil;
     // Several results ready together are told one after another, as one announcement.
-    if (this.announcedAt != null && sinceReply >= 0.3 && sinceReply <= 1.5) return true;
+    if (item.cuts === 0 && this.announcedAt != null && sinceReply >= 0.3 && sinceReply <= 1.5) return true;
     // A reply that asked the user something leaves the floor to them, unless the result has waited long already.
     const long = item.briefAt != null && t - item.briefAt >= 30;
-    if (this.replyEnded && (!this.replyAsked || long) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
+    // One the user chose to talk over (cut partway, not as it began) isn't pressed on them after the next reply: it waits for a lull.
+    if (item.cuts === 0 && this.replyEnded && (!this.replyAsked || long) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
     return quiet >= a.lull * (1 + item.cuts);
   }
 
@@ -1218,7 +1219,8 @@ export class Call {
       // A spoken reply that has ended, and whether it left the user with a question: a brief may follow it straight away.
       this.replyEnded = this.geminiSpeaking && this.turnBytes > 0;
       this.replyAsked = /\?["')\s]*$/.test(this.geminiSaid.trim());
-      if (this.windowed && !this.dormant && this.replyEnded && this.replyAsked) this.attendFor(this.c.attention.afterQuestion, this.speechUntil);
+      // A question leaves the user time to answer it, also when the model told it to a dormant call.
+      if (this.windowed && this.replyEnded && this.replyAsked) this.attendFor(this.c.attention.afterQuestion, this.speechUntil);
       if (this.hush?.afterEnd) this.hush = null;
       this.turnAudio();
       if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
@@ -1960,7 +1962,8 @@ export class Call {
   }
 
   private unheardOf(task: Task, readOut: Unheard[], room: number): string {
-    const items = this.unheard.filter((u) => u.task === task.id && !u.sending && u.playing == null);
+    // Not the one Bento is saying aloud this moment: the model would say it over it.
+    const items = this.unheard.filter((u) => u.task === task.id && !u.sending && u.playing == null && this.announcing?.item !== u);
     if (items.length === 0) return "";
     const fit: Unheard[] = [];
     let used = UNHEARD_HEADER;
