@@ -200,7 +200,9 @@ private struct SavedEntryRow: View {
 struct DeviceSettingsEditor: View {
     @Binding var settings: DeviceSettings
     /// The speed the device has by itself, where the speed slider starts so
-    /// that switching it on changes nothing. nil: the usual 400 counts per inch.
+    /// that switching it on changes nothing (for a device within the range a
+    /// speed covers, see `PointerMath.speed(forResolution:)`). nil: the usual
+    /// 400 counts per inch.
     var ownPointerSpeed: Double?
 
     var body: some View {

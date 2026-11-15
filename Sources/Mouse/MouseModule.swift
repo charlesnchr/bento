@@ -42,11 +42,22 @@ public final class MouseModule: BentoModule {
 
     public init() {
         // Pointer values a crash left changed are put back even if the module
-        // is off at this launch (when it is on, start() has done it by then).
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.started, !self.tuner.ledger.isEmpty else { return }
-            self.sync()
+        // is off at this launch. Not at once: by then a module that is on has
+        // started (and applied its values itself), and a second launch that
+        // only hands over to the running Bento has quit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.recoverAfterCrash() }
+    }
+
+    /// The ledger on disk belongs to whichever Bento is running: a process
+    /// that finds another one alive leaves it, and the devices, alone.
+    private func recoverAfterCrash() {
+        guard !started, !tuner.ledger.isEmpty else { return }
+        if let bundleID = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { !$0.isTerminated && $0.processIdentifier != getpid() }
+            guard others.isEmpty else { return }
         }
+        sync()
     }
 
     // MARK: Lifecycle

@@ -481,3 +481,8 @@ private func planned(_ rule: PointerRule, key: String, current: Int?, system: In
     let back = try JSONDecoder().decode(PointerLedger.self, from: JSONEncoder().encode(ledger))
     #expect(back == ledger)
 }
+
+@Test func aResolutionOutsideTheSpeedRangeClamps() {
+    #expect(PointerMath.speed(forResolution: 4000 << 16) == 0)
+    #expect(PointerMath.speed(forResolution: 50 << 16) == 1)
+}

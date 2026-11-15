@@ -57,6 +57,9 @@ public enum PointerMath {
         return fixed(slowestResolution - clamped * (slowestResolution - fastestResolution))
     }
 
+    /// The speed that gives a resolution, clamped: a device that reports more
+    /// than 2000 or fewer than 100 counts per inch is outside what a speed can
+    /// express, so switching pointer speed on changes how such a device feels.
     public static func speed(forResolution fixed: Int) -> Double {
         let s = (slowestResolution - value(fromFixed: fixed)) / (slowestResolution - fastestResolution)
         return min(max(s, 0), 1)
