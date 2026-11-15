@@ -55,6 +55,8 @@ final class ComposerWindow: NSObject, TextInserting, NSTextViewDelegate, NSWindo
     var onCancel: (() -> Void)?
     var onNotice: ((String) -> Void)?
     var hasDraft: Bool { !editor.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Open, holding text, or sending it: the draft lives only in memory.
+    var isInUse: Bool { panel.isVisible || hasDraft || sending }
 
     override init() {
         super.init()

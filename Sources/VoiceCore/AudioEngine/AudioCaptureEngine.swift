@@ -103,18 +103,22 @@ public final class AudioCaptureEngine: AudioCapturing {
 
     /// Build + prepare the capture graph during idle so the key press only pays
     /// engine.start(). Safe to call repeatedly; cheap when already warm.
-    public func prewarm() {
-        guard !isPrewarmed else { return }
+    /// Returns whether a prepared graph is ready.
+    @discardableResult
+    public func prewarm() -> Bool {
+        guard !isPrewarmed else { return true }
         do {
             try buildEngine(reason: "prewarm", start: false)
             isPrewarmed = true
             prewarmedDevice = AudioDeviceQuery.defaultInputDevice()
+            return true
         } catch {
             // Prewarm is an optimization, never a failure mode — the session's
             // own start() will build fresh and report any real problem.
             Log.audio.info("prewarm skipped: \(String(describing: error), privacy: .public)")
             tearDownEngine()
             isPrewarmed = false
+            return false
         }
     }
 
@@ -263,6 +267,10 @@ public final class AudioCaptureEngine: AudioCapturing {
         }
         tearDownEngine()
 
+        // Logged before the HAL work, not only after it: a build that never
+        // returns (the 2026-11-09 hang in engine.inputNode) then shows up in
+        // `log show` as a start with no matching finish.
+        Log.audio.info("AudioCaptureEngine: graph build started (\(reason, privacy: .public))")
         let engine = AVAudioEngine()
         self.engine = engine
         let input = engine.inputNode

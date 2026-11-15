@@ -1,11 +1,12 @@
 # Bento
 
-One small native macOS menu-bar app instead of eight: screenshots and annotation
+One small native macOS menu-bar app instead of nine: screenshots and annotation
 (Shottr), window management with snapping and modifier-drag (Rectangle Pro),
 app hotkeys (Raycast), optional auto-tiling (AeroSpace-lite), clipboard history
 with images, Raycast-style floating notes and a Todoist-style todo list, both
 synced in real time through a tiny Rust server, manually arranged menu bar
-sections that Bento shows and hides, and dictation with meeting notes and a
+sections that Bento shows and hides, per-device mouse and trackpad settings
+(LinearMouse), and dictation with meeting notes and a
 voice assistant (Jot, Wispr Flow). A companion [Android app](#android) carries the
 notes, todos, dictation and meeting notes to your phone.
 
@@ -25,6 +26,7 @@ Idles at ~0 % CPU.
 | Notes | Raycast Notes | floating markdown notes, Raycast's shortcuts and look, browse/actions, collapsible headings, optional Vim keybindings (motions, operators, text objects, registers, vim-surround), images (paste, drop or Insert Image…, shown inline and synced), live sync via `bento-sync` that merges edits made on two Macs at once (the caret and scroll position stay put) | ⌃⌥N |
 | Todo | Todoist | Inbox/Today/Upcoming, projects, labels, p1–p4, natural-language dates, quick-add syntax (`#project @label p1 tomorrow 5pm`), Todoist's single-key bindings (Q A E T Y L V X, G-chords, ⌘K, ?), undo, field-level merging live sync via `bento-sync` | ⌃⌘T window, ⌃⌥Space Quick Add |
 | Menu Bar (off by default) | — | Visible, Hidden and Always Hidden sections; native manual Command-drag arrangement; chevron, shortcuts and optional hover/click/scroll reveal; automatic hiding; search and Bento Bar with Accessibility opening in place; per-item shortcuts and icon-change alerts; spacing and appearance | ⌃⌥⌘M show/hide, ⌃⌥⌘S search |
+| Mouse (off by default) | LinearMouse | per device: reverse scrolling (a mouse scrolls the traditional way while the trackpad stays natural), scroll speed, pointer speed and acceleration, acceleration off; defaults for mice and for trackpads, devices recognised by vendor and product id on every Mac that shares the config | — |
 | Dictation (off by default) | Jot, Wispr Flow | hold or tap a key and talk, the text lands where the cursor is; Gemini Transcribe (batch or live), Parakeet on the Mac, GPT Transcribe, MAI-Transcribe-2 or two at once with a review pass; cleanup model, tone matching, custom instructions and a dictionary that sync with your other Macs and the Android app; crash-safe recordings, offline queue, retry with another model, searchable history; optional floating composer; voice editing of what you just dictated; Capture Thought to Note appends what you say to a chosen note as a timestamped, collapsible entry | fn, right ⌘/⌥/⌃ or ⌥F17 (hold or tap), ⌃⌥⇧R retry |
 | Meetings (off by default) | Granola | records the mic plus system audio beside dictation; live transcript, tidied as it goes, gaps backfilled from the recording, summary with decisions and action items; a small capsule while recording; notes in Markdown | ⇧⌥F17 record/stop |
 | Assistant (off by default) | — | chat window for Hermes over ACP: Markdown, equations, images, tool steps, plan, attachments, `/` commands and `@` context, queue and steer, edit/regenerate/branch, history; keep on top like picture in picture, over full-screen apps and on every Space; continuous voice calls through Azure GPT-Live or Gemini 3.8 Live with Hermes doing the work, resumed where they left off until New Chat | ⇧⌥F18 window, ⌥F18 call (voice editing and requests with calls off), ⌃⌥F18 dictate a request (hold or tap) |
@@ -61,6 +63,63 @@ press after revealing the item in place; if unavailable, click or reposition
 it manually, making space first if needed. Right-click the native item itself
 for its context menu. Legacy saved layouts, profiles and `keepItemsInPlace`
 remain readable for compatibility and have no effect on item positions.
+
+## Mouse and trackpad
+
+Turn on **Mouse** under Settings → General → Modules. Its page lists the connected mice and
+trackpads; open one to change its values:
+
+- **Reverse vertical / horizontal scrolling**: the opposite of Natural scrolling in System
+  Settings, for that device only. With Natural scrolling on and the mouse reversed, the wheel
+  scrolls the traditional way and the trackpad stays natural.
+- **Scroll speed**: multiplies every scroll distance (1.0× leaves it alone).
+- **Pointer speed** (0 to 1) and **Pointer acceleration** (System Settings' Tracking speed
+  covers 0 to 3; the slider goes to 20 and the config file to 40). Each is left to macOS until
+  you switch it on.
+- **Disable pointer acceleration**: the pointer follows the device's raw movement, and the two
+  values above have no effect.
+
+A device uses the defaults for its kind (**Mice**, **Trackpads**) until you change one of its
+values; it then gets its own entry, which **Remove Its Own Settings** removes again. In the
+config it is the `mouse` section:
+
+```json
+"mouse": {
+  "defaults": {
+    "mouse": { "reverseScrollVertical": true, "reverseScrollHorizontal": false, "scrollSpeed": 1,
+               "pointerSpeed": null, "pointerAcceleration": null, "disablePointerAcceleration": false },
+    "trackpad": { "reverseScrollVertical": false, "scrollSpeed": 1 }
+  },
+  "devices": [
+    { "name": "Razer DeathAdder V3", "vendorID": 5426, "productID": 178, "kind": "mouse",
+      "reverseScrollVertical": true, "scrollSpeed": 1.5, "disablePointerAcceleration": true },
+    { "name": "Apple Internal Keyboard / Trackpad", "kind": "trackpad", "pointerSpeed": 0.9 }
+  ]
+}
+```
+
+An entry with a `vendorID` or `productID` matches devices with those ids (a number, or a string
+such as `"0x1532"`), whatever they are called. Without ids, as for the built-in trackpad of an
+Apple silicon Mac, it matches by `name`. A `serialNumber` narrows either to one unit, and
+the settings page writes it whenever the device reports one, so two mice of one model keep
+separate values. Take the key out to make an entry cover every unit of the model, or both
+connections of a device that reports different serial numbers over USB and Bluetooth; the page
+then calls those settings shared. An entry
+holds every value itself: a key it leaves out takes the built-in default (nothing changed), not
+the default of its kind. Entries for devices that aren't connected stay in the file and show
+under **Saved for Other Devices**, so one config serves several Macs.
+
+Reversing and scaling scrolling needs Accessibility (an event tap, present only while some
+setting changes scrolling). Pointer speed and acceleration are properties of the device's HID
+service: Bento sets them when the device connects and puts macOS's values back when the entry
+or the module goes away. Scroll events posted by other programs, Bento's scrolling capture
+among them, pass through untouched. The same goes for tools that
+re-send wheel events (Logi Options+ smooth scrolling, Mos, SteerMouse): what they post is not
+reversed or scaled. Two-finger swipes between pages follow macOS's direction, not the reversed
+one. A mouse that Karabiner-Elements modifies reaches macOS through Karabiner's virtual pointer,
+so its settings belong on the **Karabiner DriverKit VirtualHIDPointing** device, not on the
+mouse's own row. You don't need LinearMouse running beside it; quit it, or both will act
+on the same events.
 
 ## Install
 
@@ -213,6 +272,12 @@ open "bento://settings"
 open "bento://settings/shortcuts/Left%20Half"    # the Shortcuts page, filtered
 open "bento://action/bento.keyboard-overview"
 ```
+
+**Sharing the config between Macs.** Bento reads and writes the one file and does not send
+it anywhere itself. To use the same settings on several Macs, keep `config.json` in a dotfiles
+repository (or any synced folder) and symlink `~/.config/bento/config.json` to it: Bento writes
+through the symlink and applies a pulled change at once. The `bento-sync` server carries notes,
+tasks and the dictation dictionary, not the config.
 
 Data (clipboard history, captures, notes and todo DBs, dictation recordings,
 history and meetings under `Voice/`) is in `~/Library/Application Support/Bento/`. Sync is optional and off by default: it needs your own
