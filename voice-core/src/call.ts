@@ -583,7 +583,14 @@ export class Call {
     if (!this.active || !this.dormant) return;
     this.cutAnnouncement();
     // The model was telling a result to a dormant call: the wake word stops that too.
-    if (this.replyAudible()) { this.emit({ type: "flush" }); this.speechUntil = this.t; this.dropTurn = this.geminiSpeaking; }
+    if (this.replyAudible()) {
+      this.emit({ type: "flush" });
+      // What it had told in full is heard; a result it was cut in goes again, as does one it was still wording.
+      this.played();
+      this.again(this.unheard.filter((u) => u.playing != null || (this.geminiSpeaking && u.awaiting)));
+      this.speechUntil = this.t;
+      this.dropTurn = this.geminiSpeaking;
+    }
     this.dormant = false;
     this.streamEnded = false;
     this.attendFor(this.c.attention.afterWake);
@@ -810,11 +817,11 @@ export class Call {
   private announce(): void {
     if (!this.byHost || !this.active) return;
     const t = this.t;
-    const now = this.announcing;
-    if (now) { if (t >= now.until - EPSILON) this.announced(now.item); return; }
     for (const u of this.unheard) {
       if (u.briefAsked != null && u.brief == null && !u.briefFailed && t - u.briefAsked >= this.c.announce.briefWait) this.briefFailed(u.id, "it took too long");
     }
+    const now = this.announcing;
+    if (now) { if (t >= now.until - EPSILON) this.announced(now.item); return; }
     if (this.rotating || this.lent) return;
     const ready = this.unheard.filter((u) => u.brief != null && !u.told && !u.sending && u.playing == null);
     // In the order they finished, with a task's question after the plain results, so it is the last
@@ -847,9 +854,11 @@ export class Call {
     // Several results ready together are told one after another, as one announcement.
     if (item.cuts === 0 && this.announcedAt != null && sinceReply >= 0.3 && sinceReply <= 1.5) return true;
     // A reply that asked the user something leaves the floor to them, unless the result has waited long already.
-    const long = item.briefAt != null && t - item.briefAt >= 30;
+    const long = item.briefAt != null && t - item.briefAt >= this.c.limits.deliverMax;
     // One the user chose to talk over (cut partway, not as it began) isn't pressed on them after the next reply: it waits for a lull.
     if (item.cuts === 0 && this.replyEnded && (!this.replyAsked || long) && sinceReply >= a.attach && sinceReply <= a.attach + 1) return true;
+    // A room that never leaves a lull (speech the model hears but doesn't answer) holds it back only so long: then any pause will do.
+    if (long) return quiet >= this.c.limits.settleQuiet;
     return quiet >= a.lull * (1 + item.cuts);
   }
 
@@ -1038,17 +1047,24 @@ export class Call {
   /** Back from standby: what the user said meanwhile goes in, then results that were waiting for the model to speak. */
   private cameBack(): void {
     this.lastSpeech = this.t;
-    this.speechUntil = 0;
+    // A brief still playing (the button brought the call back, not the user's voice) plays on.
+    this.speechUntil = this.announcing?.until ?? 0;
     this.newSession();
-    for (const pcm of this.held) this.send(audioFrame(pcm));
+    // Back for a result while dormant, not for the user: the model still hears nothing of the room.
+    if (!this.dormant) for (const pcm of this.held) this.send(audioFrame(pcm));
     for (const frame of this.typedLater.splice(0)) this.send(frame);
     const away = this.saidAway.splice(0);
     if (away.length > 0) {
       this.send(noteFrame("From Bento, not the user's words: while this call was paused Bento told the user these results aloud, so " +
         "don't say them again; their full replies are in the earlier conversation above:\n" + away.join("\n")), true);
     }
-    this.held = [];
-    this.heldBytes = 0;
+    if (this.dormant) {
+      // Only the moments a wake word would need are kept.
+      while (this.heldBytes > this.c.limits.wakePreRoll * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
+    } else {
+      this.held = [];
+      this.heldBytes = 0;
+    }
     this.voiced = 0;
     this.voiceWoke = false;
     this.rejoining = false;
@@ -1061,9 +1077,12 @@ export class Call {
     if (this.lent) { this.held = []; this.heldBytes = 0; this.voiced = 0; return; }
     this.held.push(pcm);
     this.heldBytes += pcm.length;
-    const keep = this.waking || this.rejoining ? this.c.limits.holdMax : this.c.limits.wakePreRoll;
+    // Coming back for the user, all they say meanwhile is kept; dormant, only what a wake word would need.
+    const keep = (this.waking || this.rejoining) && !this.dormant ? this.c.limits.holdMax : this.c.limits.wakePreRoll;
     while (this.heldBytes > keep * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
     if (this.waking || this.rejoining || this.c.limits.wakeLevel <= 0) return;
+    // Without echo cancellation the microphone hears a brief playing: that isn't the user.
+    if (this.c.mic.whileSpeaking !== "send" && this.replyAudible()) return;
     const seconds = pcm.length / 32_000;
     this.voiced = level(pcm) >= this.c.limits.wakeLevel ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
     // Dormant, only the wake word brings the call back: a television is loud too.
@@ -1280,6 +1299,8 @@ export class Call {
 
   private interrupted(): void {
     this.turnAudio();
+    // The flush stops a brief that was playing as well: it is cut, not heard.
+    this.cutAnnouncement();
     this.emit({ type: "flush" });
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
@@ -1394,7 +1415,7 @@ export class Call {
     if (this.announcing) { this.cutAnnouncement(); return; }
     this.emit({ type: "flush" });
     this.played();
-    this.again(this.unheard.filter((u) => u.playing != null));
+    this.again(this.unheard.filter((u) => u.playing != null || (this.geminiSpeaking && u.awaiting)));
     this.speechUntil = this.t;
     this.dropTurn = this.geminiSpeaking;
     this.updateWakeword();
@@ -1862,7 +1883,7 @@ export class Call {
     const task = this.tasks.get(taskId);
     if (!task) return "Not executed: that task is gone. Call list_tasks for what's in flight.";
     if (task.state !== RUNNING) {
-      const failed = task.state === FINISHED && (task.result ?? "").startsWith("Task failed.");
+      const failed = this.c.supervise && task.state === FINISHED && (task.result ?? "").startsWith("Task failed.");
       return `Not executed: "${task.label}" ${failed ? "has already failed" : `is already ${task.state}`}. Nothing was cancelled.`;
     }
     const queued = task.queued.length;

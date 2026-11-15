@@ -120,6 +120,7 @@ plays the audio with an ordinary `play` (tagged `source: "announcer"`):
   the user something, or at a lull of `lull` seconds;
 - never while the user is speaking or the model owes them a reply, and not while the microphone
   is loud, for up to `maxWait` seconds;
+- after `limits.deliverMax` seconds without such a moment, at the next pause in the speech;
 - several ready together one after another, a task's question last with nothing after it;
 - in standby without reconnecting the model.
 

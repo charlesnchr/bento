@@ -426,3 +426,85 @@ test("in mode open loud speech still brings a call back from standby, and a call
   assert.equal(s.sockets.size, 2);
   assert.equal(status(s), "working");
 });
+
+// Found in review.
+
+test("a brief that fails while a dormant call stands by brings the model back for the result, and it hears nothing of the room", () => {
+  const s = sim({ announce: host, standbyAfter: 3, attention: { afterAnnouncement: 0 } });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  assert.ok(until(s, () => status(s) === "standby", 5) != null);
+  assert.ok(s.statuses().includes("dormant"));
+  s.advance(5);
+  s.autoSetup = false;
+  s.mic = "loud";
+  s.complete("Booked for 8pm.");
+  s.push({ type: "brief.failed", id: "b1" });
+  s.advance(0.8); // the new session takes a moment, with the room loud
+  assert.equal(s.sockets.size, 2);
+  s.gemini({ setupComplete: {} });
+  s.advance(1);
+  assert.equal(audio(s, 2).length, 0, "no microphone audio reaches the model");
+  assert.ok(s.statuses().includes("dormant"));
+  s.push({ type: "wake" });
+  s.advance(0.1);
+  const preRoll = audio(s, 2).length;
+  assert.ok(preRoll >= 20 && preRoll <= 32, `the wake word's pre-roll, not all that was held (${preRoll} frames)`);
+});
+
+test("the wake word over a result the model was telling a dormant call: the result goes to the model again", () => {
+  const s = sim();
+  s.turn("Book a table");
+  s.toolCall("c1");
+  assert.ok(until(s, () => dormant(s), 5) != null);
+  s.advance(5);
+  s.complete("Booked for 8pm.");
+  s.advance(0.5);
+  const given = () => s.finals().length + s.resultTurns().length;
+  assert.equal(given(), 1);
+  s.said("Your table");
+  s.audio(48_000 * 4);
+  s.advance(0.3);
+  s.push({ type: "wake" });
+  s.turnComplete(); // the cut turn ends; its remaining audio was dropped
+  exchange(s, "What time is it?", "It's three.");
+  s.advance(8);
+  assert.equal(given(), 2, "what the user didn't hear is given to the model again");
+});
+
+test("with whileSpeaking wake, the wake word over a result the model is still wording gives it to the model again", () => {
+  const s = sim({ attention: { mode: "open" }, mic: { whileSpeaking: "wake", gainDb: 0 } });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  s.advance(3);
+  s.complete("Booked for 8pm.");
+  s.advance(0.5);
+  const given = () => s.finals().length + s.resultTurns().length;
+  assert.equal(given(), 1);
+  s.said("Your table");
+  s.audio(48_000 * 4);
+  s.advance(0.3);
+  s.push({ type: "wake" });
+  s.turnComplete();
+  exchange(s, "What time is it?", "It's three.");
+  s.advance(8);
+  assert.equal(given(), 2);
+});
+
+test("a result that brings a dormant call back from standby for the model to tell: the model hears nothing of the room", () => {
+  const s = sim({ standbyAfter: 3 });
+  s.turn("Book a table");
+  s.toolCall("c1");
+  assert.ok(until(s, () => status(s) === "standby", 5) != null);
+  assert.ok(s.statuses().includes("dormant"));
+  s.advance(5);
+  s.autoSetup = false;
+  s.mic = "loud";
+  s.complete("Booked for 8pm.");
+  s.advance(0.8);
+  assert.equal(s.sockets.size, 2);
+  s.gemini({ setupComplete: {} });
+  s.advance(1);
+  assert.equal(audio(s, 2).length, 0, "no microphone audio reaches the model");
+  assert.ok(s.sent(2).some((f) => f.includes("Booked for 8pm.")), "the result does");
+});

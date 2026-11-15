@@ -153,7 +153,8 @@ export class CallProtocol {
       for (let i = this.turns.indexOf(turn) - 1; i >= 0; i--) {
         const earlier = this.turns[i];
         const end = earlier.ended;
-        if (earlier.consumed || end == null || earlier.text.trim().length === 0 || first.started - end > this.join) break;
+        // A turn whose words may be another's (a transcript that came late) is never joined on.
+        if (earlier.consumed || earlier.ambiguous || end == null || earlier.text.trim().length === 0 || first.started - end > this.join) break;
         if (this.history.some((f) => f.role === "assistant" && f.at >= earlier.started && f.at < first.started)) break;
         if (earlier.text.length + task.length > 4000) break;
         earlier.consumed = true;

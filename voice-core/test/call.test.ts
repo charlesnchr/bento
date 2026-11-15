@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { liveRecap } from "../src/call.ts";
-import { taskResult } from "../src/protocol.ts";
+import { CallProtocol, taskResult } from "../src/protocol.ts";
 import { resultText } from "../src/setup.ts";
 import { Sim, turnText } from "./sim.ts";
 
@@ -411,4 +411,19 @@ test("on Vertex a task's start closes its call, and the result goes in as a turn
   s.advance(3);
   assert.equal(s.responses().length, 1, "the call took its last response");
   assert.equal(turnText(s.resultTurns()[0]), resultText([["book a table", "Booked for 8pm."]]));
+});
+
+test("a turn whose words may be another's is never joined onto the next request", () => {
+  const p = new CallProtocol();
+  p.join = 4;
+  p.activityStarted(0);
+  p.activityEnded(0.5); // a turn with no words
+  p.activityStarted(1);
+  p.transcript("user", "Delete the folder.", 1.2); // late words: they may belong to the turn before
+  p.activityEnded(1.5);
+  p.activityStarted(2.5);
+  p.transcript("user", "List my calendar.", 2.7);
+  p.activityEnded(3);
+  const d = p.delegation("ask_hermes", "c1", 3.2)!;
+  assert.equal(p.request(d)?.task, "List my calendar.");
 });

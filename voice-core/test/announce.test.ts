@@ -578,3 +578,87 @@ test("a call doesn't hang up while a brief is pending or playing", () => {
   assert.equal(s.ended(), undefined, "while it plays");
   assert.ok(until(s, () => s.ended() != null, 5) != null, "after it, the quiet hangs up");
 });
+
+// Found in review.
+
+test("the model's interruption without the user's activity cuts a brief: it isn't counted as heard", () => {
+  const s = quietRoom({}, 3);
+  s.advance(0.3);
+  s.interrupted();
+  s.advance(4); // past the end the brief would have had
+  assert.equal(played(s).length, 1);
+  assert.ok(notes(s).some((n) => n.includes("did not hear \"book a table\"'s outcome")));
+  assert.ok(until(s, () => played(s).length > 1, 15) != null, "it goes again");
+});
+
+test("the button bringing the call back while a brief plays in standby lets it play on", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "wake", gainDb: 0 } });
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  ready(s, "Your table is booked for 8pm.", 3);
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  const ends = s.t + 3;
+  s.advance(0.3);
+  s.push({ type: "resume" });
+  s.advance(0.5);
+  assert.equal(s.sockets.size, 2);
+  assert.equal(flushes(s), 0, "the brief isn't cut");
+  const wakeword = () => s.commands.flatMap((c) => (c.type === "wakeword" ? [c.on] : [])).at(-1);
+  assert.equal(wakeword(), true, "the call knows the brief is still audible");
+  near(until(s, () => wakeword() === false, 5), ends, 0.1, "until it has played");
+  assert.equal(played(s).length, 1);
+});
+
+test("a room that never leaves a lull holds a brief back for deliverMax at most", () => {
+  const s = sim({ limits: { deliverMax: 10 } });
+  task(s);
+  s.complete("Booked for 8pm at Dishoom.");
+  const at = s.t;
+  ready(s, "Your table at Dishoom is booked for 8pm.");
+  // Speech the model hears but doesn't answer, two seconds on and two off: never a lull of 3 s.
+  let told: number | null = null;
+  while (s.t < at + 30 && told == null) {
+    s.activity("ACTIVITY_START");
+    s.advance(2);
+    s.heard("and then they went to the shops");
+    s.activity("ACTIVITY_END");
+    told = until(s, () => played(s).length > 0, 2);
+  }
+  assert.ok(told != null && told >= at + 10 && told <= at + 16, `told at ${told}, the result came at ${at}`);
+});
+
+test("without echo cancellation, a brief playing in standby doesn't wake the call with its own sound", () => {
+  const s = sim({ standbyAfter: 0.5, mic: { whileSpeaking: "silence", gainDb: 0 } });
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  ready(s, "Your table is booked for 8pm.", 3);
+  assert.ok(until(s, () => played(s).length > 0, 5) != null);
+  s.mic = "loud"; // the microphone hears the loudspeaker
+  s.advance(2.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  assert.equal(flushes(s), 0);
+  s.mic = "quiet";
+  s.advance(1);
+  assert.deepEqual(told(s), ["Your table is booked for 8pm."]);
+});
+
+test("a brief that never comes is given up on time even while another is playing", () => {
+  const s = sim();
+  task(s);
+  task(s, "Find a taxi", "c2");
+  s.advance(6);
+  s.complete("Booked for 8pm.", s.hermes()[0].run);
+  s.advance(1);
+  ready(s, "Your table is booked for 8pm.", 6, "b1");
+  assert.equal(played(s).length, 1);
+  const ends = s.t + 6;
+  s.complete("A taxi comes at 7.", s.hermes()[1].run);
+  const gaveUp = until(s, () => s.commands.some((c) => c.type === "log" && c.message.includes("no brief for \"taxi\"")), 8);
+  assert.ok(gaveUp != null && gaveUp < ends - 1, `given up at ${gaveUp}, the first brief ends at ${ends}`);
+});
