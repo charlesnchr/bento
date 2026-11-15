@@ -168,13 +168,17 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
   // saying one there voices it if nothing did before, and is not a repeat.
   const retold = (scenario as { retold?: string }).retold;
   const retoldAt = retold ? utts.find((u) => u.id === retold)?.end ?? Infinity : Infinity;
-  // The model pauses mid-sentence: its stretches less than a second apart are one telling, so a result's facts
-  // either side of a pause are found together and said once. A headline is always a telling of its own.
+  // The model pauses mid-sentence: its stretches less than a second apart in one turn are one telling, so a
+  // result's facts either side of a pause are found together and said once. A headline is always a telling of its own.
   interface Telling { start: number; end: number; text: string; cut: boolean; audio: number; played: number; parts: Segment[] }
   const tellings: Telling[] = [];
+  const turnEnds = log.filter((r) => r.k === "model" && r.what === "turnComplete").map((r) => r.t);
   for (const s of segs) {
     const last = tellings[tellings.length - 1];
-    if (last && !last.cut && s.source === "model" && last.parts[0].source === "model" && s.start - last.end < 1) {
+    const prev = last?.parts[last.parts.length - 1];
+    // Within one turn of the model's only: a second reply, or anything the user said in between, starts a new telling.
+    const apart = prev != null && (turnEnds.some((t) => t > prev.start && t <= s.start) || utts.some((u) => u.start >= prev.start && u.start < s.start));
+    if (last && !apart && !last.cut && s.source === "model" && last.parts[0].source === "model" && s.start - last.end < 1) {
       last.end = s.end; last.text += " " + s.text; last.cut = s.cut; last.audio += s.audio; last.played += s.end - s.start; last.parts.push(s);
     } else tellings.push({ start: s.start, end: s.end, text: s.text, cut: s.cut, audio: s.audio, played: s.end - s.start, parts: [s] });
   }

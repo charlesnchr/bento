@@ -54,3 +54,22 @@ test("a result the model tells either side of a short pause is said once, with i
   assert.equal(m.repeatedResults, 0);
   assert.equal(m.announcements[0].delay, 1);
 });
+
+test("the same result in two replies is two tellings, however close: a repeat", () => {
+  const scenario = { name: "t", steps: [], agents: [{ id: "dinner", match: "x", result: "Booked for 8.", facts: ["book", "\\b(8|eight)\\b"] }] };
+  const model = (t: number, dur: number) => ({ t, k: "play", dur, source: "model" });
+  const ends = (t: number) => ({ t, k: "model", what: "turnComplete" });
+  const log = [
+    { t: 0, k: "run" }, { t: 9, k: "agent.result", run: "r", id: "dinner", text: "done" },
+    tx(9.9, "Your table is booked for eight."), model(10, 2), ends(10.5),
+    { t: 11.8, k: "say.start", id: "yes", text: "Yes", dur: 0.4 }, { t: 12.2, k: "say.end", id: "yes" },
+    tx(12.7, "Your table is booked for eight."), model(12.8, 2), ends(13.3),
+    { t: 20, k: "script.end" },
+  ];
+  const m = score(log as any, scenario as any);
+  assert.equal(m.announcements[0].times, 2);
+  assert.equal(m.repeatedResults, 1);
+  // And with nothing said in between, the turn's end alone parts them.
+  const quiet = log.filter((r) => !String(r.k).startsWith("say."));
+  assert.equal(score(quiet as any, scenario as any).repeatedResults, 1);
+});
