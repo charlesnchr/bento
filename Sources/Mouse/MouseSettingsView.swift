@@ -76,7 +76,7 @@ struct MouseSettingsView: View {
                 } header: {
                     Text("Saved for Other Devices")
                 } footer: {
-                    Text("Devices that are not connected to this Mac right now.")
+                    Text("Devices that are not connected to this Mac right now, and entries that a more specific one outranks here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -92,11 +92,11 @@ struct MouseSettingsView: View {
         status.running && !ScrollTable(settings: model.value, devices: status.devices).isIdentity
     }
 
-    /// Entries no connected device matches.
+    /// Entries that apply to no connected device: their device is away, or a
+    /// more specific entry outranks them here.
     private var awayEntries: [Int] {
-        model.value.devices.indices.filter { i in
-            !status.devices.contains { model.value.devices[i].matches($0.identity) }
-        }
+        let inUse = Set(status.devices.compactMap { model.value.entryIndex(for: $0.identity) })
+        return model.value.devices.indices.filter { !inUse.contains($0) }
     }
 }
 

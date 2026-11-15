@@ -105,6 +105,11 @@ has no sending device:
 9. With Karabiner-Elements modifying a mouse, its events arrive from **Karabiner DriverKit
    VirtualHIDPointing**: settings on that row apply, settings on the mouse's own row don't.
 
+10. Crash recovery: set a pointer value, `kill -9` Bento, turn the module off in the config and
+    relaunch. About 3 s later the value is macOS's again and `pointer-state.json` is gone. Then,
+    with Bento running and a value set, `open -n` the same app: the running instance's values
+    and its ledger file are untouched.
+
 To try pointer values without touching a device in use, give an entry to a pointer nobody
 holds (Karabiner's virtual pointer, `vendorID` 5824, `productID` 10202) in an isolated
 DevMouse config and read its `HIDPointerAcceleration` and `HIDPointerResolution` back with the
