@@ -1,0 +1,86 @@
+{
+ "name": "result-during-dialogue",
+ "about": "The user hands off a lookup, then holds a conversation about something else. The result lands in the middle of that conversation. The user is quick: each line comes 1.2 s after the model stops. The result must not push the conversation aside: the user's questions are answered first, the result is voiced once, briefly, at a pause.",
+ "config": {
+  "standbyAfter": 0
+ },
+ "agents": [
+  {
+   "id": "trains",
+   "match": "train|edinburgh",
+   "after": 16,
+   "progress": [
+    [
+     3,
+     "Using web_search"
+    ],
+    [
+     9,
+     "Reading nationalrail.co.uk"
+    ]
+   ],
+   "result": "The first train from London King's Cross to Edinburgh tomorrow leaves at 06:15 and arrives at 10:42, an LNER service. The next is at 07:00. Advance singles start at 58 pounds.",
+   "facts": [
+    "6[:. ]?15|six[- ]fifteen"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Ask Hermes when the first train from London to Edinburgh leaves tomorrow morning.",
+   "id": "ask"
+  },
+  {
+   "until": "dispatch:trains",
+   "timeout": 15
+  },
+  {
+   "say": "While that runs, can you explain in two sentences what a Kalman filter is?",
+   "id": "q1"
+  },
+  {
+   "say": "And how is that different from a particle filter?",
+   "id": "q2"
+  },
+  {
+   "say": "Which one would you use for tracking a phone's position indoors?",
+   "id": "q3"
+  },
+  {
+   "say": "Okay, and what about the computational cost of the two?",
+   "id": "q4"
+  },
+  {
+   "until": "quiet:8",
+   "timeout": 60
+  }
+ ],
+ "max": 150,
+ "checks": [
+  {
+   "dispatch": "trains",
+   "count": 1
+  },
+  {
+   "said": "kalman|estimat",
+   "after": "q1",
+   "before": "q2"
+  },
+  {
+   "said": "particle",
+   "after": "q2",
+   "before": "q3"
+  },
+  {
+   "voiced": "trains",
+   "within": 30
+  },
+  {
+   "request": "trains",
+   "contains": [
+    "Edinburgh",
+    "tomorrow"
+   ]
+  }
+ ]
+}
