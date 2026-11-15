@@ -13,6 +13,7 @@ node eval/run.ts eval/scenarios/single-task.json        # one call, printed as i
 node eval/metrics.ts eval/runs/<run>                    # its timeline, metrics and checks
 node eval/suite.ts --name baseline --repeat 3 --judge   # every scenario, 4 calls at a time
 node eval/report.ts eval/runs/baseline eval/runs/mine   # two suites side by side
+eval/keep.sh eval/runs/mine mine                        # keep its report and logs in eval/results
 ```
 
 A call is real time, so a scenario takes as long as the conversation it scripts. `--bundle` runs
@@ -144,6 +145,7 @@ when the user spoke.
 | `turnCollisions` | user utterances during which the model began to speak (from 0.25 s before the user started). With `when: "turn"` the user waited for silence, so the model spoke unprompted. |
 | `overlapSeconds` | seconds the user and the model were audible at once |
 | `announcements` | for each result with `facts`: seconds from the result to the stretch of speech that said them (`delay`), how many stretches said them (`times`), and starts cut off before the facts (`aborted`) |
+| `briefSeconds` | where the core tells results itself: seconds each headline took to come back, text and speech. The report's `brief s` is their median; above 2 s the network or the speech service was slow, and the run says more about that than about the build |
 | `lostResults`, `repeatedResults` | results never said, and extra times one was said |
 | `unscriptedDispatches` | requests an agent got that no script expected |
 | `ambientSpeechSeconds`, `ambientToolCalls` | the model's speech and tool calls while only ambient speech was audible (plus 3 s) |
@@ -161,3 +163,10 @@ so read judge differences smaller than that as noise.
 
 A model call is not deterministic: run a scenario at least three times before comparing two
 builds, and compare the means.
+
+## Kept results
+
+`results/` holds the suites behind the numbers in `results/README.md`, with what each ran and how
+to run it again. `eval/keep.sh eval/runs/<suite> <name>` keeps a suite there: its report, and each
+call's log, scenario and verdict (not its trace, which holds the audio). `probe/` holds the latency
+probes of the speech, TTS, STT and text models the design rests on, with their raw runs.

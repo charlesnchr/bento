@@ -5,7 +5,7 @@ traces/
 hosts/python/.venv/
 .pytest_cache/
 !dist/
-eval/cache/
+eval/cache
 eval/runs/
 eval/probe/local.env
 eval/probe/.venv/

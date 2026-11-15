@@ -101,7 +101,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
     if (!o.quiet && !["play", "task", "model", "send"].includes(k)) console.log(`${r.t.toFixed(1).padStart(6)}  ${k.padEnd(13)} ${describe(r)}`);
     return r;
   };
-  rec("run", { scenario: scenario.name, core: core.version, model: liveModelPath.split("/").pop(), config });
+  rec("run", { scenario: scenario.name, core: core.version, model: liveModelPath.split("/").pop(), config: { ...config, model: liveModelPath.split("/").pop() } });
 
   const sockets = new Map<number, WebSocket>();
   let callId = 0, ended = false, micOn = false;

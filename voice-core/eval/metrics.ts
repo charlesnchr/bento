@@ -53,6 +53,8 @@ export interface Metrics {
   modelSpeechSeconds: number;
   userSpeechSeconds: number;
   /** Seconds a model socket was open, and the share of the call. */
+  /** Seconds each headline took to prepare (text and speech), where the core tells results itself. */
+  briefSeconds: number[];
   connectedSeconds: number;
   standbySeconds: number;
   checks: CheckResult[];
@@ -243,6 +245,7 @@ export function score(log: Rec[], scenario: Scenario): Metrics {
     modelWords: segs.reduce((n, s) => n + words(s.text).length, 0),
     modelSpeechSeconds: +segs.reduce((n, s) => n + (s.end - s.start), 0).toFixed(1),
     userSpeechSeconds: +users.reduce((n, u) => n + (u.end - u.start), 0).toFixed(1),
+    briefSeconds: log.filter((r) => r.k === "brief" && typeof r.after === "number").map((r) => r.after as number),
     connectedSeconds: +connectedSeconds.toFixed(1),
     standbySeconds: +standbySeconds.toFixed(1),
     checks, timeouts, penalties,

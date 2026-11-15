@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { judge, type Verdict } from "./judge.ts";
 import { loadRun, score, type Metrics } from "./metrics.ts";
 
-interface Row { scenario: string; runs: number; score: number; spread: number; collisions: number; lost: number; repeated: number; unscripted: number; failedChecks: number; checks: number; ambient: number; reply: number | null; announce: number | null; words: number; connected: number; judge: number | null; timeouts: number }
+interface Row { scenario: string; runs: number; score: number; spread: number; collisions: number; lost: number; repeated: number; unscripted: number; failedChecks: number; checks: number; ambient: number; reply: number | null; announce: number | null; brief: number | null; words: number; connected: number; judge: number | null; timeouts: number }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null);
@@ -48,6 +48,7 @@ export async function collect(dir: string, o: { judge?: boolean } = {}): Promise
       ambient: mean(ms.map((m) => m.ambientSpeechSeconds)),
       reply: median(ms.flatMap((m) => m.replyLatency)),
       announce: median(ms.flatMap((m) => m.announcements.map((a) => a.delay).filter((d): d is number => d != null))),
+      brief: median(ms.flatMap((m) => m.briefSeconds)),
       words: mean(ms.map((m) => m.modelWords)),
       connected: mean(ms.map((m) => m.connectedSeconds / Math.max(1, m.callSeconds))),
       judge: verdicts.length ? mean(verdicts) : null,
@@ -60,10 +61,10 @@ export async function collect(dir: string, o: { judge?: boolean } = {}): Promise
 const f = (v: number | null, d = 1) => (v == null ? "-" : v.toFixed(d));
 
 function table(rows: Row[]): string {
-  const head = ["scenario", "n", "score", "±", "collide", "lost", "repeat", "stray", "checks", "ambient s", "reply s", "announce s", "words", "judge"];
-  const body = rows.map((r) => [r.scenario, String(r.runs), f(r.score, 0), f(r.spread, 0), f(r.collisions), f(r.lost), f(r.repeated), f(r.unscripted), `${f(r.checks - r.failedChecks, 1)}/${r.checks}`, f(r.ambient), f(r.reply, 2), f(r.announce), f(r.words, 0), f(r.judge)]);
+  const head = ["scenario", "n", "score", "±", "collide", "lost", "repeat", "stray", "checks", "ambient s", "reply s", "announce s", "brief s", "words", "judge"];
+  const body = rows.map((r) => [r.scenario, String(r.runs), f(r.score, 0), f(r.spread, 0), f(r.collisions), f(r.lost), f(r.repeated), f(r.unscripted), `${f(r.checks - r.failedChecks, 1)}/${r.checks}`, f(r.ambient), f(r.reply, 2), f(r.announce), f(r.brief), f(r.words, 0), f(r.judge)]);
   const total = ["ALL", String(rows.reduce((n, r) => n + r.runs, 0)), f(mean(rows.map((r) => r.score)), 1), "", f(rows.reduce((n, r) => n + r.collisions, 0)), f(rows.reduce((n, r) => n + r.lost, 0)), f(rows.reduce((n, r) => n + r.repeated, 0)), f(rows.reduce((n, r) => n + r.unscripted, 0)),
-    `${f(rows.reduce((n, r) => n + r.checks - r.failedChecks, 0))}/${rows.reduce((n, r) => n + r.checks, 0)}`, f(rows.reduce((n, r) => n + r.ambient, 0)), f(median(rows.map((r) => r.reply).filter((v): v is number => v != null)), 2), f(median(rows.map((r) => r.announce).filter((v): v is number => v != null))), f(rows.reduce((n, r) => n + r.words, 0), 0),
+    `${f(rows.reduce((n, r) => n + r.checks - r.failedChecks, 0))}/${rows.reduce((n, r) => n + r.checks, 0)}`, f(rows.reduce((n, r) => n + r.ambient, 0)), f(median(rows.map((r) => r.reply).filter((v): v is number => v != null)), 2), f(median(rows.map((r) => r.announce).filter((v): v is number => v != null))), f(median(rows.map((r) => r.brief).filter((v): v is number => v != null))), f(rows.reduce((n, r) => n + r.words, 0), 0),
     f(rows.some((r) => r.judge != null) ? mean(rows.map((r) => r.judge).filter((v): v is number => v != null)) : null)];
   const all = [head, ...body, total];
   const width = head.map((_, i) => Math.max(...all.map((row) => row[i].length)));
