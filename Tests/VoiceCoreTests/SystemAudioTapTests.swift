@@ -75,10 +75,27 @@ import Testing
         var watchdog = TapWatchdog()
         #expect(watchdog.check(now: 0.5, lastIO: 0.06, built: true, formatChanged: false) == nil)
         #expect(watchdog.check(now: 1.0, lastIO: 0.06, built: true, formatChanged: false) == .stalled)
-        // The rebuild restarts the stall clock; nothing is judged until it has had a second.
-        #expect(watchdog.check(now: 1.25, lastIO: 1.0, built: true, formatChanged: false) == nil)
-        #expect(watchdog.check(now: 1.9, lastIO: 1.0, built: true, formatChanged: false) == nil)
-        #expect(watchdog.check(now: 2.0, lastIO: 1.99, built: true, formatChanged: false) == nil)
+        // The rebuild took 0.3s; nothing is judged until it has had a second after that.
+        watchdog.rebuilt(now: 1.3)
+        #expect(watchdog.check(now: 1.5, lastIO: 0.06, built: true, formatChanged: false) == nil)
+        #expect(watchdog.check(now: 2.25, lastIO: 0.06, built: true, formatChanged: false) == nil)
+        #expect(watchdog.check(now: 2.5, lastIO: 2.49, built: true, formatChanged: false) == nil)
+    }
+
+    /// Each rebuild takes half a second and its tap never delivers: the builds
+    /// themselves must not pass for recovery.
+    @Test func aTapThatNeverDeliversAfterARebuildIsRetriedMoreSlowly() {
+        var watchdog = TapWatchdog()
+        var rebuilds: [Double] = []
+        var now = 1.0
+        while now <= 25 {
+            if watchdog.check(now: now, lastIO: 0.06, built: true, formatChanged: false) != nil {
+                rebuilds.append(now)
+                watchdog.rebuilt(now: now + 0.5)
+            }
+            now += 0.25
+        }
+        #expect(rebuilds == [1, 2.5, 4.5, 8.5, 16.5, 24.5])
     }
 
     @Test func aDeviceThatStaysBrokenIsRetriedMoreSlowly() {
@@ -93,12 +110,24 @@ import Testing
         // Once it runs again the next failure is answered promptly.
         #expect(watchdog.check(now: 23, lastIO: 22.99, built: true, formatChanged: false) == nil)
         #expect(watchdog.check(now: 24, lastIO: 22.99, built: true, formatChanged: false) == .stalled)
-        #expect(watchdog.check(now: 25, lastIO: 24, built: true, formatChanged: false) == .stalled)
+        #expect(watchdog.check(now: 25, lastIO: 22.99, built: true, formatChanged: false) == .stalled)
     }
 
     @Test func aChangedFormatIsRebuiltEvenWhileIOFlows() {
         var watchdog = TapWatchdog()
         #expect(watchdog.check(now: 5, lastIO: 4.99, built: true, formatChanged: true) == .formatChanged)
+    }
+
+    @Test func theFormatIsNotReadWhileABuildIsGivenItsTime() {
+        var watchdog = TapWatchdog()
+        watchdog.rebuilt(now: 10)
+        var reads = 0
+        func changed() -> Bool { reads += 1; return true }
+        #expect(watchdog.check(now: 10.5, lastIO: 10.4, built: true, formatChanged: changed()) == nil)
+        #expect(watchdog.check(now: 10.5, lastIO: 10.4, built: false, formatChanged: changed()) == nil)
+        #expect(reads == 0)
+        #expect(watchdog.check(now: 11, lastIO: 10.99, built: true, formatChanged: changed()) == .formatChanged)
+        #expect(reads == 1)
     }
 
     @Test func aRebuildForAnotherReasonAlsoGetsItsTime() {

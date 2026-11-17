@@ -114,11 +114,12 @@ enum TapInput {
 
 /// Decides when a tap that has stopped delivering needs rebuilding.
 ///
-/// A tap's IOProc runs whether or not anything is playing, so a quiet call is
-/// not a stall; no callbacks is. That was seen when the aggregate still held
-/// the output device: Bluetooth headphones drop from music to call mode the
-/// moment the meeting opens their mic, the HAL stops the aggregate's IO for the
-/// switch, and its own restart can fail without a word.
+/// A tap's IOProc runs whether or not anything is playing (measured on a
+/// tap-only aggregate over a silent process), so a quiet call is not a stall;
+/// no callbacks is. That was seen when the aggregate still held the output
+/// device: Bluetooth headphones drop from music to call mode the moment the
+/// meeting opens their mic, the HAL stops the aggregate's IO for the switch,
+/// and its own restart can fail without a word.
 struct TapWatchdog {
     enum Fault: Equatable {
         case notBuilt
@@ -133,24 +134,33 @@ struct TapWatchdog {
     private var attempts = 0
     private var holdUntil: TimeInterval = 0
 
-    /// Why to rebuild now, if at all. `now` and `lastIO` share a monotonic clock.
-    mutating func check(now: TimeInterval, lastIO: TimeInterval, built: Bool, formatChanged: Bool) -> Fault? {
+    /// Why to rebuild now, if at all. `now` and `lastIO` share a monotonic
+    /// clock, and `lastIO` is the IOProc's own: a build must not set it, or a
+    /// tap that never delivers reads as recovered. `formatChanged` is only
+    /// asked of a built tap that is not being held.
+    mutating func check(now: TimeInterval, lastIO: TimeInterval, built: Bool,
+                        formatChanged: @autoclosure () -> Bool) -> Fault? {
         guard now >= holdUntil else { return nil }
         let fault: Fault? = !built ? .notBuilt
-            : formatChanged ? .formatChanged
+            : formatChanged() ? .formatChanged
             : now - lastIO > stallAfter ? .stalled : nil
         guard let fault else {
             attempts = 0
             return nil
         }
-        holdUntil = now + backoff[min(attempts, backoff.count - 1)]
+        holdUntil = now + hold(after: attempts)
         attempts += 1
         return fault
     }
 
-    /// The tap was rebuilt for another reason: give that build its time too.
+    /// A build finished at `now`, for whatever reason: nothing is judged until
+    /// it has had its time to deliver.
     mutating func rebuilt(now: TimeInterval) {
-        holdUntil = max(holdUntil, now + (backoff.first ?? 1))
+        holdUntil = max(holdUntil, now + hold(after: 0))
+    }
+
+    private func hold(after attempts: Int) -> TimeInterval {
+        backoff.isEmpty ? 1 : backoff[min(attempts, backoff.count - 1)]
     }
 }
 
@@ -192,16 +202,18 @@ public final class SystemAudioTap {
     private var outputListener: AudioObjectPropertyListenerBlock?
     /// When the IOProc last ran, on `now()`'s clock.
     private var lastIO: TimeInterval = 0
+    /// Whether this build's input has already been reported as unreadable.
+    private var refusalLogged = false
     private let stateLock = NSLock()
     // Only on `controlQueue`, like every build and teardown after `init`.
     private var stopped = true
     private var watchdog = TapWatchdog()
     private var watchdogTimer: DispatchSourceTimer?
-    private static let onControlQueue = DispatchSpecificKey<Bool>()
+    private let onControlQueue = DispatchSpecificKey<Bool>()
 
     public init(fifo: SampleFIFO) {
         self.fifo = fifo
-        controlQueue.setSpecific(key: Self.onControlQueue, value: true)
+        controlQueue.setSpecific(key: onControlQueue, value: true)
     }
 
     deinit {
@@ -218,6 +230,7 @@ public final class SystemAudioTap {
                 stopped = true
                 throw error
             }
+            watchdog.rebuilt(now: Self.now())
         }
         listenForOutputChanges()
         startWatchdog()
@@ -240,7 +253,7 @@ public final class SystemAudioTap {
     /// Runs `body` on the control queue, from anywhere — the last reference can
     /// go away inside one of that queue's own blocks.
     private func onControl<T>(_ body: () throws -> T) rethrows -> T {
-        if DispatchQueue.getSpecific(key: Self.onControlQueue) == true { return try body() }
+        if DispatchQueue.getSpecific(key: onControlQueue) == true { return try body() }
         return try controlQueue.sync(execute: body)
     }
 
@@ -299,6 +312,7 @@ public final class SystemAudioTap {
         stateLock.lock()
         tapFormat = format
         self.converter = converter
+        refusalLogged = false
         stateLock.unlock()
 
         var proc: AudioDeviceIOProcID?
@@ -309,7 +323,7 @@ public final class SystemAudioTap {
             tearDown()
             throw TapError.ioProc(status)
         }
-        stateLock.lock(); procID = proc; lastIO = Self.now(); stateLock.unlock()
+        stateLock.lock(); procID = proc; stateLock.unlock()
         status = AudioDeviceStart(device, proc)
         guard status == noErr else {
             tearDown()
@@ -344,9 +358,7 @@ public final class SystemAudioTap {
     /// tap made before the move still hears the new device was never measured.
     private func listenForOutputChanges() {
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            guard let self else { return }
-            self.rebuild("default output changed")
-            self.watchdog.rebuilt(now: Self.now())
+            self?.rebuild("default output changed")
         }
         var address = Self.defaultOutputAddress
         if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, listener) == noErr {
@@ -364,6 +376,7 @@ public final class SystemAudioTap {
         } catch {
             Log.audio.error("system audio tap rebuild failed: \(String(describing: error), privacy: .public)")
         }
+        watchdog.rebuilt(now: Self.now())
     }
 
     private func startWatchdog() {
@@ -398,7 +411,11 @@ public final class SystemAudioTap {
         lastIO = Self.now()
         let format = tapFormat, converter = self.converter
         stateLock.unlock()
-        guard let format, let converter, let input = TapInput.buffer(in: bufferList, format: format) else { return }
+        guard let format, let converter else { return }
+        guard let input = TapInput.buffer(in: bufferList, format: format) else {
+            reportRefusedInput(bufferList, format: format)
+            return
+        }
         let capacity = AVAudioFrameCount(Double(input.frameLength) * targetFormat.sampleRate / format.sampleRate) + 64
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
         var fed = false
@@ -414,6 +431,19 @@ public final class SystemAudioTap {
         }
         guard error == nil, output.frameLength > 0, let channel = output.int16ChannelData else { return }
         fifo.append(UnsafeBufferPointer(start: channel[0], count: Int(output.frameLength)))
+    }
+
+    /// Once per build: input that can't be read as the tap records as silence,
+    /// which nothing else would say.
+    private func reportRefusedInput(_ bufferList: UnsafePointer<AudioBufferList>, format: AVAudioFormat) {
+        stateLock.lock()
+        let first = !refusalLogged
+        refusalLogged = true
+        stateLock.unlock()
+        guard first else { return }
+        let shape = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+            .map { "\($0.mNumberChannels)ch/\($0.mDataByteSize)B" }.joined(separator: ",")
+        Log.audio.error("system audio tap input [\(shape, privacy: .public)] is not shaped like \(format.channelCount)ch \(format.isInterleaved ? "interleaved" : "planar", privacy: .public): recording silence")
     }
 
     // MARK: - HAL helpers
