@@ -81,9 +81,87 @@ public final class SampleFIFO: @unchecked Sendable {
     }
 }
 
+/// The tap's samples, out of the input an aggregate device hands its IOProc.
+///
+/// The tap's streams are the last ones. Bento's aggregate holds nothing else,
+/// but one that also held a device with a mic (a USB interface, a headset)
+/// would list that mic first, and reading the first buffer as the tap records
+/// the mic's channel — usually silence — in place of the call.
+enum TapInput {
+    /// A copy, so nothing outlives the IO cycle that owns `bufferList`. Nil
+    /// when the trailing buffers are not shaped like `format`.
+    static func buffer(in bufferList: UnsafePointer<AudioBufferList>, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+        let wanted = format.isInterleaved ? 1 : Int(format.channelCount)
+        let channelsPerBuffer = format.isInterleaved ? format.channelCount : 1
+        let bytesPerFrame = Int(format.streamDescription.pointee.mBytesPerFrame)
+        guard wanted > 0, bytesPerFrame > 0, buffers.count >= wanted else { return nil }
+        let own = buffers[(buffers.count - wanted)...]
+        let byteSize = own[own.startIndex].mDataByteSize
+        guard own.allSatisfy({ $0.mNumberChannels == channelsPerBuffer && $0.mDataByteSize == byteSize && $0.mData != nil })
+        else { return nil }
+        let frames = Int(byteSize) / bytesPerFrame
+        guard frames > 0, let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+        else { return nil }
+        copy.frameLength = AVAudioFrameCount(frames)
+        let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        for (index, source) in own.enumerated() {
+            memcpy(target[index].mData, source.mData, frames * bytesPerFrame)
+        }
+        return copy
+    }
+}
+
+/// Decides when a tap that has stopped delivering needs rebuilding.
+///
+/// A tap's IOProc runs whether or not anything is playing, so a quiet call is
+/// not a stall; no callbacks is. That was seen when the aggregate still held
+/// the output device: Bluetooth headphones drop from music to call mode the
+/// moment the meeting opens their mic, the HAL stops the aggregate's IO for the
+/// switch, and its own restart can fail without a word.
+struct TapWatchdog {
+    enum Fault: Equatable {
+        case notBuilt
+        case formatChanged
+        case stalled
+    }
+
+    var stallAfter: TimeInterval = 0.75
+    /// How long each rebuild gets to prove itself; a device that stays broken
+    /// is retried ever more slowly.
+    var backoff: [TimeInterval] = [1, 2, 4, 8]
+    private var attempts = 0
+    private var holdUntil: TimeInterval = 0
+
+    /// Why to rebuild now, if at all. `now` and `lastIO` share a monotonic clock.
+    mutating func check(now: TimeInterval, lastIO: TimeInterval, built: Bool, formatChanged: Bool) -> Fault? {
+        guard now >= holdUntil else { return nil }
+        let fault: Fault? = !built ? .notBuilt
+            : formatChanged ? .formatChanged
+            : now - lastIO > stallAfter ? .stalled : nil
+        guard let fault else {
+            attempts = 0
+            return nil
+        }
+        holdUntil = now + backoff[min(attempts, backoff.count - 1)]
+        attempts += 1
+        return fault
+    }
+
+    /// The tap was rebuilt for another reason: give that build its time too.
+    mutating func rebuilt(now: TimeInterval) {
+        holdUntil = max(holdUntil, now + (backoff.first ?? 1))
+    }
+}
+
 /// Captures what the Mac is playing — the other side of a call — through a
 /// Core Audio process tap on every process except Bento itself (so earcons never
-/// reach the notes), read through a private aggregate device.
+/// reach the notes), read through a private aggregate device that holds the tap
+/// and nothing else.
+///
+/// The tap is rebuilt whenever the default output moves, its format changes or
+/// its IO stops arriving, so a device change mid-meeting costs a second of the
+/// far side, not the rest of the call.
 ///
 /// Requires macOS 14.2+ and `NSAudioCaptureUsageDescription`. The first start
 /// asks for "System Audio Recording" permission; when it is denied the tap
@@ -93,7 +171,6 @@ public final class SystemAudioTap {
     public enum TapError: Error, Equatable {
         case createTap(OSStatus)
         case unreadableFormat
-        case noOutputDevice
         case aggregate(OSStatus)
         case ioProc(OSStatus)
         case start(OSStatus)
@@ -113,10 +190,18 @@ public final class SystemAudioTap {
     private var tapFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var outputListener: AudioObjectPropertyListenerBlock?
+    /// When the IOProc last ran, on `now()`'s clock.
+    private var lastIO: TimeInterval = 0
     private let stateLock = NSLock()
+    // Only on `controlQueue`, like every build and teardown after `init`.
+    private var stopped = true
+    private var watchdog = TapWatchdog()
+    private var watchdogTimer: DispatchSourceTimer?
+    private static let onControlQueue = DispatchSpecificKey<Bool>()
 
     public init(fifo: SampleFIFO) {
         self.fifo = fifo
+        controlQueue.setSpecific(key: Self.onControlQueue, value: true)
     }
 
     deinit {
@@ -124,8 +209,18 @@ public final class SystemAudioTap {
     }
 
     public func start() throws {
-        try build()
+        try onControl {
+            stopped = false
+            watchdog = TapWatchdog()
+            do {
+                try build()
+            } catch {
+                stopped = true
+                throw error
+            }
+        }
         listenForOutputChanges()
+        startWatchdog()
     }
 
     public func stop() {
@@ -134,7 +229,23 @@ public final class SystemAudioTap {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, outputListener)
             self.outputListener = nil
         }
-        tearDown()
+        onControl {
+            stopped = true
+            watchdogTimer?.cancel()
+            watchdogTimer = nil
+            tearDown()
+        }
+    }
+
+    /// Runs `body` on the control queue, from anywhere — the last reference can
+    /// go away inside one of that queue's own blocks.
+    private func onControl<T>(_ body: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: Self.onControlQueue) == true { return try body() }
+        return try controlQueue.sync(execute: body)
+    }
+
+    private static func now() -> TimeInterval {
+        TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 
     // MARK: - Graph
@@ -152,37 +263,17 @@ public final class SystemAudioTap {
         guard status == noErr else { throw TapError.createTap(status) }
         stateLock.lock(); tapID = tap; stateLock.unlock()
 
-        var asbd = AudioStreamBasicDescription()
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        var formatAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        status = AudioObjectGetPropertyData(tap, &formatAddress, 0, nil, &size, &asbd)
-        guard status == noErr,
-              let format = AVAudioFormat(streamDescription: &asbd),
-              let converter = AVAudioConverter(from: format, to: targetFormat)
-        else {
-            tearDown()
-            throw TapError.unreadableFormat
-        }
-        // Without this a stereo mix becomes its left channel, and a voice panned
-        // right — some conferencing apps do this — goes missing.
-        converter.downmix = true
-
-        guard let outputUID = Self.defaultOutputUID() else {
-            tearDown()
-            throw TapError.noOutputDevice
-        }
+        // No sub-device. With the output device in it the aggregate runs at that
+        // device's rate and hands over the tap resampled to it — 44.1kHz for
+        // Bluetooth music, 16kHz once the headset's mic opens — while the tap
+        // and its stream still report 48kHz, so the recording came out as bursts
+        // of sped-up sound. Alone, the tap keeps its own rate through all of that.
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Bento Meeting Capture",
             kAudioAggregateDeviceUIDKey: "com.charles.bento.voice.meeting-tap.\(UUID().uuidString)",
-            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
-            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
             kAudioAggregateDeviceTapListKey: [[
                 kAudioSubTapDriftCompensationKey: true,
                 kAudioSubTapUIDKey: description.uuid.uuidString,
@@ -194,8 +285,18 @@ public final class SystemAudioTap {
             tearDown()
             throw TapError.aggregate(status)
         }
+        stateLock.lock(); aggregateID = device; stateLock.unlock()
+
+        guard let format = Self.format(of: tap, through: device),
+              let converter = AVAudioConverter(from: format, to: targetFormat)
+        else {
+            tearDown()
+            throw TapError.unreadableFormat
+        }
+        // Without this a stereo mix becomes its left channel, and a voice panned
+        // right — some conferencing apps do this — goes missing.
+        converter.downmix = true
         stateLock.lock()
-        aggregateID = device
         tapFormat = format
         self.converter = converter
         stateLock.unlock()
@@ -208,13 +309,14 @@ public final class SystemAudioTap {
             tearDown()
             throw TapError.ioProc(status)
         }
-        stateLock.lock(); procID = proc; stateLock.unlock()
+        stateLock.lock(); procID = proc; lastIO = Self.now(); stateLock.unlock()
         status = AudioDeviceStart(device, proc)
         guard status == noErr else {
             tearDown()
             throw TapError.start(status)
         }
-        Log.audio.info("system audio tap running: \(Int(format.sampleRate))Hz/\(format.channelCount)ch via \(outputUID, privacy: .public)")
+        let inputs = Self.inputStreamChannels(of: device).map(String.init).joined(separator: "+")
+        Log.audio.info("system audio tap running: \(Int(format.sampleRate))Hz/\(format.channelCount)ch, output \(Self.defaultOutputUID() ?? "none", privacy: .public), input streams \(inputs, privacy: .public)")
     }
 
     private func tearDown() {
@@ -238,19 +340,13 @@ public final class SystemAudioTap {
         }
     }
 
-    /// The aggregate is clocked by the output device it was built on. When the
-    /// user moves output (AirPods connect mid-call) that device may vanish, so
-    /// rebuild on the new default rather than go quiet for the rest of the call.
+    /// Rebuilds when the user moves output (AirPods connect mid-call). Whether a
+    /// tap made before the move still hears the new device was never measured.
     private func listenForOutputChanges() {
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self else { return }
-            Log.audio.info("default output changed — rebuilding the system audio tap")
-            self.tearDown()
-            do {
-                try self.build()
-            } catch {
-                Log.audio.error("system audio tap rebuild failed: \(String(describing: error), privacy: .public)")
-            }
+            self.rebuild("default output changed")
+            self.watchdog.rebuilt(now: Self.now())
         }
         var address = Self.defaultOutputAddress
         if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, listener) == noErr {
@@ -258,16 +354,51 @@ public final class SystemAudioTap {
         }
     }
 
+    /// On `controlQueue`.
+    private func rebuild(_ why: String) {
+        guard !stopped else { return }
+        Log.audio.info("\(why, privacy: .public) — rebuilding the system audio tap")
+        tearDown()
+        do {
+            try build()
+        } catch {
+            Log.audio.error("system audio tap rebuild failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func startWatchdog() {
+        let timer = DispatchSource.makeTimerSource(queue: controlQueue)
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(50))
+        timer.setEventHandler { [weak self] in self?.checkHealth() }
+        onControl { watchdogTimer = timer }
+        timer.resume()
+    }
+
+    private func checkHealth() {
+        guard !stopped else { return }
+        stateLock.lock()
+        let tap = tapID, device = aggregateID, format = tapFormat, last = lastIO
+        stateLock.unlock()
+        let built = tap != kAudioObjectUnknown && format != nil
+        let now = Self.now()
+        let fault = watchdog.check(now: now, lastIO: last, built: built,
+                                   formatChanged: built && Self.format(of: tap, through: device) != format)
+        switch fault {
+        case .stalled: rebuild("no system audio IO for \(Int((now - last) * 1000))ms")
+        case .formatChanged: rebuild("the tap's format changed")
+        case .notBuilt: rebuild("the system audio tap is down")
+        case nil: break
+        }
+    }
+
     // MARK: - IO (runs on `queue`)
 
     private func ingest(_ bufferList: UnsafePointer<AudioBufferList>) {
         stateLock.lock()
+        lastIO = Self.now()
         let format = tapFormat, converter = self.converter
         stateLock.unlock()
-        guard let format, let converter,
-              let input = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: bufferList, deallocator: nil),
-              input.frameLength > 0
-        else { return }
+        guard let format, let converter, let input = TapInput.buffer(in: bufferList, format: format) else { return }
         let capacity = AVAudioFrameCount(Double(input.frameLength) * targetFormat.sampleRate / format.sampleRate) + 64
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
         var fed = false
@@ -293,6 +424,41 @@ public final class SystemAudioTap {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+    }
+
+    /// What the IOProc receives: the tap's layout at the aggregate's rate. The
+    /// aggregate resamples the tap to its own rate, and that is the only place
+    /// the delivered rate is reported.
+    private static func format(of tap: AudioObjectID, through device: AudioObjectID) -> AVAudioFormat? {
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &asbd) == noErr else { return nil }
+        var rate: Float64 = 0
+        size = UInt32(MemoryLayout<Float64>.size)
+        address.mSelector = kAudioDevicePropertyNominalSampleRate
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate) == noErr, rate > 0 else { return nil }
+        asbd.mSampleRate = rate
+        return AVAudioFormat(streamDescription: &asbd)
+    }
+
+    /// Channels per input stream, in the order the IOProc receives them.
+    private static func inputStreamChannels(of device: AudioObjectID) -> [UInt32] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, raw) == noErr else { return [] }
+        return UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self)).map(\.mNumberChannels)
     }
 
     private static func ownProcessObject() -> AudioObjectID? {
