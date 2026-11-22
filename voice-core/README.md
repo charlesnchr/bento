@@ -30,7 +30,7 @@ replays to the same commands on any engine.
 | Surface | Engine | Host code |
 |---|---|---|
 | Web (`dev/server.mjs`) | the browser's | `web/` |
-| Android | QuickJS (Zipline) | `android/core/.../voicecore/VoiceCore.kt` |
+| Android | QuickJS (Zipline) | `android/core/.../assistant/live/CoreCall.kt` (the engine: `voicecore/VoiceCore.kt`) |
 | macOS | JavaScriptCore | `Sources/VoiceCore/SharedCore/SharedCallCore.swift` |
 | Echo bridge | QuickJS (`quickjs` on PyPI) | `hosts/python/voice_core.py` |
 | Scripts | Node | `dev/talk.ts` |
@@ -173,8 +173,19 @@ scripts/test VoiceCoreTests                                               # Java
 ```
 
 When a change alters behaviour on purpose, `npm run golden` rewrites the expected answers. Read
-the diff. Commit `dist/voice-core.js` with the change, since the Mac and the Echo use the built
-file without Node.
+the diff. Commit `dist/voice-core.js` with the change, since the Mac, the Echo and the Android
+build (which copies it into the APK's assets) use the built file without Node.
+
+The phone's host has tests of its own, against a scripted Gemini socket and, when the dev server
+is named, in a real call spoken with its clips through the relay (GSK Vertex, not the phone's
+Gemini key); a third runs the bundle from the APK on a device:
+
+```sh
+cd android
+~/android-toolchain/env.sh gradle :core:test --tests '*CoreCallTest'
+VOICE_CORE_RELAY=http://127.0.0.1:8770 ~/android-toolchain/env.sh gradle :core:test --tests '*CoreCallLiveTest'
+ANDROID_SERIAL=emulator-5554 ~/android-toolchain/env.sh gradle :app:connectedDebugAndroidTest
+```
 
 Things that differ between the Gemini API and Vertex are in the core. For example, Vertex has no
 `willContinue`, so with `api: "vertex"` a task's "started" answer closes its call and the
@@ -182,11 +193,16 @@ result goes in as a turn.
 
 ## Not done yet
 
-- The web page is the only surface that uses the core for real calls. The other engines run it
-  and pass conformance; the next step is to wire each call screen's I/O to it behind a setting, Android first (its
-  `AssistantCall` is what this ports). After that the Mac (it gains multiple tasks, earcons,
-  standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
-- Captions (Android's second transcription socket) aren't ported.
+- The web page and Bento on Android use the core for real calls. On the phone it is the default
+  (`CoreCall`), with Settings → Hermes → Call engine to go back to the Kotlin `AssistantCall` this
+  ports; once the core has proved itself there, `AssistantCall` and its tests can go. The Mac and
+  the Echo run the core and pass conformance but don't call with it yet: next the Mac (it gains
+  multiple tasks, earcons, standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
+- The phone doesn't use everything the web page does: no coding agent (T3 runs on homelab, not
+  the phone), no typing to the call or to a task, and a follow-up to a running Hermes task waits
+  for its run to end, since the phone's Hermes client has no steer.
+- Captions (Android's second transcription socket) aren't ported: on the phone the host keeps
+  them (`CaptionTracker`), from the audio the core sends and Gemini's voice activity.
 - Only Gemini Live. GPT-Live and Grok, which the Echo and the Mac also use, would be provider
   adapters next to the Gemini one in `call.ts`.
 - Loading the dev server's build from Android and the Mac at call start (a debug setting) is

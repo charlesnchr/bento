@@ -122,7 +122,7 @@ class AssistantCall(
     private val opening: (() -> ByteArray?)? = null,
     /** Seconds without speech after which a call with nothing left to do hangs up (0 = never); read as the call goes. */
     private val hangUpAfter: () -> Double = { 0.0 },
-) {
+) : VoiceCall {
     data class Limits(
         val connect: Double = 25.0,
         /** Seconds without a nonzero microphone sample (quiet rooms still have some noise), or any frame, before the microphone restarts. */
@@ -171,23 +171,23 @@ class AssistantCall(
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
     private val _status = MutableStateFlow<Status>(Status.Connecting)
-    val status: StateFlow<Status> = _status.asStateFlow()
+    override val status: StateFlow<Status> = _status.asStateFlow()
     private val _microphoneSilent = MutableStateFlow(false)
     /** The microphone has picked nothing up for a while, even after restarting: Gemini can't hear the user. Cleared once it does. */
-    val microphoneSilent: StateFlow<Boolean> = _microphoneSilent.asStateFlow()
+    override val microphoneSilent: StateFlow<Boolean> = _microphoneSilent.asStateFlow()
     private val _questions = MutableStateFlow<Map<String, String>>(emptyMap())
     /** Tasks waiting for the user's answer, by key, with what Hermes asked: until it's answered, or the user has moved on. */
-    val questions: StateFlow<Map<String, String>> = _questions.asStateFlow()
+    override val questions: StateFlow<Map<String, String>> = _questions.asStateFlow()
 
     /** (role, text) fragments as they're heard: "user" for the user, "assistant" for Gemini. Called on the call's thread. */
-    var onTranscript: ((String, String) -> Unit)? = null
+    override var onTranscript: ((String, String) -> Unit)? = null
 
     /**
      * What the user is saying, before Gemini transcribes it; null takes it down. Display only.
      * A user fragment from [onTranscript] takes it down too, so the two swap in one update; a
      * caption of later words then comes straight back. Called on the call's thread.
      */
-    var onCaption: ((String?) -> Unit)? = null
+    override var onCaption: ((String?) -> Unit)? = null
 
     private var socket = transport
     private var active = false
@@ -414,7 +414,7 @@ class AssistantCall(
     }
 
     /** Tap-to-talk: while muted nothing is sent, and Gemini is told the stream paused so it answers. */
-    var muted: Boolean
+    override var muted: Boolean
         get() = mutedNow
         set(value) {
             mutedNow = value
@@ -428,7 +428,7 @@ class AssistantCall(
             }
         }
 
-    fun start() {
+    override fun start() {
         scope.launch {
             if (active) return@launch
             active = true
@@ -655,7 +655,7 @@ class AssistantCall(
     }
 
     /** Brings a call in standby back now, to talk before Hermes finishes. */
-    fun wake() {
+    override fun wake() {
         scope.launch { comeBack() }
     }
 
@@ -664,7 +664,7 @@ class AssistantCall(
      * audio unheard as in any standby, and a task finishing or [wake] brings it back only after
      * [reclaim]. False unless the call is in standby and not already coming back. Any thread.
      */
-    fun lend(): Boolean = synchronized(lending) {
+    override fun lend(): Boolean = synchronized(lending) {
         if (!active || !standby || waking || lent) return false
         lent = true
         lends++
@@ -672,7 +672,7 @@ class AssistantCall(
     }
 
     /** Takes back the microphone [lend] lent; a comeback held off meanwhile happens now. Any thread. */
-    fun reclaim() {
+    override fun reclaim() {
         synchronized(lending) {
             if (!lent) return
             // The microphone may have gone quiet while shared: the watchdog starts counting afresh.
@@ -1353,12 +1353,12 @@ class AssistantCall(
     }
 
     /** The screen's progress line for [taskId] (the latest tool or reply text), for check_task and list_tasks. */
-    fun progress(taskId: String, text: String) {
+    override fun progress(taskId: String, text: String) {
         scope.launch { tasks[taskId]?.takeIf { it.state == RUNNING }?.progress = text.replace(Regex("\\s+"), " ").trim().take(PROGRESS_LIMIT) }
     }
 
     /** Cancels one running task, from the screen or Gemini's cancel_task; what Hermes already did stays done. */
-    fun cancelTask(taskId: String) {
+    override fun cancelTask(taskId: String) {
         scope.launch { cancelNow(taskId) }
     }
 
@@ -1559,7 +1559,7 @@ class AssistantCall(
     private fun fail(message: String) = stop(message)
 
     /** Ends the call at once; running Hermes tasks are cancelled, not undone. */
-    fun stop(message: String? = null) {
+    override fun stop(message: String?) {
         scope.launch {
             if (!active) return@launch
             active = false

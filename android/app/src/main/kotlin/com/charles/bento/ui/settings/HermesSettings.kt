@@ -33,6 +33,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.charles.bento.assistant.AssistantController
 import com.charles.bento.core.assistant.HermesEndpoint
 import com.charles.bento.core.assistant.HermesError
 import com.charles.bento.core.assistant.HermesLink
@@ -49,6 +50,7 @@ fun HermesSection(context: Context) {
     val name by prefs.hermesName.flow.collectAsStateWithLifecycle()
     val talk by prefs.hermesTalkMode.flow.collectAsStateWithLifecycle()
     val standby by prefs.hermesStandbySeconds.flow.collectAsStateWithLifecycle()
+    val engine by prefs.hermesCallEngine.flow.collectAsStateWithLifecycle()
     val secretsVersion by graph.secrets.version.collectAsStateWithLifecycle()
     val configured = remember(url, secretsVersion) { graph.assistant.configured }
     var edit by remember { mutableStateOf(false) }
@@ -90,6 +92,16 @@ fun HermesSection(context: Context) {
             waits.forEachIndexed { i, (seconds, label) ->
                 SegmentedButton(selected = standby == seconds, onClick = { prefs.hermesStandbySeconds.value = seconds },
                                 shape = SegmentedButtonDefaults.itemShape(i, waits.size)) { Text(label, maxLines = 1) }
+            }
+        }
+        SettingsRow("Call engine",
+                    "The shared core is the call logic the web page runs too: saying \"stop\" or \"goodbye\" works, and a dropped " +
+                        "connection resumes. Built in is the phone's earlier call, kept in case the shared one misbehaves")
+        val engines = listOf(AssistantController.ENGINE_CORE to "Shared core", AssistantController.ENGINE_BUILT_IN to "Built in")
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+            engines.forEachIndexed { i, (id, label) ->
+                SegmentedButton(selected = engine == id, onClick = { prefs.hermesCallEngine.value = id },
+                                shape = SegmentedButtonDefaults.itemShape(i, engines.size)) { Text(label) }
             }
         }
         if (configured) {
