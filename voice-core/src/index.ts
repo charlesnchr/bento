@@ -9,7 +9,7 @@
 // what was kept since its last call: a recording any host can replay (replay.ts).
 
 import { Call } from "./call.ts";
-import { CAPTIONS_MODEL, MODEL, VOICE } from "./setup.ts";
+import { CAPTIONS_MODEL, MODEL, TEXT_MODEL, VOICE } from "./setup.ts";
 import type { CallConfig, Captions, Command, Event } from "./types.ts";
 
 declare const __VERSION__: string;
@@ -17,6 +17,8 @@ export const VERSION = typeof __VERSION__ === "string" ? __VERSION__ : "dev";
 
 export function defaults(): CallConfig {
   return {
+    medium: "voice",
+    text: { model: TEXT_MODEL, generation: { thinkingConfig: { thinkingLevel: "low" } }, historyChars: 400_000 },
     api: "gemini",
     platform: "Android",
     device: "phone",
@@ -72,6 +74,7 @@ export function configFrom(given: Partial<CallConfig> & Record<string, unknown>)
   return {
     ...base,
     ...given,
+    text: { ...base.text, ...(given.text ?? {}) },
     mic: { ...base.mic, ...(given.mic ?? {}) },
     voiceCommands: { ...base.voiceCommands, ...(given.voiceCommands ?? {}) },
     announce: { ...base.announce, ...(given.announce ?? {}) },

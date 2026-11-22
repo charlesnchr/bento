@@ -1,5 +1,15 @@
 {
  "config": {
+  "medium": "voice",
+  "text": {
+   "model": "models/gemini-3.8-flash",
+   "generation": {
+    "thinkingConfig": {
+     "thinkingLevel": "low"
+    }
+   },
+   "historyChars": 400000
+  },
   "api": "vertex",
   "platform": "web",
   "device": "browser",

@@ -152,7 +152,34 @@ export interface Captions {
   linger: number;
 }
 
+/**
+ * How the user and the model talk.
+ * - "voice": a call on Gemini Live, with the microphone and the speaker.
+ * - "text": a typed chat. The same call, on a text model reached by request and response
+ *   (`llm.request`, `TextModel`), with no audio at all: the user's words come as `say`, the
+ *   model's as `transcript`, and tasks, follow-ups, `list_tasks`, `check_task` and `cancel_task`
+ *   work as in a voice call. A hand-off is silent (the `task` command shows it). A task's result
+ *   isn't told by the model: the host shows the reply it gave the core, and the model gets a note
+ *   of it for the user's questions. Standby, hanging up, captions, earcons and spoken commands
+ *   don't apply.
+ */
+export type Medium = "voice" | "text";
+
+/** The text model of a typed chat (medium "text"). */
+export interface TextModel {
+  /** The model as the host's request names it: `models/…` on the Gemini API, a resource path on Vertex. */
+  model: string;
+  /** The request's `generationConfig` (the thinking level, say). */
+  generation: unknown;
+  /** The most of the conversation sent with a request, in characters of JSON: the oldest turns go first. */
+  historyChars: number;
+}
+
 export interface CallConfig {
+  /** A voice call (the default), or a typed chat on a text model. */
+  medium: Medium;
+  /** The text model, for medium "text". */
+  text: TextModel;
   api: Api;
   /** The surface, for the instruction and the words Hermes gets: "Android", "macOS", "web", "Echo". */
   platform: string;
@@ -230,8 +257,15 @@ export type Event =
   | { t: number; type: "cancelAll" }
   /** The user pressed stop (or the host heard a stop word): the reply stops, and the rest of its turn is dropped. */
   | { t: number; type: "interrupt" }
-  /** The user typed to the model: a turn of its own, as if said. */
+  /** The user typed to the model: a turn of its own, as if said. In a typed chat, every message of theirs. */
   | { t: number; type: "say"; text: string }
+  /**
+   * The text model's answer to `llm.request` [id]: one `generateContent` response as JSON, whole
+   * or one chunk of a stream (each `data:` line of `streamGenerateContent?alt=sse`).
+   */
+  | { t: number; type: "llm.data"; id: number; data: string }
+  /** The request is over. `error` says why it failed, with the HTTP status if there was one. */
+  | { t: number; type: "llm.end"; id: number; error?: string; status?: number }
   /** A new task from the screen, straight to its agent ("hermes" unless "t3"); its result comes back like any other. */
   | { t: number; type: "ask"; text: string; agent?: Agent; project?: string }
   /** A follow-up to a task from the screen: into its current run if it can be steered, otherwise next, in the task's session. */
@@ -261,6 +295,18 @@ export type Command =
   | { type: "ws.connect"; sid: number; model: string; purpose?: "captions" }
   | { type: "ws.send"; sid: number; data: string }
   | { type: "ws.close"; sid: number }
+  /**
+   * A typed chat's request to its text model: POST `body` (a `generateContent` request, as JSON) to
+   * `model` with the host's own URL and credentials, and answer with `llm.data` for each response
+   * (or each chunk, streaming) and then `llm.end`. One is under way at a time.
+   */
+  | { type: "llm.request"; id: number; model: string; body: string }
+  /** Drop the request: its answer is no longer wanted. */
+  | { type: "llm.cancel"; id: number }
+  /** A typed chat's model is working on its answer (on), or has finished its turn (off). */
+  | { type: "thinking"; on: boolean }
+  /** Something went wrong that the user should see and the call survives: the text model didn't answer. */
+  | { type: "error"; message: string }
   | { type: "mic.start" }
   | { type: "mic.restart" }
   | { type: "mic.stop" }

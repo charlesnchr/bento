@@ -55,6 +55,13 @@ export class CallProtocol {
    * detection ends a turn at a pause for thought, so a request said in two breaths is two turns.
    */
   join = 0;
+  /** The most characters a turn may have and still run: a typed chat raises it, since a message is written, not heard. */
+  maxTurn = 4000;
+  /**
+   * Seconds after a turn ended within which a call may still answer it. Speech the model left for
+   * longer isn't a request any more; a typed chat's model answers a message however long it takes.
+   */
+  patience = 8;
   private seen = new Set<string>();
   private turns: Turn[] = [];
   private history: Fragment[] = [];
@@ -83,7 +90,7 @@ export class CallProtocol {
   transcript(role: string, text: string, at: number): void {
     if (role !== "user" && role !== "assistant") return;
     const size = utf8Length(text);
-    if (text.length === 0 || size > 12_000 || !Number.isFinite(at) || at < (lastOrNull(this.history)?.at ?? 0)) return;
+    if (text.length === 0 || size > Math.max(12_000, this.maxTurn * 4) || !Number.isFinite(at) || at < (lastOrNull(this.history)?.at ?? 0)) return;
     this.history.push({ role, at, text });
     this.historyBytes += size;
     while (this.history.length > 128 || this.historyBytes > 12_000) this.historyBytes -= utf8Length(this.history.shift()!.text);
@@ -91,8 +98,8 @@ export class CallProtocol {
     if (role !== "user") return;
     const last = lastOrNull(this.turns);
     if (last == null) return;
-    // Past 4,000 characters a turn never runs, so it stops growing.
-    if (last.text.length <= 4000) last.text += text;
+    // Past maxTurn (4,000) characters a turn never runs, so it stops growing.
+    if (last.text.length <= this.maxTurn) last.text += text;
     last.heard = at;
   }
 
@@ -144,7 +151,7 @@ export class CallProtocol {
     // Speech the model left unanswered for long is not this call's request.
     const ended = turn.ended;
     if (ended == null) return null;
-    if (ended < d.at - 8 || turn.ambiguous || turn.text.length > 4000) return null;
+    if (ended < d.at - this.patience || turn.ambiguous || turn.text.length > this.maxTurn) return null;
     let task = turn.text.trim();
     if (task.length === 0) return null;
     // Earlier breaths of the same request: turns just before it that the model let pass without a word or a call.
@@ -156,7 +163,7 @@ export class CallProtocol {
         // A turn whose words may be another's (a transcript that came late) is never joined on.
         if (earlier.consumed || earlier.ambiguous || end == null || earlier.text.trim().length === 0 || first.started - end > this.join) break;
         if (this.history.some((f) => f.role === "assistant" && f.at >= earlier.started && f.at < first.started)) break;
-        if (earlier.text.length + task.length > 4000) break;
+        if (earlier.text.length + task.length > this.maxTurn) break;
         earlier.consumed = true;
         task = earlier.text.trim() + " " + task;
         first = earlier;

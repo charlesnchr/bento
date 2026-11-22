@@ -312,4 +312,52 @@ export const scenarios: Record<string, () => Sim> = {
     s.push({ type: "stop" });
     return s;
   },
+
+  /** A typed chat (medium "text"): answers of the model's own, tasks, a follow-up, a message typed mid-answer, list_tasks, a failed request and stop. */
+  "typed-chat": () => {
+    const s = new Sim({ config: { medium: "text", limits: fast, history: [{ role: "user", text: "Hello" }, { role: "assistant", speaker: "Gemini", text: "Hi." }] } as any });
+    s.advance(0.1);
+    s.type("Why is the sky blue?");
+    s.advance(0.5);
+    s.writes("Sunlight scatters off the air, blue most of all.");
+    s.advance(1);
+    s.type("Book a table at Noma:\n- Friday\n- for two");
+    s.advance(0.4);
+    s.calls("ask_hermes", { label: "Noma table" });
+    s.advance(0.3);
+    s.type("And find a taxi for eight");
+    s.advance(0.2);
+    s.type("What is 2 + 2?");
+    s.calls("ask_hermes", {}, s.requests().at(-1)!.id);
+    s.advance(0.3);
+    s.writes("4.");
+    s.advance(0.5);
+    s.push({ type: "task.progress", task: "1", text: "Using browser" });
+    s.complete("There's a table at eight. Shall I book it?", s.hermes()[0].run);
+    s.advance(1);
+    s.type("Yes please");
+    s.advance(0.3);
+    s.calls("ask_hermes");
+    s.advance(0.3);
+    s.type("What's going on?");
+    s.calls("list_tasks");
+    s.advance(0.2);
+    s.writes("The Noma table is being booked and the taxi search is running.");
+    s.advance(0.5);
+    s.type("Cancel the taxi");
+    s.calls("cancel_task", { task: "taxi" });
+    s.advance(0.2);
+    s.writes("Cancelled.");
+    s.complete("Booked for eight.", s.hermes()[2].run);
+    s.advance(0.5);
+    s.type("Thanks");
+    s.push({ type: "llm.end", id: s.requests().at(-1)!.id, status: 503 });
+    s.advance(0.5);
+    s.type("Tell me a story");
+    s.push({ type: "llm.data", id: s.requests().at(-1)!.id, data: JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "Once upon a time" }] } }] }) });
+    s.push({ type: "interrupt" });
+    s.advance(0.5);
+    s.push({ type: "stop" });
+    return s;
+  },
 };
