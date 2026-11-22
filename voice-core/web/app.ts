@@ -18,7 +18,7 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
-interface ServerConfig { route: string; model: string; version: string; hermes: boolean; t3: string[] | null }
+interface ServerConfig { route: string; model: string; captionsModel?: string; version: string; hermes: boolean; t3: string[] | null }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
@@ -62,6 +62,8 @@ let ticker = 0;
 let traceTimer = 0;
 let startedAt = now();
 const sockets = new Map<number, WebSocket>();
+/** The sockets to the transcription model: their audio is the model's again, so it isn't counted or logged twice. */
+const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
 interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
@@ -77,7 +79,8 @@ interface ChatLine { role: "user" | "assistant"; speaker?: string; text: string 
 const HISTORY = "voice.history";
 const HISTORY_MAX_AGE = 12 * 3600 * 1000;
 let chat: ChatLine[] = [];
-let lastRole = "";
+/** The core's number for the line the last words were remembered on, until something else is. */
+let lastLine: number | null = null;
 
 function remember(role: "user" | "assistant", text: string, speaker?: string, join = false) {
   const last = chat.at(-1);
@@ -221,13 +224,15 @@ function scrollDown(force = false) {
   if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
 }
 
-let lineOpen = false;
+/** The core's number for the line the last row shows, until another row follows it. */
+let openLine: number | null = null;
 
-function transcript(role: "user" | "assistant", text: string) {
+/** Words go on the row the core says they belong to: it starts a new line for each turn, however long the gap. */
+function transcript(role: "user" | "assistant", text: string, line: number) {
   $("empty").hidden = true;
   const pane = $("transcript");
   const last = pane.lastElementChild as HTMLElement | null;
-  if (lineOpen && last && last.dataset.role === role) last.querySelector(".text")!.textContent += text;
+  if (openLine === line && last && last.dataset.role === role) last.querySelector(".text")!.textContent += text;
   else {
     const row = document.createElement("div");
     row.className = `line ${role}`;
@@ -235,9 +240,29 @@ function transcript(role: "user" | "assistant", text: string) {
     row.innerHTML = `<span class="who">${role === "user" ? "You" : "Gemini"}</span><span class="text"></span>`;
     row.querySelector(".text")!.textContent = text.trimStart();
     pane.append(row);
-    lineOpen = true;
+    openLine = line;
   }
   scrollDown(role === "user");
+}
+
+/**
+ * The words the user is saying, before the model has transcribed them: a faint row that stays last
+ * on screen (its CSS `order`) and first in the pane, so the lines after it join up as before.
+ */
+function caption(text: string | null) {
+  const pane = $("transcript");
+  let row = document.getElementById("caption");
+  if (text == null) { row?.remove(); return; }
+  $("empty").hidden = true;
+  if (!row) {
+    row = document.createElement("div");
+    row.id = "caption";
+    row.className = "line user caption";
+    row.innerHTML = `<span class="who">You</span><span class="text"></span>`;
+    pane.prepend(row);
+  }
+  row.querySelector(".text")!.textContent = text;
+  scrollDown(true);
 }
 
 function note(text: string) {
@@ -246,7 +271,7 @@ function note(text: string) {
   row.className = "line note";
   row.textContent = text;
   $("transcript").append(row);
-  lineOpen = false;
+  openLine = null;
   scrollDown();
 }
 
@@ -256,7 +281,7 @@ function result(agent: string, label: string, text: string, failed = false): HTM
   row.className = `line result ${agent === "t3" ? "t3" : ""}`;
   row.innerHTML = `<span class="who">${agent === "t3" ? "T3" : "Hermes"} · ${escapeHtml(label)}${failed ? " · failed" : ""}</span><div class="body">${markdown(text)}</div>`;
   $("transcript").append(row);
-  lineOpen = false;
+  openLine = null;
   const body = row.querySelector(".body") as HTMLElement;
   requestAnimationFrame(() => {
     if (body.scrollHeight > body.clientHeight + 4) {
@@ -280,13 +305,25 @@ function elapsed(seconds: number): string {
 /** The empty task list's words, kept to put back. */
 const noTasks = document.getElementById("notasks")!;
 
+/** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
+const live = (state: string) => state === "running" || state.startsWith("waiting");
+
+/** The Finished fold's count, and the fold itself only when something is in it. */
+function showDone() {
+  const n = $("donenow").childElementCount + $("doneearlier").childElementCount;
+  $("donebox").hidden = n === 0;
+  $("donecount").textContent = n > 0 ? `· ${n}` : "";
+}
+
 function showTasks(force = false) {
   const pane = $("tasks");
+  const done = $("donenow");
   const open = document.activeElement?.closest?.(".task") as HTMLElement | null;
-  if (!force && open && pane.contains(open) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
+  if (!force && open && (pane.contains(open) || done.contains(open)) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
   pane.innerHTML = "";
+  done.innerHTML = "";
   const all = [...tasks.values()].reverse();
-  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
+  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; showDone(); return; }
   const running = all.filter((t) => t.c.state === "running").length;
   $("taskcount").textContent = running > 0 ? `${running} running` : "";
   $("cancelall").hidden = !callId || running < 2;
@@ -338,8 +375,9 @@ function showTasks(force = false) {
     if (view.result) button("Result", () => { view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
-    pane.append(card);
+    (live(t.state) ? pane : done).append(card);
   }
+  showDone();
 }
 
 function followUpForm(card: HTMLElement, t: Command) {
@@ -366,9 +404,10 @@ async function showEarlier() {
   try { list = await (await fetch("/agent/recent", { cache: "no-store" })).json(); } catch {}
   const current = new Set([...tasks.values()].map((v) => v.thread).filter(Boolean));
   list = list.filter((t) => !current.has(t.thread));
-  $("earlierbox").hidden = list.length === 0;
   const pane = $("earlier");
+  const done = $("doneearlier");
   pane.innerHTML = "";
+  done.innerHTML = "";
   for (const t of list) {
     const card = document.createElement("div");
     const state = t.waiting ? "waiting for approval in T3" : t.status;
@@ -386,8 +425,10 @@ async function showEarlier() {
     copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
     acts.append(copy);
     card.append(acts);
-    pane.append(card);
+    (t.status === "running" || t.waiting ? pane : done).append(card);
   }
+  $("earlierbox").hidden = pane.childElementCount === 0;
+  showDone();
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -420,11 +461,11 @@ function push(event: Record<string, unknown>) {
 function run(commands: Command[]) {
   for (const c of commands) {
     switch (c.type) {
-      case "ws.connect": connect(c.sid); break;
+      case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
       case "ws.send": {
         sockets.get(c.sid)?.send(c.data);
-        if (c.data.startsWith('{"realtimeInput":{"audio"')) counts.sent++;
-        else log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        if (!c.data.startsWith('{"realtimeInput":{"audio"')) log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        else if (!captionSockets.has(c.sid)) counts.sent++;
         break;
       }
       case "ws.close": sockets.get(c.sid)?.close(); sockets.delete(c.sid); log("out", `ws ${c.sid} close`, "out"); break;
@@ -465,10 +506,11 @@ function run(commands: Command[]) {
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
+      case "caption": caption(c.text); break;
       case "transcript":
-        transcript(c.role, c.text);
-        remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastRole === c.role);
-        lastRole = c.role;
+        transcript(c.role, c.text, c.line);
+        remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastLine === c.line);
+        lastLine = c.line;
         break;
       case "task": {
         const view = tasks.get(c.id) ?? { c, since: now(), ended: null };
@@ -500,10 +542,11 @@ function onMic(pcm: string, level: number) {
   push({ type: "mic", pcm });
 }
 
-function connect(sid: number) {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live`);
+function connect(sid: number, captions: boolean) {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live${captions ? "?for=captions" : ""}`);
   sockets.set(sid, ws);
-  log("out", `ws ${sid} connect (${server.route})`, "out");
+  if (captions) captionSockets.add(sid);
+  log("out", `ws ${sid} connect (${server.route}${captions ? ", captions" : ""})`, "out");
   ws.onopen = () => push({ type: "ws.open", sid });
   ws.onmessage = (m) => push({ type: "ws.message", sid, data: typeof m.data === "string" ? m.data : "" });
   ws.onclose = (e) => {
@@ -554,7 +597,7 @@ async function tool(c: Command) {
     const view = tasks.get(c.taskId);
     const row = result(agent, c.label, text, failed);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
-    if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastRole = ""; }
+    if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
     if (view) { view.result = row; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
   };
@@ -618,6 +661,7 @@ function readConfig(): Record<string, unknown> {
   // A web config saved before hand-offs were named in words gets that too.
   if (config.handOff === undefined && config.platform === "web") config.handOff = "named";
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
+  if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
   return config;
 }
 
@@ -651,7 +695,8 @@ async function start(carryOn = false) {
   if (carryOn && given.history === undefined) given.history = savedHistory();
   else if (!carryOn) chat = [];
   if (carryOn) chat = savedHistory();
-  lastRole = "";
+  lastLine = null;
+  openLine = null;
   $("resume").hidden = true;
   callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-web-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));
@@ -774,7 +819,7 @@ const stopWords = new StopWords();
 // Wiring.
 
 function settingsFromStorage() {
-  for (const id of ["aec", "stopword", "ptt", "coding", "fakehermes", "trace"]) {
+  for (const id of ["aec", "stopword", "ptt", "captions", "coding", "fakehermes", "trace"]) {
     const v = localStorage.getItem(`voice.${id}`);
     if (v != null) $<HTMLInputElement>(id).checked = v === "1";
     $(id).addEventListener("change", () => localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0"));
@@ -874,6 +919,7 @@ async function main() {
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
+  $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = submitText;
   $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
   tabs();

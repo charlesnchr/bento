@@ -92,23 +92,25 @@ instruction on what `list_tasks` covers.
 | `hand-off-tone` | 58 | `df8ea5ceca0e` | `{"handOff":"tone"}` |
 | `hand-off-always` | 58 | `df8ea5ceca0e` | `{"handOff":"spoken"}` |
 | `hand-off-named` | 58 | `ba3988e08df4` | `{"handOff":"named"}` |
+| `threads-merged` | 3 | `eff416dc1f86` | none; `parallel-threads` only |
 
-`ba3988e08df4` is the build this change commits, and the bench's defaults now carry
-`handOff: "named"`. `df8ea5ceca0e` was an earlier build of the same change and is not in the
-history: its "spoken" setting asked for words after every hand-off, and with "tone" it sends
-what the committed build sends. The 58-call suites are every scenario twice.
+`ba3988e08df4` is the change's build at commit `1c060ba`, and `eff416dc1f86` the same change
+with `main` of that afternoon merged in (captions, and words said in standby); the bench's
+defaults carry `handOff: "named"` from there on. `df8ea5ceca0e` was an earlier build of the
+change and is not in the history: its "spoken" setting asked for words after every hand-off,
+and with "tone" it sends what `ba3988e08df4` sends. The 58-call suites are every scenario twice.
 
 The call's own scenario, three calls each, scored with its final checks:
 
-| | `threads-before` | `threads-tone` | `threads-named` |
-|---|---|---|---|
-| Score, 0 to 100 | 40 | 67 | 97 |
-| Checks passed, of 14 | 11.0 | 12.0 | 14.0 |
-| Judge, 0 to 10 | 4.0 | 6.7 | 9.3 |
-| The T3 Code sessions request went to Hermes | 0 of 3 | 3 of 3 | 3 of 3 |
-| The coding request was confirmed before the earlier result | 0 of 3 | 0 of 3 | 3 of 3 |
+| | `threads-before` | `threads-tone` | `threads-named` | `threads-merged` |
+|---|---|---|---|---|
+| Score, 0 to 100 | 40 | 67 | 97 | 97 |
+| Checks passed, of 14 | 11.0 | 12.0 | 14.0 | 14.0 |
+| Judge, 0 to 10 | 4.0 | 6.7 | 9.3 | 9.0 |
+| The T3 Code sessions request went to Hermes | 0 of 3 | 3 of 3 | 3 of 3 | 3 of 3 |
+| The coding request was confirmed before the earlier result | 0 of 3 | 0 of 3 | 3 of 3 | 3 of 3 |
 
-Across all the builds of this change the T3 Code sessions request went to Hermes in 14 of 15
+Across all the builds of this change the T3 Code sessions request went to Hermes in 17 of 18
 calls and to the coding agent in one; it never went to `list_tasks` again.
 
 Every scenario, two calls each. Counts are summed over the scenarios' means.

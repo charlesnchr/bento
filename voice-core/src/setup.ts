@@ -10,6 +10,8 @@ import { tidy } from "./taskNames.ts";
 
 export const MODEL = "models/gemini-3.8-live";
 export const VOICE = "Charon";
+/** Gemini's transcription model, for captions of the user's speech (captions.ts). */
+export const CAPTIONS_MODEL = "models/gemini-3.5-transcribe-live";
 
 /** Android's instruction; other surfaces get it with their own name in place of Android's. */
 export const INSTRUCTION =
@@ -217,6 +219,16 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
       sessionResumption: resumption,
     },
   });
+}
+
+/**
+ * The captions socket's setup: text only, the server's own activity detection (its pauses are
+ * where utterances end) and VERBATIM, with the call's vocabulary.
+ */
+export function captionsSetupFrame(model: string, vocabulary: string[]): string {
+  const transcription: Record<string, unknown> = { mode: "VERBATIM" };
+  if (vocabulary.length > 0) transcription.customVocabulary = vocabulary;
+  return JSON.stringify({ setup: { model, generationConfig: { responseModalities: ["TEXT"] }, inputAudioTranscription: transcription } });
 }
 
 function userTurn(text: string, turnComplete: boolean): string {
