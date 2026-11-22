@@ -89,8 +89,11 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
                         dead -> ByteArray(640)
                         else -> QUIET.copyOf()
                     }
-                    if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
+                    // Its number counts as given only once it has been handed over: a frame the call refuses as a mute lands
+                    // was never one of those "before" it.
+                    if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count)
                     onPcm(frame)
+                    if (numbered) count++
                     emitted++
                     if (kind != null && stopAfterScript && scripted == 0) quiet = true
                 }
@@ -4005,15 +4008,18 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         after.seconds = 0.0
         // Speech wakes the call on a slow uplink: the socket has taken the held audio and not sent it, so the call
-        // is still coming back, with nothing in hand, when the microphone is muted.
+        // is still coming back, with nothing in hand, when the microphone is muted. The microphone gives a second
+        // and a bit of speech and then nothing.
         second.backlog = 100_000
-        audio.loud = true
-        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
-        second.awaitSent { s -> s.count { loud in it } >= 30 }
-        audio.quiet = true // no more audio
-        // The call has sent all it had, and waits only for the socket: nothing more goes out.
-        var sentSoFar: Int
-        do { sentSoFar = second.sent.size; delay(150) } while (second.sent.size != sentSoFar)
+        audio.quiet = true
+        audio.stopAfterScript = true
+        audio.play('l' to 60)
+        audio.quiet = false
+        withTimeout(5_000) { while (audio.scripted > 0 || !audio.quiet) delay(2) }
+        // Each time round its wait for the socket the call sends what it holds and asks the socket again: once it
+        // has asked a few more times since the last frame was handed over, it holds nothing.
+        val asked = second.backlogChecks
+        withTimeout(5_000) { while (second.backlogChecks < asked + 4) delay(5) }
         call.muted = true
         second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
         delay(300)
@@ -4132,6 +4138,62 @@ class AssistantCallTest {
             if (ends > 0) assertTrue(number >= mutedFrom[ends - 1], "frame $number, captured before mute $ends (at ${mutedFrom[ends - 1]}), was sent after its stream end")
         }
         assertEquals(15, ends)
+        call.stop()
+    }
+
+    @Test fun speechWaitingInTheMicrophonesQueueHoldsOffStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        // The socket stops taking audio on a quiet frame, so the call's thread waits on that send, and what the
+        // microphone gives next waits in its queue: the user starting on a follow-up.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        first.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        withTimeout(5_000) { sending.await() }
+        audio.loud = true
+        audio.emit(10)
+        after.seconds = 0.3
+        delay(1_200) // four standby times, and none of the call's own clocks has heard a word
+        assertEquals(AssistantCall.Status.Working, call.status.value, "speech the microphone has given is waiting to be heard")
+        assertEquals(0, first.closeCount)
+        after.seconds = 0.0
+        first.beforeSend = null
+        release.complete(Unit)
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        first.awaitSent { s -> s.any { loud in it } }
+        call.stop()
+    }
+
+    @Test fun aPauseIsNeverWhatAFullMicrophoneQueueDrops() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        transport.awaitSent { s -> s.count { "\"audio\"" in it } >= 3 }
+        // The socket stops taking audio. Three bursts of speech follow, each ended by a mute, and together far more
+        // than the queue holds: audio is dropped, oldest first, and each place the user stopped is kept.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        transport.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        withTimeout(5_000) { sending.await() }
+        audio.loud = true
+        repeat(3) {
+            audio.emit(AssistantCall.MIC_FRAMES)
+            call.muted = true
+            call.muted = false
+        }
+        call.muted = true
+        transport.beforeSend = null
+        release.complete(Unit)
+        transport.awaitSent { s -> s.count { "audioStreamEnd" in it } >= 4 }
+        delay(200)
+        val sent = transport.sent
+        assertEquals(4, sent.count { "audioStreamEnd" in it }, "Gemini is told of each pause, though most of the audio between them was dropped")
+        assertTrue(sent.indexOfLast { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the last of them after the last audio")
         call.stop()
     }
 

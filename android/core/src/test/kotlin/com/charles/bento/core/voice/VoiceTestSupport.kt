@@ -77,7 +77,9 @@ class FakeTransport(script: List<String>) : LiveTransport {
 
     /** What [queued] says: bytes taken and not yet on the wire, as a slow uplink leaves them. */
     @Volatile var backlog = 0L
-    override fun queued() = backlog
+    /** How often the call has asked what is still queued. */
+    @Volatile var backlogChecks = 0
+    override fun queued(): Long { backlogChecks++; return backlog }
 
     override suspend fun connect() {
         connectError?.let { throw it }

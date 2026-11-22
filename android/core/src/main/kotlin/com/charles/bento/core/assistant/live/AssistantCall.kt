@@ -178,21 +178,19 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    /** Microphone frames, each with the [lends] count it was captured under and when it was; when it's full the oldest goes ([put]). */
-    private val mic = Channel<Triple<Int, ByteArray, Double>>(MIC_FRAMES)
+    /**
+     * Microphone frames, each with the [lends] count it was captured under and when it was, and
+     * pauses among them, in the order they were given ([MicQueue]).
+     */
+    private val mic = MicQueue(MIC_FRAMES)
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
     /**
      * Guards what goes into [mic] and in what order: a microphone frame and a mute each go in
      * whole, with their check of [mutedNow], so no frame captured before a mute lands after its
-     * pause, and nothing takes the room one of them made in a full queue ([put]).
+     * pause.
      */
     private val micLock = Any()
-    /**
-     * A pause ([PAUSE]) fell out of the full queue with the oldest audio ([put]), under this
-     * [lends] count: it isn't lost with it. Under [micLock].
-     */
-    private var pauseEvicted: Int? = null
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     override val status: StateFlow<Status> = _status.asStateFlow()
     private val _microphoneSilent = MutableStateFlow(false)
@@ -281,6 +279,12 @@ class AssistantCall(
     private var frameAt = 0.0
     @Volatile private var offeredAt = 0.0
     @Volatile private var resumedAt = 0.0
+    /**
+     * When the microphone last gave a frame at speech level ([Limits.wakeLevel]), on the audio
+     * thread: later than [frameAt], it is sound the call hasn't got to yet, behind a send that is
+     * held up, say, and may be the user's next request ([idleWhileHermesWorks]).
+     */
+    @Volatile private var loudOfferedAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
     /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
@@ -508,7 +512,7 @@ class AssistantCall(
             // A pause, through the microphone's own queue and under its lock: behind every frame the microphone gave
             // before the mute and ahead of any it gives after, so that Gemini hears the stream paused after the audio
             // captured before it, wherever that still is (queued, held for a comeback, or on its way; [paused]).
-            if (value && !was && listening) put(Triple(lends, PAUSE, now()))
+            if (value && !was && listening) mic.put(Triple(lends, PAUSE, now()))
         }
 
     override fun start() {
@@ -682,6 +686,9 @@ class AssistantCall(
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
         if ((turnOpen(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
+        // Speech-level sound the microphone has given and the call hasn't yet taken (it is behind, on a send held up,
+        // say): none of the call's own clocks know of it, and it may be the next request.
+        if (loudOfferedAt > frameAt) return false
         // The captioner says an utterance began before it has a word of it.
         val quiet = t - maxOf(lastSpeech, speechUntil, toneAt, spokeAt, wordsAt, captionTurnAt ?: 0.0)
         if (quiet < after) return false
@@ -1319,11 +1326,9 @@ class AssistantCall(
                     at += OPENING_CHUNK
                 }
             }
-            for ((captured, pcm, at) in mic) {
+            while (true) {
+                val (captured, pcm, at) = mic.take() ?: return@launch
                 if (!active) return@launch
-                // Taken under the lock a pause is pushed out under: whoever pushed one out ahead of this frame has said so.
-                val evicted = synchronized(micLock) { pauseEvicted.also { pauseEvicted = null } }
-                if (evicted != null && evicted == lends) paused()
                 if (captured != lends) continue
                 freshAudio(captured)
                 if (pcm.isEmpty()) { paused(); continue }
@@ -1342,23 +1347,12 @@ class AssistantCall(
                 val at = now()
                 if (at - offeredAt > MIC_GAP) resumedAt = at
                 offeredAt = at
-                put(Triple(lends, pcm, at))
+                if (limits.wakeLevel > 0 && level(pcm) >= limits.wakeLevel) loudOfferedAt = at
+                droppedBytes.addAndGet(mic.put(Triple(lends, pcm, at)).toLong())
             }
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
-    }
-
-    /**
-     * Queues a microphone frame, or a pause, for the call's thread; one behind (a busy phone) loses the oldest audio,
-     * never the call. A pause that is pushed out was the oldest thing waiting, so the call takes it before whatever
-     * is oldest now ([pauseEvicted]). Under [micLock], from the audio thread or whoever mutes.
-     */
-    private fun put(frame: Triple<Int, ByteArray, Double>) {
-        val result = mic.trySend(frame)
-        if (result.isSuccess || result.isClosed) return
-        mic.tryReceive().getOrNull()?.let { if (it.second.isEmpty()) pauseEvicted = it.first else droppedBytes.addAndGet(it.second.size.toLong()) }
-        if (mic.trySend(frame).isFailure && !mic.isClosedForSend) droppedBytes.addAndGet(frame.second.size.toLong())
     }
 
     private fun caption(caption: Caption) {
@@ -1963,6 +1957,53 @@ class AssistantCall(
             val detail = listOfNotNull(e.httpStatus?.let { "HTTP $it" }, e.closeCode?.takeIf { it != 1000 }?.let { "close $it" })
             if (detail.isEmpty()) return "Gemini voice disconnected. No task was retried."
             return "Gemini voice failed (${detail.joinToString(", ")}). No task was retried."
+        }
+    }
+
+    /**
+     * The microphone's queue to the call's thread: frames and pauses ([PAUSE], an empty frame) in
+     * the order they were given, taken in that order. One lock covers giving, making room and
+     * taking, so the order holds whoever does which. When [capacity] frames of audio are waiting
+     * (a busy phone), the oldest audio goes to make room, never a pause and never the call: a
+     * pause is where the user stopped, and Gemini is told so wherever the audio around it went.
+     */
+    private class MicQueue(private val capacity: Int) {
+        private val items = ArrayDeque<Triple<Int, ByteArray, Double>>()
+        private var audio = 0
+        private val waiting = Channel<Unit>(Channel.CONFLATED)
+        private var closed = false
+
+        /** Adds [frame] at the end; the bytes of audio dropped to make room for it. Any thread. */
+        fun put(frame: Triple<Int, ByteArray, Double>): Int = synchronized(items) {
+            if (closed) return 0
+            var dropped = 0
+            if (frame.second.isNotEmpty()) {
+                if (audio >= capacity) {
+                    val oldest = items.indexOfFirst { it.second.isNotEmpty() }
+                    dropped = items.removeAt(oldest).second.size
+                    audio--
+                }
+                audio++
+            }
+            items.addLast(frame)
+            waiting.trySend(Unit)
+            dropped
+        }
+
+        /** The oldest entry, once there is one; null when the queue has closed. */
+        suspend fun take(): Triple<Int, ByteArray, Double>? {
+            while (true) {
+                synchronized(items) {
+                    items.removeFirstOrNull()?.let { if (it.second.isNotEmpty()) audio--; return it }
+                    if (closed) return null
+                }
+                if (waiting.receiveCatching().isClosed) return null
+            }
+        }
+
+        fun close() {
+            synchronized(items) { closed = true; items.clear(); audio = 0 }
+            waiting.close()
         }
     }
 
