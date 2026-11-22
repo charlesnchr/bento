@@ -2492,9 +2492,10 @@ class AssistantCallTest {
         repeat(8) { guess += " also"; captions.say(Caption.Partial(guess)); delay(200) }
         assertEquals(AssistantCall.Status.Working, call.status.value)
         assertEquals(0, first.closeCount)
-        // The same guess again is no new word.
+        // The same guess again is no new word, and then the captioner says the utterance is over.
         val last = System.nanoTime()
         repeat(3) { captions.say(Caption.Partial(guess)) }
+        captions.say(Caption.Ended)
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         assertTrue((System.nanoTime() - last) / 1e9 < 1.6, "a repeated guess doesn't keep the call")
         call.stop()
@@ -3248,6 +3249,7 @@ class AssistantCallTest {
         delay(1_000)
         assertEquals(AssistantCall.Status.Working, call.status.value, "the standby time counts from where the captioner heard speech begin")
         assertEquals(0, first.closeCount)
+        captions.say(Caption.Ended)
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         call.stop()
     }
@@ -4194,6 +4196,91 @@ class AssistantCallTest {
         val sent = transport.sent
         assertEquals(4, sent.count { "audioStreamEnd" in it }, "Gemini is told of each pause, though most of the audio between them was dropped")
         assertTrue(sent.indexOfLast { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the last of them after the last audio")
+        call.stop()
+    }
+
+    @Test fun anUtteranceTheCaptionerHasntEndedHoldsOffStandbyThoughItsWordsHaveStopped() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), twoResults(), after, captions = captions)
+        firstTaskRunning(call, first)
+        // A quiet follow-up: the captioner hears it begin, has a word, and then its guesses stall while the user
+        // goes on. It hasn't said the utterance ended.
+        captions.say(Caption.Started())
+        captions.say(Caption.Partial("And"))
+        after.seconds = 1.0
+        delay(1_800) // nearly two standby times since its last word
+        assertEquals(AssistantCall.Status.Working, call.status.value, "the captioner's utterance is still open")
+        assertEquals(0, first.closeCount)
+        captions.say(Caption.Ended)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
+    @Test fun anUtteranceTheCaptionerNeverEndsHoldsOffStandbyOnlySoLong() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val captions = FakeCaptions()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), twoResults(), after, captions = captions)
+        firstTaskRunning(call, first)
+        val began = System.nanoTime()
+        captions.say(Caption.Started())
+        delay(100)
+        after.seconds = 0.4
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        val waited = (System.nanoTime() - began) / 1e9
+        assertTrue(waited >= 1.2, "three standby times for a captioner that loses its place, not for good: $waited s")
+        call.stop()
+    }
+
+    @Test fun aQuietRequestAndItsMuteWaitingInTheMicrophonesQueueHoldOffStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val started = CopyOnWriteArrayList<String>()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, started, twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        // The socket stops taking audio, so the call's thread waits on a send. The user says a follow-up too quietly
+        // for its level to count, and mutes: the words and the pause wait in the microphone's queue.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        first.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        withTimeout(5_000) { sending.await() }
+        audio.soft = true
+        audio.emit(10)
+        call.muted = true
+        after.seconds = 1.0
+        delay(700) // the standby time was up long before; the pause is still waiting to be sent
+        assertEquals(AssistantCall.Status.Working, call.status.value, "Gemini hasn't been told the user stopped")
+        assertEquals(0, first.closeCount)
+        first.beforeSend = null
+        release.complete(Unit)
+        first.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        // Told so, Gemini says what it heard and hands it to Hermes, inside the standby time it is given from there.
+        Live.turn(first, "And find me a taxi"); first.push(Live.call("c2"))
+        withTimeout(5_000) { while (started.size < 2) delay(10) }
+        after.seconds = 0.0
+        assertEquals(listOf("Book a table", "And find me a taxi"), started.toList())
+        call.stop()
+    }
+
+    @Test fun aLoudFrameTheQueueHasSinceDroppedDoesntKeepTheCallOnGemini() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        // The socket stops taking audio. One loud frame (a door) goes into the microphone's queue, and then more
+        // quiet ones than it holds, which push that frame out.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        first.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        withTimeout(5_000) { sending.await() }
+        audio.play('l' to 1)
+        after.seconds = 0.3
+        withTimeout(8_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        release.complete(Unit)
         call.stop()
     }
 
