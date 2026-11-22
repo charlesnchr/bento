@@ -106,8 +106,9 @@ class CoreCall(
 
     private class Sock(val transport: LiveTransport) {
         val out = Channel<String>(Channel.UNLIMITED)
-        /** Microphone frames waiting to be written. */
+        /** Microphone frames waiting to be written, and how many were when the core's answer now being carried out began. */
         var audioQueued = 0
+        var audioBehind = 0
         var job: Job? = null
     }
 
@@ -248,6 +249,7 @@ class CoreCall(
     }
 
     private fun carryOut(commands: JsonArray) {
+        for (sock in sockets.values) sock.audioBehind = sock.audioQueued
         for (command in commands) {
             if (ended) return
             val c = command as? JsonObject ?: continue
@@ -400,7 +402,9 @@ class CoreCall(
             // What Gemini hears, the captioner hears.
             captions?.let { c -> decode(frame.substring(AUDIO_PREFIX.length, frame.length - AUDIO_SUFFIX.length))?.let(c::feed) }
             // A socket that has stopped taking audio loses the newest of it, never the call: nothing else is dropped.
-            if (sock.audioQueued >= AUDIO_BACKLOG) { droppedBytes.addAndGet((frame.length - AUDIO_PREFIX.length) * 3L / 4); return }
+            // It's behind by what waited before this answer: audio the core kept through standby or a
+            // reconnect comes in one answer, however long, and is the start of what the user said.
+            if (sock.audioBehind >= AUDIO_BACKLOG) { droppedBytes.addAndGet((frame.length - AUDIO_PREFIX.length) * 3L / 4); return }
             sock.audioQueued++
         }
         sock.out.trySend(frame)
@@ -489,7 +493,7 @@ class CoreCall(
         /** How the core frames microphone audio for Gemini (voice-core/src/call.ts, audioFrameOf). */
         internal const val AUDIO_PREFIX = "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\""
         internal const val AUDIO_SUFFIX = "\"}}}"
-        /** Two seconds of 20 ms microphone frames may wait for a slow socket; more are dropped. */
+        /** Two seconds of 20 ms microphone frames may wait for a slow socket; more are dropped, but for audio the core replays at once ([send]). */
         const val AUDIO_BACKLOG = 100
         /** The most lines of the conversation handed to the core: it recaps the latest that fit. */
         const val HISTORY_LINES = 200

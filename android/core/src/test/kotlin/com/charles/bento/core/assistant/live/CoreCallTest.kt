@@ -17,6 +17,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
@@ -283,6 +284,34 @@ class CoreCallTest {
         assertTrue("clientContent" in second.sent[1] && "User: What's on my calendar?" in second.sent[1] && "Calendar" in second.sent[1], second.sent[1])
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
         assertTrue(second.sent.drop(2).any { loud in it }, "the words that woke it reach the new session")
+        call.stop()
+    }
+
+    @Test fun wordsSaidWhileASlowSocketOpensReachTheNewSessionWhole() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        // Three seconds to connect: the core keeps what's said meanwhile and replays it in one answer,
+        // far more frames than may wait on a socket that has fallen behind (AUDIO_BACKLOG).
+        val slow = object : LiveTransport by second {
+            override suspend fun connect() { delay(3_000); second.connect() }
+        }
+        val audio = FakeAudio().apply { numbered = true }
+        val call = call(listOf(first, slow), audio, onTool = { CompletableDeferred<ToolReply>().await() }, standbyAfter = 0.3)
+        call.start()
+        first.awaitSent { s -> s.any { "realtimeInput" in it } }
+        Live.turn(first, "What's on my calendar?"); first.push(Live.call("c1"))
+        call.awaitStatus(AssistantCall.Status.Standby)
+        val began = audio.count
+        audio.loud = true
+        withTimeout(10_000) { call.status.first { it == AssistantCall.Status.Working } }
+        audio.quiet = true
+        delay(200)
+        val last = audio.count - 1
+        assertTrue(last - began > CoreCall.AUDIO_BACKLOG, "more was said than a socket's backlog holds ($began to $last)")
+        second.awaitSent { s -> s.any { "realtimeInput" in it && ByteBuffer.wrap(microphone(it)).int == last } }
+        val heard = second.sent.filter { "realtimeInput" in it }.map { ByteBuffer.wrap(microphone(it)).int }
+        assertEquals((heard.first()..last).toList(), heard, "no frame is dropped or out of order")
+        assertTrue(heard.first() <= began, "from the first word (${heard.first()}, and the speech began at $began)")
         call.stop()
     }
 
