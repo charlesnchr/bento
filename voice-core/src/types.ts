@@ -26,8 +26,10 @@ export interface Limits {
   speechLevel: number;
   /** Seconds of speech in standby that bring the call back. */
   wakeSpeech: number;
-  /** Seconds of audio before the wake kept for the model, so the first words aren't lost. */
+  /** Seconds of audio kept for the model from before the sound that woke the call began, so the first words aren't lost. */
   wakePreRoll: number;
+  /** In standby, a pause this long ends a sound: what the microphone hears after it begins another. */
+  wakeGap: number;
   /** The most audio held for a session coming back from standby, in seconds. */
   holdMax: number;
 }
@@ -255,7 +257,11 @@ export type Command =
   /** Stop a tool run: the task was cancelled, or the call ended (a host may leave a long agent running then). */
   | { type: "tool.cancel"; run: string; reason: "cancelled" | "ended" }
   | { type: "status"; status: Status; message?: string | null }
-  | { type: "transcript"; role: "user" | "assistant"; text: string; source?: "announcer" }
+  /**
+   * Words said, for the screen. Fragments with the same `line` are one line and a new number starts
+   * the next: a new turn of the user's, another speaker, a new session, or a task between.
+   */
+  | { type: "transcript"; role: "user" | "assistant"; text: string; line: number; source?: "announcer" }
   /** A task's state for the screen. */
   | { type: "task"; id: string; label: string; agent: Agent; request: string; state: string; progress: string | null; question: string | null }
   /** Tasks waiting for the user's answer, by key, with what Hermes asked. */

@@ -94,7 +94,7 @@ function push(e: Record<string, unknown>) {
   run(JSON.parse(core.push(callId, JSON.stringify({ ...e, t: now() }))));
 }
 
-let userLine = "", modelLine = "";
+let userLine = "", modelLine = "", textLine = 0;
 function flushLines() {
   if (userLine) { say(`you: ${userLine.trim()}`); userLine = ""; }
   if (modelLine) { say(`model: ${modelLine.trim()}`); modelLine = ""; }
@@ -132,7 +132,10 @@ function run(commands: Record<string, any>[]) {
       case "flush": flushLines(); say("(playback flushed)"); speechUntil = now(); break;
       case "cue": say(`(tone: ${c.earcon})`); break;
       case "wakeword": say(`(wake word ${c.on ? "listening" : "off"})`); break;
-      case "transcript": if (c.role === "user") { if (modelLine) flushLines(); userLine += c.text; } else { if (userLine) flushLines(); modelLine += c.text; } break;
+      case "transcript":
+        if (c.line !== textLine) { flushLines(); textLine = c.line; }
+        if (c.role === "user") userLine += c.text; else modelLine += c.text;
+        break;
       case "status": flushLines(); say(`[${c.status}${c.message ? ": " + c.message : ""}]`); if (c.status === "ended") finish(); break;
       case "task": if (c.state === "running") running.add(c.id); else { running.delete(c.id); lastReply = now(); } say(`task "${c.label}" ${c.state}${c.question ? ", asks: " + c.question : ""}`); break;
       case "tool.call":

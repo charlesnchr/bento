@@ -258,6 +258,9 @@ export class Call {
   private waking = false;
   private lent = false;
   private wakeHeld = false;
+  /** In standby: the audio since the sound the microphone hears began, and since it was last loud, in bytes. */
+  private soundBytes = 0;
+  private quietBytes = 0;
   private wakeStarted = 0;
   private held: Uint8Array[] = [];
   private heldBytes = 0;
@@ -323,6 +326,8 @@ export class Call {
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
   private boundary = true;
+  /** The line of the transcript the latest fragment went on: the screen breaks its lines where the recap does. */
+  private line = 0;
 
   constructor(config: CallConfig) {
     this.c = config;
@@ -873,7 +878,7 @@ export class Call {
     this.announcing = { item, from: t, until: this.speechUntil };
     this.lastSpeech = t;
     this.replyEnded = false;
-    this.emit({ type: "transcript", role: "assistant", text: brief.text, source: "announcer" });
+    this.emit({ type: "transcript", role: "assistant", text: brief.text, line: ++this.line, source: "announcer" });
     this.chat.push({ role: "assistant", speaker: "Bento", text: brief.text });
     this.boundary = true;
     this.tellModel(item);
@@ -983,6 +988,7 @@ export class Call {
     this.replyDue = null;
     this.generated = false;
     this.geminiSaid = "";
+    this.boundary = true;
   }
 
   private silentAbout(): void {
@@ -1017,6 +1023,8 @@ export class Call {
 
   private standBy(): void {
     this.standby = true;
+    this.soundBytes = 0;
+    this.quietBytes = 0;
     this.played();
     for (const item of this.unheard) { item.told = false; item.playing = null; item.questionSaid = true; }
     this.goingAway = false;
@@ -1028,8 +1036,13 @@ export class Call {
   private lend(): boolean {
     if (!this.active || !this.standby || this.waking || this.lent) return false;
     this.lent = true;
-    this.held = []; this.heldBytes = 0; this.voiced = 0; this.voiceWoke = false;
+    this.unhold(); this.voiceWoke = false;
     return true;
+  }
+
+  /** Nothing the microphone has picked up so far is kept or counts as speech. */
+  private unhold(): void {
+    this.held = []; this.heldBytes = 0; this.voiced = 0; this.soundBytes = 0; this.quietBytes = 0;
   }
 
   private reclaim(): void {
@@ -1037,7 +1050,7 @@ export class Call {
     this.micWatchFrom = this.t;
     this.lent = false;
     this.defer(() => {
-      this.held = []; this.heldBytes = 0; this.voiced = 0; this.voiceWoke = false;
+      this.unhold(); this.voiceWoke = false;
       const wasHeld = this.wakeHeld;
       this.wakeHeld = false;
       if (wasHeld) this.comeBack();
@@ -1084,6 +1097,8 @@ export class Call {
       this.heldBytes = 0;
     }
     this.voiced = 0;
+    this.soundBytes = 0;
+    this.quietBytes = 0;
     this.voiceWoke = false;
     this.rejoining = false;
     this.sendDeliveries();
@@ -1092,17 +1107,31 @@ export class Call {
 
   /** Microphone audio while the call is off the model: in standby it listens for speech; coming back it keeps it all. */
   private hold(pcm: Uint8Array): void {
-    if (this.lent) { this.held = []; this.heldBytes = 0; this.voiced = 0; return; }
+    if (this.lent) { this.unhold(); return; }
+    const limits = this.c.limits;
+    const back = this.waking || this.rejoining;
+    // Without echo cancellation the microphone hears a brief playing: that isn't the user.
+    const hears = !back && limits.wakeLevel > 0 && !(this.c.mic.whileSpeaking !== "send" && this.replyAudible());
+    const loud = hears && level(pcm) >= limits.wakeLevel;
     this.held.push(this.kept(pcm));
     this.heldBytes += pcm.length;
+    // In standby, what's kept reaches back to where the sound began: speech takes a few seconds to
+    // tell from noise, and the words said meanwhile are the start of the request. A pause of
+    // wakeGap ends the sound.
+    if (!back && !this.dormant) {
+      if (loud) { this.soundBytes += pcm.length; this.quietBytes = 0; }
+      else if (this.soundBytes > 0) {
+        this.soundBytes += pcm.length;
+        this.quietBytes += pcm.length;
+        if (this.quietBytes >= limits.wakeGap * 32_000) this.soundBytes = 0;
+      }
+    }
     // Coming back for the user, all they say meanwhile is kept; dormant, only what a wake word would need.
-    const keep = (this.waking || this.rejoining) && !this.dormant ? this.c.limits.holdMax : this.c.limits.wakePreRoll;
+    const keep = this.dormant ? limits.wakePreRoll : back ? limits.holdMax : Math.min(limits.holdMax, limits.wakePreRoll + this.soundBytes / 32_000);
     while (this.heldBytes > keep * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
-    if (this.waking || this.rejoining || this.c.limits.wakeLevel <= 0) return;
-    // Without echo cancellation the microphone hears a brief playing: that isn't the user.
-    if (this.c.mic.whileSpeaking !== "send" && this.replyAudible()) return;
+    if (!hears) return;
     const seconds = pcm.length / 32_000;
-    this.voiced = level(pcm) >= this.c.limits.wakeLevel ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
+    this.voiced = loud ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
     // Dormant, only the wake word brings the call back: a television is loud too.
     if (this.dormant) { this.voiced = Math.min(this.voiced, this.c.limits.wakeSpeech); return; }
     if (this.voiced >= this.c.limits.wakeSpeech) {
@@ -1307,6 +1336,8 @@ export class Call {
     this.replyEnded = false;
     this.cutAnnouncement();
     this.utterance = "";
+    // What the user says now is a new line, however long ago and to whichever session they last spoke.
+    this.boundary = true;
     this.cancelledAll = false;
     if (this.hush?.afterEnd) this.hush = null;
     this.protocol.activityStarted(at);
@@ -1376,12 +1407,12 @@ export class Call {
 
   /** A transcript fragment for the screen and the recap: adjacent fragments of one speaker join. */
   private heardWords(role: "user" | "assistant", text: string): void {
-    this.emit({ type: "transcript", role, text });
     const speaker = role === "assistant" ? "Gemini" : undefined;
     const last = lastOrNull(this.chat);
     if (!this.boundary && last != null && last.role === role && last.speaker === speaker) last.text += text;
-    else this.chat.push(speaker ? { role, speaker, text } : { role, text });
+    else { this.chat.push(speaker ? { role, speaker, text } : { role, text }); this.line++; }
     this.boundary = false;
+    this.emit({ type: "transcript", role, text, line: this.line });
   }
 
   // The microphone.
