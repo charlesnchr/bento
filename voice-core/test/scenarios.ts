@@ -198,4 +198,68 @@ export const scenarios: Record<string, () => Sim> = {
     s.advance(6);
     return s;
   },
+  /** Captions: guesses while the user speaks and the model's transcript in their place, a pause only
+   *  the model splits, a caption nothing replaces, a mute, a socket that rotates and one that breaks,
+   *  standby and the words that end it. */
+  captions: () => {
+    const s = new Sim({ micEvery: 0.1, micBytes: 320, config: { limits: fast, standbyAfter: 1, captions: { idle: 4, linger: 0.5 } } as any });
+    s.advance(0.3);
+    s.utterance("ACTIVITY_START", "0.020s");
+    s.activity("ACTIVITY_START");
+    s.guess("What's the");
+    s.advance(0.3);
+    s.guess("What's the weather in Londo");
+    s.advance(0.3);
+    s.heard("What's the weather in London?");
+    s.activity("ACTIVITY_END");
+    s.guess("What's the weather in London? ");
+    s.speaks("It's sunny.");
+    s.advance(0.4);
+    s.activity("ACTIVITY_START");
+    s.advance(0.2);
+    s.guess("What's the weather in London? And tomorrow");
+    s.advance(0.2);
+    s.heard("And tomorrow?");
+    s.activity("ACTIVITY_END");
+    s.gemini({ serverContent: { inputTranscription: { text: "What's the weather in London? And tomorrow?" } } }, s.captionSid);
+    s.utterance("ACTIVITY_END", "0.170s");
+    s.advance(0.3);
+    s.utterance("ACTIVITY_START", "0.200s");
+    s.guess("Hmm");
+    s.utterance("ACTIVITY_END", "0.230s");
+    s.advance(0.8);
+    s.push({ type: "mute" });
+    s.advance(0.3);
+    s.push({ type: "unmute" });
+    s.advance(0.3);
+    s.utterance("ACTIVITY_START", "0.250s");
+    s.guess("Book a");
+    s.gemini({ goAway: { timeLeft: "5s" } }, s.captionSid);
+    s.advance(0.8);
+    s.push({ type: "ws.closed", sid: s.captionSid, code: 1006 });
+    s.advance(5.5);
+    s.utterance("ACTIVITY_START");
+    s.activity("ACTIVITY_START");
+    s.guess("Book a table at Noma");
+    s.heard("Book a table at Noma");
+    s.activity("ACTIVITY_END");
+    s.toolCall("c1");
+    s.advance(0.3);
+    s.utterance("ACTIVITY_START");
+    s.guess("And also");
+    s.advance(2);
+    s.guess("And also check");
+    s.mic = "loud";
+    s.advance(0.8);
+    s.mic = "quiet";
+    s.utterance("ACTIVITY_START");
+    s.guess("Are you there");
+    s.activity("ACTIVITY_START");
+    s.heard("Are you there?");
+    s.activity("ACTIVITY_END");
+    s.complete("Booked for eight.");
+    s.advance(5);
+    s.push({ type: "stop" });
+    return s;
+  },
 };
