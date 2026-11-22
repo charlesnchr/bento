@@ -9,8 +9,8 @@ import app.cash.zipline.QuickJs
  *
  * The core is sans-IO: [create] and [push] take JSON and return the commands for the host to
  * carry out (open a socket, send a frame, play audio, run a Hermes task); see voice-core/src/types.ts.
- * The app loads the bundle from its assets, or in a debug build from the dev server
- * (`http://…:8770/voice-core.js`), so a change to the call logic needs no new APK.
+ * The phone's host is [com.charles.bento.core.assistant.live.CoreCall]; the app gives it the bundle
+ * from its assets, where the build copies it.
  *
  * QuickJS isn't thread-safe: every method is synchronized, and a host should call from one thread.
  */

@@ -749,12 +749,16 @@ export class Call {
       this.unheard.length === 0 && !this.userTalking && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after;
   }
 
-  /** Only Hermes is left to wait for and nobody has spoken for the standby time. */
+  /**
+   * Only Hermes is left to wait for and nobody has spoken for the standby time. The model says once
+   * that the user started speaking and sends their words when they stop, so a turn still open is
+   * someone speaking, however long ago it started (until it counts as stuck, as for results).
+   */
   private idleWhileHermesWorks(t: number): boolean {
     const after = this.c.standbyAfter;
     return after > 0 && (this.running > 0 || this.dormant) && this.settling === 0 && this.waiting().length === 0 && this.listening && !this.standby &&
       !this.waking && !this.rotating && this.c.reconnect && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after &&
-      (this.unspokenSince == null || t - this.unspokenSince >= after * 3);
+      !this.talking(t) && (this.unspokenSince == null || t - this.unspokenSince >= after * 3);
   }
 
   // Results and what the user has heard.

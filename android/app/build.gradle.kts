@@ -89,6 +89,33 @@ kotlin {
     compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
 }
 
+// The shared voice core (voice-core/ at the repo's root) runs the voice call. Its built bundle is
+// committed, so the app needs no Node to build: it goes into the APK's assets as voice-core.js.
+abstract class CopyVoiceCore : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val bundle: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val assets: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        val dir = assets.get().asFile
+        dir.deleteRecursively()
+        dir.mkdirs()
+        bundle.get().asFile.copyTo(dir.resolve("voice-core.js"))
+    }
+}
+
+val copyVoiceCore = tasks.register<CopyVoiceCore>("copyVoiceCore") {
+    bundle.set(rootProject.file("../voice-core/dist/voice-core.js"))
+}
+
+androidComponents {
+    onVariants { variant -> variant.sources.assets?.addGeneratedSourceDirectory(copyVoiceCore, CopyVoiceCore::assets) }
+}
+
 dependencies {
     implementation(project(":core"))
 
