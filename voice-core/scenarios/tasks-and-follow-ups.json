@@ -25,6 +25,8 @@
    "stop": [
     "stop",
     "stop it",
+    "stab it",
+    "stabit",
     "stop talking",
     "stop there",
     "quiet",
@@ -821,7 +823,25 @@
   {
    "type": "ws.message",
    "sid": 1,
-   "data": "{\"toolCall\":{\"functionCalls\":[{\"id\":\"x1\",\"name\":\"cancel_task\",\"args\":{\"task\":\"taxi\"}}]}}",
+   "data": "{\"voiceActivity\":{\"type\":\"ACTIVITY_START\"}}",
+   "t": 4.6
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Stabit\"}}}",
+   "t": 4.6
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"voiceActivity\":{\"type\":\"ACTIVITY_END\"}}",
+   "t": 4.6
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"toolCall\":{\"functionCalls\":[{\"id\":\"x0\",\"name\":\"cancel_task\",\"args\":{\"task\":\"taxi\"}}]}}",
    "t": 4.6
   },
   {
@@ -838,9 +858,27 @@
    "t": 4.7
   },
   {
-   "type": "tool.result",
-   "run": "r3",
-   "text": "Booked for eight.",
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"voiceActivity\":{\"type\":\"ACTIVITY_START\"}}",
+   "t": 4.699999999999999
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Never mind the taxi\"}}}",
+   "t": 4.699999999999999
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"voiceActivity\":{\"type\":\"ACTIVITY_END\"}}",
+   "t": 4.699999999999999
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"toolCall\":{\"functionCalls\":[{\"id\":\"x1\",\"name\":\"cancel_task\",\"args\":{\"task\":\"taxi\"}}]}}",
    "t": 4.699999999999999
   },
   {
@@ -855,6 +893,12 @@
    "type": "mic",
    "pcm": "AAABAAIAAwAEAAUABgAAAAEAAgADAAQABQAGAAAAAQA=",
    "t": 4.8
+  },
+  {
+   "type": "tool.result",
+   "run": "r3",
+   "text": "Booked for eight.",
+   "t": 4.799999999999999
   },
   {
    "type": "tick",
@@ -1104,24 +1148,6 @@
    "t": 6.7
   },
   {
-   "type": "ws.message",
-   "sid": 1,
-   "data": "{\"serverContent\":{\"outputTranscription\":{\"text\":\"Booked for eight.\"}}}",
-   "t": 6.699999999999999
-  },
-  {
-   "type": "ws.message",
-   "sid": 1,
-   "data": "{\"serverContent\":{\"generationComplete\":true}}",
-   "t": 6.699999999999999
-  },
-  {
-   "type": "ws.message",
-   "sid": 1,
-   "data": "{\"serverContent\":{\"turnComplete\":true}}",
-   "t": 6.699999999999999
-  },
-  {
    "type": "tick",
    "t": 6.75
   },
@@ -1133,6 +1159,24 @@
    "type": "mic",
    "pcm": "AAABAAIAAwAEAAUABgAAAAEAAgADAAQABQAGAAAAAQA=",
    "t": 6.8
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"serverContent\":{\"outputTranscription\":{\"text\":\"Booked for eight.\"}}}",
+   "t": 6.799999999999999
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"serverContent\":{\"generationComplete\":true}}",
+   "t": 6.799999999999999
+  },
+  {
+   "type": "ws.message",
+   "sid": 1,
+   "data": "{\"serverContent\":{\"turnComplete\":true}}",
+   "t": 6.799999999999999
   },
   {
    "type": "tick",
@@ -1250,6 +1294,19 @@
    "type": "mic",
    "pcm": "AAABAAIAAwAEAAUABgAAAAEAAgADAAQABQAGAAAAAQA=",
    "t": 7.7
+  },
+  {
+   "type": "tick",
+   "t": 7.75
+  },
+  {
+   "type": "tick",
+   "t": 7.8
+  },
+  {
+   "type": "mic",
+   "pcm": "AAABAAIAAwAEAAUABgAAAAEAAgADAAQABQAGAAAAAQA=",
+   "t": 7.8
   }
  ]
 }

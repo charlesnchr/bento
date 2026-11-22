@@ -33,3 +33,21 @@ export function commandIn(utterance: string, commands: VoiceCommands, names: str
   if (is(commands.stop)) return "stop";
   return null;
 }
+
+/** Words that take a request back. */
+const CANCELS = /\b(?:cancel\w*|abort\w*|kill|scrap|scratch|drop|forget|undo|terminate|never ?mind|call (?:it|that|this) off|(?:dont|do not) (?:bother|need|want|do)|no need|no longer|not anymore|leave it|skip (?:it|that))\b/;
+const STOPS = /\b(?:stop\w*|halt|quit|end)\b/;
+
+/**
+ * Whether [utterance] asks for a task to be cancelled, for a cancel_task the model called on it. "Stop" alone and the
+ * other stop and hang-up phrases don't: they mean stop talking. Otherwise it does when it says so in words, when it
+ * names the task ([named]), or when it says to stop something more than the talking ("stop working on that").
+ * Words that say none of this (a mishearing such as "Stabit") don't. With nothing heard there is nothing to judge by.
+ */
+export function asksToCancel(utterance: string, commands: VoiceCommands, names: string[], named: boolean): boolean {
+  const said = words(utterance).join(" ");
+  if (said.length === 0) return true;
+  const command = commandIn(utterance, commands, names);
+  if (command === "stop" || command === "hangUp") return false;
+  return command === "cancelAll" || named || CANCELS.test(said) || STOPS.test(said);
+}

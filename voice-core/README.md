@@ -90,12 +90,17 @@ Cloudflare alike.
 The coding agent is T3 Code on this machine: `dev/t3.mjs` starts threads with the `t3` CLI (in a
 new worktree on a `voice/…` branch when the project is a git repo), follows them up, and steers and
 interrupts them over T3's WebSocket. A task is told to do the work itself and to open a pull
-request, not to merge or deploy.
+request, not to merge or deploy. A task goes to the project the model named. When it named none,
+the user's words pick it: a project's title, or a top-level directory that only one project has
+("the VoiceCore app" is Bento, for its `voice-core/`). Otherwise it starts in Scratchpad.
 
 The model route is GSK Vertex through the GSK SOCKS route (`VERTEX_*` in `~/.hermes/.env`).
 `VOICE_CORE_ROUTE=gemini` with `GEMINI_API_KEY` set uses the public Gemini API, which is billed
-to the personal key. Hermes is the API server in `~/.hermes/.env`. Approval requests are denied,
-as on the Echo. Credentials stay on the server.
+to the personal key. Hermes is the API server in `~/.hermes/.env`. Its turns run at low reasoning
+effort (`model_options` on each request; `VOICE_CORE_HERMES_REASONING_EFFORT` sets another, and
+empty leaves Hermes's own default): at the default, high, a Gmail lookup took 110 s and the call
+stood by before its answer came. Approval requests are denied, as on the Echo. Credentials stay
+on the server.
 
 ```sh
 systemctl --user restart voice-core-dev     # after changing dev/server.mjs
@@ -196,7 +201,55 @@ user a button that sends `resume`.
 replies stay short and a status answer names each task's state or outcome; `list_tasks` and
 `check_task` add how long a task has run, how long it has been quiet and each finished task's
 outcome in a line; and a request said in two breaths (two turns with a pause the model let pass)
-reaches its agent whole.
+reaches its agent whole. It also follows the user's lead (next section). The web page sets it.
+
+## Following the user's lead
+
+Two calls on 2026-11-22 (traces `2026-11-22T19-34-17` and `19-58-50`) had the user and the call
+talking past each other. What went wrong, and what the core does about each now:
+
+- **A task started on half a sentence.** "I need a new change for the Bento app", a pause, and a
+  coding task began before the user said what the change was. With `supervise`, the instruction
+  tells the model to stay silent on a request that only says the user wants something. When it
+  calls anyway and the user goes straight on (a new turn within `settleQuiet` of the call), the
+  hand-off waits for them, up to 8 s: the agent gets both breaths as one request, the tone and
+  the card come once they have finished, and a second call the model makes for the rest is
+  answered silently.
+- **The model said a cancelled task was still working.** On Vertex a task's "started" answer
+  closes its call, so a cancel from the screen had no call to answer on. The model now gets a
+  note of it.
+- **"Stop it" cancelled a task.** Gemini transcribed it as "Stabit", which matched no stop phrase,
+  so the model heard it and called `cancel_task` on six minutes of work the user never named.
+  "stab it" and "stabit" are stop phrases now, and `cancel_task` is refused unless the user's
+  latest words ask for a cancellation ("cancel", "never mind", "forget", "stop working on…") or
+  name the task. A refused cancel goes through when the model calls again after the user's next
+  turn, so it can ask and act on a "yes". A cancellation's answer names the call that resumes the
+  task (`continue_task`), for "I didn't mean that".
+- **The model paraphrased three times when asked for the exact quote.** After standby the recap
+  holds 600 characters of each reply, and the model answered from that as if it were all of it.
+  A reply the recap cuts now says so and names `check_task`, and with `supervise` the instruction
+  sends a request for exact words, or to "ask that session again", to `check_task` and then to
+  the task as a follow-up.
+- **"Just use Hermes" got an argument.** The coding agent failed to start, the user said to use
+  Hermes for "what I just said", and the model asked them to repeat it, then said code needs the
+  coding agent. The coding instruction now says the user chooses the agent. With `supervise` the
+  delegating tools take `refers_back: true` for a request that points at an earlier one: the
+  agent still gets only the user's words, with the earlier conversation marked as where the
+  request is instead of as reference only.
+- **A result landing as the user asked for the next thing made two more mistakes** (seen in the
+  scripted calls). The model told the result first and called for the request more than 8 s after
+  it was said, which the protocol refused as stale, so the model asked the user to repeat it; and
+  the result, marked to go again because the user had spoken first, was told twice. With
+  `supervise`, a reply the model began in time and was still making counts as answering the
+  request, and a result that reply told is not sent again (when `TaskNames.relays` recognises it,
+  which needs three of the reply's distinctive words: a loose paraphrase still gets told twice).
+- **A tool response named the wrong tool.** The answer to an `ask_coding_agent` call was named
+  `ask_hermes`. Responses carry the name of the tool that was called.
+
+`test/lead.test.ts` and the `following-the-lead` scenario hold these. The wording was tried in
+scripted calls on Vertex with `dev/talk.ts` (one or two calls for each case: the two breaths, "use
+Hermes for that", the exact quote after standby, "stop it" then "cancel that task"), not on the
+bench in `eval/`.
 
 ## Measuring a change
 
