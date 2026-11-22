@@ -125,7 +125,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.DateFormat
 import java.util.Date
 
-/** Chat with Hermes, and voice calls through Gemini Live that hand requests to Hermes. */
+/**
+ * The assistant's conversation, typed or spoken: a main thread where Gemini answers what it can and
+ * hands the rest to Hermes as tasks. Typed, the tasks show in a strip above the composer, which stays
+ * free while they run; in a call they show in the call's bar.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableStateFlow<HomeAction?>) {
@@ -137,7 +141,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
     val secretsVersion by graph.secrets.version.collectAsStateWithLifecycle()
     val configured = remember(url, secretsVersion) { assistant.configured }
     var showHistory by remember { mutableStateOf(false) }
-    /** The call task whose conversation is open in a sheet. */
+    /** The task (the call's, or with no call on the chat's) whose conversation is open in a sheet. */
     var shownTask by remember { mutableStateOf<String?>(null) }
     LifecycleResumeEffect(configured) { assistant.onShown(); onPauseOrDispose { } }
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) assistant.toggleCall() }
@@ -157,6 +161,8 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         }
     }
 
+    // The tasks on screen: the call's while one is on, otherwise the chat's.
+    val tasks = state.call?.tasks ?: state.tasks
     Column(modifier.fillMaxSize().imePadding()) {
         TopAppBar(
             title = {
@@ -168,7 +174,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
             actions = {
                 if (configured) {
                     IconButton(onClick = { assistant.refreshHistory(); showHistory = true }) { Icon(Icons.Rounded.History, "Conversations") }
-                    IconButton(onClick = { assistant.newChat() }, enabled = !state.working && state.call == null) { Icon(Icons.Rounded.Add, "New chat") }
+                    IconButton(onClick = { assistant.newChat() }, enabled = !state.busy && state.call == null) { Icon(Icons.Rounded.Add, "New chat") }
                 }
                 IconButton(onClick = { nav.navigate(SettingsRoute) }) { Icon(Icons.Rounded.Settings, "Settings") }
             },
@@ -179,8 +185,10 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
                 !configured -> SetupCard { nav.navigate(SettingsRoute) }
                 state.messages.isEmpty() && state.caption == null && !state.loading -> EmptyChat()
                 // A task's session opens in the chat once the call is over; during it, the task's sheet shows it.
-                else -> Messages(state.sessionId, state.messages, state.caption, state.working, savedScroll = { graph.prefs.hermesScroll.value }, saveScroll = { graph.prefs.hermesScroll.value = it }, onAnswer = assistant::answer,
-                                 onOpen = { m -> m.link?.let { link -> state.call?.tasks?.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
+                else -> Messages(state.sessionId, state.messages, state.caption, state.working || state.thinking,
+                                 workingLabel = if (state.working) "Hermes is working…" else "Gemini is thinking…",
+                                 savedScroll = { graph.prefs.hermesScroll.value }, saveScroll = { graph.prefs.hermesScroll.value = it }, onAnswer = assistant::answer,
+                                 onOpen = { m -> m.link?.let { link -> tasks.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
@@ -189,17 +197,18 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onEnd = { assistant.endCall() },
                                onOpenTask = { shownTask = it })
         else if (configured) {
+            if (state.tasks.isNotEmpty()) ChatTasks(state.tasks, onOpenTask = { shownTask = it })
             ModelPicker(assistant)
-            Composer(state.working, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
+            Composer(state.working, stoppable = state.thinking, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
         }
     }
 
     if (showHistory) HistorySheet(assistant, state.sessionId, onDismiss = { showHistory = false })
-    val task = state.call?.tasks?.firstOrNull { it.id == shownTask }
+    val task = tasks.firstOrNull { it.id == shownTask }
     if (task != null) TaskSheet(task, onAnswer = assistant::answer, onCancel = { assistant.cancelTask(task.id) }, onDismiss = { shownTask = null })
     val peek by assistant.peek.collectAsStateWithLifecycle()
     peek?.let { p ->
-        PeekSheet(p, canOpen = state.call == null && !state.working, onOpen = { assistant.closePeek(); assistant.open(p.sessionId) },
+        PeekSheet(p, canOpen = state.call == null && !state.busy, onOpen = { assistant.closePeek(); assistant.open(p.sessionId) },
                   onDismiss = assistant::closePeek)
     }
 }
@@ -226,7 +235,7 @@ private fun EmptyChat() {
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Rounded.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
         Spacer(Modifier.size(12.dp))
-        Text("Ask Hermes anything, or tap the call button to talk.", style = MaterialTheme.typography.bodyLarge,
+        Text("Ask anything, typed or by voice. Hermes takes on the work while you carry on.", style = MaterialTheme.typography.bodyLarge,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -235,7 +244,7 @@ private fun EmptyChat() {
 // field for a parameter of that (inner) class that it never generates, and 0.2.17 crashed on it (NoSuchFieldError).
 @Composable
 private fun Messages(
-    sessionId: String?, messages: List<ChatMessage>, caption: String?, working: Boolean,
+    sessionId: String?, messages: List<ChatMessage>, caption: String?, working: Boolean, workingLabel: String,
     savedScroll: () -> String, saveScroll: (String) -> Unit,
     onAnswer: (String, String) -> Unit, onOpen: (ChatMessage) -> Unit,
 ) {
@@ -297,7 +306,7 @@ private fun Messages(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
-                    Text("Hermes is working…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(workingLabel, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -441,8 +450,13 @@ private fun ErrorBar(message: String, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * [working] is a turn Hermes is on in this conversation's own session: the next message waits for it.
+ * In the main thread nothing waits, so the field always sends; with [stoppable], Gemini is writing an
+ * answer the empty field's button stops.
+ */
 @Composable
-private fun Composer(working: Boolean, onSend: (String) -> Unit, onStop: () -> Unit, onCall: () -> Unit) {
+private fun Composer(working: Boolean, stoppable: Boolean, onSend: (String) -> Unit, onStop: () -> Unit, onCall: () -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom) {
@@ -462,6 +476,7 @@ private fun Composer(working: Boolean, onSend: (String) -> Unit, onStop: () -> U
                 text.isNotBlank() -> FilledIconButton(onClick = { onSend(text); text = "" }, modifier = Modifier.size(48.dp).testTag("assistant-send")) {
                     Icon(Icons.AutoMirrored.Rounded.Send, "Send")
                 }
+                stoppable -> FilledTonalIconButton(onClick = onStop, modifier = Modifier.size(48.dp).testTag("assistant-stop")) { Icon(Icons.Rounded.Stop, "Stop") }
                 else -> FilledIconButton(onClick = onCall, modifier = Modifier.size(48.dp).testTag("assistant-call")) { Icon(Icons.Rounded.GraphicEq, "Voice call") }
             }
         }
@@ -548,18 +563,7 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
             // Only what's in flight is on screen; finished work is behind the Done chip. In standby the running tasks get rows of
             // their own under the status, with their time and latest step.
             val (working, chips) = if (c.standby) c.inFlight.partition { it.active } else emptyList<TaskUi>() to c.inFlight
-            val done = c.done
-            var showDone by remember { mutableStateOf(false) }
-            if (chips.isNotEmpty() || done.isNotEmpty()) {
-                // The tasks in flight on one line, newest last, so the conversation keeps the screen; a chip opens its task.
-                val strip = rememberScrollState()
-                LaunchedEffect(chips.size) { strip.animateScrollTo(strip.maxValue) }
-                Row(Modifier.fillMaxWidth().horizontalScroll(strip).testTag("assistant-call-tasks"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (task in chips) TaskChip(task, onOpen = { onOpenTask(task.id) })
-                    if (done.isNotEmpty()) DoneChip(done.size, onOpen = { showDone = true })
-                }
-            }
-            if (showDone && done.isNotEmpty()) DoneSheet(done, onOpen = { showDone = false; onOpenTask(it) }, onDismiss = { showDone = false })
+            TaskStrip(chips, c.done, onOpenTask, "assistant-call-tasks")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (c.connecting) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 else if (c.standby) Icon(Icons.Rounded.Pause, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
@@ -599,6 +603,31 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                     Icon(Icons.Rounded.CallEnd, "End call", tint = MaterialTheme.colorScheme.onError)
                 }
             }
+        }
+    }
+}
+
+/** The tasks in flight on one line, newest last, so the conversation keeps the screen; a chip opens its task, and Done the finished ones. */
+@Composable
+private fun TaskStrip(chips: List<TaskUi>, done: List<TaskUi>, onOpenTask: (String) -> Unit, tag: String) {
+    var showDone by remember { mutableStateOf(false) }
+    if (chips.isNotEmpty() || done.isNotEmpty()) {
+        val strip = rememberScrollState()
+        LaunchedEffect(chips.size) { strip.animateScrollTo(strip.maxValue) }
+        Row(Modifier.fillMaxWidth().horizontalScroll(strip).testTag(tag), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (task in chips) TaskChip(task, onOpen = { onOpenTask(task.id) })
+            if (done.isNotEmpty()) DoneChip(done.size, onOpen = { showDone = true })
+        }
+    }
+    if (showDone && done.isNotEmpty()) DoneSheet(done, onOpen = { showDone = false; onOpenTask(it) }, onDismiss = { showDone = false })
+}
+
+/** The chat's tasks, above the composer: what typed messages Hermes is working on, and what it has finished. */
+@Composable
+private fun ChatTasks(tasks: List<TaskUi>, onOpenTask: (String) -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+        Box(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
+            TaskStrip(tasks.filter { it.inFlight }, tasks.filterNot { it.inFlight }, onOpenTask, "assistant-chat-tasks")
         }
     }
 }

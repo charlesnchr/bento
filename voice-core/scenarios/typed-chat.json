@@ -1,0 +1,894 @@
+{
+ "config": {
+  "medium": "text",
+  "text": {
+   "model": "models/gemini-3.8-flash",
+   "generation": {
+    "thinkingConfig": {
+     "thinkingLevel": "low"
+    }
+   },
+   "historyChars": 400000
+  },
+  "api": "gemini",
+  "platform": "Android",
+  "device": "phone",
+  "model": "models/gemini-3.8-live",
+  "voice": "Charon",
+  "vocabulary": [
+   "Hermes",
+   "Bento"
+  ],
+  "hostTools": [],
+  "history": [
+   {
+    "role": "user",
+    "text": "Hello"
+   },
+   {
+    "role": "assistant",
+    "speaker": "Gemini",
+    "text": "Hi."
+   }
+  ],
+  "today": "2026-11-08",
+  "reconnect": true,
+  "standbyAfter": 0,
+  "hangUpAfter": 0,
+  "muted": false,
+  "mic": {
+   "whileSpeaking": "send",
+   "gainDb": 0
+  },
+  "earcons": true,
+  "voiceCommands": {
+   "stop": [
+    "stop",
+    "stop it",
+    "stab it",
+    "stabit",
+    "stop talking",
+    "stop there",
+    "quiet",
+    "be quiet",
+    "hush",
+    "shush",
+    "shut up",
+    "enough",
+    "that's enough",
+    "pause"
+   ],
+   "hangUp": [
+    "hang up",
+    "end call",
+    "end the call",
+    "stop the call",
+    "goodbye",
+    "bye",
+    "bye bye",
+    "that's all",
+    "that's all for now"
+   ],
+   "cancelAll": [
+    "stop everything",
+    "cancel everything",
+    "cancel all tasks",
+    "cancel all the tasks",
+    "stop all tasks",
+    "stop all the tasks",
+    "abort everything"
+   ]
+  },
+  "codingAgent": null,
+  "steering": [],
+  "handOff": "tone",
+  "announce": {
+   "by": "model",
+   "engaged": 12,
+   "lull": 4,
+   "attach": 0.4,
+   "briefWait": 3,
+   "maxWait": 6,
+   "maxWords": 28
+  },
+  "supervise": false,
+  "captions": null,
+  "attention": {
+   "mode": "open",
+   "afterWake": 8,
+   "window": 5,
+   "afterQuestion": 10,
+   "afterHandOff": 3,
+   "afterAnnouncement": 0
+  },
+  "limits": {
+   "connect": 25,
+   "deadMic": 2,
+   "deadMicWarn": 5,
+   "deadMicRetry": 10,
+   "tick": 0.05,
+   "settleQuiet": 0.1,
+   "settleMax": 1.5,
+   "deliverMax": 30,
+   "wakeLevel": 0.05,
+   "speechLevel": 0.03,
+   "wakeSpeech": 0.5,
+   "wakePreRoll": 1.5,
+   "wakeGap": 3,
+   "holdMax": 15
+  }
+ },
+ "start": 0,
+ "events": [
+  {
+   "type": "tick",
+   "t": 0
+  },
+  {
+   "type": "tick",
+   "t": 0.05
+  },
+  {
+   "type": "tick",
+   "t": 0.1
+  },
+  {
+   "type": "say",
+   "text": "Why is the sky blue?",
+   "t": 0.1
+  },
+  {
+   "type": "tick",
+   "t": 0.15
+  },
+  {
+   "type": "tick",
+   "t": 0.2
+  },
+  {
+   "type": "tick",
+   "t": 0.25
+  },
+  {
+   "type": "tick",
+   "t": 0.3
+  },
+  {
+   "type": "tick",
+   "t": 0.35
+  },
+  {
+   "type": "tick",
+   "t": 0.4
+  },
+  {
+   "type": "tick",
+   "t": 0.45
+  },
+  {
+   "type": "tick",
+   "t": 0.5
+  },
+  {
+   "type": "tick",
+   "t": 0.55
+  },
+  {
+   "type": "tick",
+   "t": 0.6
+  },
+  {
+   "type": "llm.data",
+   "id": 1,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Sunlight scatters off the air, blue most of all.\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 0.6
+  },
+  {
+   "type": "llm.end",
+   "id": 1,
+   "t": 0.6
+  },
+  {
+   "type": "tick",
+   "t": 0.65
+  },
+  {
+   "type": "tick",
+   "t": 0.7
+  },
+  {
+   "type": "tick",
+   "t": 0.75
+  },
+  {
+   "type": "tick",
+   "t": 0.8
+  },
+  {
+   "type": "tick",
+   "t": 0.85
+  },
+  {
+   "type": "tick",
+   "t": 0.9
+  },
+  {
+   "type": "tick",
+   "t": 0.95
+  },
+  {
+   "type": "tick",
+   "t": 1
+  },
+  {
+   "type": "tick",
+   "t": 1.05
+  },
+  {
+   "type": "tick",
+   "t": 1.1
+  },
+  {
+   "type": "tick",
+   "t": 1.15
+  },
+  {
+   "type": "tick",
+   "t": 1.2
+  },
+  {
+   "type": "tick",
+   "t": 1.25
+  },
+  {
+   "type": "tick",
+   "t": 1.3
+  },
+  {
+   "type": "tick",
+   "t": 1.35
+  },
+  {
+   "type": "tick",
+   "t": 1.4
+  },
+  {
+   "type": "tick",
+   "t": 1.45
+  },
+  {
+   "type": "tick",
+   "t": 1.5
+  },
+  {
+   "type": "tick",
+   "t": 1.55
+  },
+  {
+   "type": "tick",
+   "t": 1.6
+  },
+  {
+   "type": "say",
+   "text": "Book a table at Noma:\n- Friday\n- for two",
+   "t": 1.6
+  },
+  {
+   "type": "tick",
+   "t": 1.65
+  },
+  {
+   "type": "tick",
+   "t": 1.7
+  },
+  {
+   "type": "tick",
+   "t": 1.75
+  },
+  {
+   "type": "tick",
+   "t": 1.8
+  },
+  {
+   "type": "tick",
+   "t": 1.85
+  },
+  {
+   "type": "tick",
+   "t": 1.9
+  },
+  {
+   "type": "tick",
+   "t": 1.95
+  },
+  {
+   "type": "tick",
+   "t": 2
+  },
+  {
+   "type": "llm.data",
+   "id": 2,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"ask_hermes\",\"args\":{\"label\":\"Noma table\"},\"id\":\"call_ask_hermes_2\"},\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 2
+  },
+  {
+   "type": "llm.end",
+   "id": 2,
+   "t": 2
+  },
+  {
+   "type": "tick",
+   "t": 2.05
+  },
+  {
+   "type": "tick",
+   "t": 2.1
+  },
+  {
+   "type": "tick",
+   "t": 2.15
+  },
+  {
+   "type": "tick",
+   "t": 2.2
+  },
+  {
+   "type": "tick",
+   "t": 2.25
+  },
+  {
+   "type": "tick",
+   "t": 2.3
+  },
+  {
+   "type": "say",
+   "text": "And find a taxi for eight",
+   "t": 2.3
+  },
+  {
+   "type": "tick",
+   "t": 2.35
+  },
+  {
+   "type": "tick",
+   "t": 2.4
+  },
+  {
+   "type": "tick",
+   "t": 2.45
+  },
+  {
+   "type": "tick",
+   "t": 2.5
+  },
+  {
+   "type": "say",
+   "text": "What is 2 + 2?",
+   "t": 2.5
+  },
+  {
+   "type": "llm.data",
+   "id": 3,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"ask_hermes\",\"args\":{},\"id\":\"call_ask_hermes_3\"},\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 2.5
+  },
+  {
+   "type": "llm.end",
+   "id": 3,
+   "t": 2.5
+  },
+  {
+   "type": "tick",
+   "t": 2.55
+  },
+  {
+   "type": "tick",
+   "t": 2.6
+  },
+  {
+   "type": "tick",
+   "t": 2.65
+  },
+  {
+   "type": "tick",
+   "t": 2.7
+  },
+  {
+   "type": "tick",
+   "t": 2.75
+  },
+  {
+   "type": "tick",
+   "t": 2.8
+  },
+  {
+   "type": "llm.data",
+   "id": 4,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"4.\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 2.8
+  },
+  {
+   "type": "llm.end",
+   "id": 4,
+   "t": 2.8
+  },
+  {
+   "type": "tick",
+   "t": 2.85
+  },
+  {
+   "type": "tick",
+   "t": 2.9
+  },
+  {
+   "type": "tick",
+   "t": 2.95
+  },
+  {
+   "type": "tick",
+   "t": 3
+  },
+  {
+   "type": "tick",
+   "t": 3.05
+  },
+  {
+   "type": "tick",
+   "t": 3.1
+  },
+  {
+   "type": "tick",
+   "t": 3.15
+  },
+  {
+   "type": "tick",
+   "t": 3.2
+  },
+  {
+   "type": "tick",
+   "t": 3.25
+  },
+  {
+   "type": "tick",
+   "t": 3.3
+  },
+  {
+   "type": "task.progress",
+   "task": "1",
+   "text": "Using browser",
+   "t": 3.3
+  },
+  {
+   "type": "tool.result",
+   "run": "r1",
+   "text": "There's a table at eight. Shall I book it?",
+   "t": 3.3
+  },
+  {
+   "type": "tick",
+   "t": 3.35
+  },
+  {
+   "type": "tick",
+   "t": 3.4
+  },
+  {
+   "type": "tick",
+   "t": 3.45
+  },
+  {
+   "type": "tick",
+   "t": 3.5
+  },
+  {
+   "type": "tick",
+   "t": 3.55
+  },
+  {
+   "type": "tick",
+   "t": 3.6
+  },
+  {
+   "type": "tick",
+   "t": 3.65
+  },
+  {
+   "type": "tick",
+   "t": 3.7
+  },
+  {
+   "type": "tick",
+   "t": 3.75
+  },
+  {
+   "type": "tick",
+   "t": 3.8
+  },
+  {
+   "type": "tick",
+   "t": 3.85
+  },
+  {
+   "type": "tick",
+   "t": 3.9
+  },
+  {
+   "type": "tick",
+   "t": 3.95
+  },
+  {
+   "type": "tick",
+   "t": 4
+  },
+  {
+   "type": "tick",
+   "t": 4.05
+  },
+  {
+   "type": "tick",
+   "t": 4.1
+  },
+  {
+   "type": "tick",
+   "t": 4.15
+  },
+  {
+   "type": "tick",
+   "t": 4.2
+  },
+  {
+   "type": "tick",
+   "t": 4.25
+  },
+  {
+   "type": "tick",
+   "t": 4.3
+  },
+  {
+   "type": "say",
+   "text": "Yes please",
+   "t": 4.3
+  },
+  {
+   "type": "tick",
+   "t": 4.35
+  },
+  {
+   "type": "tick",
+   "t": 4.4
+  },
+  {
+   "type": "tick",
+   "t": 4.45
+  },
+  {
+   "type": "tick",
+   "t": 4.5
+  },
+  {
+   "type": "tick",
+   "t": 4.55
+  },
+  {
+   "type": "tick",
+   "t": 4.6
+  },
+  {
+   "type": "llm.data",
+   "id": 5,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"ask_hermes\",\"args\":{},\"id\":\"call_ask_hermes_5\"},\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 4.6
+  },
+  {
+   "type": "llm.end",
+   "id": 5,
+   "t": 4.6
+  },
+  {
+   "type": "tick",
+   "t": 4.65
+  },
+  {
+   "type": "tick",
+   "t": 4.7
+  },
+  {
+   "type": "tick",
+   "t": 4.75
+  },
+  {
+   "type": "tick",
+   "t": 4.8
+  },
+  {
+   "type": "tick",
+   "t": 4.85
+  },
+  {
+   "type": "tick",
+   "t": 4.9
+  },
+  {
+   "type": "say",
+   "text": "What's going on?",
+   "t": 4.8999999999999995
+  },
+  {
+   "type": "llm.data",
+   "id": 6,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"list_tasks\",\"args\":{},\"id\":\"call_list_tasks_6\"},\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 4.8999999999999995
+  },
+  {
+   "type": "llm.end",
+   "id": 6,
+   "t": 4.8999999999999995
+  },
+  {
+   "type": "tick",
+   "t": 4.95
+  },
+  {
+   "type": "tick",
+   "t": 5
+  },
+  {
+   "type": "tick",
+   "t": 5.05
+  },
+  {
+   "type": "tick",
+   "t": 5.1
+  },
+  {
+   "type": "llm.data",
+   "id": 7,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"The Noma table is being booked and the taxi search is running.\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 5.1
+  },
+  {
+   "type": "llm.end",
+   "id": 7,
+   "t": 5.1
+  },
+  {
+   "type": "tick",
+   "t": 5.15
+  },
+  {
+   "type": "tick",
+   "t": 5.2
+  },
+  {
+   "type": "tick",
+   "t": 5.25
+  },
+  {
+   "type": "tick",
+   "t": 5.3
+  },
+  {
+   "type": "tick",
+   "t": 5.35
+  },
+  {
+   "type": "tick",
+   "t": 5.4
+  },
+  {
+   "type": "tick",
+   "t": 5.45
+  },
+  {
+   "type": "tick",
+   "t": 5.5
+  },
+  {
+   "type": "tick",
+   "t": 5.55
+  },
+  {
+   "type": "tick",
+   "t": 5.6
+  },
+  {
+   "type": "say",
+   "text": "Cancel the taxi",
+   "t": 5.6
+  },
+  {
+   "type": "llm.data",
+   "id": 8,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"cancel_task\",\"args\":{\"task\":\"taxi\"},\"id\":\"call_cancel_task_8\"},\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 5.6
+  },
+  {
+   "type": "llm.end",
+   "id": 8,
+   "t": 5.6
+  },
+  {
+   "type": "tick",
+   "t": 5.65
+  },
+  {
+   "type": "tick",
+   "t": 5.7
+  },
+  {
+   "type": "tick",
+   "t": 5.75
+  },
+  {
+   "type": "tick",
+   "t": 5.8
+  },
+  {
+   "type": "llm.data",
+   "id": 9,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Cancelled.\"}]},\"finishReason\":\"STOP\"}]}",
+   "t": 5.8
+  },
+  {
+   "type": "llm.end",
+   "id": 9,
+   "t": 5.8
+  },
+  {
+   "type": "tool.result",
+   "run": "r3",
+   "text": "Booked for eight.",
+   "t": 5.8
+  },
+  {
+   "type": "tick",
+   "t": 5.85
+  },
+  {
+   "type": "tick",
+   "t": 5.9
+  },
+  {
+   "type": "tick",
+   "t": 5.95
+  },
+  {
+   "type": "tick",
+   "t": 6
+  },
+  {
+   "type": "tick",
+   "t": 6.05
+  },
+  {
+   "type": "tick",
+   "t": 6.1
+  },
+  {
+   "type": "tick",
+   "t": 6.15
+  },
+  {
+   "type": "tick",
+   "t": 6.2
+  },
+  {
+   "type": "tick",
+   "t": 6.25
+  },
+  {
+   "type": "tick",
+   "t": 6.3
+  },
+  {
+   "type": "say",
+   "text": "Thanks",
+   "t": 6.3
+  },
+  {
+   "type": "llm.end",
+   "id": 10,
+   "status": 503,
+   "t": 6.3
+  },
+  {
+   "type": "tick",
+   "t": 6.35
+  },
+  {
+   "type": "tick",
+   "t": 6.4
+  },
+  {
+   "type": "tick",
+   "t": 6.45
+  },
+  {
+   "type": "tick",
+   "t": 6.5
+  },
+  {
+   "type": "tick",
+   "t": 6.55
+  },
+  {
+   "type": "tick",
+   "t": 6.6
+  },
+  {
+   "type": "tick",
+   "t": 6.65
+  },
+  {
+   "type": "tick",
+   "t": 6.7
+  },
+  {
+   "type": "tick",
+   "t": 6.75
+  },
+  {
+   "type": "tick",
+   "t": 6.8
+  },
+  {
+   "type": "say",
+   "text": "Tell me a story",
+   "t": 6.8
+  },
+  {
+   "type": "llm.data",
+   "id": 11,
+   "data": "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Once upon a time\"}]}}]}",
+   "t": 6.8
+  },
+  {
+   "type": "interrupt",
+   "t": 6.8
+  },
+  {
+   "type": "tick",
+   "t": 6.85
+  },
+  {
+   "type": "tick",
+   "t": 6.9
+  },
+  {
+   "type": "tick",
+   "t": 6.95
+  },
+  {
+   "type": "tick",
+   "t": 7
+  },
+  {
+   "type": "tick",
+   "t": 7.05
+  },
+  {
+   "type": "tick",
+   "t": 7.1
+  },
+  {
+   "type": "tick",
+   "t": 7.15
+  },
+  {
+   "type": "tick",
+   "t": 7.2
+  },
+  {
+   "type": "tick",
+   "t": 7.25
+  },
+  {
+   "type": "tick",
+   "t": 7.3
+  },
+  {
+   "type": "stop",
+   "t": 7.3
+  }
+ ]
+}

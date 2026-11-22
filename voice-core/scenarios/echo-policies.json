@@ -1,5 +1,15 @@
 {
  "config": {
+  "medium": "voice",
+  "text": {
+   "model": "models/gemini-3.8-flash",
+   "generation": {
+    "thinkingConfig": {
+     "thinkingLevel": "low"
+    }
+   },
+   "historyChars": 400000
+  },
   "api": "gemini",
   "platform": "Echo",
   "device": "speaker",

@@ -51,6 +51,7 @@ fun HermesSection(context: Context) {
     val talk by prefs.hermesTalkMode.flow.collectAsStateWithLifecycle()
     val standby by prefs.hermesStandbySeconds.flow.collectAsStateWithLifecycle()
     val engine by prefs.hermesCallEngine.flow.collectAsStateWithLifecycle()
+    val chatMode by prefs.hermesChatMode.flow.collectAsStateWithLifecycle()
     val secretsVersion by graph.secrets.version.collectAsStateWithLifecycle()
     val configured = remember(url, secretsVersion) { graph.assistant.configured }
     var edit by remember { mutableStateOf(false) }
@@ -93,6 +94,17 @@ fun HermesSection(context: Context) {
             waits.forEachIndexed { i, (seconds, label) ->
                 SegmentedButton(selected = standby == seconds, onClick = { prefs.hermesStandbySeconds.value = seconds },
                                 shape = SegmentedButtonDefaults.itemShape(i, waits.size)) { Text(label, maxLines = 1) }
+            }
+        }
+        SettingsRow("Typed messages",
+                    "Main thread works like a call: Gemini answers what it knows and hands the rest to Hermes as tasks that run " +
+                        "side by side, so you can keep typing while Hermes works. It needs the Gemini API key. Straight to Hermes " +
+                        "makes each chat one Hermes session, one message at a time")
+        val chatModes = listOf(AssistantController.CHAT_MAIN to "Main thread", AssistantController.CHAT_DIRECT to "Straight to Hermes")
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+            chatModes.forEachIndexed { i, (id, label) ->
+                SegmentedButton(selected = chatMode == id, onClick = { prefs.hermesChatMode.value = id },
+                                shape = SegmentedButtonDefaults.itemShape(i, chatModes.size)) { Text(label, maxLines = 1) }
             }
         }
         SettingsRow("Call engine",

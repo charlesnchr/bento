@@ -7,6 +7,9 @@ answers, Hermes tasks and follow-ups, when a result may go in, standby and comin
 goAway rotation, dead-microphone recovery and the recap. The Echo's policies are settings
 (`mic.whileSpeaking`, `mic.gainDb`, `hostTools`, `hangUpAfter`).
 
+The same logic runs a typed chat (`medium: "text"`, see "Typed chat" below): a text model in
+place of Gemini Live, and the same main thread that hands work to Hermes as tasks.
+
 ## How it fits together
 
 The core is sans-IO TypeScript built into one script, `dist/voice-core.js`. It never touches a
@@ -30,10 +33,10 @@ replays to the same commands on any engine.
 | Surface | Engine | Host code |
 |---|---|---|
 | Web (`dev/server.mjs`) | the browser's | `web/` |
-| Android | QuickJS (Zipline) | `android/core/.../assistant/live/CoreCall.kt` (the engine: `voicecore/VoiceCore.kt`) |
+| Android | QuickJS (Zipline) | `android/core/.../assistant/live/CoreCall.kt` for calls and `CoreChat.kt` for typed chat (the engine: `voicecore/VoiceCore.kt`) |
 | macOS | JavaScriptCore | `Sources/VoiceCore/SharedCore/SharedCallCore.swift` |
 | Echo bridge | QuickJS (`quickjs` on PyPI) | `hosts/python/voice_core.py` |
-| Scripts | Node | `dev/talk.ts` |
+| Scripts | Node | `dev/talk.ts` (a spoken call), `dev/chat.ts` (a typed chat) |
 
 The ABI is strings in and strings out: `VoiceCore.create(configJson, t)` and
 `VoiceCore.push(id, eventJson)`. A host is about 100 lines plus its audio and socket code.
@@ -52,7 +55,9 @@ Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf
    - Say "goodbye" or "hang up" to end the call.
    - Mute with M or the microphone button; with Settings → Start muted, hold Space to talk.
    - Type to the call (Enter), or pick "New Hermes task" / "New coding task" to start one without
-     saying it.
+     saying it. With no call on, typing starts a chat instead (see "Typed chat"): the same main
+     thread in text, with the same task cards. Call then ends the chat and carries its
+     conversation on by voice, once the chat's tasks have finished.
    - A card's Follow up goes to that task. A running Hermes task or T3 thread takes it at once,
      in its current run (steering); otherwise it runs next, in the task's session. Cancel stops
      the agent (Hermes's run, or the T3 turn). Hanging up leaves T3 threads working.
@@ -75,6 +80,17 @@ It says the WAVs into a real call through the same relay and prints the conversa
 long each reply took to start. `--captions` turns captions on and prints each one as it comes. Hermes is faked unless `--hermes` is given; `--coding` gives the call
 the T3 coding agent. Echo test clips are in `home-assistant/live-bridge/testdata/`; make more with
 `node dev/tts.mjs out.wav "Words to say"` (Gemini TTS on GSK Vertex).
+
+Typed, with no audio at all:
+
+```sh
+node dev/chat.ts "What's the weather in Copenhagen?" "@1:Also, what's 17 times 23?" "@wait:And the day after?" [--hermes] [--coding]
+```
+
+It types each message into a chat (`medium: "text"`) through the server's `/generate` and prints
+the model's answers, the tasks and how long each of the model's turns took. A plain message waits
+for the model's turn before it; `@<s>:` types it that many seconds after the one before (while
+the model or a task is still working), and `@wait:` once every task has finished.
 
 Through Cloudflare, with the Access service token kept for tests:
 
@@ -146,6 +162,63 @@ In two of three calls with one 8.8 s clip, the Live model's own transcript left 
 clause ("and don't change anything else") that the caption had shown. The caption makes that
 visible when it happens, since the transcript takes its place; the agent still gets the model's
 transcript.
+
+## Typed chat: the same call in text
+
+With `medium: "text"` in `CallConfig` the core runs a typed chat. It is the same `Call`, so the
+model is the same main thread: it answers what it knows, hands the rest to Hermes (or the coding
+agent) with `ask_hermes`, and tasks, follow-ups (`continue_task`), an answer going to the task
+that asked, `list_tasks`, `check_task`, `cancel_task`, steering and the screen's `ask` and `steer`
+events all work as in a call. Nothing waits for a task: the user types on while Hermes works.
+
+What differs is the model's side (`src/textLine.ts`). A text model (`text.model`,
+`models/gemini-3.8-flash` by default, with `text.generation` as its `generationConfig`) is
+reached by request and response in place of the Live socket:
+
+- `llm.request` carries a `generateContent` body; the host posts it with its own URL and
+  credentials (streaming or not) and answers with `llm.data` for each response or chunk, then
+  `llm.end` (with `error` and `status` when it failed). `llm.cancel` drops a request. One is under
+  way at a time.
+- The user's messages come as `say`, whole and with their line breaks, up to 32,000 characters.
+  One typed while the model is still answering waits for that turn to end, and a function call
+  answers the message the model was sent, never a later one.
+- `transcript` carries the model's words as they stream, `thinking` says when it is working on a
+  turn, and `error` is a failure the chat survives (the model didn't answer: nothing was started).
+- A hand-off is silent: the "started" answer ends the model's turn without a second request, and
+  the `task` command is what the user sees. An answer that isn't silent (a refused call,
+  `list_tasks`) makes the model go on.
+- A result isn't told by the model. The host shows the reply it gave the core (`tool.result`),
+  and the model gets a note of it for the user's questions. A question in the reply counts as
+  asked at once, so a plain "yes" goes to that task.
+- A note from Bento (a result, a cancellation) goes to the model inside `<bento_note>` tags. The
+  API joins it to the user's next message as one turn, and unfenced the model took that message
+  for the end of the note and wrote nothing: 4 of 6 follow-ups after a result got no answer on
+  2026-11-22, and 8 of 8 were handed on once the note was fenced. An answer with no words and no
+  call is a failure the user is told of (`error`), not a silent turn.
+- No audio, sockets, earcons, captions, standby, hang-up timer or spoken commands. A host ticks
+  while `thinking` is on (the request's timers); nothing else needs the clock.
+- Hermes gets the message under its own wording (`typedMessage` in `src/setup.ts`): typed, not
+  transcribed, and to be answered for reading, not for the ear.
+- Of "Following the user's lead" below, a chat takes what isn't about speech. A message is whole,
+  so the next one is never joined to it as a second breath, and the instruction says nothing of
+  staying silent or of "stop" meaning stop talking (`LEAD_TYPED` in `src/call.ts`). `refers_back`
+  works as in a call, and so does the check on `cancel_task`, judged by the message the model was
+  answering: a typed "stop" alone is refused, the model asks, and a "yes" cancels.
+
+The conversation goes back to the model with every request, its parts as they came (they carry
+the thought signatures Gemini checks function calls against), trimmed from the oldest turn past
+`text.historyChars`. `history` in the config is recapped as the first turn, as for a call.
+
+A chat and a call are separate: each starts its own tasks, and a call that follows a chat gets
+its conversation as a recap, not its tasks. Hosts end a chat before a call starts, which is why
+they don't start a call while a chat's task is running.
+
+Measured on 2026-11-22 through the dev server on Vertex (`gemini-3.8-flash`, thinking level
+low), two scripted chats and eight turns: a turn of one request took 2.2 to 3.4 s, whether the
+model answered or handed off, and the one that called `list_tasks` and then answered (two
+requests) took 5.9 s. `gemini-3.5-flash-lite`
+answered in about 1 s but put the user's request into `continue_task` in two of two probes, so it
+isn't the default. `VOICE_CORE_TEXT_MODEL` picks the dev server's model.
 
 ## Who tells results, when the model listens, and closer supervision
 
@@ -304,11 +377,14 @@ result goes in as a turn.
   the Echo run the core and pass conformance but don't call with it yet: next the Mac (it gains
   multiple tasks, earcons, standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
 - The phone doesn't use everything the web page does: no coding agent (T3 runs on homelab, not
-  the phone), no typing to the call or to a task, and a follow-up to a running Hermes task waits
+  the phone), no typing to a call or to a task (typing with no call on is a chat), and a follow-up to a running Hermes task waits
   for its run to end, since the phone's Hermes client has no steer.
 - Captions are in the core (`src/captions.ts`) for the web page and `dev/talk.ts`. The phone
   doesn't set `captions` yet: its host keeps its own (`LiveCaptions`, `CaptionTracker`), from the
   audio the core sends and Gemini's voice activity. The Mac and the Echo have none.
+- A chat and a call don't share tasks: one main thread that moves between text and voice with its
+  tasks (the core switching medium, as it already leaves and rejoins the model for standby) is the
+  step after this. The Mac's assistant window doesn't use the typed chat.
 - Only Gemini Live. GPT-Live and Grok, which the Echo and the Mac also use, would be provider
   adapters next to the Gemini one in `call.ts`.
 - Loading the dev server's build from Android and the Mac at call start (a debug setting) is

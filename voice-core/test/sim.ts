@@ -156,6 +156,38 @@ export class Sim {
   speaks(words: string) { this.said(words); this.generated(); this.turnComplete(); }
   resumable(handle: string) { return this.gemini({ sessionResumptionUpdate: { newHandle: handle, resumable: true } }); }
 
+  // A typed chat (config medium "text"): the user's messages, and the text model's answers to the chat's requests.
+
+  /** The user types [text]. */
+  type(text: string) { return this.push({ type: "say", text }); }
+  /** The chat's requests to its text model, in order, each with its body parsed. */
+  requests(): { id: number; model: string; body: any }[] {
+    return this.commands.flatMap((c) => (c.type === "llm.request" ? [{ id: c.id, model: c.model, body: JSON.parse(c.body) }] : []));
+  }
+  /** The text model answers the latest request (or [id]) with [parts], in one response, and the request ends. */
+  answer(parts: unknown[], id = this.requests().at(-1)!.id): void {
+    this.push({ type: "llm.data", id, data: JSON.stringify({ candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }] }) });
+    this.push({ type: "llm.end", id });
+  }
+  /** The text model writes [text] as its whole answer. */
+  writes(text: string, id?: number) { this.answer([{ text }], id); }
+  /** The text model calls [name]. */
+  calls(name = "ask_hermes", args: Record<string, unknown> = {}, id?: number) {
+    this.answer([{ functionCall: { name, args, id: `call_${name}_${this.requests().length}` }, thoughtSignature: "sig" }], id);
+  }
+  /** What the model was sent with its latest request: each turn's role and its text or function parts. */
+  sentTurns(): any[] { return this.requests().at(-1)!.body.contents; }
+  /** The lines of the transcript, fragments of a line joined. */
+  lines(): { role: string; text: string }[] {
+    const out: { role: string; text: string; line: number }[] = [];
+    for (const c of this.commands) {
+      if (c.type !== "transcript") continue;
+      const last = out.at(-1);
+      if (last && last.line === c.line && last.role === c.role) last.text += c.text; else out.push({ role: c.role, text: c.text, line: c.line });
+    }
+    return out.map(({ role, text }) => ({ role, text }));
+  }
+
   // The transcription model's frames, on the latest captions socket.
   get captionSid(): number { return this.captionSids.at(-1) ?? 0; }
   utterance(type: "ACTIVITY_START" | "ACTIVITY_END", audioOffset?: string) {

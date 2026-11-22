@@ -8,6 +8,8 @@
 //   GET  /config            the model and what's available (route, Hermes)
 //   WS   /live              a Gemini Live socket, relayed with the server's credentials;
 //                           /live?for=captions goes to the transcription model (the core's captions)
+//   POST /generate          a typed chat's request to its text model (the core's `llm.request`), relayed
+//                           the same way and streamed back as the model's server-sent events
 //   POST /hermes            one Hermes request, streamed back as server-sent events
 //   POST /hermes/steer      more for a running Hermes task; /hermes/stop stops it;
 //                           /hermes/approval answers a command Hermes asked to run (the page's
@@ -25,6 +27,7 @@
 // money: set it on purpose). Hermes is the API server in ~/.hermes/.env (API_SERVER_*).
 
 import { createServer } from "node:http";
+import https from "node:https";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import os from "node:os";
 import { extname, join, normalize } from "node:path";
@@ -51,6 +54,8 @@ const LOCATION = process.env.VOICE_CORE_LOCATION ?? "us-central1"; // 3.8 Live h
 const LIVE_MODEL = "gemini-3.8-live";
 const CAPTIONS_MODEL = "gemini-3.5-transcribe-live";
 const CAPTIONS_LOCATION = "global"; // us-central1 doesn't serve it (2026-11-22)
+/** The text model a typed chat runs on (the core's `medium: "text"`), at the global endpoint. */
+const TEXT_MODEL = process.env.VOICE_CORE_TEXT_MODEL ?? "gemini-3.8-flash";
 const TRACES = join(root, "traces");
 
 // The model route.
@@ -80,6 +85,27 @@ async function upstream(captions = false) {
     headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
     maxPayload: 8 * 1024 * 1024,
   });
+}
+
+/** POST /generate: a `generateContent` request for the text model, answered as its stream of server-sent events. */
+async function generate(req, res) {
+  const body = await read(req);
+  const url = ROUTE === "vertex"
+    ? `https://aiplatform.googleapis.com/v1/projects/${hermesEnv.VERTEX_PROJECT_ID}/locations/global/publishers/google/models/${TEXT_MODEL}:streamGenerateContent?alt=sse`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${TEXT_MODEL}:streamGenerateContent?alt=sse`;
+  const headers = { "content-type": "application/json", ...(ROUTE === "vertex" ? { Authorization: `Bearer ${await vertex.token()}` } : { "x-goog-api-key": process.env.GEMINI_API_KEY }) };
+  const far = https.request(url, { method: "POST", headers, agent: ROUTE === "vertex" ? new SocksProxyAgent(SOCKS) : undefined, timeout: 120_000 }, (r) => {
+    // The model's status and body as they are: the core reads an error out of either.
+    res.writeHead(r.statusCode ?? 502, { "content-type": r.headers["content-type"] ?? "text/event-stream", "cache-control": "no-store" });
+    r.pipe(res);
+  });
+  far.on("timeout", () => far.destroy(new Error("the model timed out")));
+  far.on("error", (err) => {
+    if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+    res.end(err.message);
+  });
+  res.on("close", () => far.destroy());
+  far.end(body);
 }
 
 // Hermes.
@@ -320,7 +346,7 @@ const server = createServer(async (req, res) => {
     if (path === "/config") {
       res.writeHead(200, { "content-type": "application/json" });
       const projects = T3.available() ? (await T3.projects().catch(() => [])).map((p) => p.title) : null;
-      return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
+      return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, textModel: TEXT_MODEL, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
     }
     if (path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -330,6 +356,7 @@ const server = createServer(async (req, res) => {
       req.on("close", () => { listeners.delete(res); clearInterval(ping); });
       return;
     }
+    if (path === "/generate" && req.method === "POST") return await generate(req, res);
     if (path === "/hermes" && req.method === "POST") return await hermes(req, res);
     if (path === "/agent" && req.method === "POST") return await agent(req, res);
     if (path === "/hermes/steer" && req.method === "POST") return await hermesRun(req, res, "steer");

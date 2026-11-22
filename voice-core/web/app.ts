@@ -4,6 +4,10 @@
 //
 // The host's part is small: the microphone and speaker (audio.ts), the model's socket through the
 // server's relay, Hermes and T3 through the server, and the screen. The core decides the rest.
+//
+// Typing with no call on starts a chat instead: the same core with `medium: "text"`, whose requests
+// to the text model go through the server's /generate. Tasks, follow-ups and their cards work as
+// in a call. Pressing Call ends the chat and carries its conversation on by voice.
 
 import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
@@ -18,7 +22,7 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
-interface ServerConfig { route: string; model: string; captionsModel?: string; version: string; hermes: boolean; t3: string[] | null }
+interface ServerConfig { route: string; model: string; captionsModel?: string; textModel?: string; version: string; hermes: boolean; t3: string[] | null }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
@@ -73,6 +77,14 @@ let coreStatus = "idle";
 let muted = false;
 let holding = false;
 let wakeLock: { release(): Promise<void> } | null = null;
+/** What the session on screen is: a voice call, or a typed chat (the core's medium "text"). */
+let medium: "voice" | "text" = "voice";
+/** A chat's model is writing its answer. */
+let thinking = false;
+/** A chat's requests to the text model that are under way. */
+const requests = new Map<number, AbortController>();
+/** The last session winding down (its trace saved, the core's call disposed): the next starts after it. */
+let ending: Promise<void> = Promise.resolve();
 
 // The conversation, kept so a new call can carry on from it (the core's `history`, recapped to the model).
 interface ChatLine { role: "user" | "assistant"; speaker?: string; text: string }
@@ -437,15 +449,17 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 function showStatus(message?: string) {
-  const speaking = callId && coreStatus !== "standby" && audio.queued > 0.05;
-  const shown = speaking ? "speaking" : coreStatus;
+  const typed = Boolean(callId) && medium === "text";
+  const speaking = callId && !typed && coreStatus !== "standby" && audio.queued > 0.05;
+  const shown = speaking || (typed && thinking) ? "speaking" : coreStatus;
   $("status").className = shown;
   let text = speaking ? "Speaking" : STATUS_TEXT[coreStatus] ?? coreStatus;
-  if (callId && muted && !holding && !speaking) text += " · muted";
+  if (typed && coreStatus !== "ended") text = thinking ? "Writing…" : coreStatus === "working" ? "Chat · tasks running" : "Chat";
+  if (callId && !typed && muted && !holding && !speaking) text += " · muted";
   if (holding) text = "Talking (hold)";
   if (message) text = `${text}: ${message}`;
   if (coreStatus !== "ended" || message) $("statustext").textContent = text;
-  $<HTMLButtonElement>("hush").classList.toggle("live", Boolean(speaking));
+  $<HTMLButtonElement>("hush").classList.toggle("live", Boolean(speaking) || (typed && thinking));
 }
 
 // The call.
@@ -506,6 +520,10 @@ function run(commands: Command[]) {
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
+      case "llm.request": void generate(c.id, c.body); break;
+      case "llm.cancel": requests.get(c.id)?.abort(); requests.delete(c.id); log("out", `request ${c.id} dropped`, "out"); break;
+      case "thinking": thinking = c.on; showStatus(); break;
+      case "error": note(c.message); log("error", c.message, "err"); break;
       case "caption": caption(c.text); break;
       case "transcript":
         transcript(c.role, c.text, c.line);
@@ -554,6 +572,39 @@ function connect(sid: number, captions: boolean) {
     const httpStatus = e.code >= 4100 && e.code < 4600 ? e.code - 4000 : undefined;
     push({ type: "ws.closed", sid, code: httpStatus ? undefined : e.code, reason: e.reason, httpStatus });
   };
+}
+
+/** A chat's request to the text model, through the server: each `data:` line of the model's stream goes to the core as it comes. */
+async function generate(id: number, body: string) {
+  const abort = new AbortController();
+  requests.set(id, abort);
+  log("out", `request ${id} → ${server.textModel} (${Math.round(body.length / 1024)} KB)`, "out");
+  try {
+    const response = await fetch("/generate", { method: "POST", signal: abort.signal, headers: { "content-type": "application/json" }, body });
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      push({ type: "llm.end", id, status: response.status, error: `HTTP ${response.status}${text ? ": " + text.replace(/\s+/g, " ").slice(0, 200) : ""}` });
+      return;
+    }
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let cut;
+      while ((cut = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, cut).replace(/\r$/, "");
+        buffer = buffer.slice(cut + 1);
+        if (line.startsWith("data:")) push({ type: "llm.data", id, data: line.slice(5).trim() });
+      }
+    }
+    push({ type: "llm.end", id });
+  } catch (err) {
+    if (!abort.signal.aborted) push({ type: "llm.end", id, error: (err as Error).message });
+  } finally {
+    requests.delete(id);
+  }
 }
 
 function cancelRun(key: string, reason: string) {
@@ -667,7 +718,9 @@ function readConfig(): Record<string, unknown> {
   return config;
 }
 
-async function start(carryOn = false) {
+/** Starts a voice call, or with [typed] a chat (the core's medium "text": no audio, a text model). */
+async function start(carryOn = false, typed = false) {
+  await ending;
   if (callId) return;
   let given: Record<string, unknown>;
   try {
@@ -676,17 +729,25 @@ async function start(carryOn = false) {
     toast(`The developer settings aren't valid JSON: ${(err as Error).message}`);
     return;
   }
+  if (typed) {
+    if (!server.textModel) { toast("This server has no text model for a chat: start a call to type to it"); return; }
+    given = { ...given, medium: "text", muted: false };
+    delete given.captions;
+  }
   $<HTMLButtonElement>("call").disabled = true;
   if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission().catch(() => {});
   try {
-    await audio.open();
+    if (!typed) await audio.open();
     core = await loadCore();
   } finally {
     $<HTMLButtonElement>("call").disabled = false;
   }
+  if (callId) return; // another start got there first
+  medium = typed ? "text" : "voice";
+  thinking = false;
   $("version").textContent = core.version;
   $("log").innerHTML = "";
-  if (tasks.size > 0 || $("transcript").childElementCount > 1) note(`New call · ${new Date().toLocaleTimeString()}`);
+  if (!typed && (tasks.size > 0 || $("transcript").childElementCount > 1)) note(`New call · ${new Date().toLocaleTimeString()}`);
   tasks.clear();
   showTasks();
   counts = { mic: 0, play: 0, sent: 0 };
@@ -694,18 +755,23 @@ async function start(carryOn = false) {
   startedAt = now();
   muted = given.muted === true;
   // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
-  if (carryOn && given.history === undefined) given.history = savedHistory();
+  // A chat always carries on from what's on the screen (an earlier call or chat on this page).
+  if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
+  else if (carryOn && given.history === undefined) given.history = savedHistory();
   else if (!carryOn) chat = [];
-  if (carryOn) chat = savedHistory();
+  if (carryOn && !typed) chat = savedHistory();
   lastLine = null;
   openLine = null;
   $("resume").hidden = true;
-  callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-web-${core.version}`;
+  callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${typed ? "chat" : "web"}-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));
   callId = created.id;
-  $<HTMLButtonElement>("call").textContent = "Hang up";
-  $("call").classList.add("live");
-  for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = false;
+  if (!typed) {
+    $<HTMLButtonElement>("call").textContent = "Hang up";
+    $("call").classList.add("live");
+    $<HTMLButtonElement>("mic").disabled = false;
+  }
+  $<HTMLButtonElement>("hush").disabled = false;
   $("mic").classList.toggle("muted", muted);
   run(created.commands);
   ticker = window.setInterval(() => {
@@ -717,8 +783,22 @@ async function start(carryOn = false) {
   }, 100);
   traceTimer = window.setInterval(() => { void saveTrace(); void ping(); showTasks(); }, 5000);
   void ping();
+  if (typed) return;
   stopWords.start();
   try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
+}
+
+/** The Call button: hangs up a call; starts one; or, with a chat on, ends the chat and carries its conversation on by voice. */
+async function callButton() {
+  if (callId && medium === "voice") { hangUp(); return; }
+  if (callId) {
+    // A call can't take over the chat's tasks, and ending the chat would stop them.
+    if ([...tasks.values()].some((v) => v.c.state === "running")) { toast("The chat's tasks are still running: wait for them or cancel them, then call"); return; }
+    push({ type: "stop" });
+    await start(true);
+    return;
+  }
+  await start();
 }
 
 function hangUp() {
@@ -729,12 +809,15 @@ function end() {
   window.clearInterval(ticker);
   window.clearInterval(traceTimer);
   stopWords.stop();
-  void saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); });
+  ending = saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); });
   audio.stop();
   for (const ws of sockets.values()) ws.close();
   sockets.clear();
   for (const r of runs.values()) r.abort.abort();
   runs.clear();
+  for (const r of requests.values()) r.abort();
+  requests.clear();
+  thinking = false;
   $<HTMLButtonElement>("call").textContent = "Call";
   $("call").classList.remove("live");
   for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = true;
@@ -870,12 +953,17 @@ function keys() {
   });
 }
 
-function submitText(e: Event) {
+async function submitText(e: Event) {
   e.preventDefault();
   const input = $<HTMLInputElement>("text");
   let text = input.value.trim();
   if (!text) return;
-  if (!callId) { toast("Start a call first"); return; }
+  // With no call on, typing starts a chat: the same main thread, in text.
+  if (!callId) {
+    input.value = "";
+    try { await start(false, true); } catch (err) { toast((err as Error).message); log("error", (err as Error).message, "err"); }
+    if (!callId) { input.value = text; return; }
+  }
   // "/t3 …" and "/h …" pick the agent whatever the selector says.
   let mode = $<HTMLSelectElement>("mode").value;
   const prefix = text.match(/^\/(t3|code|h|hermes)\s+/i);
@@ -915,15 +1003,15 @@ async function main() {
     $("defaultsview").textContent = JSON.stringify(JSON.parse(c.defaults()), null, 2);
     $("defaultsview").hidden = !$("defaultsview").hidden;
   };
-  $("call").onclick = () => (callId ? hangUp() : void start().catch((err) => { toast(err.message); log("error", err.message, "err"); }));
+  $("call").onclick = () => void callButton().catch((err) => { toast(err.message); log("error", err.message, "err"); });
   $("resume").onclick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
   if (savedHistory().length > 0) { $("resume").hidden = false; $("resume").title = "Call again, carrying on from the last conversation"; }
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
   $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
-  $("say").onsubmit = submitText;
-  $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
+  $("say").onsubmit = (e) => void submitText(e);
+  $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") void submitText(e); });
   tabs();
   keys();
   const events = new EventSource("/events");
