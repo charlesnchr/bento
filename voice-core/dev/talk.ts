@@ -4,11 +4,14 @@
 //
 //   node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav ...] [--preset echo] [--hermes] [--captions]
 //                    [--out reply.wav] [--server http://127.0.0.1:8770] [--quiet 4] [--max 60]
+//                    [--delay 2,40] [--reply answer.txt] [--config '{"standbyAfter":5}']
 //
 // A plain WAV is said once the call is quiet (the model's reply has played and 1.5 s passed);
 // "@<s>:" says it <s> seconds after the previous one started instead (talking over a reply).
-// Hermes (and T3, with --coding) is faked (an answer after 2 s) unless --hermes. The call ends --quiet seconds after the
-// last reply, or after --max seconds. --out writes what the model said as one WAV, gaps included.
+// Hermes (and T3, with --coding) is faked (an answer after 2 s) unless --hermes. --delay sets the fake's seconds, one
+// for each task in order (the last for the rest), and --reply the first task's answer, from a file: a long reply and a
+// slow task are what standby and its recap need. --config merges JSON over the preset. The call ends --quiet seconds
+// after the last reply, or after --max seconds. --out writes what the model said as one WAV, gaps included.
 // --captions turns the core's captions on and prints each one as it comes, so the words shown
 // while a WAV is still being said can be read off against the model's transcript after it.
 
@@ -31,7 +34,11 @@ const running = new Set<string>();
 const taskOf = new Map<string, string>();
 const MAX = Number(option("max", "60"));
 const OUT = option("out", "");
-const optionValues = new Set(["--server", "--preset", "--quiet", "--max", "--out"].filter((o) => args.includes(o)).map((o) => args[args.indexOf(o) + 1]));
+const DELAYS = option("delay", "2").split(",").map(Number);
+const REPLY = option("reply", "") ? readFileSync(option("reply", ""), "utf8").trim() : null;
+const EXTRA = JSON.parse(option("config", "{}"));
+let faked = 0;
+const optionValues = new Set(["--server", "--preset", "--quiet", "--max", "--out", "--delay", "--reply", "--config"].filter((o) => args.includes(o)).map((o) => args[args.indexOf(o) + 1]));
 const plan = args.filter((a) => !a.startsWith("--") && !optionValues.has(a)).map((a) => {
   const m = a.match(/^@([\d.]+):(.*)$/);
   return m ? { at: Number(m[1]), file: m[2] } : { at: null as number | null, file: a };
@@ -39,7 +46,7 @@ const plan = args.filter((a) => !a.startsWith("--") && !optionValues.has(a)).map
 if (plan.length === 0) { console.error("say which WAV files to speak"); process.exit(2); }
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", handOff: "named" },
+  web: { platform: "web", device: "browser", handOff: "named", supervise: true },
   android: { platform: "Android", device: "phone" },
   echo: { platform: "Echo", device: "speaker", mic: { whileSpeaking: "wake", gainDb: 0 }, hangUpAfter: 6 },
 };
@@ -146,7 +153,12 @@ function run(commands: Record<string, any>[]) {
         if (c.kind === "host") { say(`host tool ${c.name} ${JSON.stringify(c.args)}`); setTimeout(() => push({ type: "tool.result", run: c.run, text: "Done." }), 300); break; }
         say(`${c.agent === "t3" ? "T3" : "Hermes"} ${c.followUp ? "follow-up" : "task"} "${c.label}"${c.project ? ` in ${c.project}` : ""}: ${c.request}`);
         taskOf.set(c.run, c.taskId);
-        if (flag("hermes")) void hermes(c); else setTimeout(() => push({ type: "tool.result", run: c.run, text: `(Fake ${c.agent === "t3" ? "T3" : "Hermes"}) Done: ${c.request}. Nothing was actually run.` }), 2000);
+        if (flag("hermes")) void hermes(c);
+        else {
+          const n = faked++;
+          const text = n === 0 && REPLY != null ? REPLY : `(Fake ${c.agent === "t3" ? "T3" : "Hermes"}) Done: ${c.request}. Nothing was actually run.`;
+          setTimeout(() => push({ type: "tool.result", run: c.run, text }), (DELAYS[Math.min(n, DELAYS.length - 1)] || 2) * 1000);
+        }
         break;
       case "voiceCommand": say(`(voice command ${c.command}: ${c.heard})`); break;
       case "tool.steer": {
@@ -222,7 +234,7 @@ function writeReply(path: string) {
 
 const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, steering: ["hermes", "t3"], ...PRESETS[PRESET],
   ...(flag("coding") ? { codingAgent: { projects: config.t3 ?? [] } } : {}),
-  ...(flag("captions") ? { captions: { model: config.captionsModel } } : {}) }), now()));
+  ...(flag("captions") ? { captions: { model: config.captionsModel } } : {}), ...EXTRA }), now()));
 callId = created.id;
 run(created.commands);
 

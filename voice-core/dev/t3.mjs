@@ -5,7 +5,7 @@
 // hangs up only stops watching, so the agent carries on in T3.
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -41,12 +41,43 @@ export async function projects() {
   return JSON.parse(stdout || "[]").filter((p) => p.path !== join(T3HOME, "scratch") && !/smoke/i.test(p.title));
 }
 
-/** The project the model named, by title (exact, then partial); Scratchpad when it named none or none matches. */
-async function project(name) {
-  const all = await projects();
+/** Letters and digits only, lower case: "Voice Core", "voice-core" and "VoiceCore" are all "voicecore". */
+const squash = (text) => String(text ?? "").toLowerCase().replace(/[^\p{L}\p{Nd}]+/gu, "");
+
+/** Directory names that say nothing about which project is meant. */
+const COMMON = new Set(["scripts", "server", "android", "helper", "sources", "assets", "public", "vendor", "examples", "packages", "plugins", "config", "resources", "frontend", "backend", "client", "common", "shared", "tests", "testdata", "fixtures", "website"]);
+
+/** The top-level directories of a project, squashed: a part of it the user may name instead of it ("the voice core" for Bento). */
+function parts(path) {
+  try {
+    return readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => squash(e.name)).filter((n) => n.length >= 6 && !COMMON.has(n));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The project for a task. The one the model named, by title (exact, then partial). When it named none, or none
+ * that exists, the one the user's own words name: a project's title, else a part of exactly one project (a
+ * top-level directory of it, as "VoiceCore" is of Bento). Otherwise Scratchpad.
+ */
+export function pick(all, name, said = "") {
   const q = (name ?? "").trim().toLowerCase();
-  const hit = q && (all.find((p) => p.title.toLowerCase() === q) ?? all.find((p) => p.title.toLowerCase().includes(q) || q.includes(p.title.toLowerCase())));
-  return hit ?? all.find((p) => p.title === "Scratchpad") ?? all[0];
+  const named = q ? all.find((p) => p.title.toLowerCase() === q) ?? all.find((p) => p.title.toLowerCase().includes(q) || q.includes(p.title.toLowerCase())) : null;
+  if (named) return named;
+  const words = ` ${String(said).toLowerCase().replace(/[^\p{L}\p{Nd}]+/gu, " ")} `;
+  const titled = all.filter((p) => p.title !== "Scratchpad" && words.includes(` ${p.title.toLowerCase().replace(/[^\p{L}\p{Nd}]+/gu, " ").trim()} `))
+    .sort((a, b) => b.title.length - a.title.length)[0];
+  if (titled) return titled;
+  const text = squash(said);
+  const holding = all.filter((p) => (p.parts ?? parts(p.path)).some((part) => text.includes(part)));
+  if (holding.length === 1) return holding[0];
+  return all.find((p) => p.title === "Scratchpad") ?? all[0] ?? null;
+}
+
+async function project(name, said) {
+  return pick(await projects(), name, said);
 }
 
 async function baseBranch(path) {
@@ -116,7 +147,7 @@ export async function runTask(body, send, signal) {
     await t3(["thread", "send", thread, "-"], body.message);
     send("progress", { text: "Sent to its T3 thread" });
   } else {
-    const p = await project(body.project);
+    const p = await project(body.project, `${body.label ?? ""} ${body.request ?? ""}`);
     if (!p) throw new Error("T3 has no projects");
     const args = ["thread", "start", p.path, "-", "--title", body.label || "Voice task", "--json"];
     const base = await baseBranch(p.path);

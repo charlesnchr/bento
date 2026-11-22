@@ -33,7 +33,8 @@ export function defaults(): CallConfig {
     mic: { whileSpeaking: "send", gainDb: 0 },
     earcons: true,
     voiceCommands: {
-      stop: ["stop", "stop it", "stop talking", "stop there", "quiet", "be quiet", "hush", "shush", "shut up", "enough", "that's enough", "pause"],
+      // "stab it" and "stabit" are how Gemini Live has transcribed "stop it".
+      stop: ["stop", "stop it", "stab it", "stabit", "stop talking", "stop there", "quiet", "be quiet", "hush", "shush", "shut up", "enough", "that's enough", "pause"],
       hangUp: ["hang up", "end call", "end the call", "stop the call", "goodbye", "bye", "bye bye", "that's all", "that's all for now"],
       cancelAll: ["stop everything", "cancel everything", "cancel all tasks", "cancel all the tasks", "stop all tasks", "stop all the tasks", "abort everything"],
     },

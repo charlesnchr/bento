@@ -32,6 +32,13 @@ function distinctive(text: string): Set<string> {
   return new Set(words(text).filter((w) => w.length >= 4 && !STOP.has(w)));
 }
 
+/** Whether [said] names the task: it shares a distinctive word with its [label] or its [request]. */
+export function mentions(said: string, label: string, request: string): boolean {
+  const of = new Set([...distinctive(label), ...distinctive(request)]);
+  for (const w of distinctive(said)) if (of.has(w)) return true;
+  return false;
+}
+
 function minus(a: Set<string>, ...others: Set<string>[]): Set<string> {
   const out = new Set<string>();
   for (const w of a) if (!others.some((o) => o.has(w))) out.add(w);
