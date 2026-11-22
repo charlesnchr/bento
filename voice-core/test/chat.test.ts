@@ -315,3 +315,62 @@ test("ending the chat cancels its tasks and its request", () => {
   assert.equal(s.ended()!.status, "ended");
   assert.ok(!s.commands.some((c) => c.type === "mic.stop" || c.type === "ws.close"));
 });
+
+test("a cancel is judged by the message the model answered, not one typed since", () => {
+  const s = oneTask();
+  s.type("Cancel the weather one");
+  s.advance(1);
+  s.type("And what is 2 + 2?");
+  s.calls("cancel_task", { task: "Copenhagen weather" }, s.requests().at(-1)!.id);
+  s.advance(0.1);
+  assert.ok(s.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"));
+});
+
+test("a cancel the message didn't ask for is refused in a chat's words, and goes through once the user confirms", () => {
+  const s = oneTask();
+  s.type("What is 2 + 2?");
+  s.calls("cancel_task", { task: "Copenhagen weather" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith(`Not executed: the user didn't ask to cancel "Copenhagen weather". They wrote "What is 2 + 2?".`));
+  assert.ok(!refusal.includes("stop talking"));
+  s.writes("Did you want the weather task cancelled?");
+  s.type("Yes");
+  s.calls("cancel_task", { task: "Copenhagen weather" });
+  s.advance(0.1);
+  assert.ok(s.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"));
+});
+
+test("with supervise, a second message is never joined to the first one's request, and the instruction is a chat's", () => {
+  const s = chat({ supervise: true });
+  s.type("Check my calendar for Friday");
+  s.advance(1);
+  s.type("Find a taxi for eight");
+  const first = s.requests()[0];
+  const instruction = first.body.systemInstruction.parts[0].text;
+  assert.ok(instruction.includes("refers_back true"));
+  assert.ok(!instruction.includes("stop talking") && !instruction.includes("they are still talking"));
+  assert.ok(first.body.tools[0].functionDeclarations[0].parameters.properties.refers_back);
+  s.calls("ask_hermes", { label: "Friday calendar" }, first.id);
+  s.advance(0.1);
+  assert.equal(s.hermes()[0].request, "Check my calendar for Friday");
+  s.calls("ask_hermes", { label: "Taxi" });
+  s.advance(0.1);
+  assert.deepEqual(s.hermes().map((h) => h.request), ["Check my calendar for Friday", "Find a taxi for eight"]);
+});
+
+test("a message that points back sends Hermes the earlier conversation as where the request is", () => {
+  const s = chat({ supervise: true });
+  s.type("I'd like the uptime of the homelab");
+  s.advance(1);
+  s.writes("Shall I ask Hermes?");
+  s.advance(1);
+  s.type("Do that with Hermes");
+  s.calls("ask_hermes", { label: "Homelab uptime", refers_back: true });
+  s.advance(0.1);
+  const message = s.hermes()[0].message;
+  assert.ok(message.startsWith("User's typed request from Bento's assistant on Android:\nDo that with Hermes\n"));
+  assert.ok(message.includes("This request points back at something the user said earlier"));
+  assert.ok(message.includes("user: I'd like the uptime of the homelab"));
+});

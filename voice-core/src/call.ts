@@ -39,7 +39,7 @@ import { RESULT_ARRIVED, TASK_STARTED } from "./earcons.ts";
 import { base64Size, codePoints, decodeBase64, encodeBase64, gain, level, looksBase64, silent64 } from "./bytes.ts";
 import { Captions } from "./captions.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
-import { commandIn } from "./commands.ts";
+import { asksToCancel, commandIn } from "./commands.ts";
 import {
   CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, LIST_TASKS, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
   type Delegation, type HermesCall, type ResponseOptions,
@@ -86,6 +86,11 @@ const RECAP_CHARS = 6000;
 /** The longest message a typed chat takes, in characters: written, so it may be a pasted page. */
 const TYPED_MAX = 32_000;
 
+/** With `join` set, the longest a hand-off waits for a user who goes on talking after the model called, in seconds. */
+const BREATH_MAX = 8;
+/** The most of one line a recap keeps, in characters. */
+const RECAP_LINE = 600;
+
 /** What the instruction adds with CallConfig.supervise: corrections, brevity and status. */
 const SUPERVISE =
   " A correction or a change of mind is a follow-up, never a new request: when the user corrects or changes a request they " +
@@ -94,6 +99,32 @@ const SUPERVISE =
   "cancel_task for it. Keep every reply to a sentence or two unless the user asks for more, and never close with an offer of " +
   "more help. Asked what is going on or what they missed, call list_tasks and say each task's state or outcome in a few " +
   "words: never only that everything is done.";
+
+/** What it adds to that in a voice call. Following the user's lead: what went wrong in real calls (README, "Following the user's lead"). */
+const LEAD =
+  " When a request points back at something said earlier instead of saying it again (\"do that with Hermes instead\", \"what " +
+  "I just said\", \"try that again\"), call the tool at once with refers_back true: Bento sends the earlier conversation " +
+  "along. Never ask the user to say again what they have said, and never say you are starting something unless you call the " +
+  "tool in that same turn. When the user has only said that they want something and not yet what (\"I need a change to the " +
+  "app\"), they are still talking: say nothing and call nothing until they have said what they want. When they ask for the " +
+  "exact words, a quote or more detail of a result, or tell you to ask the agent or that session again, don't repeat what " +
+  "you said or point at the screen: call check_task for the full reply and say the words they asked for from it, word for " +
+  "word, and if they aren't in there, send the user's words to that task with continue_task. \"Stop\", \"stop it\", " +
+  "\"quiet\" and the like only mean stop talking: Bento handles them, and they never cancel a task. Call cancel_task only " +
+  "for a task the user asked in words to cancel (\"cancel the taxi\", \"never mind that\").";
+
+/** The same in a typed chat: nothing is misheard there, a message is whole, and results are on the screen in full. */
+const LEAD_TYPED =
+  " When a message points back at something said earlier instead of saying it again (\"do that with Hermes instead\", " +
+  "\"try that again\"), call the tool at once with refers_back true: Bento sends the earlier conversation along. Never ask " +
+  "the user to write again what they have written, and never say you are starting something unless you call the tool in " +
+  "that same turn. When they ask for the exact words or more detail of a result you no longer have in full, or tell you to " +
+  "ask the agent or that session again, call check_task for the full reply, and if what they ask for isn't in there, send " +
+  "their message to that task with continue_task. Call cancel_task only for a task the user asked in words to cancel " +
+  "(\"cancel the taxi\", \"never mind that\").";
+
+/** The speaker an agent's reply has in the conversation, before its task's name. */
+const REPLY_OF = "Hermes · ";
 
 /** One request a task works on: the ask_hermes call it answers, in the session that made it. */
 class Run {
@@ -118,6 +149,10 @@ class Run {
     this.session = session;
     this.turn = turn;
     this.followUp = followUp;
+  }
+  /** Whether [turn]'s words are in its request: the turn its call answered, or a breath joined to it. */
+  took(turn: number | null): boolean {
+    return turn != null && (this.turn === turn || (this.request.turns?.includes(turn) ?? false));
   }
 }
 
@@ -159,7 +194,7 @@ class Task {
   }
   get latest(): string { return (lastOrNull(this.queued) ?? this.current).request.task; }
   has(turn: number | null): boolean {
-    return turn != null && this.state === RUNNING && (this.current.turn === turn || this.queued.some((r) => r.turn === turn));
+    return turn != null && this.state === RUNNING && (this.current.took(turn) || this.queued.some((r) => r.took(turn)));
   }
   holds(run: Run): boolean { return this.state === RUNNING && (this.current === run || this.queued.includes(run)); }
 }
@@ -310,6 +345,16 @@ export class Call {
   private cancelledAll = false;
   /** What the user has said in their current turn, for spoken commands. */
   private utterance = "";
+  /** The user's latest words, spoken or typed, until they say more: what a cancel_task is judged against. */
+  private lastWords = "";
+  /** A cancel_task the user's words didn't ask for, and the user turns there had been: the model may confirm and call again. */
+  private cancelDoubt: { task: string; turn: number } | null = null;
+  /** Delegating calls still settling, oldest first: with `join` set they are handed over in the order they came. */
+  private readonly pending: Delegation[] = [];
+  /** The tool each delegating call was made with, by call: its responses carry that name. */
+  private readonly callNames = new Map<string, string>();
+  /** In a typed chat, each message's time and words: a call answers the message the model had, not one typed since. */
+  private readonly typedWords: [number, string][] = [];
   /** Frames typed while the call was off the model, sent once it's back. */
   private typedLater: string[] = [];
   private nextScreen = 1;
@@ -356,9 +401,10 @@ export class Call {
   constructor(config: CallConfig) {
     this.c = config;
     this.mutedNow = config.muted;
-    if (config.supervise) this.protocol.join = 4;
     this.chat = config.history.map((l) => ({ ...l }));
     const typed = config.medium === "text";
+    // A typed message is whole when it arrives: the next one is never the rest of it.
+    if (config.supervise && !typed) this.protocol.join = 4;
     if (typed) { this.protocol.maxTurn = TYPED_MAX; this.protocol.patience = Infinity; }
     const instruction = typed
       ? chatInstructionFor(config.platform)
@@ -369,10 +415,11 @@ export class Call {
       model: config.model,
       voice: config.voice,
       instruction: (config.instruction ?? instruction) +
-        (config.codingAgent ? codingInstruction(config.codingAgent.projects) : "") + (config.supervise ? SUPERVISE : ""),
+        (config.codingAgent ? codingInstruction(config.codingAgent.projects) : "") + (config.supervise ? SUPERVISE + (typed ? LEAD_TYPED : LEAD) : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
       codingProjects: config.codingAgent?.projects ?? null,
+      refersBack: config.supervise,
     };
     if (typed) this.setup.typed = true;
     this.textLine = !typed ? null : new TextLine(config.text, {
@@ -500,7 +547,7 @@ export class Call {
       case "unmute": return this.setMuted(false);
       case "resume": return this.defer(() => { if (this.dormant) this.wakeUp(); else this.comeBack(); });
       case "wake": return this.wakeWord();
-      case "cancelTask": return this.defer(() => { this.cancelNow(e.task); });
+      case "cancelTask": return this.defer(() => { this.cancelNow(e.task, true); });
       case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
@@ -1146,7 +1193,8 @@ export class Call {
     this.wakeStarted = this.t;
     this.setStatus("waking");
     let recap: Resume | null = null;
-    try { recap = resumeFrom(liveRecap(this.chat)); } catch { recap = null; }
+    const labels = new Set([...this.tasks.values()].filter((t) => t.result != null).map((t) => t.label));
+    try { recap = resumeFrom(liveRecap(this.chat, RECAP_CHARS, labels)); } catch { recap = null; }
     const tasks = [...this.tasks.values()].slice(-TASKS_IN_RECAP).map((t): [string, string, string] => [t.label, this.stateOf(t), t.request]);
     this.setupResume = withTasks(recap, tasks);
     this.socket = this.openSocket();
@@ -1387,6 +1435,14 @@ export class Call {
       if (this.dropTurn) this.turnEnded(false);
       else if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
       else if (this.heardRelayed().length > 0 && !this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
+      // With supervise: a result that was to go again (the user spoke before the model told it) and that this reply
+      // told all the same has been heard; sent again, the model would say it twice.
+      if (this.c.supervise && this.spokeSince && !this.dropTurn) {
+        const late = this.unheard.filter((u) => u.toldOnce && !u.told && !u.sending && u.playing == null && this.announcing?.item !== u &&
+          TaskNames.relays(this.geminiSaid, u.label, u.result, this.tasks.get(u.task)?.request ?? ""));
+        for (const item of late) item.told = true;
+        this.heard(late);
+      }
       if (this.spokeSince) this.unspokenSince = null;
       // The turn after a hand-off's "started" answer said something: the user has their confirmation.
       if (this.spokeSince && !this.dropTurn) this.confirmed(true);
@@ -1637,6 +1693,7 @@ export class Call {
   /** A fragment of what the user is saying: a whole utterance that's a command is carried out. */
   private spoken(text: string): void {
     this.utterance = take(this.utterance + text, 400);
+    this.lastWords = this.utterance;
     const names = [...this.c.vocabulary, "Woodhouse"];
     const command = commandIn(this.utterance, this.c.voiceCommands, names);
     if (command === "cancelAll") {
@@ -1697,10 +1754,13 @@ export class Call {
     this.replyDue = t;
     this.played();
     this.lapseQuestions();
-    // An answer the model sends without naming a task goes to the task whose question the user saw last.
+    this.lastWords = take(text, 400);
     if (this.textLine) {
+      // An answer the model sends without naming a task goes to the task whose question the user saw last.
       this.answerFor.push([t, this.asking().map((task) => task.id)]);
       if (this.answerFor.length > 8) this.answerFor.shift();
+      this.typedWords.push([t, this.lastWords]);
+      if (this.typedWords.length > 8) this.typedWords.shift();
     }
     const frame = typedFrame(text);
     if (this.dormant) { this.dormant = false; this.streamEnded = false; this.updateWakeword(); this.settled(); }
@@ -1806,15 +1866,23 @@ export class Call {
       }
       return;
     }
+    if (name != null) this.callNames.set(d.id, name);
     const named = taskRef(call);
     const label = TaskNames.tidy(str(obj(call.args), "label"));
     const agent: Agent = name === CODE_TOOL ? "t3" : "hermes";
     const project = take((str(obj(call.args), "project") ?? "").trim(), 120) || null;
+    const refersBack = this.c.supervise && obj(call.args)?.refers_back === true;
     this.settling++;
+    this.pending.push(d);
     let settledYet = false;
-    const settledNow = () => { if (!settledYet) { settledYet = true; this.settling--; } };
+    const settledNow = () => {
+      if (settledYet) return;
+      settledYet = true;
+      this.settling--;
+      this.pending.splice(this.pending.indexOf(d), 1);
+    };
     const body = () => {
-      try { this.delegated(d, named, label, settledNow, agent, project); } finally { settledNow(); }
+      try { this.delegated(d, named, label, settledNow, agent, project, refersBack); } finally { settledNow(); }
     };
     this.defer(() => {
       // A typed message is whole when it arrives: nothing to wait for.
@@ -1823,22 +1891,32 @@ export class Call {
         if (!this.active) { settledNow(); return; }
         const turn = this.protocol.turnState(d);
         const t = this.t;
-        if ((turn.complete && t - (turn.changed ?? d.at) >= this.c.limits.settleQuiet) || t - d.at >= this.c.limits.settleMax) body();
+        // The user went straight on talking after the model called (it acted on their first breath): the hand-off
+        // waits for the rest, so the agent gets the request whole.
+        // A call the model made for a later breath waits for the first one's: that one takes those words.
+        const more = this.protocol.join > 0 && (this.pending[0] !== d || (t - d.at < BREATH_MAX && this.protocol.goingOn(d, t, this.c.limits.settleQuiet)));
+        if (!more && ((turn.complete && t - (turn.changed ?? d.at) >= this.c.limits.settleQuiet) || t - d.at >= this.c.limits.settleMax)) body();
         else this.sleep(0.1, check);
       };
       this.sleep(0.1, check);
     });
   }
 
-  private delegated(d: Delegation, named: string | null, label: string | null, settledNow: () => void, agent: Agent = "hermes", project: string | null = null): void {
+  private delegated(
+    d: Delegation, named: string | null, label: string | null, settledNow: () => void, agent: Agent = "hermes", project: string | null = null, refersBack = false,
+  ): void {
     settledNow();
     for (const same of this.tasks.values()) {
       if (!same.has(d.turn)) continue;
       this.protocol.discardRequest(d);
-      this.respond(d.id, `Not executed: Hermes is already working on this request in "${same.label}". Wait for its result. No automatic retry.`, false, { task: same.label });
+      // A breath the task's request already holds: the user went on talking, and the model called again for the rest.
+      const joined = same.current.turn !== d.turn && !same.queued.some((r) => r.turn === d.turn);
+      if (joined) this.respond(d.id, `"${same.label}" has these words already: they were the rest of its request, and it is working on all of it. Don't announce it.`, true, { task: same.label, scheduling: "SILENT" });
+      else this.respond(d.id, `Not executed: Hermes is already working on this request in "${same.label}". Wait for its result. No automatic retry.`, false, { task: same.label });
       return;
     }
     const request = this.protocol.request(d);
+    if (request != null && refersBack) request.refersBack = true;
     if (this.cancelledCalls.has(d.id)) return;
     if (request == null) {
       this.respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", false);
@@ -2062,7 +2140,7 @@ export class Call {
     task.job = null;
     run.closed = true;
     if (!failed && text.trim().length > 0) {
-      this.chat.push({ role: "assistant", speaker: `Hermes · ${task.label}`, text });
+      this.chat.push({ role: "assistant", speaker: REPLY_OF + task.label, text });
       this.boundary = true;
     }
     const asked = task.queued.length === 0 ? TaskNames.question(text) : null;
@@ -2115,7 +2193,8 @@ export class Call {
     }
   }
 
-  private cancelNow(taskId: string): string {
+  /** Cancels a running task. [onScreen]: the user did it there, so the model is told when no call of the task's can say so. */
+  private cancelNow(taskId: string, onScreen = false): string {
     const task = this.tasks.get(taskId);
     if (!task) return "Not executed: that task is gone. Call list_tasks for what's in flight.";
     if (task.state !== RUNNING) {
@@ -2123,24 +2202,35 @@ export class Call {
       return `Not executed: "${task.label}" ${failed ? "has already failed" : `is already ${task.state}`}. Nothing was cancelled.`;
     }
     const queued = task.queued.length;
-    const message = `Cancelled "${task.label}". Hermes stopped; what it already did was not undone.` +
+    const who = task.agent === "t3" ? "The coding agent" : "Hermes";
+    const message = `Cancelled "${task.label}". ${who} stopped; what it already did was not undone.` +
       (queued > 0 ? ` Its ${queued} follow-up${queued > 1 ? "s" : ""} waiting never ran.` : "");
     if (task.job != null) { this.jobs.delete(task.job); this.emit({ type: "tool.cancel", run: task.job, reason: "cancelled" }); }
     this.finished(task, CANCELLED, message);
     const runs = [task.current, ...task.queued];
     task.queued.length = 0;
     for (const run of runs) run.cancelled = message;
-    for (const run of runs) if (run.acknowledged) this.closeCancelled(task, run);
+    let told = false;
+    for (const run of runs) if (run.acknowledged && this.closeCancelled(task, run)) told = true;
+    // No call of the task's is open to answer (on Vertex its "started" answer closed it): the model would go on
+    // saying the task is running. In standby the recap's task list says it instead.
+    if (onScreen && !told) {
+      this.send(noteFrame(`From Bento, not the user's words: the user cancelled "${task.label}" on their screen. ${who} stopped; what it already ` +
+        "did was not undone. It is no longer running: don't say it is, and don't start it again unless the user asks."), true);
+    }
     this.afterTask();
     return message;
   }
 
-  private closeCancelled(task: Task, run: Run): void {
-    if (run.closed) return;
+  /** Answers a cancelled run's call while it's open; whether it did. */
+  private closeCancelled(task: Task, run: Run): boolean {
+    if (run.closed) return false;
     run.closed = true;
     if (!run.answered && !this.cancelledCalls.has(run.callId) && run.session === this.session && !this.standby && !this.waking) {
       this.respond(run.callId, run.cancelled ?? `Cancelled "${task.label}".`, true, { task: task.label, status: "cancelled", scheduling: "SILENT" });
+      return true;
     }
+    return false;
   }
 
   /** A tool the host runs (the Echo's TV, say): the model waits for its answer. */
@@ -2190,7 +2280,21 @@ export class Call {
         }
       } else if (ref == null || ref.length === 0) message = "Not executed: say which task to cancel.";
       else if (task == null) message = "Not executed: " + missing;
-      else message = this.cancelNow(task.id);
+      else if (task.state === RUNNING && !this.cancelAsked(task)) {
+        const said = collapse(this.wordsAnswered);
+        this.log("info", `cancel_task for "${task.label}" refused: the user said "${said}"`);
+        message = this.textLine
+          ? `Not executed: the user didn't ask to cancel "${task.label}". They wrote "${said}". Nothing was cancelled. If they may ` +
+            "have meant to cancel it, ask them to confirm, then call cancel_task again."
+          : `Not executed: the user didn't ask to cancel "${task.label}". They said "${said}", and "stop" or ` +
+            "\"quiet\" only means stop talking. Nothing was cancelled: say nothing more now. If they did mean to cancel it, ask them " +
+            "to confirm, then call cancel_task again.";
+      } else {
+        message = this.cancelNow(task.id);
+        if (message.startsWith("Cancelled")) {
+          message += ` If the user didn't mean that, call ${task.agent === "t3" ? CODE_TOOL : TOOL} with continue_task "${task.label}" to carry on with it.`;
+        }
+      }
       try {
         if (readOut.length > 0) this.toldInTurn(readOut);
         this.respond(id, message, name !== CANCEL_TASK || message.startsWith("Cancelled"), { name }, false);
@@ -2199,6 +2303,30 @@ export class Call {
       }
       if (this.waiting().length > 0) this.deliverWhenIdle();
     });
+  }
+
+  /**
+   * Whether the user's latest words ask for [task] to be cancelled: in words, or by naming it. A bare "stop", or a
+   * mishearing of one ("Stabit"), doesn't: the model once cancelled six minutes of work on that. A cancel refused
+   * goes through when the model calls again after the user has spoken once more (it asked them to confirm).
+   */
+  private cancelAsked(task: Task): boolean {
+    const doubt = this.cancelDoubt;
+    this.cancelDoubt = null;
+    if (doubt != null && doubt.task === task.id && this.userTurns > doubt.turn) return true;
+    const names = [...this.c.vocabulary, "Woodhouse"];
+    const said = this.wordsAnswered;
+    if (asksToCancel(said, this.c.voiceCommands, names, TaskNames.mentions(said, task.label, task.latest + " " + task.request))) return true;
+    this.cancelDoubt = { task: task.id, turn: this.userTurns };
+    return false;
+  }
+
+  /** The user's words a call of the model's answers: their latest, or in a typed chat the message it had when it was asked. */
+  private get wordsAnswered(): string {
+    if (!this.textLine) return this.lastWords;
+    const asOf = this.textLine.asOf;
+    for (let i = this.typedWords.length - 1; i >= 0; i--) if (this.typedWords[i][0] <= asOf) return this.typedWords[i][1];
+    return this.lastWords;
   }
 
   private overview(): [Task | null, string][] {
@@ -2299,7 +2427,8 @@ export class Call {
   private respond(id: string, message: string, executed: boolean, o: ResponseOptions = {}, toSpeak?: boolean): void {
     if (!this.active) return;
     if (toSpeak ?? (o.scheduling ?? "WHEN_IDLE") === "WHEN_IDLE") this.toldToSpeak();
-    this.send(response(id, message, executed, { ...o, vertex: this.later }), true);
+    const name = o.name ?? this.callNames.get(id);
+    this.send(response(id, message, executed, { ...o, ...(name != null ? { name } : {}), vertex: this.later }), true);
   }
 
   /** A frame the old socket couldn't take while the call moves is dropped, or with [resend] sent on the new one. */
@@ -2387,8 +2516,12 @@ function endingMessage(e: { code?: number; reason?: string; httpStatus?: number 
   return `Gemini voice failed (${detail.join(", ")}). No task was retried.`;
 }
 
-/** The conversation as a resumed call hears it: the latest lines that fit, oldest first (AssistantTranscript.liveRecap). */
-export function liveRecap(lines: ChatLine[], limit = RECAP_CHARS): string | null {
+/**
+ * The conversation as a resumed call hears it: the latest lines that fit, oldest first (AssistantTranscript.liveRecap).
+ * A line is cut at RECAP_LINE characters; an agent's reply cut there says so, and that check_task has the rest, when
+ * its task is one of [tasks] (this call's, by name): the model otherwise answers from the part it has as if it were all.
+ */
+export function liveRecap(lines: ChatLine[], limit = RECAP_CHARS, tasks: ReadonlySet<string> = new Set()): string | null {
   const picked: string[] = [];
   let size = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -2396,7 +2529,12 @@ export function liveRecap(lines: ChatLine[], limit = RECAP_CHARS): string | null
     if (m.failed) continue;
     let text = collapse(m.text);
     if (text.length === 0) continue;
-    if (text.length > 600) text = take(text, 600) + "...";
+    if (text.length > RECAP_LINE) {
+      const label = m.role === "assistant" && m.speaker?.startsWith(REPLY_OF) ? m.speaker.slice(REPLY_OF.length) : null;
+      text = take(text, RECAP_LINE) + (label != null && tasks.has(label)
+        ? `... [Bento cut this reply here. For its exact words or the rest, call check_task "${label}".]`
+        : "...");
+    }
     const line = (m.role === "user" ? "User" : m.speaker ?? "Hermes") + ": " + text;
     const scalars = codePoints(line) + 1;
     if (size + scalars > limit) break;

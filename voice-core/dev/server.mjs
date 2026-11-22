@@ -37,6 +37,7 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 import WebSocket, { WebSocketServer } from "ws";
 import { build, OUT } from "../scripts/build.mjs";
 import { envFile, serviceAccount } from "./google.mjs";
+import { chatRequestBody, DEFAULT_REASONING_EFFORT } from "./hermes.mjs";
 import * as T3 from "./t3.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -111,6 +112,7 @@ async function generate(req, res) {
 
 const HERMES_URL = process.env.HERMES_API_URL ?? (hermesEnv.API_SERVER_PORT ? `http://${hermesEnv.API_SERVER_HOST ?? "127.0.0.1"}:${hermesEnv.API_SERVER_PORT}` : null);
 const HERMES_KEY = process.env.HERMES_API_KEY ?? hermesEnv.API_SERVER_KEY;
+const HERMES_REASONING_EFFORT = process.env.VOICE_CORE_HERMES_REASONING_EFFORT ?? DEFAULT_REASONING_EFFORT;
 /** Hermes sessions by call and task: a follow-up continues its task's session. */
 const sessions = new Map();
 /** The Hermes run each call's task is on, while it runs: what steer and stop act on. */
@@ -146,15 +148,19 @@ async function hermes(req, res) {
   try {
     if (!HERMES_URL) throw new Error("no Hermes API server in ~/.hermes/.env");
     key = `${body.call}/${body.taskId}`;
-    let sid = body.followUp ? sessions.get(key) : null;
-    if (!sid) {
+    let session = body.followUp ? sessions.get(key) : null;
+    const chatBody = chatRequestBody(body, {
+      defaultEffort: HERMES_REASONING_EFFORT,
+      sessionModelOptions: session ? (session.modelOptions ?? {}) : null,
+    });
+    if (!session) {
       const r = await fetch(`${HERMES_URL}/api/sessions`, { method: "POST", headers, body: JSON.stringify({ source: "api_server" }), signal: abort.signal });
       if (!r.ok) throw new Error(`Hermes couldn't start a session: HTTP ${r.status}`);
-      sid = (await r.json()).session.id;
-      sessions.set(key, sid);
+      session = { id: (await r.json()).session.id, modelOptions: chatBody.model_options ?? {} };
+      sessions.set(key, session);
     }
-    const r = await fetch(`${HERMES_URL}/api/sessions/${sid}/chat/stream`, {
-      method: "POST", headers: { ...headers, Accept: "text/event-stream" }, body: JSON.stringify({ message: body.message }), signal: abort.signal,
+    const r = await fetch(`${HERMES_URL}/api/sessions/${session.id}/chat/stream`, {
+      method: "POST", headers: { ...headers, Accept: "text/event-stream" }, body: JSON.stringify(chatBody), signal: abort.signal,
     });
     if (!r.ok) throw new Error(`Hermes refused the request: HTTP ${r.status}`);
     let answer = "", status = "", ev = null, buffer = "";

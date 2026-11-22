@@ -23,6 +23,10 @@ export interface HermesCall {
   taskId: string;
   followUp: boolean;
   label: string;
+  /** The user turns its words came from, when breaths were joined (CallProtocol.join): a call for one of them is this request again. */
+  turns?: number[];
+  /** The model said the words point back at something said earlier ("do that with Hermes instead"): the agent finds it in [context]. */
+  refersBack?: boolean;
 }
 
 export interface Delegation { id: string; at: number; turn: number | null }
@@ -133,6 +137,34 @@ export class CallProtocol {
     return this.turns.find((t) => t.id === d.turn)?.started ?? null;
   }
 
+  /**
+   * Whether the user is still saying the request [d] answers, with `join` set: they began another turn within `join`
+   * seconds of its turn's end (and of each breath's after that) with the model silent between, and that turn is
+   * still open, has no words yet, or ended less than [quiet] seconds ago. The model's activity detection ends a
+   * turn at a pause for thought, and the model may act on the first breath alone.
+   */
+  goingOn(d: Delegation, at: number, quiet: number): boolean {
+    if (this.join <= 0) return false;
+    const i = this.turns.findIndex((t) => t.id === d.turn);
+    if (i < 0) return false;
+    let last = this.turns[i];
+    for (let j = i + 1; j < this.turns.length; j++) {
+      const later = this.turns[j];
+      const end = last.ended;
+      if (end == null || later.consumed || later.started - end > this.join || this.spokeBetween(end, later.started)) return false;
+      if (later.ended == null) return true;
+      if (later.text.trim().length === 0) return at - later.ended < quiet;
+      if (at - Math.max(later.ended, later.heard ?? 0) < quiet) return true;
+      last = later;
+    }
+    return false;
+  }
+
+  /** Whether the model said anything from [from] up to [to]. */
+  private spokeBetween(from: number, to: number): boolean {
+    return this.history.some((f) => f.role === "assistant" && f.at >= from && f.at < to);
+  }
+
   /** Consumes a declined call's turn so a later call cannot replay it. */
   discardRequest(d: Delegation): void {
     const turn = this.turns.find((t) => t.id === d.turn);
@@ -151,7 +183,13 @@ export class CallProtocol {
     // Speech the model left unanswered for long is not this call's request.
     const ended = turn.ended;
     if (ended == null) return null;
-    if (ended < d.at - this.patience || turn.ambiguous || turn.text.length > this.maxTurn) return null;
+    // With `join`, a reply the model began in time and was still making counts as answering: it tells a result that
+    // had just come in first, and calls for the request after it.
+    let answered = ended;
+    if (this.join > 0) {
+      for (const f of this.history) if (f.role === "assistant" && f.at > answered && f.at <= d.at && f.at - answered <= 8) answered = f.at;
+    }
+    if (answered < d.at - this.patience || turn.ambiguous || turn.text.length > this.maxTurn) return null;
     let task = turn.text.trim();
     if (task.length === 0) return null;
     // Earlier breaths of the same request: turns just before it that the model let pass without a word or a call.
@@ -169,8 +207,25 @@ export class CallProtocol {
         first = earlier;
       }
     }
+    // Later breaths: what the user went on to say while the call settled, when the model acted on the first breath alone.
+    const joined = [turn.id];
+    if (this.join > 0) {
+      let last = turn;
+      for (let i = this.turns.indexOf(turn) + 1; i < this.turns.length; i++) {
+        const later = this.turns[i];
+        const end = last.ended;
+        if (end == null || later.consumed || later.ambiguous || later.ended == null || later.text.trim().length === 0) break;
+        if (later.started - end > this.join || this.spokeBetween(end, later.started) || later.text.length + task.length > this.maxTurn) break;
+        later.consumed = true;
+        task = task + " " + later.text.trim();
+        joined.push(later.id);
+        last = later;
+      }
+    }
     const context = this.history.filter((f) => f.at < first.started).map((f) => `${f.role}: ${f.text}`).join("\n");
-    return { id: d.id, task, context: takeLast(context, 6000), taskId: "", followUp: false, label: "" };
+    const request: HermesCall = { id: d.id, task, context: takeLast(context, 6000), taskId: "", followUp: false, label: "" };
+    if (joined.length > 1) request.turns = joined;
+    return request;
   }
 }
 

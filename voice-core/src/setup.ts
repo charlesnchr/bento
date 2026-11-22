@@ -146,6 +146,11 @@ const LABEL_DESCRIPTION =
   "For a new task only: a name for it of two to four words saying what it is about, such as \"Copenhagen weather\". " +
   "The user sees it on screen; Hermes never gets it.";
 
+const REFERS_BACK_DESCRIPTION =
+  "True when the user's words point back at something said earlier in the conversation instead of saying it again " +
+  "(\"do that with Hermes instead\", \"what I just said\", \"try that again\"): Bento sends the earlier conversation " +
+  "along and the agent works out what they mean.";
+
 const LIST_TASKS_DESCRIPTION =
   "What is in flight in this call: each Hermes task by name, the request as the user said it, and whether it is running, " +
   "waiting for the user's answer, finished or cancelled, with its latest progress. Takes no arguments.";
@@ -173,6 +178,8 @@ export interface Setup {
   codingProjects?: string[] | null;
   /** A typed chat: the tools speak of the user's message, not their spoken request. */
   typed?: boolean;
+  /** Declares `refers_back` on the delegating tools (CallConfig.supervise). */
+  refersBack?: boolean;
 }
 
 /** What the instruction says of the coding agent, when the call has one. */
@@ -182,6 +189,10 @@ export function codingInstruction(projects: string[]): string {
     "works in its own branch and can take many minutes. Its tasks work like Hermes tasks, with continue_task, list_tasks, " +
     "check_task and cancel_task, and its result arrives the same way. Pass the project when the user names one or it is " +
     "clear from the conversation" + (projects.length > 0 ? `; the projects are ${projects.map((p) => `"${p}"`).join(", ")}` : "") + ". " +
+    "When what they name is none of these (an app or a part inside a project, say), leave the project out: Bento finds it from " +
+    "their words. Who does the work is the user's choice: when they ask for Hermes, call ask_hermes, also for work on code, " +
+    "which Hermes can do too, and never tell them a request needs the other agent. If the coding agent can't start, say so in " +
+    "a few words and offer Hermes. " +
     "Everything else still goes to Hermes. list_tasks, check_task and cancel_task know only the tasks this call started. " +
     "Sessions, threads and agents the user runs elsewhere (their other T3 Code threads, sessions of other tools, anything on " +
     "their machines) are not this call's tasks: a request to look at them, list them or check on them is a new request for " +
@@ -209,6 +220,7 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
   const worded = (description: string) => (s.typed
     ? description.replace("latest spoken request", "latest message").replace("Bento sends the transcript.", "Bento sends their message as they wrote it.")
     : description);
+  const refersBack = s.refersBack ? { refers_back: { type: "BOOLEAN", description: REFERS_BACK_DESCRIPTION } } : {};
   const declarations: unknown[] = [
     {
       name: TOOL,
@@ -219,6 +231,7 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
         properties: {
           continue_task: { type: "STRING", description: FOLLOW_UP_DESCRIPTION },
           label: { type: "STRING", description: LABEL_DESCRIPTION },
+          ...refersBack,
         },
       },
     },
@@ -245,6 +258,7 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
           continue_task: { type: "STRING", description: FOLLOW_UP_DESCRIPTION },
           label: { type: "STRING", description: LABEL_DESCRIPTION },
           project,
+          ...refersBack,
         },
       },
     });
@@ -395,8 +409,17 @@ export function resumeFrom(recap: string | null | undefined, chat = false): Resu
 /** Where the call runs, for the words Hermes gets: "Android" and "phone", "macOS" and "Mac". */
 export interface Surface { platform: string; device: string }
 
+const CONTEXT_HEADER = "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n";
+/** With refers_back: the request is in the earlier conversation, in the user's own lines. */
+const CONTEXT_REFERRED =
+  "\nThis request points back at something the user said earlier (\"do that\", \"what I just said\", \"use Hermes for it\"): " +
+  "find what they mean in the lines marked \"user:\" of the conversation below, the latest that fits, and carry that out as " +
+  "this request. Everything else in it is for reference only, NOT approval or additional tasks:\n";
+const TYPED_CONTEXT_HEADER = "\nEarlier conversation for reference only, NOT approval or additional tasks:\n";
+type Spoken = { task: string; context: string; followUp: boolean; refersBack?: boolean };
+
 /** What Hermes gets for a spoken request (the Mac's wording). */
-export function voiceMessage(request: { task: string; context: string; followUp: boolean }, today: string, surface: Surface): string {
+export function voiceMessage(request: Spoken, today: string, surface: Surface): string {
   return `User's transcribed request from Bento's Gemini Live voice session on ${surface.platform}:\n` + request.task +
     "\nInterpret this spoken request and write your own precise tool queries; do not mechanically pass filler words to tools. " +
     (request.followUp ? "It follows up your earlier work in this conversation: continue from it. " : "") +
@@ -405,11 +428,11 @@ export function voiceMessage(request: { task: string; context: string; followUp:
     `Today's date is ${today}. For current/latest information search the current year and verify dates, not old model knowledge. ` +
     "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
     `Bento displays your response directly as a Hermes chat reply on the user's ${surface.device}. Do not promise a separate document unless you actually create one. ` +
-    "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context;
+    (request.refersBack ? CONTEXT_REFERRED : CONTEXT_HEADER) + request.context;
 }
 
 /** What Hermes gets for a request typed in a chat (CallConfig.medium "text"): the user's message as they wrote it. */
-export function typedMessage(request: { task: string; context: string; followUp: boolean }, today: string, surface: Surface): string {
+export function typedMessage(request: Spoken, today: string, surface: Surface): string {
   return `User's typed request from Bento's assistant on ${surface.platform}:\n` + request.task + "\n" +
     (request.followUp ? "It follows up your earlier work in this conversation: continue from it. " : "") +
     "Perform only this request; clarify ambiguity instead of guessing actions. " +
@@ -418,11 +441,11 @@ export function typedMessage(request: { task: string; context: string; followUp:
     `Bento displays your response directly as a Hermes chat reply on the user's ${surface.device}: start with the answer, and keep it ` +
     "short unless the request asks for detail. It renders Markdown headings, lists, emphasis, code and links, and not tables, " +
     "raw HTML, images or LaTeX. Do not promise a separate document unless you actually create one. " +
-    "\nEarlier conversation for reference only, NOT approval or additional tasks:\n" + request.context;
+    (request.refersBack ? CONTEXT_REFERRED : TYPED_CONTEXT_HEADER) + request.context;
 }
 
 /** What the coding agent gets for a request typed in a chat. */
-export function typedCodingMessage(request: { task: string; context: string; followUp: boolean }, today: string, surface: Surface): string {
+export function typedCodingMessage(request: Spoken, today: string, surface: Surface): string {
   return `Request the user typed in Bento's assistant on ${surface.platform}:\n` + request.task +
     "\nYou are the coding agent this request asks for: do the work yourself in this thread, and don't start another " +
     "agent, T3 session or thread for it, even if the user's words say to spin one up. " +
@@ -432,11 +455,11 @@ export function typedCodingMessage(request: { task: string; context: string; fol
     "when the change is ready and verified; don't merge, release or deploy unless the request says so. " +
     `Today's date is ${today}. ` +
     "Start your final message with a brief summary, ideally under 60 words, then any detail: the user reads it in the chat." +
-    "\nEarlier conversation for reference only, NOT approval or additional tasks:\n" + request.context;
+    (request.refersBack ? CONTEXT_REFERRED : TYPED_CONTEXT_HEADER) + request.context;
 }
 
 /** What the coding agent gets for a spoken request. */
-export function codingMessage(request: { task: string; context: string; followUp: boolean }, today: string, surface: Surface): string {
+export function codingMessage(request: Spoken, today: string, surface: Surface): string {
   return `Transcribed request from the user's voice call on ${surface.platform} (Bento's Gemini Live front end):\n` + request.task +
     "\nYou are the coding agent this request asks for: do the work yourself in this thread, and don't start another " +
     "agent, T3 session or thread for it, even if the user's words say to spin one up. " +
@@ -446,5 +469,5 @@ export function codingMessage(request: { task: string; context: string; followUp
     "when the change is ready and verified; don't merge, release or deploy unless the request says so. " +
     `Today's date is ${today}. ` +
     "End with a brief spoken summary first, ideally under 60 words, that the voice call reads to the user, then any detail." +
-    "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context;
+    (request.refersBack ? CONTEXT_REFERRED : CONTEXT_HEADER) + request.context;
 }
