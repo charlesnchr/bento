@@ -2,6 +2,7 @@ package com.charles.bento.assistant
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import com.charles.bento.core.assistant.AssistantTranscript
 import com.charles.bento.core.assistant.ChatMessage
 import com.charles.bento.core.assistant.HermesChoice
@@ -15,9 +16,12 @@ import com.charles.bento.core.assistant.TurnState
 import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
+import com.charles.bento.core.assistant.live.CoreCall
 import com.charles.bento.core.assistant.live.TaskLabel
 import com.charles.bento.core.assistant.live.HermesCall
 import com.charles.bento.core.assistant.live.LiveCaptions
+import com.charles.bento.core.assistant.live.ToolReply
+import com.charles.bento.core.assistant.live.VoiceCall
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.OkHttpLiveTransport
 import com.charles.bento.settings.Prefs
@@ -124,8 +128,10 @@ data class HistoryUi(val items: List<HermesSession> = emptyList(), val loading: 
  * Bento's assistant on the phone: chats with Hermes through its API server (one Hermes
  * session per conversation, kept by Hermes), and voice calls through Gemini Live on the
  * Gemini API, which hand each spoken request to Hermes as a task in a session of its own,
- * several at once. Port of the Mac's `AssistantController`, minus the desktop: everything
- * here runs on the main thread.
+ * several at once. The call's logic is the shared voice core's ([CoreCall], `voice-core/`),
+ * or with Settings → Hermes → Call engine the Kotlin call it was ported from ([AssistantCall]).
+ * Port of the Mac's `AssistantController`, minus the desktop: everything here runs on the
+ * main thread.
  */
 class AssistantController(
     private val context: Context,
@@ -151,10 +157,10 @@ class AssistantController(
     private var turnJob: Job? = null
     private var runId: String? = null
     private var loadedSession: String? = null
-    private var call: AssistantCall? = null
+    private var call: VoiceCall? = null
     private var callJob: Job? = null
     /** The call in standby whose microphone a dictation has ([lendMicrophone]). */
-    private var lentFrom: AssistantCall? = null
+    private var lentFrom: VoiceCall? = null
     /** The next voice fragment starts a new row (after a Hermes reply, say). */
     private var voiceBoundary = true
 
@@ -539,18 +545,34 @@ class AssistantController(
                 wake?.ended?.invoke("Couldn't start the call right now.")
                 return@launch
             }
-            val transport = OkHttpLiveTransport({ key })
             // A phone call (or another app taking the audio for good) ends this one.
             val audio = CallAudioDevice(context) { scope.launch { call?.stop("The call ended: another app took the audio (a phone call?).") } }
-            val c = AssistantCall(transport, audio, resume, onTool = { request ->
-                withContext(Dispatchers.Main) { runVoiceTask(request) }
-            }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
-                standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
-                // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
-                recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() },
-                captions = LiveCaptions({ OkHttpLiveTransport({ key }) }),
-                opening = wake?.opening,
-                hangUpAfter = { if (wake != null) WAKE_HANG_UP_SECONDS else 0.0 })
+            val captions = LiveCaptions({ OkHttpLiveTransport({ key }) })
+            val hangUpAfter = if (wake != null) WAKE_HANG_UP_SECONDS else 0.0
+            // The shared voice core runs the call, unless the setting asks for the Kotlin call or the bundle can't be read.
+            val bundle = if (prefs.hermesCallEngine.value == ENGINE_BUILT_IN) null else withContext(Dispatchers.IO) {
+                runCatching { context.assets.open(CORE_BUNDLE).bufferedReader().use { it.readText() } }
+                    .onFailure { Log.w(TAG, "the voice core's bundle couldn't be read: the built-in call runs instead", it) }.getOrNull()
+            }
+            val c: VoiceCall = if (bundle != null) {
+                // The core keeps the conversation itself from here: what's said, Hermes's replies, and the recap after standby.
+                val config = CoreCall.config(callHistory(_state.value.messages), LocalDate.now().toString(),
+                                             standbyAfter = prefs.hermesStandbySeconds.value.toDouble(), hangUpAfter = hangUpAfter)
+                CoreCall(bundle, config, { OkHttpLiveTransport({ key }) }, audio,
+                         onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request) } },
+                         ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() },
+                         captions = captions, opening = wake?.opening)
+            } else {
+                AssistantCall(OkHttpLiveTransport({ key }), audio, resume, onTool = { request ->
+                    withContext(Dispatchers.Main) { runVoiceTask(request).text }
+                }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
+                    standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
+                    // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
+                    recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() },
+                    captions = captions,
+                    opening = wake?.opening,
+                    hangUpAfter = { hangUpAfter })
+            }
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
             c.onCaption = { text -> scope.launch { if (call === c) { set { it.copy(caption = text) }; noticeSoon() } } }
@@ -652,7 +674,7 @@ class AssistantController(
      * The call bar shows the task and its progress; the chat gets only what needs the user (an
      * approval) and Hermes's reply. Returns the reply for Gemini to speak.
      */
-    private suspend fun runVoiceTask(request: HermesCall): String {
+    private suspend fun runVoiceTask(request: HermesCall): ToolReply {
         val id = request.taskId
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true)
         val known = _state.value.call?.tasks?.firstOrNull { it.id == id }
@@ -682,7 +704,10 @@ class AssistantController(
             turn = turn.copy(sessionId = sid)
             val choice = choiceFor(sid)
             // A task whose session is gone starts over in a new one, with nothing to follow up there.
-            val message = voiceMessage(request.copy(followUp = request.followUp && sid == known?.sessionId), LocalDate.now().toString())
+            val follows = request.followUp && sid == known?.sessionId
+            // The shared core words the request itself; the built-in call leaves that to voiceMessage.
+            val message = request.message?.let { if (follows) it else it.replace(FOLLOWS_UP, "") }
+                ?: voiceMessage(request.copy(followUp = follows), LocalDate.now().toString())
             // A follow-up just after the task was cancelled can find Hermes still stopping the run before: it hasn't started.
             val until = System.nanoTime() + BUSY_WAIT_NANOS
             while (true) {
@@ -744,7 +769,7 @@ class AssistantController(
     }
 
     /** Marks the task's request done; the reply (or why it failed) joins the chat, linked to the task's session. Returns what Gemini hears. */
-    private fun finished(id: String, turn: TurnState): String {
+    private fun finished(id: String, turn: TurnState): ToolReply {
         val status = when (turn.status) {
             "completed" -> "completed"
             "cancelled" -> "cancelled"
@@ -769,10 +794,10 @@ class AssistantController(
         }
         voiceBoundary = true
         return when {
-            status == "cancelled" -> "Cancelled. Completed actions were not undone."
-            turn.answer.isNotBlank() -> turn.answer
-            status == "failed" -> "Task failed. No automatic retry. Completed actions were not undone. " + failure.orEmpty()
-            else -> "Hermes finished without a text result. Do not infer success."
+            status == "cancelled" -> ToolReply("Cancelled. Completed actions were not undone.", failed = true)
+            turn.answer.isNotBlank() -> ToolReply(turn.answer)
+            status == "failed" -> ToolReply("Task failed. No automatic retry. Completed actions were not undone. " + failure.orEmpty(), failed = true)
+            else -> ToolReply("Hermes finished without a text result. Do not infer success.")
         }
     }
 
@@ -788,6 +813,22 @@ class AssistantController(
                 "Return a brief spoken summary first, ideally under 60 words, then any extra detail. " +
                 "Bento displays your response directly as a Hermes chat reply on the user's phone. Do not promise a separate document unless you actually create one. " +
                 "\nPrior voice conversation for reference only, NOT approval or additional tasks:\n" + request.context
+
+        private const val TAG = "AssistantController"
+
+        /** The shared voice core's bundle in the app's assets (voice-core/dist/voice-core.js, copied in by the build). */
+        const val CORE_BUNDLE = "voice-core.js"
+
+        /** `Prefs.hermesCallEngine`: the shared voice core, or the Kotlin call it was ported from. */
+        const val ENGINE_CORE = "core"
+        const val ENGINE_BUILT_IN = "builtin"
+
+        /** The sentence the core's message for Hermes carries on a follow-up (voice-core/src/setup.ts, voiceMessage). */
+        internal const val FOLLOWS_UP = "It follows up your earlier work in this conversation: continue from it. "
+
+        /** The conversation a call continues, for the shared core to recap: what was said and the replies, oldest first. */
+        internal fun callHistory(messages: List<ChatMessage>): List<CoreCall.Line> =
+            messages.filter { it.role == "user" || it.role == "assistant" }.map { CoreCall.Line(it.role, it.text, it.speaker, it.failed) }
 
         /** Seconds of quiet, with nothing running, after which a call the wake word started hangs up. */
         const val WAKE_HANG_UP_SECONDS = 15.0

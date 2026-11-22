@@ -13,9 +13,14 @@ import kotlinx.serialization.json.addJsonObject
  * A spoken request for Hermes: the user's own transcribed words, and what was said before them.
  * [taskId] is the call's task as the screen keys it ("1", "2", …), once it starts, and [label]
  * its name as Gemini and the screen say it ("Pennyworth wake word"); Hermes gets neither. A
- * [followUp] continues that task's Hermes session rather than starting one.
+ * [followUp] continues that task's Hermes session rather than starting one. [message] is what
+ * Hermes gets, when the call words it (the shared voice core does, [CoreCall]); otherwise the app
+ * words [task] and [context] itself.
  */
-data class HermesCall(val id: String, val task: String, val context: String, val taskId: String = "", val followUp: Boolean = false, val label: String = "")
+data class HermesCall(
+    val id: String, val task: String, val context: String, val taskId: String = "", val followUp: Boolean = false, val label: String = "",
+    val message: String? = null,
+)
 
 /**
  * Port of the Mac's `GeminiLiveProtocol`. A function call is only a request ID: Hermes

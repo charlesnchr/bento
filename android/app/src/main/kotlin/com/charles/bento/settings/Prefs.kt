@@ -84,6 +84,8 @@ class Prefs(context: Context) {
     val hermesLocked = string("hermes.locked", "")
     /** Seconds without speech after which a call disconnects from Gemini while Hermes works (0 = never). */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
+    /** What runs a voice call: "core", the shared voice core (voice-core/), or "builtin", the Kotlin call it was ported from. */
+    val hermesCallEngine = string("hermes.callEngine", "core")
 
     // Wake word ("Pennyworth" starts a voice call with Hermes)
     val wakeWord = bool("wake.enabled", false)

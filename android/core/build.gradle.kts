@@ -40,6 +40,8 @@ tasks.test {
     // The live Gemini tests run only with a key: its presence (never its value) is an
     // input, so a cached run without the key can't stand in for one with it.
     inputs.property("geminiKeyPresent", providers.environmentVariable("GEMINI_API_KEY").map { it.isNotBlank() }.orElse(false))
+    // The live call through the voice core's dev server runs only when it's named, likewise.
+    inputs.property("voiceCoreRelay", providers.environmentVariable("VOICE_CORE_RELAY").orElse(""))
     // The voice core's bundle and recorded scenarios, which the conformance test replays.
     systemProperty("voiceCore.dir", rootProject.projectDir.resolve("../voice-core").absolutePath)
     inputs.dir(rootProject.projectDir.resolve("../voice-core/scenarios"))

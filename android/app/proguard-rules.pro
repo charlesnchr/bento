@@ -18,3 +18,7 @@
 
 # ONNX Runtime (the wake word): its JNI library finds these classes and members by name
 -keep class ai.onnxruntime.** { *; }
+
+# QuickJS (the shared voice core, Zipline's build): its JNI library finds four classes by name.
+# Zipline's own rules keep three; R8 removed the fourth, MemoryUsage, since nothing here asks for it.
+-keep class app.cash.zipline.MemoryUsage { *; }
