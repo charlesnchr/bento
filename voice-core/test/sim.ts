@@ -24,6 +24,8 @@ export interface SimOptions {
   config?: Partial<CallConfig>;
   /** Fake Gemini answers each setup with setupComplete (default true). */
   autoSetup?: boolean;
+  /** What the fake transcription model answers each captions socket's setup with (setupComplete by default). */
+  captioner?: unknown[];
   tick?: number;
   /** Microphone frames: every this many seconds, of this many bytes (20 ms of real audio by default). */
   micEvery?: number;
@@ -40,6 +42,9 @@ export class Sim {
   readonly sockets = new Map<number, { sent: string[]; open: boolean; closed: boolean }>();
   /** The socket fake Gemini speaks on: the latest one opened. */
   sid = 0;
+  /** The captions sockets the call opened, in order, and what the fake transcription model answers a setup with. */
+  readonly captionSids: number[] = [];
+  captioner: unknown[];
   micOn = false;
   mic: MicMode = "quiet";
   autoSetup: boolean;
@@ -51,6 +56,7 @@ export class Sim {
 
   constructor(o: SimOptions = {}) {
     this.autoSetup = o.autoSetup ?? true;
+    this.captioner = o.captioner ?? [{ setupComplete: {} }];
     this.tickEvery = o.tick ?? 0.05;
     this.micEvery = o.micEvery ?? 0.02;
     this.micBytes = o.micBytes ?? FRAME;
@@ -72,18 +78,23 @@ export class Sim {
       switch (c.type) {
         case "ws.connect":
           this.sockets.set(c.sid, { sent: [], open: false, closed: false });
+          if (c.purpose === "captions") this.captionSids.push(c.sid);
           this.later.push(() => {
             const s = this.sockets.get(c.sid)!;
             if (s.closed) return;
             s.open = true;
-            this.sid = c.sid;
+            if (c.purpose !== "captions") this.sid = c.sid;
             this.push({ type: "ws.open", sid: c.sid });
           });
           break;
         case "ws.send": {
           const s = this.sockets.get(c.sid)!;
           s.sent.push(c.data);
-          if (this.autoSetup && c.data.startsWith('{"setup"')) this.later.push(() => this.gemini({ setupComplete: {} }, c.sid));
+          if (!c.data.startsWith('{"setup"')) break;
+          if (this.captionSids.includes(c.sid)) {
+            const answer = [...this.captioner];
+            this.later.push(() => { for (const frame of answer) if (!s.closed) this.gemini(frame, c.sid); });
+          } else if (this.autoSetup) this.later.push(() => this.gemini({ setupComplete: {} }, c.sid));
           break;
         }
         case "ws.close": this.sockets.get(c.sid)!.closed = true; break;
@@ -144,6 +155,15 @@ export class Sim {
   turnComplete() { return this.gemini({ serverContent: { turnComplete: true } }); }
   speaks(words: string) { this.said(words); this.generated(); this.turnComplete(); }
   resumable(handle: string) { return this.gemini({ sessionResumptionUpdate: { newHandle: handle, resumable: true } }); }
+
+  // The transcription model's frames, on the latest captions socket.
+  get captionSid(): number { return this.captionSids.at(-1) ?? 0; }
+  utterance(type: "ACTIVITY_START" | "ACTIVITY_END", audioOffset?: string) {
+    return this.gemini({ voiceActivity: audioOffset == null ? { type } : { type, audioOffset } }, this.captionSid);
+  }
+  guess(text: string) { return this.gemini({ serverContent: { interimInputTranscription: { text } } }, this.captionSid); }
+  /** The captions the call showed, in order (null: taken down). */
+  captions(): (string | null)[] { return this.commands.flatMap((c) => (c.type === "caption" ? [c.text] : [])); }
 
   // What the call did.
 

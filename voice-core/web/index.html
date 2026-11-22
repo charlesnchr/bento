@@ -48,6 +48,9 @@
   .line.result a { color: var(--accent); }
   .line.note { align-self: center; background: none; color: var(--mute); font-size: 12px; padding: 2px; }
   .line.dropped { opacity: .45; }
+  /* The words being said, until the model's transcript replaces them: last on screen, whatever comes meanwhile. */
+  .line.caption { order: 1; opacity: .6; }
+  .line.caption .text::after { content: " …"; }
 
   #side { border-left: 1px solid var(--line); background: var(--panel); min-height: 0; display: flex; flex-direction: column; }
   #side h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--mute); margin: 0; font-weight: 650; padding: 12px 14px 6px; display: flex; justify-content: space-between; align-items: center; }
@@ -252,6 +255,7 @@
     <label><input type="checkbox" id="aec" checked><span>Echo cancellation<small>The browser keeps the reply out of the microphone. Leave on with speakers.</small></span></label>
     <label><input type="checkbox" id="stopword"><span>Hear “stop” locally<small>The browser's speech recognition listens for stop and goodbye too, which is quicker than the model's transcript. Chrome and Safari only.</small></span></label>
     <label><input type="checkbox" id="ptt"><span>Start muted<small>Tap to talk: hold Space, or tap the microphone, to be heard.</small></span></label>
+    <label><input type="checkbox" id="captions" checked><span>Show my words as I speak<small>The model sends your words only once you stop. A transcription model hears the same audio and shows them meanwhile; from the next call.</small></span></label>
     <label><input type="checkbox" id="coding" checked><span>Coding agent in T3<small id="codinghelp">Code changes go to a T3 Code thread in the project you name.</small></span></label>
     <label><input type="checkbox" id="fakehermes"><span>Fake Hermes and T3<small class="row2">Answer after <input type="number" id="fakedelay" value="4" min="0" max="120" style="width:64px;padding:3px 6px"> s without running anything.</small></span></label>
     <label><span>Voice<small class="row2"><select id="voice">

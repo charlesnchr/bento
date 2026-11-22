@@ -75,6 +75,7 @@
    "maxWords": 28
   },
   "supervise": false,
+  "captions": null,
   "attention": {
    "mode": "open",
    "afterWake": 8,
