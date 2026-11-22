@@ -584,12 +584,14 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                         Text("Talk now")
                     }
                 } else if (c.tapToTalk) {
-                    FilledIconButton(onClick = onMute, enabled = !c.connecting, modifier = Modifier.size(72.dp),
+                    // An open microphone can always be closed: "Talk now" opens it as the call reconnects, and what's said
+                    // then is held for Gemini, so "Done talking" has to work before it's back.
+                    FilledIconButton(onClick = onMute, enabled = !c.connecting || !c.muted, modifier = Modifier.size(72.dp),
                                      colors = if (!c.muted) IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary) else IconButtonDefaults.filledIconButtonColors()) {
                         Icon(Icons.Rounded.Mic, if (c.muted) "Talk" else "Done talking", Modifier.size(32.dp))
                     }
                 } else {
-                    FilledTonalIconButton(onClick = onMute, enabled = !c.connecting, modifier = Modifier.size(56.dp)) {
+                    FilledTonalIconButton(onClick = onMute, enabled = !c.connecting || !c.muted, modifier = Modifier.size(56.dp)) {
                         Icon(if (c.muted) Icons.Rounded.MicOff else Icons.Rounded.Mic, if (c.muted) "Unmute" else "Mute")
                     }
                 }

@@ -265,9 +265,12 @@ class AssistantCall(
      * not ([offeredAt], on the audio thread): a muted or dead microphone gives none, and what's
      * kept grows stale ([stirring], [comeBack]). The second says whether the microphone has
      * stopped, whether the call runs behind it or has only just caught up with what it gave.
+     * [resumedAt] is the latest frame it gave after giving none for a while: until the call has
+     * taken that one, what it has kept is from before the gap.
      */
     private var frameAt = 0.0
     @Volatile private var offeredAt = 0.0
+    @Volatile private var resumedAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
     /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
@@ -633,7 +636,7 @@ class AssistantCall(
     private fun nothingLeft(t: Double): Boolean {
         val after = hangUpAfter()
         return after > 0 && listening && !standby && !waking && !rotating && running == 0 && settling == 0 && unheard.isEmpty() &&
-            !userTalking && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
+            !talking(t) && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
     }
 
     /**
@@ -807,7 +810,7 @@ class AssistantCall(
         // first of a request too quiet to), unless the microphone has since stopped: what it left then is stale.
         // Of noise ([noise]) the call takes no more than of a quiet room when something other than speech wakes it.
         if (!voiceWoke) {
-            if (now() - offeredAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
+            if (micStopped(now())) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
         }
         session++
         wakeStarted = now()
@@ -896,7 +899,7 @@ class AssistantCall(
         settled()
         // The microphone is muted by now (in standby, as the call came back, or while this went out), so Gemini was
         // never told the stream it has just been given had paused: it is told now, after the audio.
-        if (mutedNow && replayed > 0) send(STREAM_END)
+        if (mutedNow && replayed > 0) { streamEnded = true; send(STREAM_END) }
     }
 
     /**
@@ -919,7 +922,13 @@ class AssistantCall(
      * [hear] can call it speech. Not what a microphone since muted or dead left behind, nor sound
      * that has gone on for [ONSET] times [Limits.wakeSpeech] without becoming speech: that's noise.
      */
-    private fun stirring(t: Double) = voiced > 0 && t - offeredAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
+    private fun stirring(t: Double) = voiced > 0 && !micStopped(t) && t - stirredAt <= limits.wakeSpeech * ONSET
+
+    /**
+     * The microphone has given the call nothing for a while, or has only just started again and
+     * the call hasn't yet taken that frame: what's kept is what it left before, not its last moment.
+     */
+    private fun micStopped(t: Double) = t - offeredAt > MIC_GAP || resumedAt > frameAt
 
     /**
      * Speech-level sound that has gone on for twice as long as it gets to become speech ([ONSET]
@@ -1289,6 +1298,7 @@ class AssistantCall(
             if (!silent(pcm)) heardAt = now()
             if (mutedNow) return@start
             val at = now()
+            if (at - offeredAt > MIC_GAP) resumedAt = at
             offeredAt = at
             offer(Triple(lends, pcm, at))
         }

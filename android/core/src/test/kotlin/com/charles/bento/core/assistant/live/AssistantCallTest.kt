@@ -3742,6 +3742,101 @@ class AssistantCallTest {
         call.stop()
     }
 
+    @Test fun aMicrophoneMutedWhileTheCallReconnectsEndsTheStreamOnceAfterTheHeldWords() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        call.muted = true
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // "Talk now", a few words, and "Done talking" before the new session is even set up.
+        audio.loud = true
+        call.muted = false
+        call.wake()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
+        audio.emit(15)
+        call.muted = true
+        delay(100)
+        second.push(Frames.setupComplete())
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        delay(300)
+        val sent = second.sent
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        assertTrue(sent.count { loud in it } >= 10, "the words said while it reconnected")
+        assertEquals(1, sent.count { "audioStreamEnd" in it })
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "the end of the stream after the last of them")
+        call.stop()
+    }
+
+    @Test fun aMuteThatLandsAsTheHeldWordsFinishGoingOutEndsTheStreamOnce() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        call.muted = true
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // The call's thread is busy with the first of the held audio when the mute comes: the microphone is muted at
+        // once, but the call only gets to the mute after it has sent the rest and told Gemini the stream paused.
+        val busy = java.util.concurrent.CountDownLatch(1)
+        val once = java.util.concurrent.atomic.AtomicBoolean(true)
+        second.beforeSend = { f -> if ("\"audio\"" in f && once.compareAndSet(true, false)) { busy.countDown(); Thread.sleep(400) } }
+        audio.loud = true
+        call.muted = false
+        call.wake()
+        assertTrue(busy.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        call.muted = true
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        delay(400)
+        assertEquals(1, second.sent.count { "audioStreamEnd" in it }, "Gemini is told once that the stream paused")
+        call.stop()
+    }
+
+    @Test fun aResultThatWakesTheCallJustAsItsMicrophoneStartsAgainReplaysNothingFromBefore() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // Quiet speech, one frame of it marked, then the microphone stops for over a second.
+        audio.quiet = true
+        audio.play('s' to 3, 'm' to 1, 's' to 20)
+        audio.quiet = false
+        withTimeout(5_000) { while (audio.scripted > 0) delay(2) }
+        audio.quiet = true
+        delay(1_300)
+        // The call's thread is held up; Hermes finishes, and then the microphone starts again, so its first frame
+        // is waiting behind the result when the thread gets going.
+        after.stall = 800
+        withTimeout(5_000) { while (after.stall > 0) delay(2) }
+        results.getValue("1").complete("Booked for 8pm.")
+        audio.quiet = false
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertFalse(FakeAudio.MARK in second.micNumbers(), "what the microphone left before it stopped isn't the moment before it started again")
+        call.stop()
+    }
+
+    @Test fun aTurnGeminiNeverEndsDoesntKeepACallWithNothingLeftFromHangingUp() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        // A turn Gemini never ends stops counting once it's three times deliverMax old.
+        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast.copy(deliverMax = 0.3), hangUpAfter = { 0.5 })
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        transport.push(Live.activity("ACTIVITY_START"))
+        assertNull(call.ended().message)
+    }
+
     @Test fun neverMeansNoStandby() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
         val result = CompletableDeferred<String>()
