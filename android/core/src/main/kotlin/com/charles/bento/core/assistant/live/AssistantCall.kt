@@ -178,12 +178,21 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    /** Microphone frames, each with the [lends] count it was captured under and when it was; when it's full the oldest goes ([offer]). */
+    /** Microphone frames, each with the [lends] count it was captured under and when it was; when it's full the oldest goes ([put]). */
     private val mic = Channel<Triple<Int, ByteArray, Double>>(MIC_FRAMES)
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
-    /** A pause ([PAUSE]) fell out of the full queue with the oldest audio ([offer]): it isn't lost with it. */
-    private val pauseEvicted = java.util.concurrent.atomic.AtomicBoolean(false)
+    /**
+     * Guards what goes into [mic] and in what order: a microphone frame and a mute each go in
+     * whole, with their check of [mutedNow], so no frame captured before a mute lands after its
+     * pause, and nothing takes the room one of them made in a full queue ([put]).
+     */
+    private val micLock = Any()
+    /**
+     * A pause ([PAUSE]) fell out of the full queue with the oldest audio ([put]), under this
+     * [lends] count: it isn't lost with it. Under [micLock].
+     */
+    private var pauseEvicted: Int? = null
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     override val status: StateFlow<Status> = _status.asStateFlow()
     private val _microphoneSilent = MutableStateFlow(false)
@@ -205,7 +214,7 @@ class AssistantCall(
 
     private var socket = transport
     private var active = false
-    private var listening = false
+    @Volatile private var listening = false
     private var goingAway = false
     /** The latest handle Gemini says the session can resume from. */
     private var resumeHandle: String? = null
@@ -221,7 +230,6 @@ class AssistantCall(
     @Volatile private var mutedNow = false
     /** When the microphone was last muted; written before [mutedNow]. */
     @Volatile private var mutedAt = 0.0
-    private var streamEnded = false
     private val cancelledCalls = HashSet<String>()
     /** Supervisor calls already answered, so a repeated ID isn't answered twice. */
     private val answered = HashSet<String>()
@@ -493,18 +501,14 @@ class AssistantCall(
     /** Tap-to-talk: while muted nothing is sent, and Gemini is told the stream paused so it answers. */
     override var muted: Boolean
         get() = mutedNow
-        set(value) {
+        set(value) = synchronized(micLock) {
             if (value) mutedAt = now()
+            val was = mutedNow
             mutedNow = value
-            scope.launch {
-                if (!active || !listening) return@launch
-                if (value && !streamEnded) {
-                    streamEnded = true
-                    // Through the microphone's own queue, so that Gemini hears the stream paused after the audio captured
-                    // before the mute, wherever that still is: queued, held for a comeback, or on its way ([paused]).
-                    offer(Triple(lends, PAUSE, now()))
-                } else if (!value) streamEnded = false
-            }
+            // A pause, through the microphone's own queue and under its lock: behind every frame the microphone gave
+            // before the mute and ahead of any it gives after, so that Gemini hears the stream paused after the audio
+            // captured before it, wherever that still is (queued, held for a comeback, or on its way; [paused]).
+            if (value && !was && listening) put(Triple(lends, PAUSE, now()))
         }
 
     override fun start() {
@@ -1317,7 +1321,9 @@ class AssistantCall(
             }
             for ((captured, pcm, at) in mic) {
                 if (!active) return@launch
-                if (pauseEvicted.getAndSet(false)) paused()
+                // Taken under the lock a pause is pushed out under: whoever pushed one out ahead of this frame has said so.
+                val evicted = synchronized(micLock) { pauseEvicted.also { pauseEvicted = null } }
+                if (evicted != null && evicted == lends) paused()
                 if (captured != lends) continue
                 freshAudio(captured)
                 if (pcm.isEmpty()) { paused(); continue }
@@ -1331,22 +1337,27 @@ class AssistantCall(
         }
         val ok = audio.start { pcm ->
             if (!silent(pcm)) heardAt = now()
-            if (mutedNow) return@start
-            val at = now()
-            if (at - offeredAt > MIC_GAP) resumedAt = at
-            offeredAt = at
-            offer(Triple(lends, pcm, at))
+            synchronized(micLock) {
+                if (mutedNow) return@start
+                val at = now()
+                if (at - offeredAt > MIC_GAP) resumedAt = at
+                offeredAt = at
+                put(Triple(lends, pcm, at))
+            }
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
     }
 
-    /** Queues a microphone frame for the call's thread; one behind (a busy phone) loses the oldest audio, never the call. Audio thread. */
-    private fun offer(frame: Triple<Int, ByteArray, Double>) {
+    /**
+     * Queues a microphone frame, or a pause, for the call's thread; one behind (a busy phone) loses the oldest audio,
+     * never the call. A pause that is pushed out was the oldest thing waiting, so the call takes it before whatever
+     * is oldest now ([pauseEvicted]). Under [micLock], from the audio thread or whoever mutes.
+     */
+    private fun put(frame: Triple<Int, ByteArray, Double>) {
         val result = mic.trySend(frame)
         if (result.isSuccess || result.isClosed) return
-        // A pause that is pushed out was the oldest thing waiting: the call takes it before whatever is oldest now.
-        mic.tryReceive().getOrNull()?.let { if (it.second.isEmpty()) pauseEvicted.set(true) else droppedBytes.addAndGet(it.second.size.toLong()) }
+        mic.tryReceive().getOrNull()?.let { if (it.second.isEmpty()) pauseEvicted = it.first else droppedBytes.addAndGet(it.second.size.toLong()) }
         if (mic.trySend(frame).isFailure && !mic.isClosedForSend) droppedBytes.addAndGet(frame.second.size.toLong())
     }
 

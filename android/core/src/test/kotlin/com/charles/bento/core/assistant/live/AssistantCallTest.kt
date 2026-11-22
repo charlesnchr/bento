@@ -53,7 +53,7 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
     fun play(vararg runs: Pair<Char, Int>) = synchronized(script) { for ((kind, n) in runs) repeat(n) { script.addLast(kind) } }
     /** Frames of the script still to give. */
     val scripted: Int get() = synchronized(script) { script.size }
-    /** The microphone goes [quiet] itself as it gives the last frame of a script: exactly the script, and nothing after. */
+    /** The microphone goes [quiet] itself once it has given the last frame of a script: exactly the script, nothing after, and the call has it. */
     @Volatile var stopAfterScript = false
     /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
     @Volatile var numbered = false
@@ -90,9 +90,9 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
                         else -> QUIET.copyOf()
                     }
                     if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
-                    if (kind != null && stopAfterScript && scripted == 0) quiet = true
                     onPcm(frame)
                     emitted++
+                    if (kind != null && stopAfterScript && scripted == 0) quiet = true
                 }
                 Thread.sleep(20)
             }
@@ -3974,7 +3974,8 @@ class AssistantCallTest {
         audio.stopAfterScript = true
         audio.play('l' to 1)
         audio.quiet = false
-        withTimeout(5_000) { while (audio.scripted > 0 || !audio.quiet) delay(2) } // that one frame given, and no other
+        withTimeout(5_000) { while (audio.scripted > 0 || !audio.quiet) delay(2) } // that one frame handed over, and no other
+        delay(200) // and taken by the call, which has nothing else to do while it waits for the new session
         val release = CompletableDeferred<Unit>()
         val sending = CompletableDeferred<Unit>()
         second.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
@@ -4009,8 +4010,10 @@ class AssistantCallTest {
         audio.loud = true
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
         second.awaitSent { s -> s.count { loud in it } >= 30 }
-        audio.quiet = true // no more audio: the call has sent all it had, and waits only for the socket
-        delay(100)
+        audio.quiet = true // no more audio
+        // The call has sent all it had, and waits only for the socket: nothing more goes out.
+        var sentSoFar: Int
+        do { sentSoFar = second.sent.size; delay(150) } while (second.sent.size != sentSoFar)
         call.muted = true
         second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
         delay(300)
@@ -4076,7 +4079,8 @@ class AssistantCallTest {
     @Test fun aPausePushedOutOfAFullMicrophoneQueueStillReachesGemini() = blocking {
         val transport = FakeTransport(listOf(Frames.setupComplete()))
         val audio = FakeAudio()
-        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        val captions = FakeCaptions()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast, captions = captions)
         call.start()
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
         transport.awaitSent { s -> s.count { "\"audio\"" in it } >= 3 }
@@ -4094,11 +4098,40 @@ class AssistantCallTest {
         audio.emit(AssistantCall.MIC_FRAMES + 30)
         transport.beforeSend = null
         release.complete(Unit)
-        transport.awaitSent { s -> s.any { "audioStreamEnd" in it } }
-        val sent = transport.sent
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        transport.awaitSent { s -> s.any { "audioStreamEnd" in it } && s.any { loud in it } }
+        val sent = transport.sent
         assertEquals(1, sent.count { "audioStreamEnd" in it })
         assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } < sent.indexOfFirst { loud in it }, "Gemini is told the stream paused before what was said after it")
+        assertTrue(captions.pauses >= 1, "and so is the captioner")
+        call.stop()
+    }
+
+    @Test fun framesCapturedBeforeAMuteNeverFollowItsStreamEnd() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio().apply { numbered = true; loud = true }
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast)
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // The microphone's thread gives frames while another thread mutes, over and over: a frame either makes it in
+        // ahead of the mute's pause or isn't taken at all.
+        val mutedFrom = ArrayList<Int>()
+        repeat(15) { round ->
+            audio.emit(3)
+            call.muted = true
+            mutedFrom += audio.count // every frame numbered below this was captured before the mute returned
+            transport.awaitSent { s -> s.count { "audioStreamEnd" in it } == round + 1 }
+            call.muted = false
+        }
+        var ends = 0
+        for (frame in transport.sent) {
+            if ("audioStreamEnd" in frame) { ends++; continue }
+            if ("\"audio\"" !in frame) continue
+            val data = Json.parseToJsonElement(frame).jsonObject["realtimeInput"]!!.jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+            val number = java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data)).int
+            if (ends > 0) assertTrue(number >= mutedFrom[ends - 1], "frame $number, captured before mute $ends (at ${mutedFrom[ends - 1]}), was sent after its stream end")
+        }
+        assertEquals(15, ends)
         call.stop()
     }
 
