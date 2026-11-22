@@ -2707,13 +2707,15 @@ class AssistantCallTest {
         val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, limits = fast.copy(wakeSpeech = 1.5))
         firstTaskRunning(call, first)
         // The user starts on something, too quietly for the call to tell, and Gemini hasn't said it hears them:
-        // the call leaves, and what the old session was sent of it is lost with that session. Their frames are
-        // numbered from 256, where the number's own bytes stay quiet for a second and a half.
+        // the call leaves, and what the old session was sent of it is lost with that session. Their first frames
+        // are numbered, from 256, where the number's own bytes are quiet.
         audio.count = 256
         audio.numbered = true
         audio.soft = true
         val begun = 256 + 3 // one of their first frames
-        audio.emit(30)
+        audio.emit(10)
+        audio.numbered = false
+        audio.emit(20)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         // They go on, louder, which wakes it.
@@ -3206,24 +3208,30 @@ class AssistantCallTest {
         firstTaskRunning(call, first)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
-        // The user's words wake the call, the new socket is stuck on the first of them, and Hermes finishes.
+        // The user's words wake the call, the new socket is stuck on the first of them, and Hermes finishes with a question.
         val release = CompletableDeferred<Unit>()
         val sending = CompletableDeferred<Unit>()
         second.beforeSend = { f -> if ("realtimeInput" in f) { sending.complete(Unit); release.await() } }
         audio.loud = true
         withTimeout(5_000) { sending.await() }
         after.seconds = 0.0
-        results.getValue("1").complete("Booked for 8pm.")
-        // Gemini asks what's running meanwhile: it gets its answer at once, without the result the words must go ahead of.
+        val result = "The table is free at 8pm. Should I book it?"
+        results.getValue("1").complete(result)
+        // Gemini asks what's running meanwhile, and then about the task: it gets its answers at once, without the
+        // result or its question, which the user's words must go ahead of, and is told one is coming.
         second.push(Live.call("s1", CallProtocol.LIST_TASKS))
-        second.awaitSent { s -> s.any { "toolResponse" in it && "\"s1\"" in it } }
-        val answer = second.responses().single { it.id() == "s1" }.message()
-        assertFalse(answer.contains("Booked for 8pm."), answer)
+        second.push(Live.call("s2", CallProtocol.CHECK_TASK, mapOf("task" to "book a table")))
+        second.awaitSent { s -> s.any { "toolResponse" in it && "\"s2\"" in it } }
+        for (id in listOf("s1", "s2")) {
+            val answer = second.responses().single { it.id() == id }.message()
+            assertFalse(answer.contains("free at 8pm") || answer.contains("Should I book it"), answer)
+            assertTrue(answer.contains("The user hasn't heard its result yet"), answer)
+        }
         assertTrue(second.resultTurns().isEmpty())
         audio.loud = false
         release.complete(Unit)
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
-        assertEquals(CallSetup.resultText(listOf("book a table" to "Booked for 8pm.")), second.resultTurns().single().turnText())
+        assertTrue(second.resultTurns().single().turnText().contains(result))
         call.stop()
     }
 
@@ -3238,12 +3246,14 @@ class AssistantCallTest {
         call.muted = true
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        delay(1_200) // what the microphone gave before the mute is stale by now (MIC_GAP)
         second.backlog = 1_000
         results.getValue("1").complete("Booked for 8pm.")
         // Past the time a comeback is given: the socket isn't refusing anything, so the call goes on, and the result in.
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         delay(1_500)
         assertEquals(AssistantCall.Status.Listening, call.status.value)
+        assertTrue(second.sent.none { "realtimeInput" in it }, "there was no audio to replay, so no send for the watchdog to go by")
         call.stop()
         assertNull(call.ended().message)
     }
@@ -3311,6 +3321,54 @@ class AssistantCallTest {
         assertTrue(second.resultTurns().isEmpty(), "Gemini has the rest of the audio only now, and time to hear words in it")
         audio.soft = false
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        call.stop()
+    }
+
+    @Test fun wordsThatWakeTheCallHaltinglyAreHeardFromTheirStart() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // A request in standby: 1.2 s too quiet to tell, 0.3 s loud, 0.4 s quiet again, then loud. It takes the call
+        // 2.3 s from its first word to be sure of speech, and the lead-in is shorter than the pre-roll.
+        audio.count = 256
+        audio.numbered = true
+        audio.soft = true
+        val begun = 256 + 3 // one of the first frames, numbered where the number's own bytes are quiet
+        audio.emit(10)
+        audio.numbered = false
+        audio.emit(50)
+        audio.loud = true
+        audio.emit(15)
+        audio.loud = false
+        audio.emit(20)
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertTrue(begun in second.micNumbers(), "the new session hears the request from its start (frame $begun), pause and all")
+        call.stop()
+    }
+
+    @Test fun captionWordsThatComeSlowlyDontHoldAResultBetweenThem() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val captions = FakeCaptions()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), results, After(),
+                                captions = captions, limits = fast.copy(settleQuiet = 0.3))
+        firstTaskRunning(call, first)
+        // A captioner whose guesses come further apart than the moment a result waits for on a quiet line, in one
+        // utterance: a television Gemini doesn't take for the user.
+        captions.say(Caption.Started())
+        var guess = "And now"
+        captions.say(Caption.Partial(guess))
+        results.getValue("1").complete("Booked for 8pm.")
+        var sent = false
+        repeat(4) { if (!sent) { delay(800); guess += " the news"; captions.say(Caption.Partial(guess)); sent = first.finals().isNotEmpty() } }
+        assertTrue(sent, "the line is quiet between such words, and the result goes in there")
         call.stop()
     }
 

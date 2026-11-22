@@ -273,7 +273,7 @@ class AssistantCall(
     private var spokeAt = 0.0
     private var spokeFrom = 0.0
     /**
-     * When a caption last brought new words, and since when in the captioner's current utterance:
+     * When a caption last brought new words, and since when in the captioner's current utterance (or since a pause, if it marks none):
      * a transcriber's word for it that someone is speaking, where [spokeAt] may be noise. It may be
      * a television too, so a result waits on it only as long as on [spokeAt].
      */
@@ -885,7 +885,7 @@ class AssistantCall(
     private fun hold(pcm: ByteArray) {
         // A dictation has the microphone: none of it is Gemini's, nor a reason to come back.
         if (lent) { held.clear(); heldBytes = 0; voiced = 0.0; return }
-        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll)
+        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll(now()))
         if (hear(pcm) && !waking && !rejoining) {
             voiceWoke = true
             comeBack()
@@ -910,8 +910,13 @@ class AssistantCall(
         frameAt = t
     }
 
-    /** What's kept of the latest audio: the speech that wakes the call ([Limits.wakeSpeech] of it does) and [Limits.wakePreRoll] before it. */
-    private val preRoll get() = limits.wakePreRoll + limits.wakeSpeech
+    /**
+     * How much of the latest audio is kept: [Limits.wakePreRoll], and once speech-level sound
+     * begins ([stirredAt]) everything since as well, for as long as it may yet prove speech
+     * ([ONSET] times [Limits.wakeSpeech]). So words that wake the call go to Gemini with the whole
+     * pre-roll before them, however haltingly they got loud enough to.
+     */
+    private fun preRoll(t: Double) = limits.wakePreRoll + if (voiced > 0) minOf(t - stirredAt, limits.wakeSpeech * ONSET) else 0.0
 
     /** Keeps [pcm] as the latest audio, and no more than [seconds] of it. */
     private fun keep(pcm: ByteArray, seconds: Double) {
@@ -1235,7 +1240,7 @@ class AssistantCall(
                 afterGap()
                 if (standby || rejoining) { hold(pcm); continue }
                 hear(pcm)
-                keep(pcm, preRoll)
+                keep(pcm, preRoll(now()))
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
@@ -1265,7 +1270,7 @@ class AssistantCall(
                 val from = captionTurnAt ?: now().also { captionTurnAt = it }
                 // New words are the user still speaking, though Gemini says nothing until they stop.
                 if (!standby && caption.text.isNotBlank() && caption.text != captionGuess) {
-                    if (wordsTurn != from) { wordsTurn = from; wordsFrom = now() }
+                    if (wordsTurn != from || now() - wordsAt > limits.settleQuiet) { wordsTurn = from; wordsFrom = now() }
                     wordsAt = now()
                 }
                 captionGuess = caption.text
@@ -1663,10 +1668,11 @@ class AssistantCall(
      * The first goes in whatever its length, cut like any reply.
      */
     private fun unheardOf(task: Task, readOut: MutableList<Unheard>, room: Int): String {
+        val items = unheard.filter { it.task == task.id && !it.sending && it.playing == null }
         // Audio held through a comeback is still going out, and may be the user's words: a result goes after it,
         // by the usual way ([lineFree]), not ahead of it in this answer.
-        if (rejoining) return ""
-        val items = unheard.filter { it.task == task.id && !it.sending && it.playing == null }
+        if (rejoining) return if (items.isEmpty()) "" else " The user hasn't heard its result yet; Bento sends it once it has sent you " +
+            "what the user said meanwhile. Don't guess at it."
         if (items.isEmpty()) return ""
         val fit = ArrayList<Unheard>()
         var used = UNHEARD_HEADER
@@ -1715,7 +1721,8 @@ class AssistantCall(
         (if (task.runs > 1) "; latest follow-up: ${quote(task.latest)}" else "") + ")" + (if (state) ": ${task.state}" else "") +
         (if (task.queued.isNotEmpty()) ", ${task.queued.size} follow-up${if (task.queued.size > 1) "s" else ""} waiting" else "") +
         (task.progress?.takeIf { task.state == RUNNING }?.let { ". Latest: $it" } ?: "") +
-        (task.asked?.takeIf { task.state == FINISHED }?.let { ". Hermes asked: $it" } ?: "") + "."
+        // A question the user hasn't heard is part of a result that waits its turn behind audio still held ([unheardOf]).
+        (task.asked?.takeIf { task.state == FINISHED && !(rejoining && task.askedAt == 0L) }?.let { ". Hermes asked: $it" } ?: "") + "."
 
     private fun stateOf(task: Task) = if (task.state == FINISHED && task.asked != null && task.askedAt > 0) "waiting for the user's answer" else task.state
 
