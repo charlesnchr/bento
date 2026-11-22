@@ -83,9 +83,10 @@ class Prefs(context: Context) {
     /** Conversations a turn from this phone locked to a picked model, comma-separated (HermesChoice.forConversation). */
     val hermesLocked = string("hermes.locked", "")
     /**
-     * Seconds with nobody speaking after which a call disconnects from Gemini while Hermes works (0 = never). 20 s is
-     * long enough to think of the next request for a task beside the one running, since the call no longer leaves in
-     * the middle of one, and one said in standby is heard from its first word.
+     * Seconds with nobody speaking after which a call disconnects from Gemini while Hermes works (0 = never). On the
+     * built-in engine (AssistantCall) 20 s is long enough to think of the next request for a task beside the one
+     * running, since that call no longer leaves in the middle of one, and one said in standby is heard from its first
+     * word; the shared core waits out an open turn and has yet to get the rest.
      */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
     /** What runs a voice call: "core", the shared voice core (voice-core/), or "builtin", the Kotlin call it was ported from. */

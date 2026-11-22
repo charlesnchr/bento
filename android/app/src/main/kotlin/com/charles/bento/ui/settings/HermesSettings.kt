@@ -86,8 +86,8 @@ fun HermesSection(context: Context) {
             }
         }
         SettingsRow("Pause Gemini while Hermes works",
-                    "After this long with nobody speaking the call leaves Gemini, which bills by the second. It stays while " +
-                        "you're talking, and comes back when Hermes answers or you speak (with tap to talk, tap Talk now)")
+                    "After this long with nobody speaking the call leaves Gemini, which bills by the second. It comes back " +
+                        "when Hermes answers or you speak, or with Talk now if the microphone is muted")
         val waits = listOf(0 to "Never", 10 to "10 s", 20 to "20 s", 30 to "30 s", 60 to "1 min")
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
             waits.forEachIndexed { i, (seconds, label) ->

@@ -594,8 +594,9 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        // With tap to talk the microphone is muted, so speaking doesn't bring the call back: the button does.
-                        val status = if (s.call?.tapToTalk == true) STANDBY_TAP_STATUS else STANDBY_STATUS
+                        // A muted microphone (tap to talk, or muted by hand) hears nothing, so speaking doesn't bring the
+                        // call back: the button does.
+                        val status = if (s.call?.muted == true) STANDBY_MUTED_STATUS else STANDBY_STATUS
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
@@ -618,12 +619,13 @@ class AssistantController(
     }
 
     /**
-     * Back from standby before Hermes finishes, to talk. With tap to talk the microphone opens too,
-     * as "Talk now" says: what's said while the call reconnects is held for it, not lost to a mute.
+     * Back from standby before Hermes finishes, to talk. A muted microphone opens too (tap to talk,
+     * or muted by hand), as "Talk now" says: what's said while the call reconnects is held for it,
+     * not lost to the mute.
      */
     fun wakeCall() {
         val c = call ?: return
-        if (_state.value.call?.tapToTalk == true) setMuted(false)
+        if (c.muted) setMuted(false)
         c.wake()
     }
 
@@ -844,7 +846,7 @@ class AssistantController(
 
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
-        const val STANDBY_TAP_STATUS = "Paused while Hermes works. Tap Talk now to speak."
+        const val STANDBY_MUTED_STATUS = "Paused while Hermes works. Tap Talk now to speak."
 
         /** Who a call task's reply in the chat is from: by the task's name, since a recap of the chat goes back to Gemini. */
         internal fun taskSpeaker(label: String) = "Hermes · $label"
