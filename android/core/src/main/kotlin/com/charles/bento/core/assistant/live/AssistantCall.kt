@@ -263,6 +263,8 @@ class AssistantCall(
     private var frameAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
+    /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
+    private var stirredBytes = 0
     /** Audio held for a comeback and dropped for want of room ([Limits.holdMax]), logged as it ends. */
     private var heldLost = 0
     /**
@@ -885,8 +887,9 @@ class AssistantCall(
     private fun hold(pcm: ByteArray) {
         // A dictation has the microphone: none of it is Gemini's, nor a reason to come back.
         if (lent) { held.clear(); heldBytes = 0; voiced = 0.0; return }
-        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll(now()))
-        if (hear(pcm) && !waking && !rejoining) {
+        val speech = hear(pcm)
+        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll())
+        if (speech && !waking && !rejoining) {
             voiceWoke = true
             comeBack()
         }
@@ -912,11 +915,16 @@ class AssistantCall(
 
     /**
      * How much of the latest audio is kept: [Limits.wakePreRoll], and once speech-level sound
-     * begins ([stirredAt]) everything since as well, for as long as it may yet prove speech
-     * ([ONSET] times [Limits.wakeSpeech]). So words that wake the call go to Gemini with the whole
-     * pre-roll before them, however haltingly they got loud enough to.
+     * begins everything since as well ([stirredBytes]), while it may yet prove speech ([ONSET]
+     * times [Limits.wakeSpeech] of it; sound that goes on longer is noise, and keeps no more than
+     * a quiet room). So words that wake the call go to Gemini with the whole pre-roll before
+     * them, however haltingly they got loud enough to. Counted in audio, not by the clock: frames
+     * the call's thread takes late, in a burst, are no shorter for it.
      */
-    private fun preRoll(t: Double) = limits.wakePreRoll + if (voiced > 0) minOf(t - stirredAt, limits.wakeSpeech * ONSET) else 0.0
+    private fun preRoll(): Double {
+        val since = stirredBytes / 32_000.0
+        return limits.wakePreRoll + if (voiced > 0 && since <= limits.wakeSpeech * ONSET) since else 0.0
+    }
 
     /** Keeps [pcm] as the latest audio, and no more than [seconds] of it. */
     private fun keep(pcm: ByteArray, seconds: Double) {
@@ -940,8 +948,9 @@ class AssistantCall(
         if (limits.wakeLevel <= 0) return false
         val seconds = pcm.size / 32_000.0
         val loud = level(pcm) >= limits.wakeLevel
-        if (loud && voiced <= 0) stirredAt = now()
+        if (loud && voiced <= 0) { stirredAt = now(); stirredBytes = 0 }
         voiced = if (loud) minOf(limits.wakeSpeech, voiced + seconds) else maxOf(0.0, voiced - seconds / 2)
+        if (voiced > 0) stirredBytes += pcm.size
         if (voiced < limits.wakeSpeech) return false
         spoke()
         return true
@@ -1240,7 +1249,7 @@ class AssistantCall(
                 afterGap()
                 if (standby || rejoining) { hold(pcm); continue }
                 hear(pcm)
-                keep(pcm, preRoll(now()))
+                keep(pcm, preRoll())
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
@@ -1671,8 +1680,12 @@ class AssistantCall(
         val items = unheard.filter { it.task == task.id && !it.sending && it.playing == null }
         // Audio held through a comeback is still going out, and may be the user's words: a result goes after it,
         // by the usual way ([lineFree]), not ahead of it in this answer.
-        if (rejoining) return if (items.isEmpty()) "" else " The user hasn't heard its result yet; Bento sends it once it has sent you " +
-            "what the user said meanwhile. Don't guess at it."
+        if (rejoining) {
+            if (items.isEmpty()) return ""
+            // One Gemini stayed silent about too often was waiting to be asked for, as now: it goes once more.
+            for (item in items) if (item.tries >= MAX_TRIES) item.tries = MAX_TRIES - 1
+            return " The user hasn't heard its result yet; Bento sends it once it has sent you what the user said meanwhile. Don't guess at it."
+        }
         if (items.isEmpty()) return ""
         val fit = ArrayList<Unheard>()
         var used = UNHEARD_HEADER

@@ -2338,13 +2338,21 @@ class AssistantCallTest {
     }
 
     /** A call's standby time: 0 (never) while a test sets its scene, so no step of that races the watchdog. */
-    private class After(@Volatile var seconds: Double = 0.0)
+    private class After(@Volatile var seconds: Double = 0.0) {
+        /** Milliseconds the call's thread stalls for, once, the next time it reads the standby time (every tick): microphone frames queue up behind it. */
+        @Volatile var stall = 0L
+        fun read(): Double {
+            val ms = stall
+            if (ms > 0) { stall = 0; Thread.sleep(ms) }
+            return seconds
+        }
+    }
 
     /** A call on [first] that stands by after [after]; [started] gets each request as Hermes takes it, and [results] answer by task. */
     private fun multitasking(first: LiveTransport, next: () -> FakeTransport, started: MutableList<String>, results: Map<String, CompletableDeferred<String>>,
                              after: After, audio: FakeAudio = FakeAudio(), captions: CallCaptions? = null, limits: AssistantCall.Limits = fast) =
         AssistantCall(first, audio, null, { c -> started.add(c.task); results.getValue(c.taskId).await() }, limits = limits, reconnect = next,
-                      standbyAfter = { after.seconds }, recap = { CallSetup.resume("User: book a table") }, captions = captions)
+                      standbyAfter = { after.read() }, recap = { CallSetup.resume("User: book a table") }, captions = captions)
 
     /** [call]'s first request, "Book a table", handed to Hermes on [first] and still running. */
     private suspend fun firstTaskRunning(call: AssistantCall, first: FakeTransport) {
@@ -3370,6 +3378,112 @@ class AssistantCallTest {
         repeat(4) { if (!sent) { delay(800); guess += " the news"; captions.say(Caption.Partial(guess)); sent = first.finals().isNotEmpty() } }
         assertTrue(sent, "the line is quiet between such words, and the result goes in there")
         call.stop()
+    }
+
+    @Test fun wordsThatWakeTheCallInABurstOfLateFramesAreHeardFromTheirStart() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // 1.2 s too quiet to tell, then the call's thread is held up while the user gets loud: it takes the loud
+        // frames all at once, so by its clock no time passed between the first of them and the one that woke it.
+        audio.count = 256
+        audio.numbered = true
+        audio.soft = true
+        val begun = 256 + 3
+        audio.emit(10)
+        audio.numbered = false
+        audio.emit(50)
+        after.stall = 700
+        withTimeout(5_000) { while (after.stall > 0) delay(2) }
+        audio.loud = true
+        audio.emit(30)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertTrue(begun in second.micNumbers(), "the audio kept is counted in audio, not by when the call got to it: frame $begun is there")
+        call.stop()
+    }
+
+    @Test fun aResultGeminiNeverSpokeAskedForWhileHeldWordsGoOutStillFollows() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio, limits = fast.copy(deliverMax = 0.5))
+        firstTaskRunning(call, first)
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2")); first.push(Live.turnComplete())
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        // The first task finishes and Gemini never says so, however often it's told: the result waits to be asked for.
+        results.getValue("1").complete("Booked for 8pm.")
+        withTimeout(10_000) { while (first.resultTurns().size < AssistantCall.MAX_TRIES - 1) delay(50) }
+        delay(1_500)
+        assertEquals(AssistantCall.MAX_TRIES - 1, first.resultTurns().size)
+        // With the taxi still running the call stands by; the user's words wake it, and the new socket is stuck on them.
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("realtimeInput" in f) { sending.complete(Unit); release.await() } }
+        audio.loud = true
+        withTimeout(5_000) { sending.await() }
+        after.seconds = 0.0
+        // Gemini asks about the table now: it's told the result is coming, and it does come, after the words.
+        second.push(Live.call("k1", CallProtocol.CHECK_TASK, mapOf("task" to "book a table")))
+        second.awaitSent { s -> s.any { "toolResponse" in it && "\"k1\"" in it } }
+        assertTrue(second.responses().single { it.id() == "k1" }.message().contains("Bento sends it"), second.responses().toString())
+        assertTrue(second.resultTurns().isEmpty())
+        audio.loud = false
+        release.complete(Unit)
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertTrue(second.resultTurns().single().turnText().contains("Booked for 8pm."))
+        call.stop()
+    }
+
+    @Test fun captionWordsFromACaptionerThatMarksNoUtterancesHoldAResultAgainAfterAPause() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val captions = FakeCaptions()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), results, After(),
+                                captions = captions, limits = fast.copy(settleQuiet = 0.5))
+        firstTaskRunning(call, first)
+        // Words with no start of an utterance before them, then a pause longer than Gemini is given to say it hears speech.
+        captions.say(Caption.Partial("And"))
+        delay(2_000)
+        // More words, as the user begins a request, and Hermes finishes: they hold the result as the first ones would have.
+        var guess = "And also"
+        captions.say(Caption.Partial(guess))
+        results.getValue("1").complete("Booked for 8pm.")
+        repeat(6) { delay(100); guess += " find"; captions.say(Caption.Partial(guess)) }
+        assertTrue(first.finals().isEmpty(), "the result doesn't go in over words the captioner hears")
+        first.awaitSent { s -> s.any { "\"status\":\"ok\"" in it } }
+        call.stop()
+    }
+
+    @Test fun steadyNoiseKeepsNoMoreBeforeAComebackThanAQuietRoom() = blocking {
+        val logs = logged {
+            val first = FakeTransport(listOf(Frames.setupComplete()))
+            val second = FakeTransport(listOf(Frames.setupComplete()))
+            val results = twoResults()
+            val audio = FakeAudio()
+            val after = After()
+            val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+            firstTaskRunning(call, first)
+            // Clatter that has gone on for longer than sound gets to prove itself speech: it isn't a word beginning.
+            audio.sputter = true
+            audio.emit(150)
+            after.seconds = 0.3
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+            results.getValue("1").complete("Booked for 8pm.")
+            second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+            call.stop()
+        }
+        val replayed = logs.firstNotNullOf { Regex("back from standby: (\\d+) ms replayed").find(it)?.groupValues?.get(1)?.toInt() }
+        assertTrue(replayed < 2_500, "the pre-roll and the moment it took to come back, not everything since the noise began: $replayed ms")
     }
 
     @Test fun neverMeansNoStandby() = blocking {
