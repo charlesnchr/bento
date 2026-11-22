@@ -4241,6 +4241,7 @@ class AssistantCallTest {
         val after = After()
         val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, started, twoResults(), after, audio = audio)
         firstTaskRunning(call, first)
+        delay(1_500) // nobody has spoken for longer than the standby time this call will get
         // The socket stops taking audio, so the call's thread waits on a send. The user says a follow-up too quietly
         // for its level to count, and mutes: the words and the pause wait in the microphone's queue.
         val release = CompletableDeferred<Unit>()
