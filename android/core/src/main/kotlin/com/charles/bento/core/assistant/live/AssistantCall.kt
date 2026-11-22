@@ -220,8 +220,6 @@ class AssistantCall(
     /** When the microphone was last muted; written before [mutedNow]. */
     @Volatile private var mutedAt = 0.0
     private var streamEnded = false
-    /** The microphone was muted while audio held through a comeback was still going out: Gemini is told the stream paused once it has gone. */
-    private var endOwed = false
     private val cancelledCalls = HashSet<String>()
     /** Supervisor calls already answered, so a repeated ID isn't answered twice. */
     private val answered = HashSet<String>()
@@ -263,12 +261,13 @@ class AssistantCall(
     private var voiceWoke = false
     /**
      * When the latest microphone frame the call has taken was captured ([afterGap] goes by the
-     * gap between captures), and when the call took it: a muted or dead microphone gives none,
-     * and what's kept grows stale ([stirring], [comeBack]). The second, not the first, says whether
-     * the microphone has stopped, as a call that runs behind is still getting frames.
+     * gap between captures), and when the microphone last gave the call one at all, taken yet or
+     * not ([offeredAt], on the audio thread): a muted or dead microphone gives none, and what's
+     * kept grows stale ([stirring], [comeBack]). The second says whether the microphone has
+     * stopped, whether the call runs behind it or has only just caught up with what it gave.
      */
     private var frameAt = 0.0
-    private var frameTakenAt = 0.0
+    @Volatile private var offeredAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
     /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
@@ -493,8 +492,8 @@ class AssistantCall(
                     streamEnded = true
                     captions?.pause()
                     // Audio held through a comeback is still going out: the end of the stream goes after it ([rejoin]).
-                    if (rejoining) endOwed = true else send(STREAM_END)
-                } else if (!value) { streamEnded = false; endOwed = false }
+                    if (!rejoining) send(STREAM_END)
+                } else if (!value) streamEnded = false
             }
         }
 
@@ -565,11 +564,14 @@ class AssistantCall(
                 socket = next
                 moved = true
                 goingAway = false
-                // The session is the same one on a new socket: what Gemini owed the user, it still owes. A turn of
-                // theirs open now is owed its end from now, whatever older reply never came.
-                val owed = if (userTalking) now() else unanswered
+                // The session is the same one on a new socket: what Gemini owed the user, it still owes, and a turn
+                // of theirs that is open stays open. Gemini said it began on the old socket and needn't say so again;
+                // it ends when Gemini says so, or when it counts as stuck ([talking]).
+                val owed = unanswered
+                val open = userTalking
                 newSession()
                 unanswered = owed
+                userTalking = open
                 old.close()
                 launch { read(next) }
             } finally {
@@ -805,7 +807,7 @@ class AssistantCall(
         // first of a request too quiet to), unless the microphone has since stopped: what it left then is stale.
         // Of noise ([noise]) the call takes no more than of a quiet room when something other than speech wakes it.
         if (!voiceWoke) {
-            if (now() - frameTakenAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
+            if (now() - offeredAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
         }
         session++
         wakeStarted = now()
@@ -837,7 +839,6 @@ class AssistantCall(
     private fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
-        endOwed = false
         newSession()
         scope.launch { rejoin() }
     }
@@ -893,7 +894,9 @@ class AssistantCall(
         if (spoke && userTurns == turns) replyDue = now()
         if (waiting().isNotEmpty()) deliverWhenIdle()
         settled()
-        if (endOwed) { endOwed = false; send(STREAM_END) }
+        // The microphone is muted by now (in standby, as the call came back, or while this went out), so Gemini was
+        // never told the stream it has just been given had paused: it is told now, after the audio.
+        if (mutedNow && replayed > 0) send(STREAM_END)
     }
 
     /**
@@ -916,7 +919,7 @@ class AssistantCall(
      * [hear] can call it speech. Not what a microphone since muted or dead left behind, nor sound
      * that has gone on for [ONSET] times [Limits.wakeSpeech] without becoming speech: that's noise.
      */
-    private fun stirring(t: Double) = voiced > 0 && t - frameTakenAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
+    private fun stirring(t: Double) = voiced > 0 && t - offeredAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
 
     /**
      * Speech-level sound that has gone on for twice as long as it gets to become speech ([ONSET]
@@ -935,7 +938,6 @@ class AssistantCall(
     private fun afterGap(at: Double) {
         if (at - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
         frameAt = at
-        frameTakenAt = now()
     }
 
     /**
@@ -1286,7 +1288,9 @@ class AssistantCall(
         val ok = audio.start { pcm ->
             if (!silent(pcm)) heardAt = now()
             if (mutedNow) return@start
-            offer(Triple(lends, pcm, now()))
+            val at = now()
+            offeredAt = at
+            offer(Triple(lends, pcm, at))
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening

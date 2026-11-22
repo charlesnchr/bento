@@ -3187,26 +3187,34 @@ class AssistantCallTest {
         call.stop()
     }
 
-    @Test fun aTurnOpenWhenTheSocketMovesIsOwedItsEndWhateverOlderReplyNeverCame() = blocking {
+    @Test fun aTurnOpenWhenTheSocketMovesStaysOpenWhateverOlderReplyNeverCame() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
         val second = FakeTransport(listOf(Frames.setupComplete()))
+        val started = CopyOnWriteArrayList<String>()
         val after = After()
-        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after)
+        val call = multitasking(first, { second }, started, twoResults(), after)
         firstTaskRunning(call, first)
         // Gemini never answered something the user said a while ago: longer ago than it is given to answer.
         Live.turn(first, "Hm")
         first.taken()
         delay(1_500)
-        // Now they're partway through a request, quietly, when Gemini moves the connection.
+        // Now they're partway through a request, quietly, when Gemini moves the connection. It said the turn began on
+        // the old socket, and the session it resumes needn't say so again.
         first.push(Live.activity("ACTIVITY_START"))
         first.taken()
-        val moving = System.nanoTime()
         first.push(Live.GO_AWAY)
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
         after.seconds = 0.4
-        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
-        val waited = (System.nanoTime() - moving) / 1e9
-        assertTrue(waited >= 1.2, "the open turn is owed its end from the move, not judged by the reply that never came: $waited s")
+        delay(1_800) // past the standby time, and past what a reply owed would have held
+        assertEquals(AssistantCall.Status.Working, call.status.value, "the user's turn is still open on the socket the call moved to")
+        assertEquals(0, second.closeCount)
+        // They finish, and Gemini hands the request to Hermes on the new socket.
+        second.push(Live.heard("And find me a taxi for seven"))
+        second.push(Live.activity("ACTIVITY_END"))
+        second.push(Live.call("c2"))
+        withTimeout(5_000) { while (started.size < 2) delay(10) }
+        after.seconds = 0.0
+        assertEquals(listOf("Book a table", "And find me a taxi for seven"), started.toList())
         call.stop()
     }
 
@@ -3653,6 +3661,84 @@ class AssistantCallTest {
         assertEquals(0, first.closeCount)
         release.complete(Unit)
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        call.stop()
+    }
+
+    @Test fun doneTalkingWhileTheRecapGoesOutStillEndsTheStreamAfterTheHeldWords() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        call.muted = true
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // As above, but the new socket is slow with the recap, before any of the held audio: "Done talking" comes then.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("clientContent" in f) { sending.complete(Unit); release.await() } }
+        audio.loud = true
+        call.muted = false
+        call.wake()
+        withTimeout(5_000) { sending.await() }
+        audio.emit(15)
+        call.muted = true
+        delay(300)
+        release.complete(Unit)
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        val sent = second.sent
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        assertTrue(sent.count { loud in it } >= 10, "the words said while it reconnected")
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the end of the stream after the last of them")
+        call.stop()
+    }
+
+    @Test fun aCallMutedInStandbyThatAResultBringsBackEndsTheStreamItReplays() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The caller mutes by hand in standby, over sound too quiet to tell, and Hermes finishes within the second:
+        // the microphone's last moment is still fresh, so it goes to the new session, which has to be told it paused.
+        audio.soft = true
+        audio.emit(30)
+        call.muted = true
+        results.getValue("1").complete("Booked for 8pm.")
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        val sent = second.sent
+        assertTrue(sent.any { "\"audio\"" in it }, "the moment before the mute was replayed")
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the end of the stream after it")
+        call.stop()
+    }
+
+    @Test fun aResultThatWakesACallWhoseMicrophoneStoppedWhileItWasHeldUpReplaysNothingStale() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The call's thread is held up for a second and a half. The microphone gives a few more frames and then
+        // stops (another app takes it, say); Hermes finishes meanwhile. When the thread gets going it takes those
+        // frames, a second and more old by now, and then the result.
+        audio.soft = true
+        after.stall = 1_500
+        withTimeout(5_000) { while (after.stall > 0) delay(2) }
+        delay(100)
+        audio.quiet = true
+        results.getValue("1").complete("Booked for 8pm.")
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        assertTrue(second.sent.none { "\"audio\"" in it }, "what a microphone since stopped left behind isn't replayed as the moment before")
         call.stop()
     }
 
