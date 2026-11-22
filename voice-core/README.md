@@ -21,7 +21,7 @@ host                                   core (dist/voice-core.js)
                                   ◄──   ws.connect / ws.send / ws.close
                                   ◄──   play / flush / cue / mic.start
                                   ◄──   tool.call (Hermes or a host tool)
-                                  ◄──   status / transcript / task
+                                  ◄──   status / transcript / caption / task
 ```
 
 `src/types.ts` defines both directions. Every event carries the host's time, so a recorded call
@@ -67,11 +67,11 @@ Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf
 Without a microphone:
 
 ```sh
-node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav] [--preset echo] [--hermes] [--out reply.wav]
+node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav] [--preset echo] [--hermes] [--captions] [--out reply.wav]
 ```
 
 It says the WAVs into a real call through the same relay and prints the conversation, with how
-long each reply took to start. Hermes is faked unless `--hermes` is given; `--coding` gives the call
+long each reply took to start. `--captions` turns captions on and prints each one as it comes. Hermes is faked unless `--hermes` is given; `--coding` gives the call
 the T3 coding agent. Echo test clips are in `home-assistant/live-bridge/testdata/`; make more with
 `node dev/tts.mjs out.wav "Words to say"` (Gemini TTS on GSK Vertex).
 
@@ -101,6 +101,45 @@ systemctl --user restart voice-core-dev     # after changing dev/server.mjs
 journalctl --user -u voice-core-dev -f
 tailscale serve --https=8770 off            # take it off the tailnet (needs sudo here)
 ```
+
+## Captions: the user's words while they speak
+
+Gemini Live sends a turn's transcript in one piece once the user has stopped. On Vertex on
+2026-11-22, 8.8 s of speech came as one `inputTranscription` 0.84 s after it ended, with nothing
+during it, and `inputAudioTranscription.mode` made no difference. Someone talking for ten seconds
+sees nothing of it on screen until they stop.
+
+With `captions` set in `CallConfig` (off by default; `{}` takes the defaults), the core sends the
+audio the model hears to Gemini's transcription model (`gemini-3.5-transcribe-live`) over a second
+socket, and shows its growing guess meanwhile. That is a port of Android's `LiveCaptions` and of
+`AssistantCall`'s caption bookkeeping, in `src/captions.ts`. A host does two things:
+
+- `ws.connect` with `purpose: "captions"` opens a socket to the transcription model named in
+  `model`, with the host's own URL and credentials; its `ws.open`, `ws.message` and `ws.closed`
+  events go to the core like the model socket's.
+- `caption` carries the words for the screen. Each replaces the last, and `text: null` takes the
+  caption down. A caption is never part of the conversation: the `transcript` that follows is.
+
+The rest is the core's:
+
+- The captioner hears frame for frame what the model is sent, so nothing is captioned that the
+  model didn't hear (muted, standby, dormant, or silence over a reply where the policy says so).
+- The model's transcript replaces a caption, and is all an agent gets. Where the two disagree
+  about pauses, only the words the model hasn't transcribed yet are shown.
+- A caption nothing replaces comes down `linger` seconds (4) after its utterance ended.
+- The socket opens with the first audio, closes after `idle` seconds (20) without any, and is
+  replaced at the next audio when the server rotates it. One that breaks waits 5 s; three in a row
+  without a single caption and the call goes on without captions. Losing them never ends a call.
+
+Measured on 2026-11-22 through the dev server on Vertex, seven scripted calls: the first caption
+came 0.73 to 0.93 s after the speech began, with 4 to 11 updates an utterance. The dev server
+relays the socket at `/live?for=captions` to the global endpoint (us-central1 doesn't serve the
+model), and the web page has the setting "Show my words as I speak", on by default.
+
+In two of three calls with one 8.8 s clip, the Live model's own transcript left out the last
+clause ("and don't change anything else") that the caption had shown. The caption makes that
+visible when it happens, since the transcript takes its place; the agent still gets the model's
+transcript.
 
 ## Who tells results, when the model listens, and closer supervision
 
@@ -186,7 +225,8 @@ result goes in as a turn.
   and pass conformance; the next step is to wire each call screen's I/O to it behind a setting, Android first (its
   `AssistantCall` is what this ports). After that the Mac (it gains multiple tasks, earcons,
   standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
-- Captions (Android's second transcription socket) aren't ported.
+- Captions are wired on the web page and in `dev/talk.ts` only. Android still shows its own
+  (`LiveCaptions`); the Mac and the Echo have none.
 - Only Gemini Live. GPT-Live and Grok, which the Echo and the Mac also use, would be provider
   adapters next to the Gemini one in `call.ts`.
 - Loading the dev server's build from Android and the Mac at call start (a debug setting) is

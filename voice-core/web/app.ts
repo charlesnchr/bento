@@ -18,7 +18,7 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
-interface ServerConfig { route: string; model: string; version: string; hermes: boolean; t3: string[] | null }
+interface ServerConfig { route: string; model: string; captionsModel?: string; version: string; hermes: boolean; t3: string[] | null }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
@@ -62,6 +62,8 @@ let ticker = 0;
 let traceTimer = 0;
 let startedAt = now();
 const sockets = new Map<number, WebSocket>();
+/** The sockets to the transcription model: their audio is the model's again, so it isn't counted or logged twice. */
+const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
 interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
@@ -238,6 +240,26 @@ function transcript(role: "user" | "assistant", text: string) {
     lineOpen = true;
   }
   scrollDown(role === "user");
+}
+
+/**
+ * The words the user is saying, before the model has transcribed them: a faint row that stays last
+ * on screen (its CSS `order`) and first in the pane, so the lines after it join up as before.
+ */
+function caption(text: string | null) {
+  const pane = $("transcript");
+  let row = document.getElementById("caption");
+  if (text == null) { row?.remove(); return; }
+  $("empty").hidden = true;
+  if (!row) {
+    row = document.createElement("div");
+    row.id = "caption";
+    row.className = "line user caption";
+    row.innerHTML = `<span class="who">You</span><span class="text"></span>`;
+    pane.prepend(row);
+  }
+  row.querySelector(".text")!.textContent = text;
+  scrollDown(true);
 }
 
 function note(text: string) {
@@ -420,11 +442,11 @@ function push(event: Record<string, unknown>) {
 function run(commands: Command[]) {
   for (const c of commands) {
     switch (c.type) {
-      case "ws.connect": connect(c.sid); break;
+      case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
       case "ws.send": {
         sockets.get(c.sid)?.send(c.data);
-        if (c.data.startsWith('{"realtimeInput":{"audio"')) counts.sent++;
-        else log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        if (!c.data.startsWith('{"realtimeInput":{"audio"')) log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        else if (!captionSockets.has(c.sid)) counts.sent++;
         break;
       }
       case "ws.close": sockets.get(c.sid)?.close(); sockets.delete(c.sid); log("out", `ws ${c.sid} close`, "out"); break;
@@ -465,6 +487,7 @@ function run(commands: Command[]) {
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
+      case "caption": caption(c.text); break;
       case "transcript":
         transcript(c.role, c.text);
         remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastRole === c.role);
@@ -500,10 +523,11 @@ function onMic(pcm: string, level: number) {
   push({ type: "mic", pcm });
 }
 
-function connect(sid: number) {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live`);
+function connect(sid: number, captions: boolean) {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live${captions ? "?for=captions" : ""}`);
   sockets.set(sid, ws);
-  log("out", `ws ${sid} connect (${server.route})`, "out");
+  if (captions) captionSockets.add(sid);
+  log("out", `ws ${sid} connect (${server.route}${captions ? ", captions" : ""})`, "out");
   ws.onopen = () => push({ type: "ws.open", sid });
   ws.onmessage = (m) => push({ type: "ws.message", sid, data: typeof m.data === "string" ? m.data : "" });
   ws.onclose = (e) => {
@@ -616,6 +640,7 @@ function readConfig(): Record<string, unknown> {
   if (given.voice === undefined) config.voice = $<HTMLSelectElement>("voice").value;
   if (config.steering === undefined) config.steering = ["hermes", "t3"];
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
+  if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
   return config;
 }
 
@@ -772,7 +797,7 @@ const stopWords = new StopWords();
 // Wiring.
 
 function settingsFromStorage() {
-  for (const id of ["aec", "stopword", "ptt", "coding", "fakehermes", "trace"]) {
+  for (const id of ["aec", "stopword", "ptt", "captions", "coding", "fakehermes", "trace"]) {
     const v = localStorage.getItem(`voice.${id}`);
     if (v != null) $<HTMLInputElement>(id).checked = v === "1";
     $(id).addEventListener("change", () => localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0"));

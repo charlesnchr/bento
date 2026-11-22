@@ -22,12 +22,17 @@
 // the microphone keeps running unheard. A task finishing, the user speaking or `resume` brings it
 // back on a new session with the conversation so far.
 //
+// With `captions` set, the audio the model hears also goes to a transcription model, whose growing
+// guess at the user's words is shown while they speak (captions.ts): the model itself sends a
+// turn's words only once it has ended.
+//
 // Kotlin's coroutines become a small scheduler: `defer` runs after the current event (as a launch
 // on the call's one thread would), `sleep` on the first event at or after its time. Hosts tick
 // every 100 ms, the period Android's loops poll at.
 
 import { RESULT_ARRIVED, TASK_STARTED } from "./earcons.ts";
 import { base64Size, codePoints, decodeBase64, encodeBase64, gain, level, looksBase64, silent64 } from "./bytes.ts";
+import { Captions } from "./captions.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
 import { commandIn } from "./commands.ts";
 import {
@@ -323,6 +328,8 @@ export class Call {
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
   private boundary = true;
+  /** The user's words on screen while they speak (CallConfig.captions). */
+  private readonly captions: Captions | null;
 
   constructor(config: CallConfig) {
     this.c = config;
@@ -339,6 +346,18 @@ export class Call {
       hostTools: config.hostTools,
       codingProjects: config.codingAgent?.projects ?? null,
     };
+    this.captions = config.captions == null ? null : new Captions(config.captions, config.vocabulary, {
+      connect: (model) => {
+        const sid = this.nextSid++;
+        this.emit({ type: "ws.connect", sid, model, purpose: "captions" });
+        return sid;
+      },
+      send: (sid, data) => this.emit({ type: "ws.send", sid, data }),
+      close: (sid) => this.emit({ type: "ws.close", sid }),
+      show: (text) => this.emit({ type: "caption", text }),
+      log: (level, message) => this.log(level, message),
+      away: () => this.standby,
+    });
   }
 
   // The scheduler.
@@ -474,6 +493,7 @@ export class Call {
   }
 
   private opened(sid: number): void {
+    if (this.captions?.opened(sid)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       rotation.sock.open = true;
@@ -490,6 +510,7 @@ export class Call {
   }
 
   private message(sid: number, data: string): void {
+    if (this.captions?.message(sid, data, this.t)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       // The resumed session already has the recap and the microphone: wait for it to take input.
@@ -504,6 +525,7 @@ export class Call {
   }
 
   private closed(sid: number, e: { code?: number; reason?: string; httpStatus?: number }): void {
+    if (this.captions?.closed(sid, this.t)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       rotation.sock.closed = true;
@@ -535,6 +557,7 @@ export class Call {
     if (this.c.mic.whileSpeaking === "wake") this.updateWakeword();
     this.announce();
     this.attend();
+    this.captions?.tick(this.t);
   }
 
   private get windowed(): boolean {
@@ -570,7 +593,7 @@ export class Call {
     this.dormant = true;
     this.held = [];
     this.heldBytes = 0;
-    if (!this.streamEnded) { this.streamEnded = true; this.send(STREAM_END); }
+    if (!this.streamEnded) { this.streamEnded = true; this.send(STREAM_END); this.captions?.pause(t); }
     this.setStatus("dormant");
     this.updateWakeword();
   }
@@ -600,7 +623,7 @@ export class Call {
     this.log("info", "listening again");
     if (this.standby) { this.voiceWoke = true; this.comeBack(); }
     else {
-      for (const pcm of this.held) this.send(audioFrame(pcm));
+      for (const pcm of this.held) this.hear(audioFrame(pcm), pcm.length);
       this.held = [];
       this.heldBytes = 0;
       this.settled();
@@ -956,6 +979,7 @@ export class Call {
       if (value && !this.streamEnded) {
         this.streamEnded = true;
         this.send(STREAM_END);
+        this.captions?.pause(this.t);
       } else if (!value) this.streamEnded = false;
     });
   }
@@ -1023,6 +1047,8 @@ export class Call {
     this.resumeHandle = null;
     this.closeSocket(this.socket);
     this.setStatus("standby");
+    this.captions?.pause(this.t);
+    this.captions?.takeDown();
   }
 
   private lend(): boolean {
@@ -1069,7 +1095,7 @@ export class Call {
     this.speechUntil = this.announcing?.until ?? 0;
     this.newSession();
     // Back for a result while dormant, not for the user: the model still hears nothing of the room.
-    if (!this.dormant) for (const pcm of this.held) this.send(audioFrame(pcm));
+    if (!this.dormant) for (const pcm of this.held) this.hear(audioFrame(pcm), pcm.length);
     for (const frame of this.typedLater.splice(0)) this.send(frame);
     const away = this.saidAway.splice(0).map((a) => a.line);
     if (away.length > 0) {
@@ -1233,8 +1259,11 @@ export class Call {
     for (const source of [content, event]) {
       const input = str(obj(source.inputTranscription), "text");
       if (input) {
+        // These words take the caption's place; a caption of later words comes straight back.
+        const captionBack = this.captions?.transcribed(input, this.t);
         this.protocol.transcript("user", input, this.t);
         this.heardWords("user", input);
+        captionBack?.();
         this.lastSpeech = this.t;
         this.lastUserSpeech = this.t;
         this.replyEnded = false;
@@ -1320,6 +1349,7 @@ export class Call {
     else { this.heardRelayed(); this.again(this.unheard.filter((u) => u.awaiting)); }
     this.answerFor.push([at, this.asking().map((t) => t.id)]);
     if (this.answerFor.length > 8) this.answerFor.shift();
+    this.captions?.turnStarted(at);
   }
 
   private activityEnd(): void {
@@ -1329,6 +1359,7 @@ export class Call {
     this.lastSpeech = this.t;
     this.userTalking = false;
     this.replyDue = this.t;
+    this.captions?.turnEnded(this.t);
   }
 
   private interrupted(): void {
@@ -1395,7 +1426,10 @@ export class Call {
     const before = this.c.opening ? decodeBase64(this.c.opening) : null;
     if (before != null && before.length > 0 && !this.mutedNow) {
       this.log("info", `the call starts with ${Math.trunc(before.length / 32)} ms said before it connected`);
-      for (let at = 0; at < before.length; at += OPENING_CHUNK) this.send(audioFrame(before.subarray(at, Math.min(before.length, at + OPENING_CHUNK))));
+      for (let at = 0; at < before.length; at += OPENING_CHUNK) {
+        const chunk = before.subarray(at, Math.min(before.length, at + OPENING_CHUNK));
+        this.hear(audioFrame(chunk), chunk.length);
+      }
     }
     this.emit({ type: "mic.start" });
     for (const frame of this.typedLater.splice(0)) this.send(frame);
@@ -1418,7 +1452,13 @@ export class Call {
       while (this.heldBytes > this.c.limits.wakePreRoll * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
       return;
     }
-    this.send(this.forModel(pcm64));
+    this.hear(this.forModel(pcm64), base64Size(pcm64));
+  }
+
+  /** Microphone audio for the model ([bytes] of it, as a frame), and for the captioner: it hears what the model hears. */
+  private hear(frame: string, bytes: number): void {
+    this.send(frame);
+    if (this.active) this.captions?.feed(frame, bytes, this.t);
   }
 
   /** What the model hears of a frame: silence over its own reply if the policy says so, then the gain. */
@@ -2134,6 +2174,7 @@ export class Call {
     this.closeSocket(this.rotation?.sock ?? null);
     this.rotation = null;
     this.closeSocket(this.socket);
+    this.captions?.stop();
     this.setStatus("ended", message);
   }
 }
