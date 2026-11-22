@@ -44,12 +44,15 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
     private var sputtered = 0
     /** Frames the microphone has given so far. */
     @Volatile var emitted = 0
-    /** Frames to give next, exactly as listed, before going back to the flags: 'l' loud, 's' soft, 'q' quiet. */
-    private val script = java.util.concurrent.ConcurrentLinkedQueue<Char>()
-    /** Queues [runs] of frames, each a kind and how many: an exact pattern, where switching the flags by hand is a frame or two out. */
-    fun play(vararg runs: Pair<Char, Int>) { for ((kind, n) in runs) repeat(n) { script.add(kind) } }
+    /** Frames to give next, exactly as listed, before going back to the flags: 'l' loud, 's' soft, 'q' quiet, 'm' a soft one that carries [MARK]. */
+    private val script = ArrayDeque<Char>()
+    /**
+     * Queues [runs] of frames, each a kind and how many, all at once: an exact pattern, where
+     * switching the flags by hand is a frame or two out.
+     */
+    fun play(vararg runs: Pair<Char, Int>) = synchronized(script) { for ((kind, n) in runs) repeat(n) { script.addLast(kind) } }
     /** Frames of the script still to give. */
-    val scripted: Int get() = script.size
+    val scripted: Int get() = synchronized(script) { script.size }
     /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
     @Volatile var numbered = false
     /** The next frame's number. */
@@ -72,10 +75,11 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
         if (delivers) thread = Thread {
             while (!stopped) {
                 if (!quiet) {
-                    val kind = script.poll()
+                    val kind = synchronized(script) { script.removeFirstOrNull() }
                     val frame = when {
                         kind == 'l' -> LOUD.copyOf()
                         kind == 's' -> SOFT.copyOf()
+                        kind == 'm' -> SOFT.copyOf().also { java.nio.ByteBuffer.wrap(it).putInt(MARK) }
                         kind == 'q' -> QUIET.copyOf()
                         sputter -> (if (sputtered < 2 || sputtered % 3 == 0) LOUD else QUIET).copyOf().also { sputtered++ }
                         loud -> LOUD.copyOf()
@@ -112,6 +116,8 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
         val QUIET = ByteArray(640) { i -> if (i % 64 == 0) 1 else 0 }
         /** A square wave at a quarter of full scale: speech as far as the level goes. */
         val LOUD = ByteArray(640) { i -> if (i % 2 == 0) 0 else if ((i / 32) % 2 == 0) 0x20 else 0xE0.toByte() }
+        /** What a marked frame's first four bytes say, as [numbered] frames carry their number: small enough to stay quiet. */
+        const val MARK = 259
         /** The same wave at a thirty-second of full scale: speech, but under the level that counts as it. */
         val SOFT = ByteArray(640) { i -> if (i % 2 == 0) 0 else if ((i / 32) % 2 == 0) 0x04 else 0xFC.toByte() }
     }
@@ -3358,17 +3364,11 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         // A request in standby: 1.2 s too quiet to tell, 0.3 s loud, 0.4 s quiet again, then loud. It takes the call
         // 2.3 s from its first word to be sure of speech, and the lead-in is shorter than the pre-roll.
-        audio.count = 256
-        audio.numbered = true
-        audio.soft = true
-        val begun = 256 + 3 // one of the first frames, numbered where the number's own bytes are quiet
-        audio.play('s' to 60, 'l' to 15, 's' to 20)
+        audio.play('s' to 3, 'm' to 1, 's' to 56, 'l' to 15, 's' to 20) // the fourth frame is marked
         audio.loud = true // once the pattern has played
-        audio.emit(10)
-        audio.numbered = false
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
-        assertTrue(begun in second.micNumbers(), "the new session hears the request from its start (frame $begun), pause and all")
+        assertTrue(FakeAudio.MARK in second.micNumbers(), "the new session hears the request from its start (the marked frame), pause and all")
         call.stop()
     }
 
@@ -3458,17 +3458,11 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         // 0.8 s too quiet to tell, then three rounds of 0.3 s loud and 0.44 s quiet, then loud: the sound never
         // quite dies away, and it's over two seconds from the first loud word before the call is sure of speech.
-        audio.count = 256
-        audio.numbered = true
-        audio.soft = true
-        val begun = 256 + 3
-        audio.play('s' to 40, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22)
+        audio.play('s' to 3, 'm' to 1, 's' to 36, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22) // the fourth frame is marked
         audio.loud = true // once the pattern has played
-        audio.emit(10)
-        audio.numbered = false
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
-        assertTrue(begun in second.micNumbers(), "speech that woke the call keeps what came before it, though it took a while: frame $begun is there")
+        assertTrue(FakeAudio.MARK in second.micNumbers(), "speech that woke the call keeps what came before it, though it took a while: the marked frame is there")
         call.stop()
     }
 
@@ -3563,19 +3557,16 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         // The same halting request, three seconds in and not yet loud for long enough to wake the call (the sound
         // began 2.2 s ago), when Hermes finishes, which does wake it.
-        audio.count = 256
-        audio.numbered = true
-        audio.soft = true
-        val begun = 256 + 3
-        audio.play('s' to 40, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22)
-        audio.emit(10)
-        audio.numbered = false
+        audio.quiet = true // the microphone gives the pattern and then nothing, so the sound stands as it was when Hermes finishes
+        audio.play('s' to 3, 'm' to 1, 's' to 36, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22, 'l' to 15, 's' to 22) // the fourth frame is marked
+        audio.quiet = false
         withTimeout(5_000) { while (audio.scripted > 0) delay(2) }
+        audio.quiet = true
         results.getValue("1").complete("Booked for 8pm.")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
-        audio.soft = false
+        audio.quiet = false
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
-        assertTrue(begun in second.micNumbers(), "the result took the call back with the request's first words (frame $begun), as its own wake would have")
+        assertTrue(FakeAudio.MARK in second.micNumbers(), "the result took the call back with the request's first words (the marked frame), as its own wake would have")
         call.stop()
     }
 
@@ -3602,6 +3593,66 @@ class AssistantCallTest {
         release.complete(Unit)
         first.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         assertEquals(CallSetup.resultText(listOf("book a table" to "Booked for 8pm.", "taxi" to "A taxi is on its way.")), first.resultTurns().single().turnText())
+        call.stop()
+    }
+
+    @Test fun doneTalkingWhileHeldWordsStillGoOutEndsTheStreamAfterThem() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        // Tap to talk: muted, the call stands by. "Talk now" opens the microphone and brings it back; the user
+        // speaks while it reconnects, on a socket slow to take what was held, and taps "Done talking".
+        call.muted = true
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        audio.loud = true
+        call.muted = false
+        call.wake()
+        withTimeout(5_000) { sending.await() }
+        audio.emit(15)
+        call.muted = true
+        delay(300)
+        assertTrue(second.sent.none { "audioStreamEnd" in it }, "the end of the stream waits for the words before it")
+        release.complete(Unit)
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        val sent = second.sent
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        assertTrue(sent.count { loud in it } >= 10, "the words said while it reconnected")
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the end of the stream after the last of them")
+        call.stop()
+    }
+
+    @Test fun aResultSentAgainWhileItsFirstSendIsHeldUpStillHoldsOffStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val after = After()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), results, after, limits = fast.copy(deliverMax = 0.5))
+        firstTaskRunning(call, first)
+        Live.turn(first, "Find a taxi"); first.push(Live.call("c2")); first.push(Live.turnComplete())
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        // The first task's result is held up on the socket as the last response to its call. Gemini says nothing, so
+        // after deliverMax the result goes again, as a turn, and that send returns; Gemini speaks it.
+        val release = CompletableDeferred<Unit>()
+        val holding = CompletableDeferred<Unit>()
+        first.beforeSend = { f -> if ("\"status\":\"ok\"" in f) { holding.complete(Unit); release.await() } }
+        results.getValue("1").complete("Booked for 8pm.")
+        withTimeout(5_000) { holding.await() }
+        withTimeout(10_000) { while (first.resultTurns().isEmpty()) delay(20) }
+        Live.speaks(first, "The table is booked for 8pm.")
+        first.taken()
+        after.seconds = 0.3
+        delay(1_000)
+        assertEquals(AssistantCall.Status.Working, call.status.value, "the first send is still on its way to the socket")
+        assertEquals(0, first.closeCount)
+        release.complete(Unit)
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         call.stop()
     }
 

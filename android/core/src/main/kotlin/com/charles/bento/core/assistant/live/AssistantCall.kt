@@ -220,6 +220,8 @@ class AssistantCall(
     /** When the microphone was last muted; written before [mutedNow]. */
     @Volatile private var mutedAt = 0.0
     private var streamEnded = false
+    /** The microphone was muted while audio held through a comeback was still going out: Gemini is told the stream paused once it has gone. */
+    private var endOwed = false
     private val cancelledCalls = HashSet<String>()
     /** Supervisor calls already answered, so a repeated ID isn't answered twice. */
     private val answered = HashSet<String>()
@@ -306,8 +308,8 @@ class AssistantCall(
     /** Results the user hasn't heard yet, in the order they finished. */
     private val unheard = ArrayList<Unheard>()
     private var delivering = false
-    /** Results are on their way to the socket ([sendDeliveries]): the call isn't left under them. */
-    private var dispatching = false
+    /** Sends of results on their way to the socket ([sendDeliveries]; a retry can overlap one held up): the call isn't left under them. */
+    private var dispatching = 0
     /** The user is speaking (between Gemini's ACTIVITY_START and ACTIVITY_END), since [talkingSince]. */
     private var userTalking = false
     private var talkingSince = 0.0
@@ -490,8 +492,9 @@ class AssistantCall(
                 if (value && !streamEnded) {
                     streamEnded = true
                     captions?.pause()
-                    send(STREAM_END)
-                } else if (!value) streamEnded = false
+                    // Audio held through a comeback is still going out: the end of the stream goes after it ([rejoin]).
+                    if (rejoining) endOwed = true else send(STREAM_END)
+                } else if (!value) { streamEnded = false; endOwed = false }
             }
         }
 
@@ -647,7 +650,7 @@ class AssistantCall(
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
         if (after <= 0 || running == 0 || !listening || standby || waking || rejoining || rotating || reconnect == null) return false
-        if (settling > 0 || handling > 0 || dispatching || waiting().isNotEmpty()) return false
+        if (settling > 0 || handling > 0 || dispatching > 0 || waiting().isNotEmpty()) return false
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
         if ((talking(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
@@ -834,6 +837,7 @@ class AssistantCall(
     private fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
+        endOwed = false
         newSession()
         scope.launch { rejoin() }
     }
@@ -889,6 +893,7 @@ class AssistantCall(
         if (spoke && userTurns == turns) replyDue = now()
         if (waiting().isNotEmpty()) deliverWhenIdle()
         settled()
+        if (endOwed) { endOwed = false; send(STREAM_END) }
     }
 
     /**
@@ -1077,7 +1082,7 @@ class AssistantCall(
         val turns = userTurns
         // Each counts as told only as it goes, so a turn that ends meanwhile can't take one not yet sent for heard.
         fun told(item: Unheard) { item.sending = false; item.told = true }
-        dispatching = true
+        dispatching++
         try {
             // One result to an open call is its last response; Gemini may give each of several its own turn, so they go as one.
             val only = batch.singleOrNull()
@@ -1097,7 +1102,7 @@ class AssistantCall(
             toldResults(batch)
             send(CallSetup.resultFrame(batch.map { it.label to it.result }, waiting = batch.filter { it.asked != null }.map { it.label }), resend = true)
         } finally {
-            dispatching = false
+            dispatching--
             batch.forEach { it.sending = false }
         }
     }
