@@ -69,6 +69,7 @@
    "maxWords": 28
   },
   "supervise": true,
+  "captions": null,
   "attention": {
    "mode": "window",
    "afterWake": 4,

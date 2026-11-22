@@ -18,7 +18,7 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
-interface ServerConfig { route: string; model: string; version: string; hermes: boolean; t3: string[] | null }
+interface ServerConfig { route: string; model: string; captionsModel?: string; version: string; hermes: boolean; t3: string[] | null }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
@@ -62,6 +62,8 @@ let ticker = 0;
 let traceTimer = 0;
 let startedAt = now();
 const sockets = new Map<number, WebSocket>();
+/** The sockets to the transcription model: their audio is the model's again, so it isn't counted or logged twice. */
+const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
 interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
@@ -243,6 +245,26 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
   scrollDown(role === "user");
 }
 
+/**
+ * The words the user is saying, before the model has transcribed them: a faint row that stays last
+ * on screen (its CSS `order`) and first in the pane, so the lines after it join up as before.
+ */
+function caption(text: string | null) {
+  const pane = $("transcript");
+  let row = document.getElementById("caption");
+  if (text == null) { row?.remove(); return; }
+  $("empty").hidden = true;
+  if (!row) {
+    row = document.createElement("div");
+    row.id = "caption";
+    row.className = "line user caption";
+    row.innerHTML = `<span class="who">You</span><span class="text"></span>`;
+    pane.prepend(row);
+  }
+  row.querySelector(".text")!.textContent = text;
+  scrollDown(true);
+}
+
 function note(text: string) {
   $("empty").hidden = true;
   const row = document.createElement("div");
@@ -283,13 +305,25 @@ function elapsed(seconds: number): string {
 /** The empty task list's words, kept to put back. */
 const noTasks = document.getElementById("notasks")!;
 
+/** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
+const live = (state: string) => state === "running" || state.startsWith("waiting");
+
+/** The Finished fold's count, and the fold itself only when something is in it. */
+function showDone() {
+  const n = $("donenow").childElementCount + $("doneearlier").childElementCount;
+  $("donebox").hidden = n === 0;
+  $("donecount").textContent = n > 0 ? `· ${n}` : "";
+}
+
 function showTasks(force = false) {
   const pane = $("tasks");
+  const done = $("donenow");
   const open = document.activeElement?.closest?.(".task") as HTMLElement | null;
-  if (!force && open && pane.contains(open) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
+  if (!force && open && (pane.contains(open) || done.contains(open)) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
   pane.innerHTML = "";
+  done.innerHTML = "";
   const all = [...tasks.values()].reverse();
-  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
+  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; showDone(); return; }
   const running = all.filter((t) => t.c.state === "running").length;
   $("taskcount").textContent = running > 0 ? `${running} running` : "";
   $("cancelall").hidden = !callId || running < 2;
@@ -341,8 +375,9 @@ function showTasks(force = false) {
     if (view.result) button("Result", () => { view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
-    pane.append(card);
+    (live(t.state) ? pane : done).append(card);
   }
+  showDone();
 }
 
 function followUpForm(card: HTMLElement, t: Command) {
@@ -369,9 +404,10 @@ async function showEarlier() {
   try { list = await (await fetch("/agent/recent", { cache: "no-store" })).json(); } catch {}
   const current = new Set([...tasks.values()].map((v) => v.thread).filter(Boolean));
   list = list.filter((t) => !current.has(t.thread));
-  $("earlierbox").hidden = list.length === 0;
   const pane = $("earlier");
+  const done = $("doneearlier");
   pane.innerHTML = "";
+  done.innerHTML = "";
   for (const t of list) {
     const card = document.createElement("div");
     const state = t.waiting ? "waiting for approval in T3" : t.status;
@@ -389,8 +425,10 @@ async function showEarlier() {
     copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
     acts.append(copy);
     card.append(acts);
-    pane.append(card);
+    (t.status === "running" || t.waiting ? pane : done).append(card);
   }
+  $("earlierbox").hidden = pane.childElementCount === 0;
+  showDone();
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -423,11 +461,11 @@ function push(event: Record<string, unknown>) {
 function run(commands: Command[]) {
   for (const c of commands) {
     switch (c.type) {
-      case "ws.connect": connect(c.sid); break;
+      case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
       case "ws.send": {
         sockets.get(c.sid)?.send(c.data);
-        if (c.data.startsWith('{"realtimeInput":{"audio"')) counts.sent++;
-        else log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        if (!c.data.startsWith('{"realtimeInput":{"audio"')) log("out", `ws ${c.sid} → ${brief(c.data)}`, "out");
+        else if (!captionSockets.has(c.sid)) counts.sent++;
         break;
       }
       case "ws.close": sockets.get(c.sid)?.close(); sockets.delete(c.sid); log("out", `ws ${c.sid} close`, "out"); break;
@@ -468,6 +506,7 @@ function run(commands: Command[]) {
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
+      case "caption": caption(c.text); break;
       case "transcript":
         transcript(c.role, c.text, c.line);
         remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastLine === c.line);
@@ -503,10 +542,11 @@ function onMic(pcm: string, level: number) {
   push({ type: "mic", pcm });
 }
 
-function connect(sid: number) {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live`);
+function connect(sid: number, captions: boolean) {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live${captions ? "?for=captions" : ""}`);
   sockets.set(sid, ws);
-  log("out", `ws ${sid} connect (${server.route})`, "out");
+  if (captions) captionSockets.add(sid);
+  log("out", `ws ${sid} connect (${server.route}${captions ? ", captions" : ""})`, "out");
   ws.onopen = () => push({ type: "ws.open", sid });
   ws.onmessage = (m) => push({ type: "ws.message", sid, data: typeof m.data === "string" ? m.data : "" });
   ws.onclose = (e) => {
@@ -619,6 +659,7 @@ function readConfig(): Record<string, unknown> {
   if (given.voice === undefined) config.voice = $<HTMLSelectElement>("voice").value;
   if (config.steering === undefined) config.steering = ["hermes", "t3"];
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
+  if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
   return config;
 }
 
@@ -776,7 +817,7 @@ const stopWords = new StopWords();
 // Wiring.
 
 function settingsFromStorage() {
-  for (const id of ["aec", "stopword", "ptt", "coding", "fakehermes", "trace"]) {
+  for (const id of ["aec", "stopword", "ptt", "captions", "coding", "fakehermes", "trace"]) {
     const v = localStorage.getItem(`voice.${id}`);
     if (v != null) $<HTMLInputElement>(id).checked = v === "1";
     $(id).addEventListener("change", () => localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0"));
@@ -876,6 +917,7 @@ async function main() {
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
+  $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = submitText;
   $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
   tabs();

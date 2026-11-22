@@ -6,7 +6,8 @@
 //                           the Echo can load it from here too, to try a change without a release
 //   GET  /events            server-sent events: `core` with the new version after each rebuild
 //   GET  /config            the model and what's available (route, Hermes)
-//   WS   /live              a Gemini Live socket, relayed with the server's credentials
+//   WS   /live              a Gemini Live socket, relayed with the server's credentials;
+//                           /live?for=captions goes to the transcription model (the core's captions)
 //   POST /hermes            one Hermes request, streamed back as server-sent events
 //   POST /hermes/steer      more for a running Hermes task; /hermes/stop stops it;
 //                           /hermes/approval answers a command Hermes asked to run (the page's
@@ -47,22 +48,28 @@ const ROUTE = process.env.VOICE_CORE_ROUTE ?? (process.env.GEMINI_API_KEY ? "gem
 const SOCKS = process.env.VOICE_CORE_SOCKS ?? "socks5h://127.0.0.1:11080";
 const LOCATION = process.env.VOICE_CORE_LOCATION ?? "us-central1"; // 3.8 Live has no global endpoint
 const LIVE_MODEL = "gemini-3.8-live";
+const CAPTIONS_MODEL = "gemini-3.5-transcribe-live";
+const CAPTIONS_LOCATION = "global"; // us-central1 doesn't serve it (2026-11-22)
 const TRACES = join(root, "traces");
 
 // The model route.
 
 let vertex = null;
 let model = `models/${LIVE_MODEL}`;
+let captionsModel = `models/${CAPTIONS_MODEL}`;
 if (ROUTE === "vertex") {
   const path = (hermesEnv.VERTEX_CREDENTIALS_PATH ?? "").replace(/^~/, os.homedir());
   if (!path || !existsSync(path)) throw new Error("VERTEX_CREDENTIALS_PATH in ~/.hermes/.env doesn't name a key file");
   vertex = serviceAccount(path);
   model = `projects/${hermesEnv.VERTEX_PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${LIVE_MODEL}`;
+  captionsModel = `projects/${hermesEnv.VERTEX_PROJECT_ID}/locations/${CAPTIONS_LOCATION}/publishers/google/models/${CAPTIONS_MODEL}`;
 }
 
-async function upstream() {
+/** A socket to the Live model, or with [captions] to the transcription model. */
+async function upstream(captions = false) {
   if (ROUTE === "vertex") {
-    return new WebSocket(`wss://${LOCATION}-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent`, {
+    const host = captions ? "aiplatform.googleapis.com" : `${LOCATION}-aiplatform.googleapis.com`;
+    return new WebSocket(`wss://${host}/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent`, {
       headers: { Authorization: `Bearer ${await vertex.token()}` },
       agent: new SocksProxyAgent(SOCKS),
       maxPayload: 8 * 1024 * 1024,
@@ -307,7 +314,7 @@ const server = createServer(async (req, res) => {
     if (path === "/config") {
       res.writeHead(200, { "content-type": "application/json" });
       const projects = T3.available() ? (await T3.projects().catch(() => [])).map((p) => p.title) : null;
-      return res.end(JSON.stringify({ route: ROUTE, model, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
+      return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
     }
     if (path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -382,7 +389,9 @@ const server = createServer(async (req, res) => {
 
 const relay = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 server.on("upgrade", (req, socket, head) => {
-  if (new URL(req.url, "http://x").pathname !== "/live" || !allowed(req)) { socket.destroy(); return; }
+  const url = new URL(req.url, "http://x");
+  if (url.pathname !== "/live" || !allowed(req)) { socket.destroy(); return; }
+  const captions = url.searchParams.get("for") === "captions";
   relay.handleUpgrade(req, socket, head, async (browser) => {
     // Frames the browser sends before the far end is open (the setup, at once) wait here.
     const early = [];
@@ -393,7 +402,7 @@ server.on("upgrade", (req, socket, head) => {
     });
     browser.on("close", () => far?.close());
     try {
-      far = await upstream();
+      far = await upstream(captions);
     } catch (err) {
       browser.close(4500, `relay: ${err.message}`.slice(0, 120));
       return;

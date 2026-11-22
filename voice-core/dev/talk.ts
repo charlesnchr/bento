@@ -2,13 +2,15 @@
 // build the web surface uses), against the real model, and prints what happened. The quickest
 // end-to-end check of a change, and one a script can run.
 //
-//   node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav ...] [--preset echo] [--hermes]
+//   node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav ...] [--preset echo] [--hermes] [--captions]
 //                    [--out reply.wav] [--server http://127.0.0.1:8770] [--quiet 4] [--max 60]
 //
 // A plain WAV is said once the call is quiet (the model's reply has played and 1.5 s passed);
 // "@<s>:" says it <s> seconds after the previous one started instead (talking over a reply).
 // Hermes (and T3, with --coding) is faked (an answer after 2 s) unless --hermes. The call ends --quiet seconds after the
 // last reply, or after --max seconds. --out writes what the model said as one WAV, gaps included.
+// --captions turns the core's captions on and prints each one as it comes, so the words shown
+// while a WAV is still being said can be read off against the model's transcript after it.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import vm from "node:vm";
@@ -104,7 +106,7 @@ function run(commands: Record<string, any>[]) {
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": {
-        const ws = new WebSocket(`${SERVER.replace(/^http/, "ws")}/live`, { headers: ACCESS });
+        const ws = new WebSocket(`${SERVER.replace(/^http/, "ws")}/live${c.purpose === "captions" ? "?for=captions" : ""}`, { headers: ACCESS });
         sockets.set(c.sid, ws);
         ws.on("open", () => push({ type: "ws.open", sid: c.sid }));
         ws.on("error", (err) => say(`(socket ${c.sid}: ${err.message})`)); // "close" follows
@@ -132,6 +134,7 @@ function run(commands: Record<string, any>[]) {
       case "flush": flushLines(); say("(playback flushed)"); speechUntil = now(); break;
       case "cue": say(`(tone: ${c.earcon})`); break;
       case "wakeword": say(`(wake word ${c.on ? "listening" : "off"})`); break;
+      case "caption": say(c.text == null ? "(caption down)" : `caption: ${c.text}`); break;
       case "transcript":
         if (c.line !== textLine) { flushLines(); textLine = c.line; }
         if (c.role === "user") userLine += c.text; else modelLine += c.text;
@@ -218,7 +221,8 @@ function writeReply(path: string) {
 // The microphone: room noise, with each WAV said when its time comes.
 
 const created = JSON.parse(core.create(JSON.stringify({ model: config.model, api: config.route === "vertex" ? "vertex" : "gemini", today: new Date().toISOString().slice(0, 10), trace: true, steering: ["hermes", "t3"], ...PRESETS[PRESET],
-  ...(flag("coding") ? { codingAgent: { projects: config.t3 ?? [] } } : {}) }), now()));
+  ...(flag("coding") ? { codingAgent: { projects: config.t3 ?? [] } } : {}),
+  ...(flag("captions") ? { captions: { model: config.captionsModel } } : {}) }), now()));
 callId = created.id;
 run(created.commands);
 
