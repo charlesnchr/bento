@@ -79,7 +79,8 @@ interface ChatLine { role: "user" | "assistant"; speaker?: string; text: string 
 const HISTORY = "voice.history";
 const HISTORY_MAX_AGE = 12 * 3600 * 1000;
 let chat: ChatLine[] = [];
-let lastRole = "";
+/** The core's number for the line the last words were remembered on, until something else is. */
+let lastLine: number | null = null;
 
 function remember(role: "user" | "assistant", text: string, speaker?: string, join = false) {
   const last = chat.at(-1);
@@ -223,13 +224,15 @@ function scrollDown(force = false) {
   if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
 }
 
-let lineOpen = false;
+/** The core's number for the line the last row shows, until another row follows it. */
+let openLine: number | null = null;
 
-function transcript(role: "user" | "assistant", text: string) {
+/** Words go on the row the core says they belong to: it starts a new line for each turn, however long the gap. */
+function transcript(role: "user" | "assistant", text: string, line: number) {
   $("empty").hidden = true;
   const pane = $("transcript");
   const last = pane.lastElementChild as HTMLElement | null;
-  if (lineOpen && last && last.dataset.role === role) last.querySelector(".text")!.textContent += text;
+  if (openLine === line && last && last.dataset.role === role) last.querySelector(".text")!.textContent += text;
   else {
     const row = document.createElement("div");
     row.className = `line ${role}`;
@@ -237,7 +240,7 @@ function transcript(role: "user" | "assistant", text: string) {
     row.innerHTML = `<span class="who">${role === "user" ? "You" : "Gemini"}</span><span class="text"></span>`;
     row.querySelector(".text")!.textContent = text.trimStart();
     pane.append(row);
-    lineOpen = true;
+    openLine = line;
   }
   scrollDown(role === "user");
 }
@@ -268,7 +271,7 @@ function note(text: string) {
   row.className = "line note";
   row.textContent = text;
   $("transcript").append(row);
-  lineOpen = false;
+  openLine = null;
   scrollDown();
 }
 
@@ -278,7 +281,7 @@ function result(agent: string, label: string, text: string, failed = false): HTM
   row.className = `line result ${agent === "t3" ? "t3" : ""}`;
   row.innerHTML = `<span class="who">${agent === "t3" ? "T3" : "Hermes"} · ${escapeHtml(label)}${failed ? " · failed" : ""}</span><div class="body">${markdown(text)}</div>`;
   $("transcript").append(row);
-  lineOpen = false;
+  openLine = null;
   const body = row.querySelector(".body") as HTMLElement;
   requestAnimationFrame(() => {
     if (body.scrollHeight > body.clientHeight + 4) {
@@ -505,9 +508,9 @@ function run(commands: Command[]) {
         break;
       case "caption": caption(c.text); break;
       case "transcript":
-        transcript(c.role, c.text);
-        remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastRole === c.role);
-        lastRole = c.role;
+        transcript(c.role, c.text, c.line);
+        remember(c.role, c.text, c.role === "assistant" ? "Gemini" : undefined, lastLine === c.line);
+        lastLine = c.line;
         break;
       case "task": {
         const view = tasks.get(c.id) ?? { c, since: now(), ended: null };
@@ -594,7 +597,7 @@ async function tool(c: Command) {
     const view = tasks.get(c.taskId);
     const row = result(agent, c.label, text, failed);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
-    if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastRole = ""; }
+    if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
     if (view) { view.result = row; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
   };
@@ -690,7 +693,8 @@ async function start(carryOn = false) {
   if (carryOn && given.history === undefined) given.history = savedHistory();
   else if (!carryOn) chat = [];
   if (carryOn) chat = savedHistory();
-  lastRole = "";
+  lastLine = null;
+  openLine = null;
   $("resume").hidden = true;
   callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-web-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));

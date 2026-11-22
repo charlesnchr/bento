@@ -56,6 +56,7 @@ export function defaults(): CallConfig {
       speechLevel: 0.03,
       wakeSpeech: 0.5,
       wakePreRoll: 1.5,
+      wakeGap: 3,
       holdMax: 15,
     },
   };
