@@ -131,8 +131,10 @@ private class FakeCaptions : CallCaptions {
     @Volatile private var onCaption: ((Caption) -> Unit)? = null
 
     override fun start(onCaption: (Caption) -> Unit) { this.onCaption = onCaption }
+    /** How many frames it had been fed at its latest pause. */
+    @Volatile var fedAtPause = -1
     override fun feed(pcm: ByteArray) { fed++ }
-    override fun pause() { pauses++ }
+    override fun pause() { pauses++; fedAtPause = fed }
     override fun stop() { stopped = true }
     fun say(caption: Caption) = onCaption!!(caption)
 }
@@ -1964,21 +1966,26 @@ class AssistantCallTest {
 
     @Test fun aCallStillWaitingForItsWordsHoldsOffStandby() = blocking {
         val first = FakeTransport(listOf(Frames.setupComplete()))
-        // A turn Gemini never ends stops holding the call once it's three times deliverMax old.
+        // A turn Gemini hasn't ended stops holding results back once it's three times deliverMax old; not the call.
         val call = AssistantCall(first, FakeAudio(), null, { CompletableDeferred<String>().await() }, limits = fast.copy(settleMax = 1.5, deliverMax = 0.4),
                                  reconnect = { FakeTransport(listOf(Frames.setupComplete())) }, standbyAfter = { 0.3 })
         call.start()
         first.awaitSent { s -> s.any { "realtimeInput" in it } }
         Live.turn(first, "Book a table"); first.push(Live.call("c1"))
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
-        // A second call whose turn never ends: no answer has gone to Gemini yet, so the call stays.
+        // A second call whose turn hasn't ended: no answer has gone to Gemini yet, so the call stays.
         first.push(Live.activity("ACTIVITY_START")); first.push(Live.heard("And a"))
         first.push(Live.call("c2"))
         delay(1_000)
         assertEquals(AssistantCall.Status.Working, call.status.value)
         assertEquals(0, first.closeCount)
-        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        first.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
         assertEquals("not_executed", first.finals().single().status(), "the unfinished turn ran nothing")
+        delay(2_500) // past the time a result waits on a turn like this, and what Gemini is given to speak that answer
+        assertEquals(AssistantCall.Status.Working, call.status.value, "the user's turn is still open")
+        assertEquals(0, first.closeCount)
+        first.push(Live.activity("ACTIVITY_END"))
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         call.stop()
     }
 
@@ -2362,9 +2369,13 @@ class AssistantCallTest {
     private class After(@Volatile var seconds: Double = 0.0) {
         /** Milliseconds the call's thread stalls for, once, the next time it reads the standby time (every tick): microphone frames queue up behind it. */
         @Volatile var stall = 0L
+        /** The call's thread waits on this, once, the next time it reads the standby time; [held] says it is waiting. */
+        @Volatile var gate: java.util.concurrent.CountDownLatch? = null
+        val held = java.util.concurrent.atomic.AtomicBoolean(false)
         fun read(): Double {
             val ms = stall
             if (ms > 0) { stall = 0; Thread.sleep(ms) }
+            gate?.let { g -> gate = null; held.set(true); g.await(10, java.util.concurrent.TimeUnit.SECONDS); held.set(false) }
             return seconds
         }
     }
@@ -3786,8 +3797,9 @@ class AssistantCallTest {
         // The call's thread is busy with the first of the held audio when the mute comes: the microphone is muted at
         // once, but the call only gets to the mute after it has sent the rest and told Gemini the stream paused.
         val busy = java.util.concurrent.CountDownLatch(1)
+        val free = java.util.concurrent.CountDownLatch(1)
         val once = java.util.concurrent.atomic.AtomicBoolean(true)
-        second.beforeSend = { f -> if ("\"audio\"" in f && once.compareAndSet(true, false)) { busy.countDown(); Thread.sleep(400) } }
+        second.beforeSend = { f -> if ("\"audio\"" in f && once.compareAndSet(true, false)) { busy.countDown(); free.await(10, java.util.concurrent.TimeUnit.SECONDS) } }
         audio.loud = true
         call.muted = false
         call.wake()
@@ -3796,6 +3808,7 @@ class AssistantCallTest {
         audio.play('m' to 1)
         audio.emit(2)
         call.muted = true
+        free.countDown()
         second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
         delay(400)
         val sent = second.sent
@@ -3824,12 +3837,14 @@ class AssistantCallTest {
         delay(1_300)
         // The call's thread is held up; Hermes finishes, and then the microphone starts again, so its first frame
         // is waiting behind the result when the thread gets going.
-        after.stall = 800
-        withTimeout(5_000) { while (after.stall > 0) delay(2) }
+        val free = java.util.concurrent.CountDownLatch(1)
+        after.gate = free
+        withTimeout(5_000) { while (!after.held.get()) delay(2) }
         results.getValue("1").complete("Booked for 8pm.")
         audio.play('l' to 5) // what it gives when it starts again
         audio.quiet = false
         audio.emit(1) // given, behind the result, while the thread is still held up
+        free.countDown()
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
         assertTrue(second.sent.any { loud in it }, "what the microphone gave once it started again went to Gemini")
@@ -3837,13 +3852,34 @@ class AssistantCallTest {
         call.stop()
     }
 
-    @Test fun aTurnGeminiNeverEndsDoesntKeepACallWithNothingLeftFromHangingUp() = blocking {
-        val transport = FakeTransport(listOf(Frames.setupComplete()))
-        // A turn Gemini never ends stops counting once it's three times deliverMax old.
-        val call = AssistantCall(transport, FakeAudio(), null, { "" }, limits = fast.copy(deliverMax = 0.3), hangUpAfter = { 0.5 })
+    @Test fun aTurnCarriedOverAMoveThatGeminiNeverEndsDoesntKeepACallWithNothingLeftFromHangingUp() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        // A turn carried over a move stops counting once it's three times deliverMax old, with nobody speaking.
+        val call = AssistantCall(first, FakeAudio(), null, { "" }, limits = fast.copy(deliverMax = 0.3), reconnect = { second }, hangUpAfter = { 0.5 })
         call.start()
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // The user's turn is open when Gemini moves the connection, and its end is lost with the old socket.
+        first.push(Live.activity("ACTIVITY_START"))
+        first.taken()
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertNull(call.ended().message)
+    }
+
+    @Test fun aQuietTurnGeminiHasntEndedKeepsACallFromHangingUp() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(deliverMax = 0.3), hangUpAfter = { 0.5 })
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // A long request in a quiet voice, with no captions: Gemini says it began, and the call hears nothing for itself.
+        audio.soft = true
         transport.push(Live.activity("ACTIVITY_START"))
+        delay(3_000) // past the time a result would wait on such a turn, and the hang-up time
+        assertEquals(AssistantCall.Status.Listening, call.status.value, "Gemini hasn't said the user's turn is over")
+        audio.soft = false
+        transport.push(Live.activity("ACTIVITY_END"))
         assertNull(call.ended().message)
     }
 
@@ -3857,10 +3893,11 @@ class AssistantCallTest {
         // A long request: Gemini says it began and nothing more, and the microphone hears the user all the while.
         audio.loud = true
         transport.push(Live.activity("ACTIVITY_START"))
-        delay(3_000) // past the stuck time, the time Gemini has to answer, and the hang-up time
+        delay(3_000) // past the time a result would wait on such a turn, and the hang-up time
         assertEquals(AssistantCall.Status.Listening, call.status.value, "the user is still talking")
-        // They stop, and still Gemini never ends the turn: now there's nothing left.
+        // They stop, Gemini ends the turn, and there's nothing left.
         audio.loud = false
+        transport.push(Live.activity("ACTIVITY_END"))
         assertNull(call.ended().message)
     }
 
@@ -3887,6 +3924,126 @@ class AssistantCallTest {
         withTimeout(5_000) { while (started.size < 2) delay(10) }
         after.seconds = 0.0
         assertEquals(listOf("Book a table", "Also find me a taxi"), started.toList())
+        call.stop()
+    }
+
+    @Test fun aQuietRequestPastTheTimeAResultWouldWaitOnItIsStillNotCutOffByStandby() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val started = CopyOnWriteArrayList<String>()
+        val audio = FakeAudio()
+        val after = After()
+        // A turn Gemini hasn't ended stops holding results back once it's three times deliverMax old; not the call.
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, started, twoResults(), after, audio = audio, limits = fast.copy(deliverMax = 0.3))
+        firstTaskRunning(call, first)
+        audio.soft = true
+        first.push(Live.activity("ACTIVITY_START"))
+        first.taken()
+        after.seconds = 0.3
+        delay(3_000) // ten standby times, in a voice too quiet for the call to tell, with no captions
+        assertEquals(AssistantCall.Status.Working, call.status.value, "Gemini hasn't said the user's turn is over")
+        assertEquals(0, first.closeCount)
+        audio.soft = false
+        first.push(Live.heard("And when that is done, find me a taxi to the station"))
+        first.push(Live.activity("ACTIVITY_END"))
+        first.push(Live.call("c2"))
+        withTimeout(5_000) { while (started.size < 2) delay(10) }
+        after.seconds = 0.0
+        call.stop()
+    }
+
+    @Test fun aMuteWhileTheLastHeldFrameIsStillGoingOutEndsTheStreamAfterIt() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(emptyList())
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // The microphone gives nothing for a while, so nothing is kept; a result wakes the call, and one frame comes
+        // while it reconnects. That frame is all there is to replay, and the new socket is slow to take it.
+        audio.quiet = true
+        delay(1_300)
+        results.getValue("1").complete("Booked for 8pm.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
+        audio.play('l' to 1)
+        audio.quiet = false
+        audio.emit(1)
+        audio.quiet = true
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("\"audio\"" in f) { sending.complete(Unit); release.await() } }
+        second.push(Frames.setupComplete())
+        withTimeout(5_000) { sending.await() }
+        // Muted now: the frame has left the call's hands and hasn't reached the socket, and there's no more audio.
+        call.muted = true
+        delay(300)
+        release.complete(Unit)
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        delay(300)
+        val sent = second.sent
+        assertEquals(1, sent.count { "audioStreamEnd" in it })
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "the stream ends after the frame that was on its way")
+        call.stop()
+    }
+
+    @Test fun aMuteWhileTheSocketStillHasReplayedAudioToSendEndsTheStreamOnce() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val captions = FakeCaptions()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, captions = captions)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // Speech wakes the call on a slow uplink: the socket has taken the held audio and not sent it, so the call
+        // is still coming back, with nothing in hand, when the microphone is muted.
+        second.backlog = 100_000
+        audio.loud = true
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        second.awaitSent { s -> s.count { loud in it } >= 30 }
+        call.muted = true
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        delay(300)
+        val sent = second.sent
+        assertEquals(1, sent.count { "audioStreamEnd" in it })
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "the stream ends after the last of the audio")
+        assertEquals(captions.fed, captions.fedAtPause, "and the captioner is told it paused after the last audio it was fed")
+        second.backlog = 0
+        call.stop()
+    }
+
+    @Test fun theCaptionerIsToldTheStreamPausedAfterTheHeldWordsItIsFed() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val captions = FakeCaptions()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, captions = captions)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        // Speech wakes the call, the new socket is slow with the recap, and the microphone is muted meanwhile, with
+        // all the held words still to go.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("clientContent" in f) { sending.complete(Unit); release.await() } }
+        audio.loud = true
+        withTimeout(5_000) { sending.await() }
+        audio.emit(15)
+        val fedBefore = captions.fed
+        call.muted = true
+        delay(300)
+        release.complete(Unit)
+        second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
+        delay(200)
+        assertTrue(captions.fed > fedBefore, "the held words went to the captioner")
+        assertEquals(captions.fed, captions.fedAtPause, "and it was told the stream paused after them, not before")
         call.stop()
     }
 

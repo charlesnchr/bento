@@ -316,6 +316,11 @@ class AssistantCall(
     private var userTalking = false
     private var talkingSince = 0.0
     private var stuckLogged = false
+    /**
+     * The open turn began on a socket the call has since moved from ([rotate]): its end may have
+     * been lost with that socket, so it can't be taken to be open for good ([turnOpen]).
+     */
+    private var turnCarried = false
     /** User turns so far (ACTIVITY_START), to tell whether a new one began across a suspension. */
     private var userTurns = 0
     /** When the user's turn ended, until Gemini's reply to it completes. */
@@ -575,6 +580,7 @@ class AssistantCall(
                 newSession()
                 unanswered = owed
                 userTalking = open
+                turnCarried = open
                 old.close()
                 launch { read(next) }
             } finally {
@@ -635,13 +641,20 @@ class AssistantCall(
      */
     private fun nothingLeft(t: Double): Boolean {
         val after = hangUpAfter()
-        // The user's turn counts while it holds results back ([talking]), and past that for as long as the call still
-        // hears them for itself: Gemini says nothing more of a long turn until it ends. One it never ends, with
-        // nobody speaking, doesn't keep the call.
-        val speaking = userTalking && (talking(t) || t - maxOf(spokeAt, wordsAt) < after)
         return after > 0 && listening && !standby && !waking && !rotating && running == 0 && settling == 0 && unheard.isEmpty() &&
-            !speaking && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
+            !turnOpen(t) && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
     }
+
+    /**
+     * The user's turn is open, as far as closing the socket goes (standby, hanging up). One Gemini
+     * opened on this socket is open until Gemini ends it, however long that takes: a request can
+     * be long and quiet, Gemini says nothing more of it until it ends, and its age is no evidence
+     * that it has. That is a longer wait than a result's ([talking]), since a result that goes in
+     * late can go again and a closed socket loses the request. One carried over a move of the
+     * connection may have ended on the old socket unheard, so it is open only as long as it holds
+     * results back, or while the call still hears the user for itself.
+     */
+    private fun turnOpen(t: Double) = userTalking && (!turnCarried || talking(t) || t - maxOf(spokeAt, wordsAt) < limits.settleMax)
 
     /**
      * Only Hermes is left to wait for and nobody has spoken (Gemini included) for the standby time:
@@ -652,9 +665,9 @@ class AssistantCall(
      * at the end), speech the microphone or the captioner hears before Gemini says so, a reply or
      * a function call Gemini owes the user, a turn of Gemini's, a call of its being answered. What
      * Gemini owes holds the call three standby times at most (and no more than [Limits.deliverMax]
-     * past the first), in case it never comes; a turn of the user's Gemini never ends holds it as
-     * long as it holds results back ([talking]), or that long once the microphone is muted, since
-     * Gemini hears nothing more of it.
+     * past the first), in case it never comes. A turn of the user's holds it until Gemini ends it
+     * ([turnOpen]), or for that same patience once the microphone is muted, since Gemini hears
+     * nothing more of it then.
      */
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
@@ -662,7 +675,7 @@ class AssistantCall(
         if (settling > 0 || handling > 0 || dispatching > 0 || waiting().isNotEmpty()) return false
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
-        if ((talking(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
+        if ((turnOpen(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
         // The captioner says an utterance began before it has a word of it.
         val quiet = t - maxOf(lastSpeech, speechUntil, toneAt, spokeAt, wordsAt, captionTurnAt ?: 0.0)
         if (quiet < after) return false
@@ -701,6 +714,7 @@ class AssistantCall(
         geminiSpeaking = false
         skipTurn = false
         userTalking = false
+        turnCarried = false
         replyDue = null
         unanswered = null
         generated = false
@@ -870,7 +884,9 @@ class AssistantCall(
                 val pcm = held.removeFirst()
                 replaying = now()
                 if (pcm.isEmpty()) {
-                    send(STREAM_END) // where the microphone was muted ([paused])
+                    // Where the microphone was muted ([paused]): after the audio before it, for the captioner too.
+                    captions?.pause()
+                    send(STREAM_END)
                 } else {
                     heldBytes -= pcm.size
                     replayed += pcm.size
@@ -909,12 +925,13 @@ class AssistantCall(
 
     /**
      * The call has come to where the microphone was muted, in the order its frames were captured:
-     * Gemini is told the stream paused, so it answers. Off Gemini, or with audio still held for
-     * it, that goes after the held audio ([rejoin]); with none held, there's nothing it would follow.
+     * Gemini and the captioner are told the stream paused, so Gemini answers. While audio held
+     * through a comeback is going out, that waits its turn behind it ([rejoin]), even with none
+     * left in hand: the last of it may still be on its way. In standby it joins what's kept, to go
+     * with that if a comeback takes it; with nothing kept there's nothing it would follow.
      */
     private suspend fun paused() {
-        captions?.pause()
-        if (!standby && !rejoining) send(STREAM_END) else if (held.isNotEmpty()) held.addLast(PAUSE)
+        if (!standby && !rejoining) { captions?.pause(); send(STREAM_END) } else if (rejoining || held.isNotEmpty()) held.addLast(PAUSE)
     }
 
     /**
@@ -1077,7 +1094,7 @@ class AssistantCall(
     private fun talking(t: Double): Boolean {
         if (!userTalking) return false
         val stuck = t - talkingSince >= STUCK_TURNS * limits.deliverMax && t - lastSpeech >= limits.settleMax
-        if (stuck && !stuckLogged) { stuckLogged = true; VoiceLog.w(TAG, "the user's turn never ended: results go in regardless, and the call may stand by") }
+        if (stuck && !stuckLogged) { stuckLogged = true; VoiceLog.w(TAG, "the user's turn never ended: results go in regardless") }
         if (!stuck) stuckLogged = false
         return !stuck
     }
@@ -1155,7 +1172,7 @@ class AssistantCall(
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
             "ACTIVITY_START" -> {
                 val at = now()
-                protocol.activityStarted(at); lastSpeech = at; userTalking = true; talkingSince = at; userTurns++
+                protocol.activityStarted(at); lastSpeech = at; userTalking = true; turnCarried = false; talkingSince = at; userTurns++
                 // Speech that has all but played is heard now, not at the next tick, so a question that just ended can be answered.
                 played()
                 lapseQuestions()
@@ -1173,7 +1190,7 @@ class AssistantCall(
                 if (geminiTurns.size > 8) geminiTurns.removeFirst()
             }
             "ACTIVITY_END" -> {
-                protocol.activityEnded(now()); lastSpeech = now(); userTalking = false; replyDue = now(); unanswered = now()
+                protocol.activityEnded(now()); lastSpeech = now(); userTalking = false; turnCarried = false; replyDue = now(); unanswered = now()
                 geminiTurns.lastOrNull()?.takeIf { it.ended == null }?.let { turn ->
                     turn.ended = now()
                     // A transcript lent to an earlier turn while this one went on, and none of its own: it was this one's.
