@@ -182,6 +182,8 @@ class AssistantCall(
     private val mic = Channel<Triple<Int, ByteArray, Double>>(MIC_FRAMES)
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
+    /** A pause ([PAUSE]) fell out of the full queue with the oldest audio ([offer]): it isn't lost with it. */
+    private val pauseEvicted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     override val status: StateFlow<Status> = _status.asStateFlow()
     private val _microphoneSilent = MutableStateFlow(false)
@@ -1279,8 +1281,7 @@ class AssistantCall(
             val c = call as? JsonObject ?: continue
             when (c.str("name")) {
                 CallProtocol.LIST_TASKS, CallProtocol.CHECK_TASK, CallProtocol.CANCEL_TASK -> supervise(c)
-                // Handing the request to Hermes is Gemini's answer to the user: it may say nothing more.
-                else -> { unanswered = null; delegate(c) }
+                else -> delegate(c)
             }
         }
     }
@@ -1316,6 +1317,7 @@ class AssistantCall(
             }
             for ((captured, pcm, at) in mic) {
                 if (!active) return@launch
+                if (pauseEvicted.getAndSet(false)) paused()
                 if (captured != lends) continue
                 freshAudio(captured)
                 if (pcm.isEmpty()) { paused(); continue }
@@ -1343,7 +1345,8 @@ class AssistantCall(
     private fun offer(frame: Triple<Int, ByteArray, Double>) {
         val result = mic.trySend(frame)
         if (result.isSuccess || result.isClosed) return
-        mic.tryReceive().getOrNull()?.let { droppedBytes.addAndGet(it.second.size.toLong()) }
+        // A pause that is pushed out was the oldest thing waiting: the call takes it before whatever is oldest now.
+        mic.tryReceive().getOrNull()?.let { if (it.second.isEmpty()) pauseEvicted.set(true) else droppedBytes.addAndGet(it.second.size.toLong()) }
         if (mic.trySend(frame).isFailure && !mic.isClosedForSend) droppedBytes.addAndGet(frame.second.size.toLong())
     }
 
@@ -1427,6 +1430,9 @@ class AssistantCall(
             }
             return
         }
+        // Handing a request to Hermes is Gemini's answer to the user: it may say nothing more. A call Bento doesn't
+        // take up (one repeated, say) answers nobody, and leaves what Gemini owes as it was.
+        unanswered = null
         // The task a follow-up continues, and a new task's name: never words for Hermes.
         val named = taskRef(call)
         val label = TaskNames.tidy((call["args"] as? JsonObject)?.str("label"))
