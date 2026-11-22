@@ -2793,15 +2793,14 @@ class AssistantCallTest {
         audio.loud = true
         audio.emit(40)
         second.push(Frames.setupComplete())
-        second.awaitSent { s -> s.count { "realtimeInput" in it } >= 30 }
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
-        assertTrue(second.sent.count { loud in it } >= 30, "the words said while it connected")
-        // The user talks on, and this Gemini never says it hears them: past the time it has to answer (settleMax),
-        // the result still doesn't go in over speech the microphone hears.
-        delay(2_500)
-        assertTrue(second.resultTurns().isEmpty(), "the result waits while the user is still talking")
-        audio.loud = false
+        second.awaitSent { s -> s.count { loud in it } >= 30 } // the words said while it connected
+        delay(700)
+        assertTrue(second.resultTurns().isEmpty(), "the result waits for Gemini to answer the user")
+        // The sound goes on and this Gemini never says it hears a word: it has had its chance (settleMax), so this is
+        // a noisy room, and the result goes in.
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
+        audio.loud = false
         assertEquals(CallSetup.resultText(listOf("book a table" to "Booked for 8pm.")), second.resultTurns().single().turnText())
         call.stop()
     }
@@ -2926,6 +2925,96 @@ class AssistantCallTest {
         withTimeout(5_000) { while (started.size < 2) delay(10) }
         after.seconds = 0.0
         assertEquals(listOf("Book a table", "Find me a taxi"), started.toList())
+        call.stop()
+    }
+
+    @Test fun speechOnlyTheMicrophoneHearsHoldsAResultBackForAMoment() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val call = multitasking(first, { FakeTransport(listOf(Frames.setupComplete())) }, CopyOnWriteArrayList(), results, After(), audio = audio)
+        firstTaskRunning(call, first)
+        // The user starts talking, Gemini hasn't said so yet, and Hermes finishes.
+        audio.loud = true
+        audio.emit(30)
+        results.getValue("1").complete("Booked for 8pm.")
+        delay(500)
+        assertTrue(first.finals().isEmpty(), "the result doesn't go in over speech the microphone hears")
+        // Gemini never does say it hears them: not speech, then, and the result isn't kept for as long as the room is loud.
+        first.awaitSent { s -> s.any { "\"status\":\"ok\"" in it } }
+        audio.loud = false
+        call.stop()
+    }
+
+    @Test fun aSlowComebackThatKeepsTakingTheHeldWordsLives() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, limits = fast.copy(connect = 1.0))
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The new session's socket takes audio no faster than the microphone gives it, so the held words take
+        // longer to go out than a comeback is given to set up; but they keep going.
+        second.beforeSend = { f -> if ("realtimeInput" in f) delay(20) }
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it != AssistantCall.Status.Standby } }
+        after.seconds = 0.0
+        delay(2_500)
+        assertFalse(call.status.value is AssistantCall.Status.Ended, "a slow socket that keeps taking the audio isn't a failed one")
+        second.beforeSend = null
+        audio.loud = false
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        call.stop()
+        assertNull(call.ended().message)
+    }
+
+    @Test fun quietWordsBegunInStandbyBeforeAResultWakesTheCallAreHeard() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The user starts on something too quietly to wake the call, and just then Hermes finishes, which does.
+        audio.soft = true
+        audio.emit(70)
+        results.getValue("1").complete("Booked for 8pm.")
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        audio.soft = false
+        val soft = Base64.getEncoder().encodeToString(FakeAudio.SOFT)
+        second.awaitSent { s -> s.count { soft in it } >= 40 } // more than were said after it woke: the session has how they began
+        call.stop()
+    }
+
+    @Test fun aResultWaitsForReplayedWordsToLeaveTheSocket() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val results = twoResults()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // Quiet words, a result that wakes the call, and an uplink slow enough that the socket has taken the replayed
+        // audio a second before it has sent it: Gemini's time to say it hears words in it counts from when it has gone.
+        second.backlog = 100_000
+        audio.soft = true
+        audio.emit(80)
+        results.getValue("1").complete("Booked for 8pm.")
+        val soft = Base64.getEncoder().encodeToString(FakeAudio.SOFT)
+        second.awaitSent { s -> s.count { soft in it } >= 75 }
+        delay(1_000)
+        second.backlog = 0
+        delay(1_100) // past the time Gemini would have had, counted from when the socket took the audio
+        assertTrue(second.resultTurns().isEmpty(), "Gemini has only just been sent the words")
+        audio.soft = false
+        second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         call.stop()
     }
 
