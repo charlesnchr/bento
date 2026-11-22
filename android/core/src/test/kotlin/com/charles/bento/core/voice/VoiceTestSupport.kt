@@ -72,6 +72,15 @@ class FakeTransport(script: List<String>) : LiveTransport {
 
     fun push(frame: String) = synchronized(lock) { inbox.addLast(frame) }
 
+    /** Frames pushed and not yet taken by [receive]. */
+    val pending: Int get() = synchronized(lock) { inbox.size }
+
+    /** What [queued] says: bytes taken and not yet on the wire, as a slow uplink leaves them. */
+    @Volatile var backlog = 0L
+    /** How often the call has asked what is still queued. */
+    @Volatile var backlogChecks = 0
+    override fun queued(): Long { backlogChecks++; return backlog }
+
     override suspend fun connect() {
         connectError?.let { throw it }
     }
