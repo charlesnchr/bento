@@ -593,8 +593,15 @@ class AssistantController(
         return true
     }
 
-    /** Back from standby before Hermes finishes, to talk. */
-    fun wakeCall() { call?.wake() }
+    /**
+     * Back from standby before Hermes finishes, to talk. With tap to talk the microphone opens too,
+     * as "Talk now" says: what's said while the call reconnects is held for it, not lost to a mute.
+     */
+    fun wakeCall() {
+        val c = call ?: return
+        if (_state.value.call?.tapToTalk == true) setMuted(false)
+        c.wake()
+    }
 
     /** Cancels one of the call's tasks; the call and the other tasks go on, and Gemini is told. */
     fun cancelTask(id: String) { call?.cancelTask(id) }

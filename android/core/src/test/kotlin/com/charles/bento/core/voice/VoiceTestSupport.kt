@@ -72,6 +72,9 @@ class FakeTransport(script: List<String>) : LiveTransport {
 
     fun push(frame: String) = synchronized(lock) { inbox.addLast(frame) }
 
+    /** Frames pushed and not yet taken by [receive]. */
+    val pending: Int get() = synchronized(lock) { inbox.size }
+
     override suspend fun connect() {
         connectError?.let { throw it }
     }
