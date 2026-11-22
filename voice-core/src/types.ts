@@ -123,6 +123,17 @@ export interface Attention {
   afterAnnouncement: number;
 }
 
+/**
+ * How the user learns a request has gone to an agent.
+ * - "tone": the hand-off's tone and nothing said, as on Android.
+ * - "named": the tone, and when a tone can't say which request was taken (another task is running,
+ *   or a result is still to be told) the model then says in a few words what it started and who
+ *   has it, unless it said so with the call. Results wait until it has, so a result that was ready
+ *   never takes the place of the answer to the user's newest request. A hand-off the user speaks
+ *   straight over is named with the next one's. A call's only task still gets the tone alone.
+ */
+export type HandOff = "tone" | "named";
+
 export interface CallConfig {
   api: Api;
   /** The surface, for the instruction and the words Hermes gets: "Android", "macOS", "web", "Echo". */
@@ -161,6 +172,7 @@ export interface CallConfig {
    * goes into its current run instead of waiting for it to finish.
    */
   steering: Agent[];
+  handOff: HandOff;
   announce: Announce;
   attention: Attention;
   /**

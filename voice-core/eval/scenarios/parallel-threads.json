@@ -1,0 +1,190 @@
+{
+ "name": "parallel-threads",
+ "about": "Three requests to three different agents, one after another, while the earlier ones still run (a real call on 22 November 2026). The user asks Hermes about their Fluide sessions; then asks for 'another one' that looks at their running T3 Code sessions, which is a second Hermes task about the user's machine and not a question about this call's own tasks; then, in a long utterance during which the Fluide result arrives, asks for a coding agent to make the Bento app use the voice core. Good: each request starts one task with the right agent (Fluide and the T3 Code sessions with Hermes, the Bento work with the coding agent, project Bento); the first request, alone in the call, needs only its tone; after the second and the third, made while other work is in flight, the user hears in a few words what was started and who has it, so they never have to ask whether it was taken; the coding request is confirmed before the Fluide result is told, and the Fluide result is told by what it is about, so the two are not confused; asked what is still running, the assistant names the coding agent's work and not the finished checks. Bad: answering the T3 Code sessions request from the call's own task list; telling the Fluide result straight after the coding request without a word about that request; long confirmations.",
+ "config": {
+  "codingAgent": {
+   "projects": [
+    "Bento",
+    "Lectio",
+    "Website"
+   ]
+  }
+ },
+ "agents": [
+  {
+   "id": "fluide",
+   "agent": "hermes",
+   "match": "fluid",
+   "after": 19,
+   "progress": [
+    [
+     4,
+     "Using skill_view: fluide-sessions"
+    ],
+    [
+     9,
+     "Using terminal: fluides status"
+    ]
+   ],
+   "result": "All three Fluide services are up and nothing is actively running. You have 17 unarchived sessions: five awake and idle, twelve asleep.",
+   "facts": [
+    "17|seventeen"
+   ]
+  },
+  {
+   "id": "threads",
+   "agent": "hermes",
+   "match": "t3|t 3|tee three|code session|coding session|running session",
+   "after": 42,
+   "progress": [
+    [
+     5,
+     "Using skill_view: t3-code-sessions"
+    ],
+    [
+     20,
+     "Using terminal: reading the T3 state database"
+    ]
+   ],
+   "result": "Two T3 Code sessions are running on homelab, both in the Bento project, with no pending approval prompts. One has been fixing Android standby clipping for 24 minutes.",
+   "facts": [
+    "\\b(2|two)\\b"
+   ]
+  },
+  {
+   "id": "coding",
+   "agent": "t3",
+   "match": "voice|bento|core|rebase|implementation",
+   "after": 120,
+   "progress": [
+    [
+     3,
+     "Started in Bento, branch voice/update-bento-voice-core"
+    ],
+    [
+     30,
+     "Reading Sources/VoiceCore/SharedCore/SharedCallCore.swift"
+    ]
+   ],
+   "result": "The Mac app now runs its calls on the shared voice core. Pull request 90 is open.",
+   "facts": [
+    "pull request|\\bPR\\b"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "say": "Can you first just find out what's going on with my Fluide sessions?",
+   "id": "fluide"
+  },
+  {
+   "until": "dispatch:fluide",
+   "timeout": 15
+  },
+  {
+   "say": "All right. Can you do another one where you look at the currently running T3 Code sessions?",
+   "id": "threads"
+  },
+  {
+   "until": "dispatch:threads",
+   "timeout": 12
+  },
+  {
+   "say": "Now, finally, I would like you to also set up a T3 coding session. Update my Bento so that the Bento app uses the voice core, the same implementation that we have in this web app. So we should rebase on this.",
+   "id": "coding"
+  },
+  {
+   "until": "dispatch:coding",
+   "timeout": 15
+  },
+  {
+   "until": "result:threads",
+   "timeout": 60
+  },
+  {
+   "until": "quiet:6",
+   "timeout": 40
+  },
+  {
+   "say": "Okay, so what's still running now?",
+   "id": "status"
+  },
+  {
+   "until": "quiet:4",
+   "timeout": 20
+  }
+ ],
+ "checks": [
+  {
+   "dispatch": "fluide",
+   "count": 1
+  },
+  {
+   "dispatch": "threads",
+   "count": 1
+  },
+  {
+   "dispatch": "coding",
+   "count": 1
+  },
+  {
+   "dispatch": "?",
+   "count": 0
+  },
+  {
+   "dispatch": "threads",
+   "within": 5
+  },
+  {
+   "request": "coding",
+   "contains": [
+    "bento",
+    "voice core"
+   ],
+   "project": "Bento"
+  },
+  {
+   "said": "\\w",
+   "after": "threads",
+   "before": "coding"
+  },
+  {
+   "said": "coding|agent|bento|voice core",
+   "after": "coding",
+   "before": "result:threads"
+  },
+  {
+   "notSaid": "17|seventeen",
+   "after": "threads",
+   "before": "coding"
+  },
+  {
+   "voiced": "fluide",
+   "within": 30
+  },
+  {
+   "voiced": "threads",
+   "within": 15
+  },
+  {
+   "said": "coding|bento|voice core",
+   "after": "status"
+  },
+  {
+   "maxModelWords": 40,
+   "after": "status"
+  },
+  {
+   "maxModelWords": 20,
+   "after": "threads",
+   "before": "coding"
+  }
+ ],
+ "judge": [
+  "After the second and the third request, made while other work was running, did the user hear in a few words that it had been taken and by whom, without having to ask?",
+  "Did the request to look at the running T3 Code sessions start a new Hermes task, rather than being answered from the call's own task list?",
+  "Was the coding request confirmed before the Fluide result was told, and was it clear which request the Fluide result belonged to?",
+  "Asked what was still running, did the assistant name the coding agent's work and not the finished checks?"
+ ],
+ "max": 170
+}

@@ -320,6 +320,13 @@ export class Call {
   private attendUntil = 0;
   private replyEnded = false;
   private replyAsked = false;
+  /**
+   * handOff "named": when the model last spoke; the hand-offs it has just been asked to tell the user of, and when;
+   * and those it was to name but the user has heard only a tone for, which the next confirmation names too.
+   */
+  private modelSpokeAt = -Infinity;
+  private confirming: { tasks: Task[]; at: number } | null = null;
+  private unconfirmed: Task[] = [];
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
   private boundary = true;
@@ -333,7 +340,7 @@ export class Call {
       api: config.api,
       model: config.model,
       voice: config.voice,
-      instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host")) +
+      instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host", config.handOff === "named")) +
         (config.codingAgent ? codingInstruction(config.codingAgent.projects) : "") + (config.supervise ? SUPERVISE : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
@@ -533,6 +540,8 @@ export class Call {
     // Timers run in drain(); a rotation that never set up runs out here.
     if (this.rotation && this.t >= this.rotation.deadline - EPSILON) this.rotated(false);
     if (this.c.mic.whileSpeaking === "wake") this.updateWakeword();
+    // A confirmation the model never gave: results stop waiting for it, and the next one names its hand-offs.
+    if (this.confirming && this.t - this.confirming.at >= this.c.limits.settleMax && !this.geminiSpeaking && this.t >= this.speechUntil) this.confirmed(false);
     this.announce();
     this.attend();
   }
@@ -841,7 +850,7 @@ export class Call {
    */
   private fits(item: Unheard, t: number): boolean {
     const a = this.c.announce;
-    if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null) return false;
+    if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null || this.confirming != null) return false;
     // A room that is never quiet (a television) holds a brief back only so long.
     const waited = item.briefAt != null && t - item.briefAt >= a.maxWait;
     // Off the model the microphone's level is all there is to go by.
@@ -976,6 +985,7 @@ export class Call {
 
   private newSession(): void {
     this.turnEnded(!this.dropTurn && this.spokeSince && !this.skipTurn && (this.generated || !this.geminiSpeaking));
+    this.confirmed(false);
     this.geminiSpeaking = false;
     this.skipTurn = false;
     this.dropTurn = false;
@@ -1009,6 +1019,7 @@ export class Call {
   }
 
   private geminiSpoke(): void {
+    this.modelSpokeAt = this.t;
     this.geminiSpeaking = true;
     if (!this.skipTurn) this.spokeSince = true;
   }
@@ -1279,6 +1290,8 @@ export class Call {
       else if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
       else if (this.heardRelayed().length > 0 && !this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
       if (this.spokeSince) this.unspokenSince = null;
+      // The turn after a hand-off's "started" answer said something: the user has their confirmation.
+      if (this.spokeSince && !this.dropTurn) this.confirmed(true);
       this.geminiSaid = "";
       this.geminiSpeaking = false;
       this.skipTurn = false;
@@ -1306,6 +1319,8 @@ export class Call {
     this.lastUserSpeech = at;
     this.replyEnded = false;
     this.cutAnnouncement();
+    // The user spoke before the model had confirmed a hand-off: the next confirmation names it.
+    this.confirmed(this.spokeSince && this.generated && this.speechUntil - at <= INTERRUPT_GRACE);
     this.utterance = "";
     this.cancelledAll = false;
     if (this.hush?.afterEnd) this.hush = null;
@@ -1341,6 +1356,7 @@ export class Call {
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
     if (!this.skipTurn) this.turnEnded(playedOut);
+    this.confirmed(playedOut);
     this.geminiSaid = "";
     this.speechUntil = this.t;
     this.geminiSpeaking = false;
@@ -1475,6 +1491,9 @@ export class Call {
     // The brief being said goes too, and one the user's "stop" itself cut a moment ago: their speech stopped it before the word was known.
     const cut = this.lastCut != null && this.t - this.lastCut.at < 6 ? this.lastCut.item : null;
     const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting || this.announcing?.item === u || u === cut);
+    // Nor is a hand-off confirmed after a stop: the user has its tone and its card.
+    this.confirming = null;
+    this.unconfirmed = [];
     this.announcing = null;
     this.lastCut = null;
     for (const item of stopped) this.unheard.splice(this.unheard.indexOf(item), 1);
@@ -1765,8 +1784,9 @@ export class Call {
     task.runs++;
     const asAnswer = answer ? `Bento took this as the user's answer to "${task.label}": ${task.asked} ` : "";
     if (this.steerable(task)) {
+      const say = this.cancelledCalls.has(run.callId) ? null : this.confirmation(task, true);
       this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
-        "it works and takes it into account, and one result covers both. Don't announce it.", true, { task: task.label, scheduling: "SILENT" });
+        "it works and takes it into account, and one result covers both." + (say ?? " Don't announce it."), true, { task: task.label, scheduling: say != null ? "WHEN_IDLE" : "SILENT" });
       run.closed = true;
       this.steerInto(task, run.request.task);
       return;
@@ -1807,8 +1827,44 @@ export class Call {
     return capital ? text[0].toUpperCase() + text.slice(1) : text;
   }
 
+  /**
+   * handOff "named": what a hand-off's "started" answer adds so the model tells the user of it, or null when
+   * it stays silent. A tone says enough while nothing else is in flight: with another task running or a result
+   * still to be told, the user can't tell which request it was for. The model that spoke after the user's
+   * words has said so already. A hand-off the user is talking over gets only its tone, and the next
+   * confirmation names it too.
+   */
+  private confirmation(task: Task, followUp: boolean): string | null {
+    if (this.c.handOff !== "named" || this.modelSpokeAt > this.lastUserSpeech) return null;
+    const others = this.unheard.length > 0 || [...this.tasks.values()].some((t) => t !== task && t.state === RUNNING);
+    if (!others) return null;
+    if (this.talking(this.t)) {
+      if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
+      return null;
+    }
+    const who = task.agent === "t3" ? "the coding agent" : "Hermes";
+    const earlier = this.unconfirmed.filter((t) => t !== task && t.state === RUNNING);
+    this.unconfirmed = [];
+    this.confirming = { tasks: [...earlier, task], at: this.t };
+    const names = earlier.map((t) => `"${t.label}"`).join(" and ");
+    return " Other work is in flight, so tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
+      (earlier.length > 0 ? ` Say too that ${names} ${earlier.length > 1 ? "are" : "is"} under way, unless you have told them: they have heard only a tone for ${earlier.length > 1 ? "those" : "it"}.` : "") +
+      " Nothing else.";
+  }
+
+  /** The model's turn after a confirmation was asked for has ended ([heard]), or it won't come: the user spoke first, or the model said nothing. */
+  private confirmed(heard: boolean): void {
+    const asked = this.confirming;
+    if (asked == null) return;
+    this.confirming = null;
+    if (!heard) for (const task of asked.tasks) if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
+    // Nothing else is owed to the user: the call stands by on time.
+    if (!this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
+  }
+
   private acknowledge(task: Task, run: Run, message: string): void {
-    this.respond(run.callId, message, true, { task: task.label, status: "started", scheduling: "SILENT", willContinue: true });
+    const say = task.holds(run) && !this.cancelledCalls.has(run.callId) ? this.confirmation(task, run.followUp) : null;
+    this.respond(run.callId, message + (say ?? ""), true, { task: task.label, status: "started", scheduling: say != null ? "WHEN_IDLE" : "SILENT", willContinue: true });
     run.acknowledged = true;
     run.answered = this.c.api === "vertex";
     this.showTask(task);

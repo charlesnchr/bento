@@ -1,0 +1,16 @@
+== eval/runs/threads-main
+scenario          n  score  ±  collide  lost  repeat  stray   checks  ambient s  reply s  announce s  brief s  words  judge
+parallel-threads  3     40  4      0.0   0.0     0.0    0.0  11.0/14        0.0     1.59        14.3        -     61    4.0
+ALL               3   39.7         0.0   0.0     0.0    0.0  11.0/14        0.0     1.59        14.3        -     61    4.0
+
+failed checks:
+  parallel-threads-1: {"dispatch":"threads","count":1} (0 task(s) started for threads)
+  parallel-threads-1: {"dispatch":"threads","within":5} (0 task(s) started for threads)
+  parallel-threads-1: {"voiced":"threads","within":15} (no such result)
+  parallel-threads-2: {"dispatch":"threads","count":1} (0 task(s) started for threads)
+  parallel-threads-2: {"dispatch":"threads","within":5} (0 task(s) started for threads)
+  parallel-threads-2: {"voiced":"threads","within":15} (no such result)
+  parallel-threads-3: {"dispatch":"threads","count":1} (0 task(s) started for threads)
+  parallel-threads-3: {"dispatch":"threads","within":5} (0 task(s) started for threads)
+  parallel-threads-3: {"voiced":"threads","within":15} (no such result)
+

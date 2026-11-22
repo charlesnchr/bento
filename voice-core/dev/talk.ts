@@ -37,7 +37,7 @@ const plan = args.filter((a) => !a.startsWith("--") && !optionValues.has(a)).map
 if (plan.length === 0) { console.error("say which WAV files to speak"); process.exit(2); }
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser" },
+  web: { platform: "web", device: "browser", handOff: "named" },
   android: { platform: "Android", device: "phone" },
   echo: { platform: "Echo", device: "speaker", mic: { whileSpeaking: "wake", gainDb: 0 }, hangUpAfter: 6 },
 };

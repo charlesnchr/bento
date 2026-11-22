@@ -1,9 +1,10 @@
 # Kept results
 
 What the bench measured on 15 November 2026, and how to run it again. Every suite is the 28
-scenarios in `../scenarios`, with `gemini-3.8-live` on Vertex (us-central1) as the call's model,
-user clips from `gemini-3.8-flash-tts`, headlines written by `gemini-3.1-flash-lite` and spoken by
-Chirp 3 HD, and `gemini-4-hydrogen` as the judge.
+scenarios `../scenarios` held then (the suites of 22 November, further down, have a 29th), with
+`gemini-3.8-live` on Vertex (us-central1) as the call's model, user clips from
+`gemini-3.8-flash-tts`, headlines written by `gemini-3.1-flash-lite` and spoken by Chirp 3 HD,
+and `gemini-4-hydrogen` as the judge.
 
 Each folder holds `report.txt` (what `report.ts` prints: a row per scenario and every failed
 check) and `runs.tar.gz` (each call's `log.jsonl`, the `scenario.json` it ran and the judge's
@@ -73,6 +74,73 @@ of 292 headlines took longer than 3 s.
 
 The default `announce.briefWait` has been 3 s since. The builds after `21c057956950` (that
 default, and the fixes from review) have not had a suite on a normal network.
+
+## Hand-offs named in words, 22 November 2026
+
+A call that day made three requests in a row while the earlier ones ran. Each hand-off got a
+tone and no words, a request to look at the user's T3 Code sessions was answered from the call's
+own task list, and an earlier task's result was told straight after the third request, in place
+of any word about it. `../scenarios/parallel-threads.json` scripts that call, which makes 29
+scenarios. `handOff: "named"` (see `../../README.md`) is the fix, with a sentence in the
+instruction on what `list_tasks` covers.
+
+| Folder | Calls | Build | Config over the bench's defaults |
+|---|---|---|---|
+| `threads-before` | 3 | `ba4140d296a2` (`17f89bd`) | none; `parallel-threads` only |
+| `threads-tone` | 3 | `ba3988e08df4` | `{"handOff":"tone"}`; `parallel-threads` only |
+| `threads-named` | 3 | `ba3988e08df4` | `{"handOff":"named"}`; `parallel-threads` only |
+| `hand-off-tone` | 58 | `df8ea5ceca0e` | `{"handOff":"tone"}` |
+| `hand-off-always` | 58 | `df8ea5ceca0e` | `{"handOff":"spoken"}` |
+| `hand-off-named` | 58 | `ba3988e08df4` | `{"handOff":"named"}` |
+
+`ba3988e08df4` is the build this change commits, and the bench's defaults now carry
+`handOff: "named"`. `df8ea5ceca0e` was an earlier build of the same change and is not in the
+history: its "spoken" setting asked for words after every hand-off, and with "tone" it sends
+what the committed build sends. The 58-call suites are every scenario twice.
+
+The call's own scenario, three calls each, scored with its final checks:
+
+| | `threads-before` | `threads-tone` | `threads-named` |
+|---|---|---|---|
+| Score, 0 to 100 | 40 | 67 | 97 |
+| Checks passed, of 14 | 11.0 | 12.0 | 14.0 |
+| Judge, 0 to 10 | 4.0 | 6.7 | 9.3 |
+| The T3 Code sessions request went to Hermes | 0 of 3 | 3 of 3 | 3 of 3 |
+| The coding request was confirmed before the earlier result | 0 of 3 | 0 of 3 | 3 of 3 |
+
+Across all the builds of this change the T3 Code sessions request went to Hermes in 14 of 15
+calls and to the coding agent in one; it never went to `list_tasks` again.
+
+Every scenario, two calls each. Counts are summed over the scenarios' means.
+
+| | `hand-off-tone` | `hand-off-always` | `hand-off-named` |
+|---|---|---|---|
+| Score | 80.9 | 76.4 | 81.1 |
+| Turn collisions | 4.0 | 6.5 | 3.0 |
+| Lost results | 0.5 | 2.5 | 2.0 |
+| Checks passed, of 201 | 177.5 | 176.0 | 179.5 |
+| Words the assistant said | 1626 | 1957 | 1696 |
+| Judge | 7.8 | 7.1 | 7.7 |
+
+Words after every hand-off were tried first and dropped. With one task in the call they tell
+the user what the tone already has, and they start about 2 s after the user stops, which is
+where a user who paused to think carries on (`rambling-request`: the model was cut off 0.9 s
+into "Hermes is looking into booking that haircut"). "named" keeps the tone alone for a call's
+only task, so those scenarios send the model what "tone" sends. Where tasks overlap it scored
+higher: `parallel-threads` 34 to 98, `result-during-user-speech` 68 to 100, `burst-three` 62
+to 92, `multitask-interrupt` 70 to 88. With two calls a scenario these are within the 15 points
+one scenario moves between runs, apart from `parallel-threads`.
+
+The lost results under "named" are not hand-offs gone wrong. In `steer-running` the result was
+said and transcribed as "one hundred fortyTwo pounds", which its pattern misses; in
+`noisy-request` the script ended as the result went in after a long stretch of television; in
+`question-while-busy` and `names-fidelity` the model told the result without the number its
+pattern looks for ("over two hundred old files" for 214). `correction` fell from 92 to 55 because the model started a new task for "no, I meant
+Tesco" in both calls, as it did in one of the two "tone" calls: that is what `supervise` is for,
+and the web page does not set it.
+
+The older scenarios' word limits and `noSpeech` checks were written for silent hand-offs, so
+they count against any confirmation, including a wanted one.
 
 ## Run a suite again
 

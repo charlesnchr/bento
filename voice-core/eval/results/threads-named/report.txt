@@ -1,0 +1,5 @@
+== eval/runs/threads-named
+scenario          n  score  ±  collide  lost  repeat  stray   checks  ambient s  reply s  announce s  brief s  words  judge
+parallel-threads  3     97  1      0.0   0.0     0.0    0.0  14.0/14        0.0     1.45        17.1        -     94    9.3
+ALL               3   97.3         0.0   0.0     0.0    0.0  14.0/14        0.0     1.45        17.1        -     94    9.3
+

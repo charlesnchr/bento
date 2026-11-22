@@ -41,7 +41,7 @@ const FAKE_TV = [
 ];
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
+  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, handOff: "named", vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
   android: { platform: "Android", device: "phone", standbyAfter: 20 },
   "android wake word": { platform: "Android", device: "phone", standbyAfter: 20, hangUpAfter: 15 },
   macos: { platform: "macOS", device: "Mac", standbyAfter: 20 },
@@ -615,6 +615,8 @@ function readConfig(): Record<string, unknown> {
   if (checked("ptt")) config.muted = true;
   if (given.voice === undefined) config.voice = $<HTMLSelectElement>("voice").value;
   if (config.steering === undefined) config.steering = ["hermes", "t3"];
+  // A web config saved before hand-offs were named in words gets that too.
+  if (config.handOff === undefined && config.platform === "web") config.handOff = "named";
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   return config;
 }
