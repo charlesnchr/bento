@@ -1,0 +1,85 @@
+== eval/runs/suite-spoken
+scenario                    n  score   ±  collide  lost  repeat  stray     checks  ambient s  reply s  announce s  brief s  words  judge
+agent-question              2     78  15      0.0   0.0     0.0    0.0      6.5/8        0.0     0.85         0.7        -     74    8.0
+ambient-during-task         2     10  20      0.0   0.0     0.0    0.0      3.0/6        7.4        -        10.6        -     61    3.0
+ambient-tv                  2     20  10      0.0   0.0     0.0    1.0      2.0/4        3.8        -         0.7        -     65    2.5
+away-and-back               2     69   2      0.0   0.0     0.0    0.0      3.0/5        0.0     1.41         0.6        -     79    5.0
+burst-three                 2     85  30      0.0   0.0     0.0    0.0      6.0/7        0.0     0.79         5.2        -     85    7.0
+cancel-one                  2     71  26      0.0   0.5     0.0    0.0      7.0/8        0.0     1.32         0.7        -     72    7.0
+coding-handoff              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0     0.97         0.7        -     76    8.0
+correction                  2     50   0      0.0   0.0     0.0    0.0      3.0/6        0.0     0.76         3.0        -     65    4.0
+echo-wake-barge-in          2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.75           -        -     18   10.0
+failed-task                 2     93  15      0.0   0.0     0.0    0.0      6.5/7        0.0     0.69           -        -     37    8.0
+interrupted-reply           2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.96           -        -     17   10.0
+long-result                 2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.65         0.6        -     62    9.0
+multitask-interrupt         2     70  24      0.0   0.5     0.0    0.0    11.0/12        0.0     1.51         0.6        -    124    7.5
+names-fidelity              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -        10.2        -     98    7.5
+noisy-request               2     75  30      0.0   0.5     0.0    0.0      3.5/4        0.4        -        10.5        -      7    6.0
+parallel-threads            2     89  21      0.5   0.0     0.5    0.0    14.0/14        0.0     1.37        20.5        -    107    7.5
+question-while-busy         2     20   0      1.0   1.0     0.0    0.0     7.0/10        0.0     0.86        15.2        -    113    6.0
+quick-chat                  2     93  15      0.0   0.0     0.0    0.0      6.5/7        0.0     0.86           -        -     52   10.0
+rambling-request            2     60   0      1.0   0.0     0.0    0.0      3.0/5        0.0        -         5.1        -     35    3.5
+result-during-dialogue      2     60  20      3.0   0.0     1.0    0.0      5.0/5        0.0     0.82        28.2        -    189    4.0
+result-during-user-speech   2     90   0      1.0   0.0     0.0    0.0      6.0/6        0.0     0.76        17.3        -     48    8.0
+side-speech                 2     10  20      0.0   0.0     0.0    1.0      2.5/5        7.2        -         0.6        -     47    3.0
+silence-then-continue       2     98   5      0.0   0.0     0.0    0.0      6.0/6        0.0     0.76           -        -     73    9.5
+single-task                 2     78  15      0.0   0.0     0.0    0.0      5.5/7        0.0     0.77         0.7        -     34    8.0
+standby-resume              2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.86         1.6        -     54    9.0
+status-check                2     99   1      0.0   0.0     0.0    0.0    11.0/11        0.0     1.42         0.9        -    107    8.0
+steer-running               2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.83         3.6        -     82    8.5
+stop-mid-announcement       2    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.86           -        -     41    8.0
+wake-from-standby-speech    2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0        -         0.7        -     39    9.0
+ALL                        58   76.4          6.5   2.5     1.5    2.0  176.0/201       18.8     0.86         1.6        -   1957    7.1
+
+failed checks:
+  agent-question-1: {"maxModelWords":35,"after":"ask","before":"yes"} (40 words)
+  agent-question-1: {"maxModelWords":30,"after":"yes","before":"thanks"} (31 words)
+  agent-question-2: {"maxModelWords":35,"after":"ask","before":"yes"} (36 words)
+  ambient-during-task-1: {"noSpeech":true,"after":"start:tv1","before":"result:tariffs"} (3 segment(s): To get that perfect soft-boiled egg with a runny yolk and The comparison is still running; Hermes is currently Parboil t)
+  ambient-during-task-1: {"status":"standby"} (status standby)
+  ambient-during-task-1: {"connected":"tariffs","max":40} (connected 75.0 s of the task's 75.0 s)
+  ambient-during-task-2: {"noSpeech":true,"after":"start:tv1","before":"result:tariffs"} (2 segment(s):  Parboil them first, then rough up the edges and use plenty of really)
+  ambient-during-task-2: {"status":"standby"} (status standby)
+  ambient-during-task-2: {"connected":"tariffs","max":40} (connected 75.0 s of the task's 75.0 s)
+  ambient-tv-1: {"noSpeech":true,"before":"ask"} (2 segment(s): Hermes is checking the weather forecast for York. Expect heavy showers on Saturday, clearing from the west on Sunday aft)
+  ambient-tv-1: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  ambient-tv-2: {"noSpeech":true,"before":"ask"} (4 segment(s): Good evening! How can I help you today? That sounds like a  Hermes is setting a reminder for you to check the weather be)
+  ambient-tv-2: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  away-and-back-1: {"said":"78|seventy[- ]eight","after":"back"} (the model said: You’re all caught up! You missed the results for your sleep score and the email from the electrician, which I just shared.)
+  away-and-back-1: {"said":"tuesday","after":"back"} (the model said: You’re all caught up! You missed the results for your sleep score and the email from the electrician, which I just shared.)
+  away-and-back-2: {"said":"78|seventy[- ]eight","after":"back"} (the model said: Everything is caught up; you received the results for your Garmin sleep score and the electrician's email reply.)
+  away-and-back-2: {"said":"tuesday","after":"back"} (the model said: Everything is caught up; you received the results for your Garmin sleep score and the electrician's email reply.)
+  burst-three-2: {"voiced":"arsenal","within":6} (said 1x, delay 6.5)
+  burst-three-2: {"voiced":"brighton","within":6} (said 1x, delay 6.83)
+  cancel-one-1: {"maxModelWords":50,"after":"cancel","before":"thanks"} (52 words)
+  cancel-one-2: {"voiced":"radiator","within":20} (said 0x, delay null)
+  correction-1: {"anyOf":[{"cancel":"lidl"},{"followUp":"lidl","match":"tesco"}]} (fail: cancel of lidl | fail: 0 follow-up(s) reached lidl)
+  correction-1: {"notSaid":"\\b(10|ten)\\b ?(pm|p\\.? ?m|o'clock|tonight)|lidl closes","after":"fix"} (the model said: Hermes is checking the closing time for the Tesco on Seven Sisters Road. By the way, that Lidl on Seven Sisters Road closes )
+  correction-1: {"maxModelWords":30,"after":"fix","before":"thanks"} (45 words)
+  correction-2: {"anyOf":[{"cancel":"lidl"},{"followUp":"lidl","match":"tesco"}]} (fail: cancel of lidl | fail: 0 follow-up(s) reached lidl)
+  correction-2: {"notSaid":"\\b(10|ten)\\b ?(pm|p\\.? ?m|o'clock|tonight)|lidl closes","after":"fix"} (the model said: Hermes is looking up the Tesco closing time for you now. By the way, that Lidl on Seven Sisters Road closes at 10 pm tonight)
+  correction-2: {"maxModelWords":30,"after":"fix","before":"thanks"} (43 words)
+  failed-task-2: {"maxModelWords":10,"after":"ok"} (13 words)
+  multitask-interrupt-1: {"request":"christmas","contains":["christmas","flights"]} (missing: flights in "Separately, while that's happening, can you ask Hermes how many days it is until Christmas?")
+  multitask-interrupt-2: {"request":"christmas","contains":["christmas","flights"]} (missing: flights in "Separately, while that's happening, can you ask Hermes how many days it is until Christmas?")
+  noisy-request-1: {"voiced":"coffee","within":20} (said 0x, delay null)
+  question-while-busy-1: {"voiced":"downloads","within":30} (said 0x, delay null)
+  question-while-busy-1: {"said":"(should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead)[^.!?]*[.!?]?\\W*$","after":"bike","before":"yes"} (the model said: Given the rough roads and park paths, a gravel bike is probably your best bet for a more comfortable and versatile commute. )
+  question-while-busy-1: {"maxModelWords":25,"after":"yes","before":"thanks"} (27 words)
+  question-while-busy-2: {"voiced":"downloads","within":30} (said 0x, delay null)
+  question-while-busy-2: {"said":"(should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead)[^.!?]*[.!?]?\\W*$","after":"bike","before":"yes"} (the model said: Given the rough roads and park paths, a gravel bike would probably be your best bet; its wider tires handle potholes and bum)
+  question-while-busy-2: {"maxModelWords":25,"after":"yes","before":"thanks"} (28 words)
+  quick-chat-1: {"maxModelWords":12,"after":"thanks"} (13 words)
+  rambling-request-1: {"noSpeech":true,"after":"r1","before":"r3"} (1 segment(s): Hermes is looking into booking that haircut)
+  rambling-request-1: {"request":"haircut","contains":["hair|barber","green lanes","friday","morning|before ten|10"]} (missing: friday, morning|before ten|10 in "Can you ask Hermes to book me a haircut at the barber on Green Lanes?")
+  rambling-request-2: {"noSpeech":true,"after":"r1","before":"r3"} (1 segment(s): Hermes is looking into booking your haircut)
+  rambling-request-2: {"request":"haircut","contains":["hair|barber","green lanes","friday","morning|before ten|10"]} (missing: friday, morning|before ten|10 in "Can you ask Hermes to book me a haircut at the barber on Green Lanes?")
+  side-speech-1: {"noSpeech":true,"before":"ask"} (4 segment(s):              Hermes is checking the showtime for the film. Hermes is asking for clarification regarding your film time r)
+  side-speech-1: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  side-speech-2: {"noSpeech":true,"before":"ask"} (4 segment(s):   Hermes is checking the film time and starting the kettle. By the way, regarding the film and kettle, Hermes is waiting)
+  side-speech-2: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  side-speech-2: {"request":"cinema","contains":["odeon|cinema","wood ?green"]} (missing: wood ?green in "Ask Hermes what time the Odeon in Woodhouse closes tonight.")
+  single-task-1: {"notSaid":"still (checking|looking|working)|let me (check|ask)|i'?ll (check|ask)|asking hermes|hermes is (on|checking|looking)","after":"ask","before":"thanks"} (the model said: Hermes is checking the London weather forecast for you. You should take an umbrella, as light rain is expected in London fro)
+  single-task-2: {"notSaid":"still (checking|looking|working)|let me (check|ask)|i'?ll (check|ask)|asking hermes|hermes is (on|checking|looking)","after":"ask","before":"thanks"} (the model said: Hermes is checking the forecast for London this afternoon. You'll want an umbrella this afternoon, as there's light rain exp)
+  single-task-2: {"maxModelWords":8,"after":"thanks"} (10 words)
+

@@ -59,6 +59,7 @@
   },
   "codingAgent": null,
   "steering": [],
+  "handOff": "tone",
   "announce": {
    "by": "model",
    "engaged": 12,

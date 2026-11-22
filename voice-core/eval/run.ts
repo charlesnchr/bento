@@ -77,8 +77,11 @@ export interface Rec { t: number; k: string; [key: string]: unknown }
 
 const BASE_CONFIG = {
   api: "vertex", platform: "web", device: "browser", vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"],
-  standbyAfter: 30, hangUpAfter: 0, steering: ["hermes", "t3"], trace: true,
+  standbyAfter: 30, hangUpAfter: 0, steering: ["hermes", "t3"], handOff: "named", trace: true,
 };
+
+/** Seconds after a hand-off's tone that the simulated user waits for its spoken confirmation to start, where the core asked the model for one (handOff "named"). */
+const CONFIRM_WAIT = 3;
 
 const sleep = (s: number) => new Promise<void>((r) => setTimeout(r, s * 1000));
 
@@ -106,7 +109,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
   const sockets = new Map<number, WebSocket>();
   let callId = 0, ended = false, micOn = false;
   let speechUntil = 0, modelSpeakingSince: number | null = null, lastUserEnd = 0, lastPlay = -1, status = "";
-  let modelText = "", repliedSince = false, dispatchedSince = false, wakewordOn = false;
+  let modelText = "", repliedSince = false, dispatchedSince = false, dispatchedAt = 0, confirmDue = false, wakewordOn = false;
   const dispatched = new Map<string, number>(), resulted = new Map<string, number>();
   const speaking: { step: Step; pcm: Int16Array; offset: number; gain: number; id: string; waked: boolean; done: () => void }[] = [];
   const playLog: { at: number; pcm: Buffer }[] = [];
@@ -135,6 +138,7 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
     rec("agent.start", { run: c.run, id, taskId: c.taskId, agent: c.agent, label: c.label, followUp: c.followUp, request: words, project: c.project ?? null, scripted: script != null });
     dispatched.set(id, now());
     dispatchedSince = true;
+    dispatchedAt = now();
     const entry = { timers: [] as NodeJS.Timeout[], id, taskId: c.taskId, script, result };
     runs.set(c.run, entry);
     for (const [at, text] of script?.progress ?? []) {
@@ -228,7 +232,11 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
     let m: any;
     try { m = JSON.parse(data); } catch { return; }
     if (m.setup) rec("send", { what: "setup", resumed: !!m.setup.sessionResumption?.handle, instruction: m.setup.systemInstruction?.parts?.[0]?.text?.length ?? 0 });
-    else if (m.toolResponse) for (const r of m.toolResponse.functionResponses ?? []) rec("send", { what: "toolResponse", name: r.name, scheduling: r.scheduling ?? null, text: JSON.stringify(r.response).slice(0, 1500) });
+    else if (m.toolResponse) for (const r of m.toolResponse.functionResponses ?? []) {
+      rec("send", { what: "toolResponse", name: r.name, scheduling: r.scheduling ?? null, text: JSON.stringify(r.response).slice(0, 1500) });
+      // A hand-off's answer that asks the model to tell the user of it.
+      if (r.response?.status === "started" || String(r.response?.message ?? "").includes("got this follow-up")) confirmDue = r.scheduling === "WHEN_IDLE";
+    }
     else if (m.clientContent) rec("send", { what: m.clientContent.turnComplete ? "turn" : "note", text: (m.clientContent.turns ?? []).map((x: any) => (x.parts ?? []).map((p: any) => p.text).join("")).join(" | ").slice(0, 1500) });
     else if (m.realtimeInput) rec("send", { what: "realtime", text: JSON.stringify(m.realtimeInput).slice(0, 200) });
   }
@@ -323,9 +331,11 @@ export async function runScenario(scenario: Scenario, o: { bundle: string; confi
       const gap = step.gap ?? 1.2, patience = step.patience ?? 8;
       const asked = now();
       // The user's turn: the model has answered what was said last (or handed it off, or stayed silent for long) and has finished speaking.
+      // Where the core asked the model to name the hand-off in words, the user gives that CONFIRM_WAIT seconds to start after the tone.
       while (!ended) {
         const t = now();
-        const answered = lastUserEnd === 0 || repliedSince || dispatchedSince || t - Math.max(lastUserEnd, asked) >= patience;
+        const handedOff = dispatchedSince && (!confirmDue || t - dispatchedAt >= CONFIRM_WAIT);
+        const answered = lastUserEnd === 0 || repliedSince || handedOff || t - Math.max(lastUserEnd, asked) >= patience;
         if (answered && !modelSpeaking() && !userSpeaking() && t - Math.max(speechUntil, lastUserEnd) >= gap) break;
         await sleep(0.03);
       }

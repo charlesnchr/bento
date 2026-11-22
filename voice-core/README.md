@@ -144,8 +144,20 @@ transcript.
 
 ## Who tells results, when the model listens, and closer supervision
 
-Three settings in `CallConfig` (`src/types.ts`), all off by default, so a host that sets none
+Four settings in `CallConfig` (`src/types.ts`), all off by default, so a host that sets none
 behaves as before. `eval/` measures them (see below).
+
+**`handOff: "named"`**: when a tone can't say which request was taken, because another task is
+running or a result is still to be told, the model says in a few words after the tone what it
+started and who has it ("Hermes is looking at your T3 sessions too"), unless it said so as it
+called. The core asks for that in the task's "started" answer and holds results back until the
+model has said it (for `limits.settleMax` seconds if it says nothing), so a result that was ready
+never takes the place of the answer to the user's newest request. A hand-off the user talks
+straight over gets only its tone, and the next confirmation names it too. A follow-up to one of
+several running tasks is confirmed the same way. A call's only task still gets the tone alone:
+on the bench, words after every hand-off cost more in talking over the user than they gave
+(`eval/results/README.md`). The web page sets it; the default, "tone", is Android's silent
+hand-off. It has been measured on Vertex only.
 
 **`announce.by: "host"`**: the core tells the user each task's result itself, instead of handing
 the full reply to the speech model to word and time. For each result it sends the host a `brief`
@@ -188,7 +200,7 @@ reaches its agent whole.
 
 ## Measuring a change
 
-`eval/` runs scripted calls against the real model and scores them: 28 scenarios of real use
+`eval/` runs scripted calls against the real model and scores them: 29 scenarios of real use
 (results landing mid-conversation, several tasks at once, corrections, status checks, a television
 in the room, standby and coming back), a simulated user, scripted agents, metrics from the trace
 and a judge. See `eval/README.md`. Run the suite on the build before and after a change, three

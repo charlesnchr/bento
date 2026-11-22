@@ -65,6 +65,7 @@
   "steering": [
    "hermes"
   ],
+  "handOff": "tone",
   "announce": {
    "by": "model",
    "engaged": 12,

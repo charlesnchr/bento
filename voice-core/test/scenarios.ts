@@ -155,6 +155,56 @@ export const scenarios: Record<string, () => Sim> = {
     return s;
   },
 
+  /** Hand-offs named in words while other work is in flight (handOff "named"): a first task gets its tone alone, a result
+   *  waits for the next request's confirmation, a hand-off talked over is named with the next one, and so is a steered follow-up. */
+  "named-hand-offs": () => {
+    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: {
+      limits: fast, api: "vertex", platform: "web", device: "browser", handOff: "named", codingAgent: { projects: ["Bento"] }, steering: ["hermes", "t3"],
+    } as any });
+    const silentTurn = () => { s.generated(); s.turnComplete(); };
+    const says = (words: string, seconds: number) => { s.said(words); s.audio(Math.round(seconds * 24_000) * 2); s.advance(seconds); s.generated(); s.turnComplete(); };
+    s.advance(0.1);
+    s.turn("Find out what's going on with my Fluide sessions");
+    s.toolCall("c1", "ask_hermes", { label: "Fluide sessions" });
+    silentTurn();
+    s.advance(0.7);
+    // The result lands while the user asks for the next thing: it waits for that request's confirmation.
+    s.activity("ACTIVITY_START");
+    s.advance(0.2);
+    s.complete("All three Fluide services are up.", s.hermes()[0].run);
+    s.advance(0.4);
+    s.heard("Now start a coding session: make the Mac app use the voice core");
+    s.activity("ACTIVITY_END");
+    s.toolCall("c2", "ask_coding_agent", { project: "Bento", label: "voice core" });
+    silentTurn();
+    s.advance(0.6);
+    says("A coding agent is starting on the voice core in Bento.", 1.2);
+    s.advance(0.4);
+    says("Your Fluide services are all up.", 1);
+    s.advance(0.5);
+    // Two requests without a pause: the first gets its tone, and the second's confirmation names both.
+    s.turn("Look at my running T3 Code sessions");
+    s.toolCall("c3", "ask_hermes", { label: "T3 sessions" });
+    silentTurn();
+    s.activity("ACTIVITY_START");
+    s.advance(0.3);
+    s.heard("And what's the weather in Copenhagen");
+    s.activity("ACTIVITY_END");
+    s.toolCall("c4", "ask_hermes", { label: "Copenhagen weather" });
+    silentTurn();
+    s.advance(0.3);
+    says("Hermes has both: your T3 sessions and the weather in Copenhagen.", 1.5);
+    s.advance(0.4);
+    // A follow-up steered into the coding agent's run.
+    s.turn("Tell the coding agent to keep the old path behind a setting");
+    s.toolCall("c5", "ask_coding_agent", { continue_task: "voice core" });
+    silentTurn();
+    s.advance(0.3);
+    says("The coding agent has that.", 0.8);
+    s.advance(1);
+    return s;
+  },
+
   /** The core tells results itself and listens in windows: a brief in a quiet room, one waiting on a
    *  reply, a question, a brief that failed, dormant and woken. */
   "announcements-and-attention": () => {
