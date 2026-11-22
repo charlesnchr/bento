@@ -46,6 +46,11 @@ export const scenarios: Record<string, () => Sim> = {
     s.advance(0.3);
     s.toolCall("l1", "list_tasks");
     s.advance(0.1);
+    // A stop the model heard cancels nothing; a cancel asked for in words does.
+    s.turn("Stabit");
+    s.toolCall("x0", "cancel_task", { task: "taxi" });
+    s.advance(0.1);
+    s.turn("Never mind the taxi");
     s.toolCall("x1", "cancel_task", { task: "taxi" });
     s.advance(0.1);
     s.complete("Booked for eight.", s.hermes()[2].run);
@@ -202,6 +207,55 @@ export const scenarios: Record<string, () => Sim> = {
     s.advance(0.3);
     says("The coding agent has that.", 0.8);
     s.advance(1);
+    return s;
+  },
+
+  /** Following the user's lead on the web page (Vertex, supervise): a request said in two breaths that the model acts on
+   *  at the first, a task cancelled on the screen, a request that points back at an earlier one, and standby with a long
+   *  reply the recap cuts. */
+  "following-the-lead": () => {
+    const s = new Sim({ micEvery: 0.1, micBytes: 32, config: {
+      limits: fast, api: "vertex", platform: "web", device: "browser", handOff: "named", supervise: true, standbyAfter: 1,
+      codingAgent: { projects: ["Bento"] }, steering: ["hermes", "t3"],
+    } as any });
+    const silentTurn = () => { s.generated(); s.turnComplete(); };
+    const says = (words: string, seconds: number) => { s.said(words); s.audio(Math.round(seconds * 24_000) * 2); s.advance(seconds); s.generated(); s.turnComplete(); };
+    s.advance(0.1);
+    s.turn("I need a new change for the Bento app.");
+    s.toolCall("c1", "ask_coding_agent", { project: "Bento", label: "Bento app change" });
+    silentTurn();
+    s.advance(0.05);
+    s.activity("ACTIVITY_START");
+    s.advance(0.6);
+    s.heard(" It should work the same when I type as when I talk.");
+    s.activity("ACTIVITY_END");
+    s.toolCall("c2", "ask_coding_agent", { project: "Bento", continue_task: "Bento app change" });
+    silentTurn();
+    s.advance(0.4);
+    s.push({ type: "cancelTask", task: "1" });
+    s.advance(0.3);
+    s.turn("Update the voice core so every request goes to Hermes");
+    s.toolCall("c3", "ask_coding_agent", { label: "voice core update" });
+    silentTurn();
+    s.advance(0.3);
+    s.push({ type: "tool.error", run: s.hermes()[1].run, message: "T3: the thread never started" });
+    s.advance(0.3);
+    says("The coding agent couldn't start. Shall I give it to Hermes?", 1);
+    s.advance(0.3);
+    s.turn("Just use Hermes for that.");
+    s.toolCall("c4", "ask_hermes", { label: "voice core update", refers_back: true });
+    silentTurn();
+    s.advance(0.3);
+    s.complete("Done: every request goes to Hermes now. " + "The details follow. ".repeat(40), s.hermes()[2].run);
+    s.advance(0.3);
+    says("Every request goes to Hermes now. The details are on your screen.", 1);
+    s.advance(0.3);
+    s.turn("And check my email");
+    s.toolCall("c5", "ask_hermes", { label: "email" });
+    silentTurn();
+    s.advance(2.5);
+    s.push({ type: "resume" });
+    s.advance(0.5);
     return s;
   },
 
