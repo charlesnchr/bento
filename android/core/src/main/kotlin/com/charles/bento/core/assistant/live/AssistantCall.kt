@@ -259,8 +259,14 @@ class AssistantCall(
     /** How much of the latest audio was speech by its level, up to [Limits.wakeSpeech] ([hear]). */
     private var voiced = 0.0
     private var voiceWoke = false
-    /** When the latest microphone frame the call has taken was captured: a muted or dead microphone gives none, and what's kept grows stale. */
+    /**
+     * When the latest microphone frame the call has taken was captured ([afterGap] goes by the
+     * gap between captures), and when the call took it: a muted or dead microphone gives none,
+     * and what's kept grows stale ([stirring], [comeBack]). The second, not the first, says whether
+     * the microphone has stopped, as a call that runs behind is still getting frames.
+     */
     private var frameAt = 0.0
+    private var frameTakenAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
     /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
@@ -300,6 +306,8 @@ class AssistantCall(
     /** Results the user hasn't heard yet, in the order they finished. */
     private val unheard = ArrayList<Unheard>()
     private var delivering = false
+    /** Results are on their way to the socket ([sendDeliveries]): the call isn't left under them. */
+    private var dispatching = false
     /** The user is speaking (between Gemini's ACTIVITY_START and ACTIVITY_END), since [talkingSince]. */
     private var userTalking = false
     private var talkingSince = 0.0
@@ -639,7 +647,7 @@ class AssistantCall(
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
         if (after <= 0 || running == 0 || !listening || standby || waking || rejoining || rotating || reconnect == null) return false
-        if (settling > 0 || handling > 0 || waiting().isNotEmpty()) return false
+        if (settling > 0 || handling > 0 || dispatching || waiting().isNotEmpty()) return false
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
         if ((talking(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
@@ -792,10 +800,9 @@ class AssistantCall(
         }
         // The moment before goes to the new session too, in case words began in it (those that woke the call, or the
         // first of a request too quiet to), unless the microphone has since stopped: what it left then is stale.
-        // Sound that has gone on too long to be a word beginning is noise: woken by anything else, the call takes no
-        // more of it than of a quiet room.
+        // Of noise ([noise]) the call takes no more than of a quiet room when something other than speech wakes it.
         if (!voiceWoke) {
-            if (now() - frameAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (!stirring(now())) trim(limits.wakePreRoll)
+            if (now() - frameTakenAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
         }
         session++
         wakeStarted = now()
@@ -904,7 +911,14 @@ class AssistantCall(
      * [hear] can call it speech. Not what a microphone since muted or dead left behind, nor sound
      * that has gone on for [ONSET] times [Limits.wakeSpeech] without becoming speech: that's noise.
      */
-    private fun stirring(t: Double) = voiced > 0 && t - frameAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
+    private fun stirring(t: Double) = voiced > 0 && t - frameTakenAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
+
+    /**
+     * Speech-level sound that has gone on for twice as long as it gets to become speech ([ONSET]
+     * times [Limits.wakeSpeech], in audio) without doing so: a noisy room, not a request getting
+     * under way. By its length alone, which is all the level can tell.
+     */
+    private fun noise() = voiced > 0 && stirredBytes / 32_000.0 > limits.wakeSpeech * ONSET * 2
 
     /**
      * A microphone frame captured [at] a time well after the one before (it was muted, dead or
@@ -916,6 +930,7 @@ class AssistantCall(
     private fun afterGap(at: Double) {
         if (at - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
         frameAt = at
+        frameTakenAt = now()
     }
 
     /**
@@ -923,8 +938,8 @@ class AssistantCall(
      * begins everything since as well ([stirredBytes]), up to [ONSET] times [Limits.wakeSpeech] of
      * it. So words that wake the call go to Gemini with the pre-roll before them, however
      * haltingly they got loud enough to. Counted in audio, not by the clock: frames the call's
-     * thread takes late, in a burst, are no shorter for it. Sound that goes on for longer without
-     * becoming speech is noise, and a comeback for anything else takes less of it ([comeBack]).
+     * thread takes late, in a burst, are no shorter for it. Sound that goes on much longer without
+     * becoming speech is noise ([noise]), and a comeback for anything else takes less of it ([comeBack]).
      */
     private fun preRoll() = limits.wakePreRoll + if (voiced > 0) minOf(stirredBytes / 32_000.0, limits.wakeSpeech * ONSET) else 0.0
 
@@ -1062,6 +1077,7 @@ class AssistantCall(
         val turns = userTurns
         // Each counts as told only as it goes, so a turn that ends meanwhile can't take one not yet sent for heard.
         fun told(item: Unheard) { item.sending = false; item.told = true }
+        dispatching = true
         try {
             // One result to an open call is its last response; Gemini may give each of several its own turn, so they go as one.
             val only = batch.singleOrNull()
@@ -1081,6 +1097,7 @@ class AssistantCall(
             toldResults(batch)
             send(CallSetup.resultFrame(batch.map { it.label to it.result }, waiting = batch.filter { it.asked != null }.map { it.label }), resend = true)
         } finally {
+            dispatching = false
             batch.forEach { it.sending = false }
         }
     }
