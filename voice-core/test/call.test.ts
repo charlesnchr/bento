@@ -315,6 +315,34 @@ test("silence while Hermes works leaves Gemini, and its answer brings the call b
   assert.deepEqual(s.cues(), ["taskStarted", "resultArrived"]);
 });
 
+test("a request longer than the standby time isn't cut off, and starts a second task", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.advance(0.3);
+  // The model says the user started, then nothing until they stop: five standby times of speech.
+  s.activity("ACTIVITY_START");
+  s.advance(2.5);
+  assert.notEqual(s.statuses().at(-1), "standby");
+  assert.ok(!s.sockets.get(1)!.closed, "the session the request is being said to stays open");
+  s.heard("And check the token counts for the Hermes session too."); s.activity("ACTIVITY_END");
+  s.toolCall("c2");
+  s.advance(0.2);
+  assert.equal(s.hermes().length, 2, "the follow-up became a task of its own, beside the first");
+  // Then it's quiet, and the call leaves as before.
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+});
+
+test("a turn the model never ends doesn't keep the call from standing by for good", () => {
+  const s = sim({ standbyAfter: 0.5, limits: { ...fast, deliverMax: 1 } });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.activity("ACTIVITY_START");
+  s.advance(2.5);
+  assert.notEqual(s.statuses().at(-1), "standby");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+});
+
 test("talking in standby brings the call back with the first words", () => {
   const s = sim({ standbyAfter: 0.5 });
   s.turn("Book a table"); s.toolCall("c1");
