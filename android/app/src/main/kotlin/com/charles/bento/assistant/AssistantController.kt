@@ -642,8 +642,15 @@ class AssistantController(
     fun setMuted(muted: Boolean) {
         val c = call ?: return
         c.muted = muted
-        set { s -> s.copy(call = s.call?.copy(muted = muted)) }
+        // In standby the banner says how to come back, which depends on whether the microphone hears.
+        set { s -> s.copy(call = s.call?.let { ui -> ui.copy(muted = muted, status = if (ui.standby) standbyStatus(muted) else ui.status) }) }
     }
+
+    /**
+     * A muted microphone (tap to talk, or muted by hand) hears nothing, so speaking doesn't bring the
+     * call back: "Talk now" does, and the microphone's own button opens it once the call is back.
+     */
+    private fun standbyStatus(muted: Boolean) = if (muted) STANDBY_MUTED_STATUS else STANDBY_STATUS
 
     /** Starts a call on the conversation on screen, or ends the running one. The screen has the microphone permission. */
     fun toggleCall() {
@@ -747,7 +754,7 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        s.copy(call = s.call?.copy(status = STANDBY_STATUS, connecting = false, hermesWorking = true, standby = true))
+                        s.copy(call = s.call?.copy(status = standbyStatus(s.call.muted), connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
                     is AssistantCall.Status.Ended -> {
@@ -1015,6 +1022,7 @@ class AssistantController(
 
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
+        const val STANDBY_MUTED_STATUS = "Paused while Hermes works. Tap Talk now, then the microphone to speak."
 
         /** Who a call task's reply in the chat is from: by the task's name, since a recap of the chat goes back to Gemini. */
         internal fun taskSpeaker(label: String) = "Hermes · $label"

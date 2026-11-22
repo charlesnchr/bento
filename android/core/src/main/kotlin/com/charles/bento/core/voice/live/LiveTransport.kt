@@ -19,6 +19,8 @@ interface LiveTransport {
     suspend fun send(frame: String)
     /** The next server frame; throws once the socket is closed or failed. */
     suspend fun receive(): String
+    /** Bytes [send] has taken that haven't gone out yet, where the socket can tell. */
+    fun queued(): Long = 0
     fun close()
 }
 
@@ -94,6 +96,8 @@ class OkHttpLiveTransport(
     }
 
     override suspend fun receive(): String = incoming.receive()
+
+    override fun queued(): Long = socket?.queueSize() ?: 0
 
     override fun close() {
         if (closed) return

@@ -80,10 +80,16 @@ interface CallAudio {
  *
  * Gemini bills a connection by the second, so a call with only Hermes left to wait for, in
  * silence for [standbyAfter] seconds, leaves it ([Status.Standby]): the socket closes and the
- * microphone keeps running unheard. When any task finishes, the user starts talking (the
- * microphone's level, [Limits.wakeLevel]) or on [wake], a new session starts with the
- * conversation so far ([recap]); the words that woke it and any said while it connects go in
- * once it's set up. Results that outlived their session go in as a new turn for Gemini to speak
+ * microphone keeps running unheard. It never leaves in the middle of anything
+ * ([idleWhileHermesWorks]): not while the user is speaking, however long (Gemini's open turn for
+ * them, the microphone's own level or the captioner, since Gemini sends no words until they
+ * stop), nor while Gemini owes them a reply or a function call, is partway through a turn, or
+ * has a function call still being answered: a follow-up longer than the standby time, said
+ * while a task ran, was cut off there and never became a second task. When any task finishes,
+ * the user starts talking (the microphone's level, [Limits.wakeLevel]) or on [wake], a new
+ * session starts with the conversation so far ([recap]); the words that woke it and any said
+ * while it connects go in once it's set up, ahead of any result, which then waits for the line
+ * like any other. Results that outlived their session go in as a new turn for Gemini to speak
  * ([CallSetup.resultFrame]), since the old session's calls are gone with it.
  * In standby the microphone can be lent to a dictation ([lend]); the call stays in standby until
  * it's back ([reclaim]), hears none of it (nor wakes to it), and only then comes back for a task
@@ -141,14 +147,20 @@ class AssistantCall(
         val deliverMax: Double = 30.0,
         /** Seconds a caption stays after its utterance ended, if Gemini sends no transcript to replace it. */
         val captionLinger: Double = 4.0,
-        /** In standby, microphone frames this loud (RMS, as a fraction of full scale) count as speech; 0 never wakes. */
+        /**
+         * Microphone frames this loud (RMS, as a fraction of full scale) count as speech: in standby it brings the call
+         * back, and on Gemini it holds standby off. 0 never wakes, and leaves that to Gemini and the captioner.
+         */
         val wakeLevel: Double = 0.05,
         /** Seconds of speech in standby that bring the call back. */
         val wakeSpeech: Double = 0.5,
-        /** Seconds of audio before the wake kept for Gemini, so the first words aren't lost. */
+        /** Seconds of audio before the speech that wakes the call kept for Gemini with it, so the first words aren't lost. */
         val wakePreRoll: Double = 1.5,
-        /** The most audio held for a session coming back from standby, in seconds. */
-        val holdMax: Double = 15.0,
+        /**
+         * The most audio held for a session coming back from standby, in seconds: more than a comeback may take
+         * ([connect]) with the moment before it ([wakePreRoll]), so one that succeeds has everything said meanwhile.
+         */
+        val holdMax: Double = 30.0,
     )
 
     sealed interface Status {
@@ -166,10 +178,19 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    /** Microphone frames, each with the [lends] count it was captured under; when it's full the oldest goes ([offer]). */
-    private val mic = Channel<Pair<Int, ByteArray>>(MIC_FRAMES)
+    /**
+     * Microphone frames, each with the [lends] count it was captured under and when it was, and
+     * pauses among them, in the order they were given ([MicQueue]).
+     */
+    private val mic = MicQueue(MIC_FRAMES)
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
+    /**
+     * Guards what goes into [mic] and in what order: a microphone frame and a mute each go in
+     * whole, with their check of [mutedNow], so no frame captured before a mute lands after its
+     * pause.
+     */
+    private val micLock = Any()
     private val _status = MutableStateFlow<Status>(Status.Connecting)
     override val status: StateFlow<Status> = _status.asStateFlow()
     private val _microphoneSilent = MutableStateFlow(false)
@@ -191,7 +212,7 @@ class AssistantCall(
 
     private var socket = transport
     private var active = false
-    private var listening = false
+    @Volatile private var listening = false
     private var goingAway = false
     /** The latest handle Gemini says the session can resume from. */
     private var resumeHandle: String? = null
@@ -205,7 +226,8 @@ class AssistantCall(
     private var micRestarts = 0
     private var micRestartedAt = 0.0
     @Volatile private var mutedNow = false
-    private var streamEnded = false
+    /** When the microphone was last muted; written before [mutedNow]. */
+    @Volatile private var mutedAt = 0.0
     private val cancelledCalls = HashSet<String>()
     /** Supervisor calls already answered, so a repeated ID isn't answered twice. */
     private val answered = HashSet<String>()
@@ -214,6 +236,8 @@ class AssistantCall(
     private var nextTask = 1
     /** `ask_hermes` calls still waiting for their transcript to settle: no task yet, and no answer sent. */
     private var settling = 0
+    /** Function calls of Gemini's the call is still answering: an `ask_hermes` until Gemini has been told the task started or that nothing ran, a supervisor call until its answer has gone. */
+    private var handling = 0
     /** Each session after standby is a new one, and the calls of an earlier one are gone with it. */
     private var session = 0
     /** How the current session was set up: the call's [resume], or after standby the conversation then. */
@@ -234,24 +258,83 @@ class AssistantCall(
     /** A comeback held off while the microphone was lent: it happens on [reclaim]. */
     private var wakeHeld = false
     private var wakeStarted = 0.0
-    /** In standby, the latest audio and how much of it was speech; coming back, everything since, for the new session. */
+    /**
+     * The latest microphone audio ([preRoll], on Gemini and in standby alike, so words begun just
+     * before standby are still there when they wake it); coming back, everything since, for the new session.
+     */
     private val held = ArrayDeque<ByteArray>()
     private var heldBytes = 0
+    /** How much of the latest audio was speech by its level, up to [Limits.wakeSpeech] ([hear]). */
     private var voiced = 0.0
     private var voiceWoke = false
-    /** Back from standby, until the held audio has gone to the new session. */
+    /**
+     * When the latest microphone frame the call has taken was captured ([afterGap] goes by the
+     * gap between captures), and when the microphone last gave the call one at all, taken yet or
+     * not ([offeredAt], on the audio thread): a muted or dead microphone gives none, and what's
+     * kept grows stale ([stirring], [comeBack]). The second says whether the microphone has
+     * stopped, whether the call runs behind it or has only just caught up with what it gave.
+     * [resumedAt] is the latest frame it gave after giving none for a while: until the call has
+     * taken that one, what it has kept is from before the gap.
+     */
+    private var frameAt = 0.0
+    @Volatile private var offeredAt = 0.0
+    @Volatile private var resumedAt = 0.0
+    /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
+    private var stirredAt = 0.0
+    /** The audio since then, that frame included, in bytes: what [preRoll] keeps on top of the moment before. */
+    private var stirredBytes = 0
+    /** Audio held for a comeback and dropped for want of room ([Limits.holdMax]), logged as it ends. */
+    private var heldLost = 0
+    /**
+     * When the call last heard the user speak by the microphone's level ([hear]), and since when
+     * without a pause: Gemini says it hears speech within a moment, so sound that has gone on for
+     * long without that isn't what a result waits for.
+     */
+    private var spokeAt = 0.0
+    private var spokeFrom = 0.0
+    /**
+     * When a caption last brought new words, and since when in the captioner's current utterance (or since a pause, if it marks none):
+     * a transcriber's word for it that someone is speaking, where [spokeAt] may be noise. It may be
+     * a television too, so a result waits on it only as long as on [spokeAt].
+     */
+    private var wordsAt = 0.0
+    private var wordsFrom = 0.0
+    /** The captioner's utterance ([captionTurnAt]) the spell of words since [wordsFrom] belongs to. */
+    private var wordsTurn: Double? = null
+    /**
+     * Back from standby, until the held audio has gone to the new session ([rejoin]), since
+     * [rejoinedAt]; [replaying] is since when the socket has been taking the frame it is on.
+     */
     private var rejoining = false
+    private var rejoinedAt = 0.0
+    private var replaying: Double? = null
+    /**
+     * Until when Gemini may still be making out the audio a comeback replayed to it, if there was
+     * any sound in it: as long as that audio lasted, [Limits.settleMax] at most. No result goes
+     * before, since there may be words in it too quiet for the call to tell, and Gemini says so
+     * only once it has heard them.
+     */
+    private var replayUntil = 0.0
     /** Results the user hasn't heard yet, in the order they finished. */
     private val unheard = ArrayList<Unheard>()
     private var delivering = false
+    /** Sends of results on their way to the socket ([sendDeliveries]; a retry can overlap one held up): the call isn't left under them. */
+    private var dispatching = 0
     /** The user is speaking (between Gemini's ACTIVITY_START and ACTIVITY_END), since [talkingSince]. */
     private var userTalking = false
     private var talkingSince = 0.0
     private var stuckLogged = false
+    /**
+     * The open turn began on a socket the call has since moved from ([rotate]): its end may have
+     * been lost with that socket, so it can't be taken to be open for good ([turnOpen]).
+     */
+    private var turnCarried = false
     /** User turns so far (ACTIVITY_START), to tell whether a new one began across a suspension. */
     private var userTurns = 0
     /** When the user's turn ended, until Gemini's reply to it completes. */
     private var replyDue: Double? = null
+    /** When the user's turn ended or Gemini asked about a task for them, until Gemini does something about it (speaks, hands it to Hermes, ends its turn): standby waits for that. */
+    private var unanswered: Double? = null
     /** Gemini has generated all of its current turn, though it may not have played yet. */
     private var generated = false
     /** When Gemini was last told something to say (a result, say), until it has said something and finished its turn. */
@@ -284,6 +367,11 @@ class AssistantCall(
     private var captionTurnAt: Double? = null
     private var captionGuess = ""
     private var captionWordsTranscribed = 0
+    /**
+     * The captioner has said an utterance began (or sent words of one) and hasn't said it ended:
+     * someone is speaking, as far as it can tell, whatever its words are doing ([idleWhileHermesWorks]).
+     */
+    private var captionOpen = false
     /** When the captioned utterance ended, for taking down a caption Gemini never replaces. */
     private var captionEndedAt: Double? = null
 
@@ -416,16 +504,14 @@ class AssistantCall(
     /** Tap-to-talk: while muted nothing is sent, and Gemini is told the stream paused so it answers. */
     override var muted: Boolean
         get() = mutedNow
-        set(value) {
+        set(value) = synchronized(micLock) {
+            if (value) mutedAt = now()
+            val was = mutedNow
             mutedNow = value
-            scope.launch {
-                if (!active || !listening) return@launch
-                if (value && !streamEnded) {
-                    streamEnded = true
-                    captions?.pause()
-                    send(STREAM_END)
-                } else if (!value) streamEnded = false
-            }
+            // A pause, through the microphone's own queue and under its lock: behind every frame the microphone gave
+            // before the mute and ahead of any it gives after, so that Gemini hears the stream paused after the audio
+            // captured before it, wherever that still is (queued, held for a comeback, or on its way; [paused]).
+            if (value && !was && listening) mic.put(Mic(lends, PAUSE, now(), telling = true))
         }
 
     override fun start() {
@@ -495,7 +581,15 @@ class AssistantCall(
                 socket = next
                 moved = true
                 goingAway = false
+                // The session is the same one on a new socket: what Gemini owed the user, it still owes, and a turn
+                // of theirs that is open stays open. Gemini said it began on the old socket and needn't say so again;
+                // it ends when Gemini says so, or when it counts as stuck ([talking]).
+                val owed = unanswered
+                val open = userTalking
                 newSession()
+                unanswered = owed
+                userTalking = open
+                turnCarried = open
                 old.close()
                 launch { read(next) }
             } finally {
@@ -518,6 +612,9 @@ class AssistantCall(
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
+                // A socket that set up and then can't take a frame of what was held for it in as long again is no better
+                // than none. A slow one that keeps taking them is left to finish, and so is one with nothing to take.
+                rejoining && replaying?.let { t - it >= limits.connect } == true -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
                 nothingLeft(t) -> { VoiceLog.i(TAG, "nothing said for ${hangUpAfter().toInt()}s and nothing running: hanging up"); stop(); return }
             }
@@ -554,19 +651,54 @@ class AssistantCall(
     private fun nothingLeft(t: Double): Boolean {
         val after = hangUpAfter()
         return after > 0 && listening && !standby && !waking && !rotating && running == 0 && settling == 0 && unheard.isEmpty() &&
-            !userTalking && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
+            !turnOpen(t) && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
     }
+
+    /**
+     * The user's turn is open, as far as closing the socket goes (standby, hanging up). One Gemini
+     * opened on this socket is open until Gemini ends it, however long that takes: a request can
+     * be long and quiet, Gemini says nothing more of it until it ends, and its age is no evidence
+     * that it has. That is a longer wait than a result's ([talking]), since a result that goes in
+     * late can go again and a closed socket loses the request. One carried over a move of the
+     * connection may have ended on the old socket unheard, so it is open only as long as it holds
+     * results back, or while the call still hears the user for itself.
+     */
+    private fun turnOpen(t: Double) = userTalking && (!turnCarried || talking(t) || t - maxOf(spokeAt, wordsAt) < limits.settleMax)
 
     /**
      * Only Hermes is left to wait for and nobody has spoken (Gemini included) for the standby time:
      * a task is running, every other is finished, and no call or result is waiting on Gemini.
+     *
+     * Closing the socket drops whatever is underway on it, so nothing may be: the user's turn (a
+     * request longer than the standby time is still one request, and Gemini sends its words only
+     * at the end), speech the microphone or the captioner hears before Gemini says so, a reply or
+     * a function call Gemini owes the user, a turn of Gemini's, a call of its being answered. What
+     * Gemini owes holds the call three standby times at most (and no more than [Limits.deliverMax]
+     * past the first), in case it never comes. A turn of the user's holds it until Gemini ends it
+     * ([turnOpen]), or for that same patience once the microphone is muted, since Gemini hears
+     * nothing more of it then.
      */
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
-        return after > 0 && running > 0 && settling == 0 && waiting().isEmpty() && listening && !standby && !waking &&
-            !rotating && reconnect != null && t - maxOf(lastSpeech, speechUntil, toneAt) >= after &&
-            // Gemini hasn't spoken what it was told yet: closing now would lose it (unless it stays silent for long).
-            (unspokenSince?.let { t - it >= after * 3 } ?: true)
+        if (after <= 0 || running == 0 || !listening || standby || waking || rejoining || rotating || reconnect == null) return false
+        if (settling > 0 || handling > 0 || dispatching > 0 || waiting().isNotEmpty()) return false
+        val patience = minOf(after * 3, after + limits.deliverMax)
+        // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
+        if ((turnOpen(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
+        // The microphone has given speech-level sound, or a pause, that the call hasn't yet taken (it is behind, on a
+        // send held up, say): none of the call's own clocks know of it, and it may be the next request, or the end of
+        // one. Only while the call is less than the queue's length behind: further than that, audio is being dropped,
+        // and a socket that slow is no reason to stay.
+        if (mic.telling() && t - frameAt < MIC_FRAMES * FRAME_SECONDS) return false
+        // The captioner says an utterance is under way and hasn't said it ended, though its words have stopped coming.
+        if (captionOpen && t - maxOf(captionTurnAt ?: 0.0, wordsAt) < patience) return false
+        // The captioner says an utterance began before it has a word of it.
+        val quiet = t - maxOf(lastSpeech, speechUntil, toneAt, spokeAt, wordsAt, captionTurnAt ?: 0.0)
+        if (quiet < after) return false
+        // Gemini hasn't answered the user, finished its turn or spoken what it was told yet: closing now would lose it
+        // (unless it stays silent for long).
+        return (unanswered?.let { t - it >= patience } ?: true) && (!geminiSpeaking || quiet >= patience) &&
+            (unspokenSince?.let { t - it >= patience } ?: true)
     }
 
     /** Gemini has been told something to say at its next pause. */
@@ -598,7 +730,9 @@ class AssistantCall(
         geminiSpeaking = false
         skipTurn = false
         userTalking = false
+        turnCarried = false
         replyDue = null
+        unanswered = null
         generated = false
         geminiSaid.clear()
     }
@@ -637,6 +771,7 @@ class AssistantCall(
     /** Gemini said something: it counts towards what it was told unless its turn began before. */
     private fun geminiSpoke() {
         geminiSpeaking = true
+        unanswered = null
         if (!skipTurn) spokeSince = true
     }
 
@@ -651,6 +786,7 @@ class AssistantCall(
         socket.close()
         _status.value = Status.Standby
         captions?.pause()
+        captionOpen = false
         takeDownCaption()
     }
 
@@ -705,8 +841,12 @@ class AssistantCall(
             if (lent) { wakeHeld = true; voiceWoke = false; return }
             waking = true
         }
-        // Only the words that woke it keep the audio before; otherwise the new session hears from now.
-        if (!voiceWoke) { held.clear(); heldBytes = 0 }
+        // The moment before goes to the new session too, in case words began in it (those that woke the call, or the
+        // first of a request too quiet to), unless the microphone has since stopped: what it left then is stale.
+        // Of noise ([noise]) the call takes no more than of a quiet room when something other than speech wakes it.
+        if (!voiceWoke) {
+            if (micStopped(now())) { held.clear(); heldBytes = 0 } else if (noise()) trim(limits.wakePreRoll)
+        }
         session++
         wakeStarted = now()
         _status.value = Status.Waking
@@ -728,23 +868,95 @@ class AssistantCall(
         }
     }
 
-    /** Back from standby: what the user said meanwhile goes in, then results that were waiting for Gemini to speak. */
-    private suspend fun cameBack() {
+    /**
+     * Back from standby: what the user said meanwhile goes in ([rejoin]), then results that were
+     * waiting for Gemini to speak, once the line is quiet ([deliverWhenIdle]). Called as the read
+     * loop takes setupComplete; the audio goes out beside it, so that a socket slow to take it
+     * doesn't keep the call from hearing what Gemini says meanwhile, a function call included.
+     */
+    private fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
         newSession()
-        while (held.isNotEmpty()) {
-            val pcm = held.removeFirst()
-            heldBytes -= pcm.size
-            send(audioFrame(pcm))
-            captions?.feed(pcm)
+        scope.launch { rejoin() }
+    }
+
+    /**
+     * Sends the new session the audio held for it, oldest first, with what the microphone gives
+     * meanwhile, until it has caught up. No result goes while it does ([lineFree]): anything
+     * still held may be the user's words, and a result may not overtake them. A socket no faster
+     * than the microphone never catches up, and then results wait; it can't carry a call either.
+     *
+     * A result sent straight after the user's words is what Gemini answers, and their request is
+     * dropped. So if there was sound in the audio, Gemini gets as long as it lasted to say it hears
+     * words in it, perhaps too quiet for the call ([replayUntil]); and if the call heard the user
+     * speak, Gemini owes them a reply first, unless it has opened a turn for them meanwhile.
+     */
+    private suspend fun rejoin() {
+        val turns = userTurns
+        var replayed = 0
+        var peak = 0.0
+        suspend fun replay() {
+            while (held.isNotEmpty()) {
+                val pcm = held.removeFirst()
+                replaying = now()
+                if (pcm.isEmpty()) {
+                    // Where the microphone was muted ([paused]): after the audio before it, for the captioner too.
+                    captions?.pause()
+                    lastSpeech = now()
+                    send(STREAM_END)
+                } else {
+                    heldBytes -= pcm.size
+                    replayed += pcm.size
+                    peak = maxOf(peak, level(pcm))
+                    send(audioFrame(pcm))
+                    captions?.feed(pcm)
+                }
+                replaying = null
+            }
         }
+        replay()
+        // The socket may have taken audio it hasn't sent yet, and Gemini can't hear what is still queued here: the
+        // call waits for that to go too, looking a moment after each send and taking what the microphone gives
+        // meanwhile.
+        while (active && socket.queued() > 0 && now() - rejoinedAt < limits.connect) {
+            delay(20)
+            if (socket.queued() <= 0) break
+            replay()
+        }
+        replay()
         heldBytes = 0
-        voiced = 0.0
+        if (heldLost > 0) VoiceLog.w(TAG, "the call came back too slowly to keep all that was said meanwhile: the first ${heldLost / 32} ms are lost")
+        heldLost = 0
+        // The peak says whether MURMUR is a fair line between a room and a voice on this phone.
+        VoiceLog.i(TAG, "back from standby: ${replayed / 32} ms replayed, peak level ${(peak * 1000).toInt() / 1000.0}")
+        val spoke = voiceWoke || stirring(now()) || maxOf(spokeAt, wordsAt) >= wakeStarted
         voiceWoke = false
         rejoining = false
-        sendDeliveries()
+        lastSpeech = maxOf(lastSpeech, now())
+        replayUntil = if (peak >= limits.wakeLevel / MURMUR) now() + minOf(replayed / 32_000.0, limits.settleMax) else 0.0
+        // A turn Gemini opened for them during the replay holds results itself, and ends with a reply due.
+        if (spoke && userTurns == turns) { replyDue = now(); unanswered = now() }
+        if (waiting().isNotEmpty()) deliverWhenIdle()
         settled()
+    }
+
+    /**
+     * The call has come to where the microphone was muted, in the order its frames were captured:
+     * Gemini and the captioner are told the stream paused, so Gemini answers. While audio held
+     * through a comeback is going out, that waits its turn behind it ([rejoin]), even with none
+     * left in hand: the last of it may still be on its way. In standby it joins what's kept, to go
+     * with that if a comeback takes it; with nothing kept there's nothing it would follow.
+     */
+    private suspend fun paused() {
+        captionOpen = false
+        if (!standby && !rejoining) {
+            captions?.pause()
+            // Gemini is told the user stopped: the quiet that leads to standby counts from here, so that it has that
+            // long to say what it heard, where the words before were ones the call couldn't tell.
+            lastSpeech = now()
+            send(STREAM_END)
+        } else if (rejoining || held.isNotEmpty()) held.addLast(PAUSE)
     }
 
     /**
@@ -754,18 +966,96 @@ class AssistantCall(
     private fun hold(pcm: ByteArray) {
         // A dictation has the microphone: none of it is Gemini's, nor a reason to come back.
         if (lent) { held.clear(); heldBytes = 0; voiced = 0.0; return }
-        held.addLast(pcm)
-        heldBytes += pcm.size
-        // 16 kHz 16-bit mono: 32,000 bytes a second.
-        val keep = if (waking || rejoining) limits.holdMax else limits.wakePreRoll
-        while (heldBytes > keep * 32_000 && held.size > 1) heldBytes -= held.removeFirst().size
-        if (waking || rejoining || limits.wakeLevel <= 0) return
-        val seconds = pcm.size / 32_000.0
-        voiced = if (level(pcm) >= limits.wakeLevel) voiced + seconds else maxOf(0.0, voiced - seconds / 2)
-        if (voiced >= limits.wakeSpeech) {
+        val speech = hear(pcm)
+        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll())
+        if (speech && !waking && !rejoining) {
             voiceWoke = true
             comeBack()
         }
+    }
+
+    /**
+     * Speech-level sound in the microphone's last moment: perhaps the user's first word, before
+     * [hear] can call it speech. Not what a microphone since muted or dead left behind, nor sound
+     * that has gone on for [ONSET] times [Limits.wakeSpeech] without becoming speech: that's noise.
+     */
+    private fun stirring(t: Double) = voiced > 0 && !micStopped(t) && t - stirredAt <= limits.wakeSpeech * ONSET
+
+    /**
+     * The microphone has given the call nothing for a while, or has only just started again and
+     * the call hasn't yet taken that frame: what's kept is what it left before, not its last moment.
+     */
+    private fun micStopped(t: Double) = t - offeredAt > MIC_GAP || resumedAt > frameAt
+
+    /**
+     * Speech-level sound that has gone on for twice as long as it gets to become speech ([ONSET]
+     * times [Limits.wakeSpeech], in audio) without doing so: a noisy room, not a request getting
+     * under way. By its length alone, which is all the level can tell.
+     */
+    private fun noise() = voiced > 0 && stirredBytes / 32_000.0 > limits.wakeSpeech * ONSET * 2
+
+    /**
+     * A microphone frame captured [at] a time well after the one before (it was muted, dead or
+     * restarted) follows on from nothing: what was kept from before isn't the start of what comes
+     * now, and Gemini has heard it. Coming back, everything held is still to be heard. By when
+     * frames were captured, not when the call got to them: a thread held up for a moment has
+     * missed no audio.
+     */
+    private fun afterGap(at: Double) {
+        if (at - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
+        frameAt = at
+    }
+
+    /**
+     * How much of the latest audio is kept: [Limits.wakePreRoll], and once speech-level sound
+     * begins everything since as well ([stirredBytes]), up to [ONSET] times [Limits.wakeSpeech] of
+     * it. So words that wake the call go to Gemini with the pre-roll before them, however
+     * haltingly they got loud enough to. Counted in audio, not by the clock: frames the call's
+     * thread takes late, in a burst, are no shorter for it. Sound that goes on much longer without
+     * becoming speech is noise ([noise]), and a comeback for anything else takes less of it ([comeBack]).
+     */
+    private fun preRoll() = limits.wakePreRoll + if (voiced > 0) minOf(stirredBytes / 32_000.0, limits.wakeSpeech * ONSET) else 0.0
+
+    /** Keeps [pcm] as the latest audio, and no more than [seconds] of it. */
+    private fun keep(pcm: ByteArray, seconds: Double) {
+        held.addLast(pcm)
+        heldBytes += pcm.size
+        trim(seconds, lost = waking || rejoining)
+    }
+
+    /** Drops the oldest of what's kept down to [seconds] of it; [lost] when that's audio a comeback was to have had. */
+    private fun trim(seconds: Double, lost: Boolean = false) {
+        // 16 kHz 16-bit mono: 32,000 bytes a second.
+        while (heldBytes > seconds * 32_000 && held.size > 1) {
+            val dropped = held.removeFirst().size
+            heldBytes -= dropped
+            if (lost) heldLost += dropped
+        }
+    }
+
+    /**
+     * Listens to a microphone frame for speech by its level, on Gemini and off it: true once
+     * [Limits.wakeSpeech] of the latest audio was that loud. Gemini says the user is speaking only
+     * a moment after they start, and nothing more until they stop, so this is what tells the call
+     * they're still at it; in standby it brings the call back.
+     */
+    private fun hear(pcm: ByteArray): Boolean {
+        if (limits.wakeLevel <= 0) return false
+        val seconds = pcm.size / 32_000.0
+        val loud = level(pcm) >= limits.wakeLevel
+        if (loud && voiced <= 0) { stirredAt = now(); stirredBytes = 0 }
+        voiced = if (loud) minOf(limits.wakeSpeech, voiced + seconds) else maxOf(0.0, voiced - seconds / 2)
+        if (voiced > 0) stirredBytes += pcm.size
+        if (voiced < limits.wakeSpeech) return false
+        spoke()
+        return true
+    }
+
+    /** The microphone hears the user speak, by its level: after a pause, a new spell of it begins. */
+    private fun spoke() {
+        val t = now()
+        if (t - spokeAt > limits.settleQuiet) spokeFrom = t
+        spokeAt = t
     }
 
     /** RMS of PCM16 little-endian audio, as a fraction of full scale. */
@@ -802,17 +1092,24 @@ class AssistantCall(
 
     /**
      * Nobody is speaking or has for a moment, no call is waiting for its words, and Gemini owes no
-     * reply: a result sent now isn't lost in a turn about something else.
+     * reply: a result sent now isn't lost in a turn about something else. A caption's new words
+     * count ([wordsAt]), and so does speech by the microphone's level ([spokeAt]), each for the
+     * first [Limits.settleMax] of a spell of it: by then Gemini has said it hears the user, which
+     * holds the result in its own right, or it's a noisy room, where results would otherwise all
+     * come late.
      */
-    private fun lineQuiet(t: Double) = lineFree(t) && t - maxOf(lastSpeech, speechUntil) >= limits.settleQuiet
+    private fun lineQuiet(t: Double) = lineFree(t) &&
+        t - maxOf(lastSpeech, speechUntil, if (t - wordsFrom <= limits.settleMax) wordsAt else 0.0,
+                  if (t - spokeFrom <= limits.settleMax) spokeAt else 0.0) >= limits.settleQuiet
 
     /**
      * The user isn't speaking, no call of theirs is settling and Gemini owes them no reply (nor
      * hasn't yet said what it was just told, such as "say that again"), nor is its speech still
-     * playing: the least a result waits for, however long it has waited, since Gemini answers
+     * playing, nor is audio held through a comeback still going to Gemini ahead of everything
+     * else, or only just gone ([replayUntil]): the least a result waits for, however long it has waited, since Gemini answers
      * whatever arrives last and the user's request would be the one dropped.
      */
-    private fun lineFree(t: Double) = !talking(t) && settling == 0 && (replyDue?.let { t - it >= limits.settleMax } ?: true) && t >= speechUntil &&
+    private fun lineFree(t: Double) = !rejoining && t >= replayUntil && !talking(t) && settling == 0 && (replyDue?.let { t - it >= limits.settleMax } ?: true) && t >= speechUntil &&
         (spokeSince || unspokenSince?.let { t - it >= limits.settleMax } ?: true)
 
     /**
@@ -853,6 +1150,7 @@ class AssistantCall(
         val turns = userTurns
         // Each counts as told only as it goes, so a turn that ends meanwhile can't take one not yet sent for heard.
         fun told(item: Unheard) { item.sending = false; item.told = true }
+        dispatching++
         try {
             // One result to an open call is its last response; Gemini may give each of several its own turn, so they go as one.
             val only = batch.singleOrNull()
@@ -872,6 +1170,7 @@ class AssistantCall(
             toldResults(batch)
             send(CallSetup.resultFrame(batch.map { it.label to it.result }, waiting = batch.filter { it.asked != null }.map { it.label }), resend = true)
         } finally {
+            dispatching--
             batch.forEach { it.sending = false }
         }
     }
@@ -891,14 +1190,14 @@ class AssistantCall(
         }
         if (event["setupComplete"] != null) {
             val back = waking
-            if (back) synchronized(lending) { waking = false; standby = false; rejoining = true }
+            if (back) { synchronized(lending) { waking = false; standby = false; rejoining = true }; rejoinedAt = now(); replaying = null }
             setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
             if (back) cameBack() else listen()
         }
         when ((event["voiceActivity"] as? JsonObject)?.str("type")) {
             "ACTIVITY_START" -> {
                 val at = now()
-                protocol.activityStarted(at); lastSpeech = at; userTalking = true; talkingSince = at; userTurns++
+                protocol.activityStarted(at); lastSpeech = at; userTalking = true; turnCarried = false; talkingSince = at; userTurns++
                 // Speech that has all but played is heard now, not at the next tick, so a question that just ended can be answered.
                 played()
                 lapseQuestions()
@@ -916,7 +1215,7 @@ class AssistantCall(
                 if (geminiTurns.size > 8) geminiTurns.removeFirst()
             }
             "ACTIVITY_END" -> {
-                protocol.activityEnded(now()); lastSpeech = now(); userTalking = false; replyDue = now()
+                protocol.activityEnded(now()); lastSpeech = now(); userTalking = false; turnCarried = false; replyDue = now(); unanswered = now()
                 geminiTurns.lastOrNull()?.takeIf { it.ended == null }?.let { turn ->
                     turn.ended = now()
                     // A transcript lent to an earlier turn while this one went on, and none of its own: it was this one's.
@@ -964,6 +1263,7 @@ class AssistantCall(
             geminiSpeaking = false // the turn it was in is over
             skipTurn = false
             replyDue = null
+            unanswered = null
             generated = false
         }
         val parts = ((content["modelTurn"] as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
@@ -992,6 +1292,7 @@ class AssistantCall(
             geminiSpeaking = false
             skipTurn = false
             replyDue = null
+            unanswered = null
             generated = false
         }
         ((event["toolCallCancellation"] as? JsonObject)?.get("ids") as? JsonArray)?.take(32)?.forEach { id ->
@@ -1037,38 +1338,46 @@ class AssistantCall(
                     at += OPENING_CHUNK
                 }
             }
-            for ((captured, pcm) in mic) {
+            while (true) {
+                val (captured, pcm, at) = mic.take() ?: return@launch
                 if (!active) return@launch
                 if (captured != lends) continue
                 freshAudio(captured)
+                if (pcm.isEmpty()) { paused(); continue }
+                afterGap(at)
                 if (standby || rejoining) { hold(pcm); continue }
+                hear(pcm)
+                keep(pcm, preRoll())
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
         }
         val ok = audio.start { pcm ->
             if (!silent(pcm)) heardAt = now()
-            if (mutedNow) return@start
-            offer(lends to pcm)
+            synchronized(micLock) {
+                if (mutedNow) return@start
+                val at = now()
+                if (at - offeredAt > MIC_GAP) resumedAt = at
+                offeredAt = at
+                droppedBytes.addAndGet(mic.put(Mic(lends, pcm, at, telling = limits.wakeLevel > 0 && level(pcm) >= limits.wakeLevel)).toLong())
+            }
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
     }
 
-    /** Queues a microphone frame for the call's thread; one behind (a busy phone) loses the oldest audio, never the call. Audio thread. */
-    private fun offer(frame: Pair<Int, ByteArray>) {
-        val result = mic.trySend(frame)
-        if (result.isSuccess || result.isClosed) return
-        mic.tryReceive().getOrNull()?.let { droppedBytes.addAndGet(it.second.size.toLong()) }
-        if (mic.trySend(frame).isFailure && !mic.isClosedForSend) droppedBytes.addAndGet(frame.second.size.toLong())
-    }
-
     private fun caption(caption: Caption) {
         if (!active) return
         when (caption) {
-            is Caption.Started -> { captionTurnAt = caption.at ?: now(); captionGuess = ""; captionWordsTranscribed = 0; captionEndedAt = null }
+            is Caption.Started -> { captionTurnAt = caption.at ?: now(); captionGuess = ""; captionWordsTranscribed = 0; captionEndedAt = null; captionOpen = !standby }
             is Caption.Partial -> {
                 val from = captionTurnAt ?: now().also { captionTurnAt = it }
+                // New words are the user still speaking, though Gemini says nothing until they stop.
+                if (!standby && caption.text.isNotBlank() && caption.text != captionGuess) {
+                    if (wordsTurn != from || now() - wordsAt > limits.settleQuiet) { wordsTurn = from; wordsFrom = now() }
+                    wordsAt = now()
+                    captionOpen = true
+                }
                 captionGuess = caption.text
                 if (standby) return
                 // Guesses at words Gemini has transcribed are stale. Once Gemini hears a new turn
@@ -1083,7 +1392,7 @@ class AssistantCall(
                 captionEndedAt = null
                 showCaption(text, from)
             }
-            Caption.Ended -> if (captionText != null) captionEndedAt = now()
+            Caption.Ended -> { captionOpen = false; if (captionText != null) captionEndedAt = now() }
         }
     }
 
@@ -1138,10 +1447,14 @@ class AssistantCall(
             }
             return
         }
+        // Handing a request to Hermes is Gemini's answer to the user: it may say nothing more. A call Bento doesn't
+        // take up (one repeated, say) answers nobody, and leaves what Gemini owes as it was.
+        unanswered = null
         // The task a follow-up continues, and a new task's name: never words for Hermes.
         val named = taskRef(call)
         val label = TaskNames.tidy((call["args"] as? JsonObject)?.str("label"))
         settling++
+        handling++
         scope.launch {
             var settled = false
             fun settledNow() { if (!settled) { settled = true; settling-- } }
@@ -1183,6 +1496,7 @@ class AssistantCall(
                 }
             } finally {
                 settledNow()
+                handling--
             }
         }
     }
@@ -1396,7 +1710,10 @@ class AssistantCall(
         if (id in answered || answered.size >= 1024) return
         answered.add(id)
         val ref = taskRef(call)
-        scope.launch {
+        // Gemini speaks this call's answer, so it owes the user that; and the call isn't left while it's being answered.
+        unanswered = now()
+        handling++
+        val answering = scope.launch {
             val task = ref?.let(::find)
             val missing = (ref?.let(TaskNames::tidy)?.let { "There is no task called \"$it\"." } ?: "Say which task.") + " Call list_tasks for what's in flight."
             played()
@@ -1428,11 +1745,14 @@ class AssistantCall(
             try {
                 if (readOut.isNotEmpty()) toldInTurn(readOut)
                 respond(id, message, executed = name != CallProtocol.CANCEL_TASK || message.startsWith("Cancelled"), name = name, toSpeak = false)
+                // Gemini has its answer only now, however long that took to send: what it owes the user counts from here.
+                unanswered = now()
             } finally {
                 readOut.forEach { it.sending = false }
             }
             if (waiting().isNotEmpty()) deliverWhenIdle()
         }
+        scope.launch { answering.join(); handling-- }
     }
 
     /**
@@ -1457,6 +1777,14 @@ class AssistantCall(
      */
     private fun unheardOf(task: Task, readOut: MutableList<Unheard>, room: Int): String {
         val items = unheard.filter { it.task == task.id && !it.sending && it.playing == null }
+        // Audio held through a comeback is still going out, and may be the user's words: a result goes after it,
+        // by the usual way ([lineFree]), not ahead of it in this answer.
+        if (rejoining) {
+            if (items.isEmpty()) return ""
+            // One Gemini stayed silent about too often was waiting to be asked for, as now: it goes once more.
+            for (item in items) if (item.tries >= MAX_TRIES) item.tries = MAX_TRIES - 1
+            return " The user hasn't heard its result yet; Bento sends it once it has sent you what the user said meanwhile. Don't guess at it."
+        }
         if (items.isEmpty()) return ""
         val fit = ArrayList<Unheard>()
         var used = UNHEARD_HEADER
@@ -1505,7 +1833,8 @@ class AssistantCall(
         (if (task.runs > 1) "; latest follow-up: ${quote(task.latest)}" else "") + ")" + (if (state) ": ${task.state}" else "") +
         (if (task.queued.isNotEmpty()) ", ${task.queued.size} follow-up${if (task.queued.size > 1) "s" else ""} waiting" else "") +
         (task.progress?.takeIf { task.state == RUNNING }?.let { ". Latest: $it" } ?: "") +
-        (task.asked?.takeIf { task.state == FINISHED }?.let { ". Hermes asked: $it" } ?: "") + "."
+        // A question the user hasn't heard is part of a result that waits its turn behind audio still held ([unheardOf]).
+        (task.asked?.takeIf { task.state == FINISHED && !(rejoining && task.askedAt == 0L) }?.let { ". Hermes asked: $it" } ?: "") + "."
 
     private fun stateOf(task: Task) = if (task.state == FINISHED && task.asked != null && task.askedAt > 0) "waiting for the user's answer" else task.state
 
@@ -1577,6 +1906,7 @@ class AssistantCall(
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
         /** Two seconds of 20 ms microphone frames: a burst that big waits for the call's thread rather than being dropped. */
         const val MIC_FRAMES = 100
+        private const val FRAME_SECONDS = 0.02
         /** The words said before the call connected go to Gemini in 100 ms frames. */
         const val OPENING_CHUNK = 3_200
         const val RECONNECT_FAILED = "Gemini voice couldn't reconnect after standby. The call ended."
@@ -1594,6 +1924,8 @@ class AssistantCall(
         /** Room kept for the words around results list_tasks or check_task reads out. */
         private const val UNHEARD_HEADER = 400
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
+        /** In the microphone's queue and in what's held, where it was muted: no audio ([paused]). */
+        private val PAUSE = ByteArray(0)
         const val RUNNING = "running"
         const val FINISHED = "finished"
         const val CANCELLED = "cancelled"
@@ -1606,6 +1938,12 @@ class AssistantCall(
         const val ANSWER_TURNS = 2
         /** A user turn this many times [Limits.deliverMax] old, with nothing heard lately, no longer holds results back. */
         const val STUCK_TURNS = 3
+        /** Seconds without a microphone frame after which the audio kept from before is stale ([afterGap]). */
+        const val MIC_GAP = 1.0
+        /** Speech-level sound has this many times [Limits.wakeSpeech] to become speech before it stops holding standby off ([stirring]). */
+        const val ONSET = 4
+        /** Audio a comeback replays counts as having sound in it from this fraction of [Limits.wakeLevel]: words, perhaps, too quiet to wake the call. */
+        const val MURMUR = 5
 
         /** Exact digital silence: no microphone gives that for long, even in a quiet room. */
         private fun silent(pcm: ByteArray): Boolean {
@@ -1634,6 +1972,70 @@ class AssistantCall(
             return "Gemini voice failed (${detail.joinToString(", ")}). No task was retried."
         }
     }
+
+    /**
+     * The microphone's queue to the call's thread: frames and pauses ([PAUSE], an empty frame) in
+     * the order they were given, taken in that order. One lock covers giving, making room and
+     * taking, so the order holds whoever does which. When [capacity] frames of audio are waiting
+     * (a busy phone), the oldest audio goes to make room, never a pause and never the call: a
+     * pause is where the user stopped, and Gemini is told so wherever the audio around it went.
+     */
+    private class MicQueue(private val capacity: Int) {
+        private val items = ArrayDeque<Mic>()
+        private var audio = 0
+        private var telling = 0
+        private val waiting = Channel<Unit>(Channel.CONFLATED)
+        private var closed = false
+
+        /** Adds [frame] at the end; the bytes of audio dropped to make room for it. Any thread. */
+        fun put(frame: Mic): Int = synchronized(items) {
+            if (closed) return 0
+            var dropped = 0
+            if (frame.pcm.isNotEmpty()) {
+                if (audio >= capacity) {
+                    val oldest = items.removeAt(items.indexOfFirst { it.pcm.isNotEmpty() })
+                    dropped = oldest.pcm.size
+                    audio--
+                    if (oldest.telling) telling--
+                }
+                audio++
+            }
+            if (frame.telling) telling++
+            items.addLast(frame)
+            waiting.trySend(Unit)
+            dropped
+        }
+
+        /** The oldest entry, once there is one; null when the queue has closed. */
+        suspend fun take(): Mic? {
+            while (true) {
+                synchronized(items) {
+                    items.removeFirstOrNull()?.let {
+                        if (it.pcm.isNotEmpty()) audio--
+                        if (it.telling) telling--
+                        return it
+                    }
+                    if (closed) return null
+                }
+                if (waiting.receiveCatching().isClosed) return null
+            }
+        }
+
+        /** Something that says the user spoke or stopped is waiting to be taken: speech-level audio, or a pause. Any thread. */
+        fun telling(): Boolean = synchronized(items) { telling > 0 }
+
+        fun close() {
+            synchronized(items) { closed = true; items.clear(); audio = 0; telling = 0 }
+            waiting.close()
+        }
+    }
+
+    /**
+     * One entry of the microphone's queue: a frame of audio, or a pause ([PAUSE], no audio), with
+     * the [lends] count it was given under and when. [telling] ones say something of the user for
+     * themselves, before the call has taken them: audio at speech level, or a pause.
+     */
+    private data class Mic(val lends: Int, val pcm: ByteArray, val at: Double, val telling: Boolean)
 
     private class GeminiTurn(val started: Double) {
         var ended: Double? = null
