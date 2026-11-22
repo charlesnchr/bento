@@ -3385,11 +3385,12 @@ class AssistantCallTest {
         val second = FakeTransport(listOf(Frames.setupComplete()))
         val audio = FakeAudio()
         val after = After()
-        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        // It takes a second and a half of speech to wake this call.
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, limits = fast.copy(wakeSpeech = 1.5))
         firstTaskRunning(call, first)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
-        // 1.2 s too quiet to tell, then the call's thread is held up while the user gets loud: it takes the loud
+        // 0.6 s too quiet to tell, then the call's thread is held up while the user gets loud: it takes the loud
         // frames all at once, so by its clock no time passed between the first of them and the one that woke it.
         audio.count = 256
         audio.numbered = true
@@ -3397,14 +3398,72 @@ class AssistantCallTest {
         val begun = 256 + 3
         audio.emit(10)
         audio.numbered = false
-        audio.emit(50)
-        after.stall = 700
+        audio.emit(20)
+        after.stall = 1_700
         withTimeout(5_000) { while (after.stall > 0) delay(2) }
         audio.loud = true
-        audio.emit(30)
+        audio.emit(80)
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
         second.awaitSent { s -> s.any { "realtimeInput" in it } }
         assertTrue(begun in second.micNumbers(), "the audio kept is counted in audio, not by when the call got to it: frame $begun is there")
+        call.stop()
+    }
+
+    @Test fun aCallThreadHeldUpForOverASecondLosesNoneOfWhatTheMicrophoneKept() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // 0.4 s of quiet speech, then the call's thread is held up for longer than a microphone may go quiet before
+        // what it gave is stale (MIC_GAP), and the user gets loud meanwhile. The microphone never stopped.
+        audio.count = 256
+        audio.numbered = true
+        audio.soft = true
+        val begun = 256 + 3
+        audio.emit(10)
+        audio.numbered = false
+        audio.emit(10)
+        after.stall = 1_100
+        withTimeout(5_000) { while (after.stall > 0) delay(2) }
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertTrue(begun in second.micNumbers(), "audio the call got to late isn't audio after a gap: frame $begun is there")
+        call.stop()
+    }
+
+    @Test fun wordsThatTakeOverTwoSecondsToWakeTheCallAreHeardFromTheirStart() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // 0.8 s too quiet to tell, then three rounds of 0.3 s loud and 0.44 s quiet, then loud: the sound never
+        // quite dies away, and it's over two seconds from the first loud word before the call is sure of speech.
+        audio.count = 256
+        audio.numbered = true
+        audio.soft = true
+        val begun = 256 + 3
+        audio.emit(10)
+        audio.numbered = false
+        audio.emit(30)
+        repeat(3) {
+            audio.loud = true
+            audio.emit(15)
+            audio.loud = false
+            audio.emit(22)
+        }
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        assertTrue(begun in second.micNumbers(), "speech that woke the call keeps what came before it, though it took a while: frame $begun is there")
         call.stop()
     }
 

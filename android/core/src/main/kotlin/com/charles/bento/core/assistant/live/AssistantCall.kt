@@ -178,8 +178,8 @@ class AssistantCall(
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + confined)
     private val protocol = CallProtocol()
-    /** Microphone frames, each with the [lends] count it was captured under; when it's full the oldest goes ([offer]). */
-    private val mic = Channel<Pair<Int, ByteArray>>(MIC_FRAMES)
+    /** Microphone frames, each with the [lends] count it was captured under and when it was; when it's full the oldest goes ([offer]). */
+    private val mic = Channel<Triple<Int, ByteArray, Double>>(MIC_FRAMES)
     /** Microphone audio dropped because the call's thread fell behind, logged once a tick. */
     private val droppedBytes = AtomicLong()
     private val _status = MutableStateFlow<Status>(Status.Connecting)
@@ -259,7 +259,7 @@ class AssistantCall(
     /** How much of the latest audio was speech by its level, up to [Limits.wakeSpeech] ([hear]). */
     private var voiced = 0.0
     private var voiceWoke = false
-    /** When the call last took a microphone frame: a muted or dead microphone gives none, and what's kept grows stale. */
+    /** When the latest microphone frame the call has taken was captured: a muted or dead microphone gives none, and what's kept grows stale. */
     private var frameAt = 0.0
     /** When [voiced] last rose from nothing: sound that hasn't become speech a moment later is noise ([stirring]). */
     private var stirredAt = 0.0
@@ -792,7 +792,11 @@ class AssistantCall(
         }
         // The moment before goes to the new session too, in case words began in it (those that woke the call, or the
         // first of a request too quiet to), unless the microphone has since stopped: what it left then is stale.
-        if (!voiceWoke && now() - frameAt > MIC_GAP) { held.clear(); heldBytes = 0 }
+        // Sound that has gone on too long to be a word beginning is noise: woken by anything else, the call takes no
+        // more of it than of a quiet room.
+        if (!voiceWoke) {
+            if (now() - frameAt > MIC_GAP) { held.clear(); heldBytes = 0 } else if (!stirring(now())) trim(limits.wakePreRoll)
+        }
         session++
         wakeStarted = now()
         _status.value = Status.Waking
@@ -903,38 +907,41 @@ class AssistantCall(
     private fun stirring(t: Double) = voiced > 0 && t - frameAt <= MIC_GAP && t - stirredAt <= limits.wakeSpeech * ONSET
 
     /**
-     * A microphone frame after a gap (it was muted, dead or restarted) follows on from nothing:
-     * what was kept from before isn't the start of what comes now, and Gemini has heard it.
-     * Coming back, everything held is still to be heard.
+     * A microphone frame captured [at] a time well after the one before (it was muted, dead or
+     * restarted) follows on from nothing: what was kept from before isn't the start of what comes
+     * now, and Gemini has heard it. Coming back, everything held is still to be heard. By when
+     * frames were captured, not when the call got to them: a thread held up for a moment has
+     * missed no audio.
      */
-    private fun afterGap() {
-        val t = now()
-        if (t - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
-        frameAt = t
+    private fun afterGap(at: Double) {
+        if (at - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
+        frameAt = at
     }
 
     /**
      * How much of the latest audio is kept: [Limits.wakePreRoll], and once speech-level sound
-     * begins everything since as well ([stirredBytes]), while it may yet prove speech ([ONSET]
-     * times [Limits.wakeSpeech] of it; sound that goes on longer is noise, and keeps no more than
-     * a quiet room). So words that wake the call go to Gemini with the whole pre-roll before
-     * them, however haltingly they got loud enough to. Counted in audio, not by the clock: frames
-     * the call's thread takes late, in a burst, are no shorter for it.
+     * begins everything since as well ([stirredBytes]), up to [ONSET] times [Limits.wakeSpeech] of
+     * it. So words that wake the call go to Gemini with the pre-roll before them, however
+     * haltingly they got loud enough to. Counted in audio, not by the clock: frames the call's
+     * thread takes late, in a burst, are no shorter for it. Sound that goes on for longer without
+     * becoming speech is noise, and a comeback for anything else takes less of it ([comeBack]).
      */
-    private fun preRoll(): Double {
-        val since = stirredBytes / 32_000.0
-        return limits.wakePreRoll + if (voiced > 0 && since <= limits.wakeSpeech * ONSET) since else 0.0
-    }
+    private fun preRoll() = limits.wakePreRoll + if (voiced > 0) minOf(stirredBytes / 32_000.0, limits.wakeSpeech * ONSET) else 0.0
 
     /** Keeps [pcm] as the latest audio, and no more than [seconds] of it. */
     private fun keep(pcm: ByteArray, seconds: Double) {
         held.addLast(pcm)
         heldBytes += pcm.size
+        trim(seconds, lost = waking || rejoining)
+    }
+
+    /** Drops the oldest of what's kept down to [seconds] of it; [lost] when that's audio a comeback was to have had. */
+    private fun trim(seconds: Double, lost: Boolean = false) {
         // 16 kHz 16-bit mono: 32,000 bytes a second.
         while (heldBytes > seconds * 32_000 && held.size > 1) {
             val dropped = held.removeFirst().size
             heldBytes -= dropped
-            if (waking || rejoining) heldLost += dropped
+            if (lost) heldLost += dropped
         }
     }
 
@@ -1242,11 +1249,11 @@ class AssistantCall(
                     at += OPENING_CHUNK
                 }
             }
-            for ((captured, pcm) in mic) {
+            for ((captured, pcm, at) in mic) {
                 if (!active) return@launch
                 if (captured != lends) continue
                 freshAudio(captured)
-                afterGap()
+                afterGap(at)
                 if (standby || rejoining) { hold(pcm); continue }
                 hear(pcm)
                 keep(pcm, preRoll())
@@ -1257,14 +1264,14 @@ class AssistantCall(
         val ok = audio.start { pcm ->
             if (!silent(pcm)) heardAt = now()
             if (mutedNow) return@start
-            offer(lends to pcm)
+            offer(Triple(lends, pcm, now()))
         }
         if (!ok) { scope.launch { fail("Couldn't open the microphone.") }; return }
         _status.value = if (running > 0) Status.Working else Status.Listening
     }
 
     /** Queues a microphone frame for the call's thread; one behind (a busy phone) loses the oldest audio, never the call. Audio thread. */
-    private fun offer(frame: Pair<Int, ByteArray>) {
+    private fun offer(frame: Triple<Int, ByteArray, Double>) {
         val result = mic.trySend(frame)
         if (result.isSuccess || result.isClosed) return
         mic.tryReceive().getOrNull()?.let { droppedBytes.addAndGet(it.second.size.toLong()) }
