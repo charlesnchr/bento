@@ -42,6 +42,8 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
     /** Two speech-loud frames, then one in every three: always some loud sound lately, never half a second of it. */
     @Volatile var sputter = false
     private var sputtered = 0
+    /** Frames the microphone has given so far. */
+    @Volatile var emitted = 0
     /** Each frame carries its number in its first four bytes, to check none is lost or reordered. */
     @Volatile var numbered = false
     /** The next frame's number. */
@@ -73,6 +75,7 @@ internal class FakeAudio(private val delivers: Boolean = true, private val opens
                     }
                     if (numbered) java.nio.ByteBuffer.wrap(frame).putInt(count++)
                     onPcm(frame)
+                    emitted++
                 }
                 Thread.sleep(20)
             }
@@ -2354,6 +2357,12 @@ class AssistantCallTest {
 
     private fun twoResults() = mapOf("1" to CompletableDeferred<String>(), "2" to CompletableDeferred())
 
+    /** The microphone gives [frames] more frames (20 ms each): counted, since a sleep says little about another thread. */
+    private suspend fun FakeAudio.emit(frames: Int) {
+        val from = emitted
+        withTimeout(10_000) { while (emitted < from + frames) delay(5) }
+    }
+
     /** The call has taken every frame pushed so far, and had a moment to act on the last. */
     private suspend fun FakeTransport.taken() {
         withTimeout(5_000) { while (pending > 0) delay(5) }
@@ -2394,7 +2403,7 @@ class AssistantCallTest {
         firstTaskRunning(call, first)
         // The user is talking, and Gemini hasn't said so (its ACTIVITY_START trails the first word, or was lost).
         audio.loud = true
-        delay(200)
+        audio.emit(5)
         after.seconds = 0.5
         delay(1_500)
         assertEquals(AssistantCall.Status.Working, call.status.value)
@@ -2413,7 +2422,7 @@ class AssistantCallTest {
         firstTaskRunning(call, first)
         // Clatter: some sound at speech level in every moment, and never enough of it together to be speech.
         audio.sputter = true
-        delay(200)
+        audio.emit(5)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         delay(500)
@@ -2584,13 +2593,18 @@ class AssistantCallTest {
         first.beforeSend = { f -> if ("\"s1\"" in f) { holding.complete(Unit); release.await() } }
         first.push(Live.call("s1", CallProtocol.LIST_TASKS))
         withTimeout(5_000) { holding.await() }
-        after.seconds = 0.3
-        delay(1_500) // five standby times
+        after.seconds = 0.5
+        delay(2_000) // four standby times: longer than Gemini is given to speak an answer
         assertEquals(AssistantCall.Status.Working, call.status.value, "list_tasks isn't answered yet")
         assertEquals(0, first.closeCount)
         release.complete(Unit)
+        first.awaitSent { sent -> sent.any { "toolResponse" in it && "\"s1\"" in it } }
+        // Gemini has its answer only now: the time it has to speak it counts from here, not from when it asked.
+        delay(800)
+        assertEquals(AssistantCall.Status.Working, call.status.value, "Gemini is about to say what's running")
+        assertEquals(0, first.closeCount)
+        Live.speaks(first, "One task is running: the table.")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
-        assertTrue(first.responses().any { it.id() == "s1" }, "Gemini got its answer before the call left")
         call.stop()
     }
 
@@ -2621,7 +2635,7 @@ class AssistantCallTest {
         firstTaskRunning(call, first)
         // The user speaks, and each stage of their request outlasts the standby time.
         audio.loud = true
-        delay(200)
+        audio.emit(5)
         after.seconds = 0.5
         delay(700) // the microphone hears them before Gemini says so
         first.push(Live.activity("ACTIVITY_START"))
@@ -2694,7 +2708,7 @@ class AssistantCallTest {
         // The user starts on something, too quietly for the call to tell, and Gemini hasn't said it hears them:
         // the call leaves, and what the old session was sent of it is lost with that session.
         audio.soft = true
-        delay(700)
+        audio.emit(60)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         // They go on, louder, which wakes it.
@@ -2718,7 +2732,7 @@ class AssistantCallTest {
         firstTaskRunning(call, first)
         // Tap to talk: the user starts a word and mutes, so the microphone stops with speech-level sound its last.
         audio.loud = true
-        delay(300)
+        audio.emit(10)
         call.muted = true
         val mutedAt = audio.count
         after.seconds = 0.3
@@ -2777,15 +2791,16 @@ class AssistantCallTest {
         results.getValue("1").complete("Booked for 8pm.")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
         audio.loud = true
-        delay(700)
+        audio.emit(40)
         second.push(Frames.setupComplete())
         second.awaitSent { s -> s.count { "realtimeInput" in it } >= 30 }
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
         assertTrue(second.sent.count { loud in it } >= 30, "the words said while it connected")
-        delay(300)
-        assertTrue(second.resultTurns().isEmpty(), "the result waits for Gemini to answer the user")
+        // The user talks on, and this Gemini never says it hears them: past the time it has to answer (settleMax),
+        // the result still doesn't go in over speech the microphone hears.
+        delay(2_500)
+        assertTrue(second.resultTurns().isEmpty(), "the result waits while the user is still talking")
         audio.loud = false
-        // This Gemini never answers: the result goes in once it has had its chance (settleMax).
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
         assertEquals(CallSetup.resultText(listOf("book a table" to "Booked for 8pm.")), second.resultTurns().single().turnText())
         call.stop()
@@ -2797,20 +2812,23 @@ class AssistantCallTest {
         val results = twoResults()
         val audio = FakeAudio()
         val after = After()
-        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio, limits = fast.copy(settleQuiet = 1.0))
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), results, after, audio = audio)
         firstTaskRunning(call, first)
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         results.getValue("1").complete("Booked for 8pm.")
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Waking } }
-        // The user speaks while it connects, under the level the call takes for speech: only Gemini can tell, once it has the audio.
+        // The user speaks while it connects, under the level the call takes for speech: only Gemini can tell, once it
+        // has made out the audio, and it has a second and a half of it to get through.
         audio.soft = true
-        delay(300)
+        audio.emit(80)
         second.push(Frames.setupComplete())
-        second.awaitSent { s -> s.count { "realtimeInput" in it } >= 10 }
+        second.awaitSent { s -> s.count { "realtimeInput" in it } >= 80 }
+        delay(600) // well past the moment a result waits for on a quiet line (settleQuiet), and Gemini hasn't said a thing
+        assertTrue(second.resultTurns().isEmpty(), "the result gives Gemini as long as the replayed audio lasted")
         second.push(Live.activity("ACTIVITY_START"))
-        delay(1_300) // past the moment a result waits for on a quiet line
-        assertTrue(second.resultTurns().isEmpty(), "the result gave Gemini that moment, and Gemini heard the user")
+        delay(1_300) // past that too
+        assertTrue(second.resultTurns().isEmpty(), "and by then Gemini has heard the user")
         audio.soft = false
         second.push(Live.heard("Also find me a taxi")); second.push(Live.activity("ACTIVITY_END"))
         Live.speaks(second, "Sure, what time?")
@@ -2845,6 +2863,69 @@ class AssistantCallTest {
         val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
         val words = second.sent.takeWhile { "turnComplete\":true" !in it }.count { loud in it }
         assertTrue(words >= 25, "the words went first: $words frames ahead of the result")
+        call.stop()
+    }
+
+    @Test fun standbyWaitsForHeldWordsStillGoingOut() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The user's words wake the call, and the new session's socket takes them slowly: they've stopped talking
+        // long before it has them all, with the first task still running.
+        val release = CompletableDeferred<Unit>()
+        val sending = CompletableDeferred<Unit>()
+        second.beforeSend = { f -> if ("realtimeInput" in f) { sending.complete(Unit); release.await() } }
+        audio.loud = true
+        withTimeout(5_000) { sending.await() }
+        audio.loud = false
+        delay(2_000) // quiet for several standby times
+        assertEquals(0, second.closeCount, "the call doesn't leave the session it is still giving the user's words")
+        release.complete(Unit)
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        second.awaitSent { s -> s.count { loud in it } >= 25 }
+        call.stop()
+    }
+
+    @Test fun aComebackThatCantTakeTheHeldWordsEndsTheCall() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio, limits = fast.copy(connect = 1.0))
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        // The new session sets up, and then its socket never takes the audio held for it.
+        second.beforeSend = { f -> if ("realtimeInput" in f) CompletableDeferred<Unit>().await() }
+        audio.loud = true
+        assertEquals(AssistantCall.RECONNECT_FAILED, call.ended().message)
+    }
+
+    @Test fun aReplyGeminiOwesIsStillOwedOnTheSocketItMovesTo() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete(), Live.resumable("h1")))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val started = CopyOnWriteArrayList<String>()
+        val after = After()
+        val call = multitasking(first, { second }, started, twoResults(), after)
+        firstTaskRunning(call, first)
+        // The user asks for a second thing, and Gemini moves the connection before it has answered.
+        Live.turn(first, "Find me a taxi")
+        first.taken()
+        first.push(Live.GO_AWAY)
+        second.awaitSent { s -> s.any { "realtimeInput" in it } }
+        after.seconds = 1.0
+        delay(1_600)
+        assertEquals(AssistantCall.Status.Working, call.status.value, "the resumed session still owes the user its reply")
+        assertEquals(0, second.closeCount)
+        second.push(Live.call("c2"))
+        withTimeout(5_000) { while (started.size < 2) delay(10) }
+        after.seconds = 0.0
+        assertEquals(listOf("Book a table", "Find me a taxi"), started.toList())
         call.stop()
     }
 

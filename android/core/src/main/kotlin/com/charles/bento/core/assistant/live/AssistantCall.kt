@@ -267,8 +267,15 @@ class AssistantCall(
     private var heldLost = 0
     /** When the call last heard the user speak by itself: the microphone's level ([hear]) or a caption's new words. */
     private var spokeAt = 0.0
-    /** Back from standby, until the held audio has gone to the new session. */
+    /** Back from standby, until the held audio has gone to the new session, since [rejoinedAt]. */
     private var rejoining = false
+    private var rejoinedAt = 0.0
+    /**
+     * Until when Gemini may still be making out the audio a comeback replayed to it: as long as
+     * that audio lasted, [Limits.settleMax] at most. No result goes before, since there may be
+     * words in it too quiet for the call to tell, and Gemini says so only once it has heard them.
+     */
+    private var replayUntil = 0.0
     /** Results the user hasn't heard yet, in the order they finished. */
     private val unheard = ArrayList<Unheard>()
     private var delivering = false
@@ -526,7 +533,10 @@ class AssistantCall(
                 socket = next
                 moved = true
                 goingAway = false
+                // The session is the same one on a new socket: what Gemini owed the user, it still owes.
+                val owed = unanswered
                 newSession()
+                unanswered = owed
                 old.close()
                 launch { read(next) }
             } finally {
@@ -549,6 +559,8 @@ class AssistantCall(
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
+                // A socket that set up and then can't take what was held for it in as long again is no better than none.
+                rejoining && t - rejoinedAt >= limits.connect -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
                 nothingLeft(t) -> { VoiceLog.i(TAG, "nothing said for ${hangUpAfter().toInt()}s and nothing running: hanging up"); stop(); return }
             }
@@ -603,7 +615,7 @@ class AssistantCall(
      */
     private fun idleWhileHermesWorks(t: Double): Boolean {
         val after = standbyAfter()
-        if (after <= 0 || running == 0 || !listening || standby || waking || rotating || reconnect == null) return false
+        if (after <= 0 || running == 0 || !listening || standby || waking || rejoining || rotating || reconnect == null) return false
         if (settling > 0 || handling > 0 || waiting().isNotEmpty()) return false
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
@@ -783,15 +795,18 @@ class AssistantCall(
      * Gemini to speak, once the line is quiet ([deliverWhenIdle]; none goes while the held audio
      * does, [lineFree]). A result sent straight after the user's words is what Gemini answers, and
      * their request is dropped: so if the call heard them speak, Gemini owes them a reply first,
-     * and if it didn't, Gemini still gets a moment to say it hears words too quiet for the call.
+     * and if it didn't, Gemini still gets as long as the audio lasted to say it hears words too
+     * quiet for the call ([replayUntil]).
      */
     private suspend fun cameBack() {
         lastSpeech = now()
         speechUntil = 0.0
         newSession()
+        var replayed = 0
         while (held.isNotEmpty()) {
             val pcm = held.removeFirst()
             heldBytes -= pcm.size
+            replayed += pcm.size
             send(audioFrame(pcm))
             captions?.feed(pcm)
         }
@@ -802,6 +817,7 @@ class AssistantCall(
         voiceWoke = false
         rejoining = false
         lastSpeech = now()
+        replayUntil = now() + minOf(replayed / 32_000.0, limits.settleMax)
         if (spoke) replyDue = now()
         if (waiting().isNotEmpty()) deliverWhenIdle()
         settled()
@@ -902,18 +918,20 @@ class AssistantCall(
 
     /**
      * Nobody is speaking or has for a moment, no call is waiting for its words, and Gemini owes no
-     * reply: a result sent now isn't lost in a turn about something else.
+     * reply: a result sent now isn't lost in a turn about something else. Speech the call hears
+     * for itself counts ([spokeAt]), whether or not Gemini has said it hears it; like any talk, it
+     * holds a result [Limits.deliverMax] at most.
      */
-    private fun lineQuiet(t: Double) = lineFree(t) && t - maxOf(lastSpeech, speechUntil) >= limits.settleQuiet
+    private fun lineQuiet(t: Double) = lineFree(t) && t - maxOf(lastSpeech, speechUntil, spokeAt) >= limits.settleQuiet
 
     /**
      * The user isn't speaking, no call of theirs is settling and Gemini owes them no reply (nor
      * hasn't yet said what it was just told, such as "say that again"), nor is its speech still
      * playing, nor is audio held through a comeback still going to Gemini ahead of everything
-     * else: the least a result waits for, however long it has waited, since Gemini answers
+     * else, or only just gone ([replayUntil]): the least a result waits for, however long it has waited, since Gemini answers
      * whatever arrives last and the user's request would be the one dropped.
      */
-    private fun lineFree(t: Double) = !rejoining && !talking(t) && settling == 0 && (replyDue?.let { t - it >= limits.settleMax } ?: true) && t >= speechUntil &&
+    private fun lineFree(t: Double) = !rejoining && t >= replayUntil && !talking(t) && settling == 0 && (replyDue?.let { t - it >= limits.settleMax } ?: true) && t >= speechUntil &&
         (spokeSince || unspokenSince?.let { t - it >= limits.settleMax } ?: true)
 
     /**
@@ -992,7 +1010,7 @@ class AssistantCall(
         }
         if (event["setupComplete"] != null) {
             val back = waking
-            if (back) synchronized(lending) { waking = false; standby = false; rejoining = true }
+            if (back) { synchronized(lending) { waking = false; standby = false; rejoining = true }; rejoinedAt = now() }
             setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
             if (back) cameBack() else listen()
         }
@@ -1542,6 +1560,8 @@ class AssistantCall(
             try {
                 if (readOut.isNotEmpty()) toldInTurn(readOut)
                 respond(id, message, executed = name != CallProtocol.CANCEL_TASK || message.startsWith("Cancelled"), name = name, toSpeak = false)
+                // Gemini has its answer only now, however long that took to send: what it owes the user counts from here.
+                unanswered = now()
             } finally {
                 readOut.forEach { it.sending = false }
             }

@@ -572,7 +572,9 @@ class AssistantController(
                         s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = false))
                     }
                     AssistantCall.Status.Standby -> set { s ->
-                        s.copy(call = s.call?.copy(status = STANDBY_STATUS, connecting = false, hermesWorking = true, standby = true))
+                        // With tap to talk the microphone is muted, so speaking doesn't bring the call back: the button does.
+                        val status = if (s.call?.tapToTalk == true) STANDBY_TAP_STATUS else STANDBY_STATUS
+                        s.copy(call = s.call?.copy(status = status, connecting = false, hermesWorking = true, standby = true))
                     }
                     AssistantCall.Status.Waking -> set { s -> s.copy(call = s.call?.copy(status = "Reconnecting to Gemini…", connecting = true, standby = false)) }
                     is AssistantCall.Status.Ended -> {
@@ -801,6 +803,7 @@ class AssistantController(
 
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
+        const val STANDBY_TAP_STATUS = "Paused while Hermes works. Tap Talk now to speak."
 
         /** Who a call task's reply in the chat is from: by the task's name, since a recap of the chat goes back to Gemini. */
         internal fun taskSpeaker(label: String) = "Hermes · $label"
