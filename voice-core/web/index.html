@@ -73,7 +73,13 @@
   .approval button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
   .task form input { flex: 1; min-width: 0; }
   #earlier { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
-  #earlier .task a { color: var(--accent); }
+  #earlier .task a, #done .task a { color: var(--accent); }
+  #donebox { flex: none; border-top: 1px solid var(--line); }
+  #donebox[open] { flex: 0 1 auto; min-height: 96px; overflow: auto; }
+  #donebox summary { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--mute); font-weight: 650; padding: 10px 14px; cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--panel); }
+  #donebox[open] summary { padding-bottom: 6px; }
+  #done { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+  #donenow, #doneearlier { display: contents; }
   .spin { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
 
@@ -137,16 +143,19 @@
 
   @media (max-width: 860px) {
     #talk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-    #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; min-width: 0; }
-    #side:has(#notasks):has(#earlierbox[hidden]) { display: none; }
-    #earlier { flex-direction: row; overflow-x: auto; }
+    #side { border-left: 0; border-bottom: 1px solid var(--line); order: -1; max-height: 34dvh; min-width: 0; overflow-y: auto; }
+    #side:has(#notasks):has(#earlierbox[hidden]):has(#donebox[hidden]) { display: none; }
+    #earlier, #done { flex-direction: row; overflow-x: auto; }
+    #donebox, #donebox[open] { flex: none; min-height: 0; overflow: visible; }
+    #donebox:not([open]) { position: sticky; bottom: 0; background: var(--panel); }
+    #donebox summary { padding: 6px 12px; position: static; }
     header { gap: 6px 12px; }
     #bar { flex-wrap: wrap; }
     #say { order: -1; flex-basis: 100%; }
     #call { margin-left: auto; }
     #call { padding: 11px 16px; }
     #side h2 { padding: 8px 12px 4px; }
-    #tasks { flex-direction: row; overflow-x: auto; padding-bottom: 8px; }
+    #tasks { flex: none; flex-direction: row; overflow-x: auto; padding-bottom: 8px; }
     .task { min-width: 260px; max-width: 300px; }
     #dev { grid-template-columns: 1fr; overflow: auto; }
     .keys, .wide { display: none !important; }
@@ -210,6 +219,10 @@
       <h2><span>Coding agents from earlier calls</span></h2>
       <div id="earlier"></div>
     </div>
+    <details id="donebox" hidden>
+      <summary>Finished <span id="donecount"></span></summary>
+      <div id="done"><div id="donenow"></div><div id="doneearlier"></div></div>
+    </details>
   </aside>
 </main>
 

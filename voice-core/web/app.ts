@@ -280,13 +280,25 @@ function elapsed(seconds: number): string {
 /** The empty task list's words, kept to put back. */
 const noTasks = document.getElementById("notasks")!;
 
+/** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
+const live = (state: string) => state === "running" || state.startsWith("waiting");
+
+/** The Finished fold's count, and the fold itself only when something is in it. */
+function showDone() {
+  const n = $("donenow").childElementCount + $("doneearlier").childElementCount;
+  $("donebox").hidden = n === 0;
+  $("donecount").textContent = n > 0 ? `· ${n}` : "";
+}
+
 function showTasks(force = false) {
   const pane = $("tasks");
+  const done = $("donenow");
   const open = document.activeElement?.closest?.(".task") as HTMLElement | null;
-  if (!force && open && pane.contains(open) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
+  if (!force && open && (pane.contains(open) || done.contains(open)) && open.querySelector("form")) return; // don't redraw under someone typing a follow-up
   pane.innerHTML = "";
+  done.innerHTML = "";
   const all = [...tasks.values()].reverse();
-  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; return; }
+  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; showDone(); return; }
   const running = all.filter((t) => t.c.state === "running").length;
   $("taskcount").textContent = running > 0 ? `${running} running` : "";
   $("cancelall").hidden = !callId || running < 2;
@@ -338,8 +350,9 @@ function showTasks(force = false) {
     if (view.result) button("Result", () => { view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
-    pane.append(card);
+    (live(t.state) ? pane : done).append(card);
   }
+  showDone();
 }
 
 function followUpForm(card: HTMLElement, t: Command) {
@@ -366,9 +379,10 @@ async function showEarlier() {
   try { list = await (await fetch("/agent/recent", { cache: "no-store" })).json(); } catch {}
   const current = new Set([...tasks.values()].map((v) => v.thread).filter(Boolean));
   list = list.filter((t) => !current.has(t.thread));
-  $("earlierbox").hidden = list.length === 0;
   const pane = $("earlier");
+  const done = $("doneearlier");
   pane.innerHTML = "";
+  done.innerHTML = "";
   for (const t of list) {
     const card = document.createElement("div");
     const state = t.waiting ? "waiting for approval in T3" : t.status;
@@ -386,8 +400,10 @@ async function showEarlier() {
     copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
     acts.append(copy);
     card.append(acts);
-    pane.append(card);
+    (t.status === "running" || t.waiting ? pane : done).append(card);
   }
+  $("earlierbox").hidden = pane.childElementCount === 0;
+  showDone();
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -872,6 +888,7 @@ async function main() {
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
+  $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = submitText;
   $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submitText(e); });
   tabs();

@@ -44,7 +44,8 @@ The dev server runs as a user service on homelab. Open **https://voice.charlesnc
 Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf93d.ts.net:8770.
 
 1. Press Call and talk. Work goes to Hermes and code changes to a coding agent in T3 while the
-   conversation goes on; each task gets a card with its live progress.
+   conversation goes on; each task gets a card with its live progress. Tasks that are finished
+   or cancelled, and earlier calls' coding agents that are done, fold away under Finished.
 2. The controls:
    - Say "stop" (or "Woodhouse, stop", "that's enough", "quiet") to cut a reply short: the model
      stays quiet until you speak again. The stop button and Esc do the same.
