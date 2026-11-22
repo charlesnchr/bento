@@ -82,7 +82,11 @@ class Prefs(context: Context) {
     val hermesEffort = string("hermes.effort", "")
     /** Conversations a turn from this phone locked to a picked model, comma-separated (HermesChoice.forConversation). */
     val hermesLocked = string("hermes.locked", "")
-    /** Seconds without speech after which a call disconnects from Gemini while Hermes works (0 = never). */
+    /**
+     * Seconds with nobody speaking after which a call disconnects from Gemini while Hermes works (0 = never). 20 s is
+     * long enough to think of the next request for a task beside the one running, since the call no longer leaves in
+     * the middle of one, and one said in standby is heard from its first word.
+     */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
 
     // Wake word ("Pennyworth" starts a voice call with Hermes)
