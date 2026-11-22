@@ -13,6 +13,7 @@
 // go back as they came, since they carry the thought signatures its function calls are checked
 // against. What the user types while a turn is under way waits for the turn to end.
 
+import { fencedNote, isRecap } from "./setup.ts";
 import type { Command } from "./types.ts";
 
 type Json = Record<string, unknown>;
@@ -112,7 +113,10 @@ export class TextLine {
       const turns = arr(content.turns);
       turns.forEach((turn, i) => {
         const text = arr(obj(turn)?.parts).map((p) => obj(p)?.text).filter((t): t is string => typeof t === "string").join("\n");
-        if (text.length > 0) this.take({ role: "user", parts: [{ text }] }, content.turnComplete === true && i === turns.length - 1);
+        if (text.length === 0) return;
+        // A turn the model isn't to answer is a note of Bento's (a result, a cancellation): fenced, so the user's next message stands apart from it.
+        const note = content.turnComplete !== true && !isRecap(text);
+        this.take({ role: "user", parts: [{ text: note ? fencedNote(text) : text }] }, content.turnComplete === true && i === turns.length - 1);
       });
       return;
     }
@@ -204,7 +208,9 @@ export class TextLine {
     if (!r || r.id !== id) return;
     this.request = null;
     const failure = error ?? r.error;
-    if (failure != null || r.parts.length === 0) {
+    // Thoughts and nothing else (a signature on an empty text) is no answer either: the user would be left waiting.
+    const empty = !r.parts.some((p) => obj(p.functionCall) != null || (typeof p.text === "string" && p.thought !== true && p.text.trim().length > 0));
+    if (failure != null || empty) {
       // A request the API calls malformed would be refused again with the same conversation: it starts over from the user's last words.
       if (status === 400) this.forget();
       this.fail(failure ?? "the model sent nothing");

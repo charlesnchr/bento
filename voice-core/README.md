@@ -190,6 +190,11 @@ reached by request and response in place of the Live socket:
 - A result isn't told by the model. The host shows the reply it gave the core (`tool.result`),
   and the model gets a note of it for the user's questions. A question in the reply counts as
   asked at once, so a plain "yes" goes to that task.
+- A note from Bento (a result, a cancellation) goes to the model inside `<bento_note>` tags. The
+  API joins it to the user's next message as one turn, and unfenced the model took that message
+  for the end of the note and wrote nothing: 4 of 6 follow-ups after a result got no answer on
+  2026-11-22, and 8 of 8 were handed on once the note was fenced. An answer with no words and no
+  call is a failure the user is told of (`error`), not a silent turn.
 - No audio, sockets, earcons, captions, standby, hang-up timer or spoken commands. A host ticks
   while `thinking` is on (the request's timers); nothing else needs the clock.
 - Hermes gets the message under its own wording (`typedMessage` in `src/setup.ts`): typed, not

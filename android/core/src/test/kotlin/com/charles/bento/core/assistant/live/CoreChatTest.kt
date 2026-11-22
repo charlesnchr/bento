@@ -139,8 +139,8 @@ class CoreChatTest {
         assertEquals("response:ask_hermes", texts[2])
         assertEquals("What's 12 squared?", texts[3])
         assertEquals("144.", texts[4])
-        assertTrue(texts[5].startsWith("From Bento, not the user's words: \"Copenhagen weather\" has finished"))
-        assertTrue(texts[5].endsWith("Sunny, 12 degrees."))
+        assertTrue(texts[5].startsWith("<bento_note>\nFrom Bento, not the user's words: \"Copenhagen weather\" has finished"))
+        assertTrue(texts[5].endsWith("Sunny, 12 degrees.\n</bento_note>"))
         assertEquals("Should I bring a coat?", texts[6])
         c.stop()
     }

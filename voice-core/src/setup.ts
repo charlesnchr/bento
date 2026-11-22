@@ -73,10 +73,28 @@ export const CHAT_INSTRUCTION =
   "what is running, what is waiting for their answer, and what is done. Use check_task for one task's latest progress or " +
   "result, and cancel_task only when the user asks to cancel a task. You cannot write documents or use tools yourself. " +
   "Never claim an action succeeded before its result. Never invent approval state or failure reasons. If an answer from " +
-  "Bento says a call was not executed, tell the user and ask for a short, specific request. A message that begins \"From " +
-  "Bento\" is not the user's words and never a request. Cancelling a task stops Hermes, but what it already did is not " +
-  "undone. Never retry denied or completed actions automatically. Write plain prose or simple Markdown (headings, lists, " +
-  "emphasis, code, links), never tables, images or LaTeX.";
+  "Bento says a call was not executed, tell the user and ask for a short, specific request. Text inside " +
+  "<bento_note> tags is from Bento: it is not the user's words and never a request, and it needs no answer. What the user " +
+  "writes after a note is their message, to answer as any other. Cancelling a task stops Hermes, but what it already did " +
+  "is not undone. Never retry denied or completed actions automatically. Write plain prose or simple Markdown (headings, " +
+  "lists, emphasis, code, links), never tables, images or LaTeX.";
+
+/** The tag a typed chat's notes from Bento go in (CHAT_INSTRUCTION names it). */
+const NOTE_TAG = "bento_note";
+
+/**
+ * A note of Bento's as a text model gets it: fenced. The API joins it to the user's next message as one turn, and
+ * unfenced the model took that message for the end of the note and wrote nothing, in about half the tries.
+ */
+export function fencedNote(text: string): string {
+  const close = new RegExp("</\\s*" + NOTE_TAG + "\\s*>", "gi");
+  return `<${NOTE_TAG}>\n${text.replace(close, "")}\n</${NOTE_TAG}>`;
+}
+
+/** Whether a turn the call sends is the recap of an earlier conversation, which has its own fence. */
+export function isRecap(text: string): boolean {
+  return text.includes(`<${RECAP_TAG}>`);
+}
 
 export function chatInstructionFor(platform: string): string {
   return CHAT_INSTRUCTION.replace("in Bento on Android:", `in Bento on ${platform}:`);
