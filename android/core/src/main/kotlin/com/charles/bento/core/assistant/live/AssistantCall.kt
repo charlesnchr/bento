@@ -154,7 +154,7 @@ class AssistantCall(
         val wakeLevel: Double = 0.05,
         /** Seconds of speech in standby that bring the call back. */
         val wakeSpeech: Double = 0.5,
-        /** Seconds of audio before the wake kept for Gemini, so the first words aren't lost. */
+        /** Seconds of audio before the speech that wakes the call kept for Gemini with it, so the first words aren't lost. */
         val wakePreRoll: Double = 1.5,
         /**
          * The most audio held for a session coming back from standby, in seconds: more than a comeback may take
@@ -251,8 +251,8 @@ class AssistantCall(
     private var wakeHeld = false
     private var wakeStarted = 0.0
     /**
-     * The latest microphone audio ([Limits.wakePreRoll], on Gemini and in standby alike, so words begun
-     * just before standby are still there when they wake it); coming back, everything since, for the new session.
+     * The latest microphone audio ([preRoll], on Gemini and in standby alike, so words begun just
+     * before standby are still there when they wake it); coming back, everything since, for the new session.
      */
     private val held = ArrayDeque<ByteArray>()
     private var heldBytes = 0
@@ -273,19 +273,21 @@ class AssistantCall(
     private var spokeAt = 0.0
     private var spokeFrom = 0.0
     /**
-     * When a caption last brought new words, and since when without a pause: a transcriber's word
-     * for it that someone is speaking, where [spokeAt] may be noise. It may be a television too,
-     * so a result waits on it only as long as on [spokeAt].
+     * When a caption last brought new words, and since when in the captioner's current utterance:
+     * a transcriber's word for it that someone is speaking, where [spokeAt] may be noise. It may be
+     * a television too, so a result waits on it only as long as on [spokeAt].
      */
     private var wordsAt = 0.0
     private var wordsFrom = 0.0
+    /** The captioner's utterance ([captionTurnAt]) the spell of words since [wordsFrom] belongs to. */
+    private var wordsTurn: Double? = null
     /**
      * Back from standby, until the held audio has gone to the new session ([rejoin]), since
-     * [rejoinedAt]; [replayedAt] is when the session last got some of it.
+     * [rejoinedAt]; [replaying] is since when the socket has been taking the frame it is on.
      */
     private var rejoining = false
     private var rejoinedAt = 0.0
-    private var replayedAt = 0.0
+    private var replaying: Double? = null
     /**
      * Until when Gemini may still be making out the audio a comeback replayed to it, if there was
      * any sound in it: as long as that audio lasted, [Limits.settleMax] at most. No result goes
@@ -577,9 +579,9 @@ class AssistantCall(
             when {
                 !listening && t - started >= limits.connect -> { fail("Gemini didn't answer. The call timed out."); return }
                 waking && t - wakeStarted >= limits.connect -> { fail(RECONNECT_FAILED); return }
-                // A socket that set up and then takes none of what was held for it for as long again is no better than
-                // none. A slow one that keeps taking it is left to finish.
-                rejoining && t - replayedAt >= limits.connect -> { fail(RECONNECT_FAILED); return }
+                // A socket that set up and then can't take a frame of what was held for it in as long again is no better
+                // than none. A slow one that keeps taking them is left to finish, and so is one with nothing to take.
+                rejoining && replaying?.let { t - it >= limits.connect } == true -> { fail(RECONNECT_FAILED); return }
                 idleWhileHermesWorks(t) -> standBy()
                 nothingLeft(t) -> { VoiceLog.i(TAG, "nothing said for ${hangUpAfter().toInt()}s and nothing running: hanging up"); stop(); return }
             }
@@ -639,7 +641,8 @@ class AssistantCall(
         val patience = minOf(after * 3, after + limits.deliverMax)
         // A turn still open on a muted microphone isn't the user speaking: Gemini owes its end and a reply, and that only so long.
         if ((talking(t) && !(mutedNow && t - mutedAt >= patience)) || stirring(t)) return false
-        val quiet = t - maxOf(lastSpeech, speechUntil, toneAt, spokeAt, wordsAt)
+        // The captioner says an utterance began before it has a word of it.
+        val quiet = t - maxOf(lastSpeech, speechUntil, toneAt, spokeAt, wordsAt, captionTurnAt ?: 0.0)
         if (quiet < after) return false
         // Gemini hasn't answered the user, finished its turn or spoken what it was told yet: closing now would lose it
         // (unless it stays silent for long).
@@ -843,8 +846,9 @@ class AssistantCall(
                 heldBytes -= pcm.size
                 replayed += pcm.size
                 peak = maxOf(peak, level(pcm))
+                replaying = now()
                 send(audioFrame(pcm))
-                replayedAt = now()
+                replaying = null
                 captions?.feed(pcm)
             }
         }
@@ -881,7 +885,7 @@ class AssistantCall(
     private fun hold(pcm: ByteArray) {
         // A dictation has the microphone: none of it is Gemini's, nor a reason to come back.
         if (lent) { held.clear(); heldBytes = 0; voiced = 0.0; return }
-        keep(pcm, if (waking || rejoining) limits.holdMax else limits.wakePreRoll)
+        keep(pcm, if (waking || rejoining) limits.holdMax else preRoll)
         if (hear(pcm) && !waking && !rejoining) {
             voiceWoke = true
             comeBack()
@@ -905,6 +909,9 @@ class AssistantCall(
         if (t - frameAt > MIC_GAP && !waking && !rejoining) { held.clear(); heldBytes = 0; voiced = 0.0 }
         frameAt = t
     }
+
+    /** What's kept of the latest audio: the speech that wakes the call ([Limits.wakeSpeech] of it does) and [Limits.wakePreRoll] before it. */
+    private val preRoll get() = limits.wakePreRoll + limits.wakeSpeech
 
     /** Keeps [pcm] as the latest audio, and no more than [seconds] of it. */
     private fun keep(pcm: ByteArray, seconds: Double) {
@@ -1072,7 +1079,7 @@ class AssistantCall(
         }
         if (event["setupComplete"] != null) {
             val back = waking
-            if (back) { synchronized(lending) { waking = false; standby = false; rejoining = true }; rejoinedAt = now(); replayedAt = rejoinedAt }
+            if (back) { synchronized(lending) { waking = false; standby = false; rejoining = true }; rejoinedAt = now(); replaying = null }
             setupResume?.let { send(CallSetup.recapFrame(it.recap)) }
             if (back) cameBack() else listen()
         }
@@ -1228,7 +1235,7 @@ class AssistantCall(
                 afterGap()
                 if (standby || rejoining) { hold(pcm); continue }
                 hear(pcm)
-                keep(pcm, limits.wakePreRoll)
+                keep(pcm, preRoll)
                 send(audioFrame(pcm))
                 captions?.feed(pcm)
             }
@@ -1258,7 +1265,7 @@ class AssistantCall(
                 val from = captionTurnAt ?: now().also { captionTurnAt = it }
                 // New words are the user still speaking, though Gemini says nothing until they stop.
                 if (!standby && caption.text.isNotBlank() && caption.text != captionGuess) {
-                    if (now() - wordsAt > limits.settleQuiet) wordsFrom = now()
+                    if (wordsTurn != from) { wordsTurn = from; wordsFrom = now() }
                     wordsAt = now()
                 }
                 captionGuess = caption.text
@@ -1656,6 +1663,9 @@ class AssistantCall(
      * The first goes in whatever its length, cut like any reply.
      */
     private fun unheardOf(task: Task, readOut: MutableList<Unheard>, room: Int): String {
+        // Audio held through a comeback is still going out, and may be the user's words: a result goes after it,
+        // by the usual way ([lineFree]), not ahead of it in this answer.
+        if (rejoining) return ""
         val items = unheard.filter { it.task == task.id && !it.sending && it.playing == null }
         if (items.isEmpty()) return ""
         val fit = ArrayList<Unheard>()
