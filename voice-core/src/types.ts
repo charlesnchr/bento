@@ -26,8 +26,10 @@ export interface Limits {
   speechLevel: number;
   /** Seconds of speech in standby that bring the call back. */
   wakeSpeech: number;
-  /** Seconds of audio before the wake kept for the model, so the first words aren't lost. */
+  /** Seconds of audio kept for the model from before the sound that woke the call began, so the first words aren't lost. */
   wakePreRoll: number;
+  /** In standby, a pause this long ends a sound: what the microphone hears after it begins another. */
+  wakeGap: number;
   /** The most audio held for a session coming back from standby, in seconds. */
   holdMax: number;
 }
@@ -123,6 +125,33 @@ export interface Attention {
   afterAnnouncement: number;
 }
 
+/**
+ * How the user learns a request has gone to an agent.
+ * - "tone": the hand-off's tone and nothing said, as on Android.
+ * - "named": the tone, and when a tone can't say which request was taken (another task is running,
+ *   or a result is still to be told) the model then says in a few words what it started and who
+ *   has it, unless it said so with the call. Results wait until it has, so a result that was ready
+ *   never takes the place of the answer to the user's newest request. A hand-off the user speaks
+ *   straight over is named with the next one's. A call's only task still gets the tone alone.
+ */
+export type HandOff = "tone" | "named";
+
+/**
+ * Captions: the user's words on screen while they speak. The model sends a turn's transcript in
+ * one piece once the user stops, so with this set the call also sends the audio the model hears
+ * to a transcription model over a second socket (`ws.connect` with `purpose: "captions"`) and
+ * shows its growing guess meanwhile (`caption`). Display only: the model's transcript replaces a
+ * caption, and is all an agent gets.
+ */
+export interface Captions {
+  /** The transcription model as its socket's setup names it: `models/…` on the Gemini API, a resource path on Vertex. */
+  model: string;
+  /** Seconds without audio after which the captions socket closes; the next audio opens another. */
+  idle: number;
+  /** Seconds a caption stays after its utterance ended, if the model sends no transcript to replace it. */
+  linger: number;
+}
+
 export interface CallConfig {
   api: Api;
   /** The surface, for the instruction and the words Hermes gets: "Android", "macOS", "web", "Echo". */
@@ -161,6 +190,7 @@ export interface CallConfig {
    * goes into its current run instead of waiting for it to finish.
    */
   steering: Agent[];
+  handOff: HandOff;
   announce: Announce;
   attention: Attention;
   /**
@@ -170,6 +200,8 @@ export interface CallConfig {
    * a request said in two breaths reaches its agent whole (CallProtocol.join).
    */
   supervise: boolean;
+  /** Captions of the user's speech (a host passes `{}` for the defaults); null for none. */
+  captions: Captions | null;
   limits: Limits;
 }
 
@@ -222,8 +254,11 @@ export type Agent = "hermes" | "t3";
 export type Status = "connecting" | "listening" | "working" | "dormant" | "standby" | "waking" | "ended";
 
 export type Command =
-  /** Open a socket to the model; `sid` names it in later commands and events. The host owns the URL and credentials. */
-  | { type: "ws.connect"; sid: number; model: string }
+  /**
+   * Open a socket to the model; `sid` names it in later commands and events. The host owns the URL
+   * and credentials. With `purpose: "captions"` it goes to the transcription model `model` instead.
+   */
+  | { type: "ws.connect"; sid: number; model: string; purpose?: "captions" }
   | { type: "ws.send"; sid: number; data: string }
   | { type: "ws.close"; sid: number }
   | { type: "mic.start" }
@@ -255,7 +290,17 @@ export type Command =
   /** Stop a tool run: the task was cancelled, or the call ended (a host may leave a long agent running then). */
   | { type: "tool.cancel"; run: string; reason: "cancelled" | "ended" }
   | { type: "status"; status: Status; message?: string | null }
-  | { type: "transcript"; role: "user" | "assistant"; text: string; source?: "announcer" }
+  /**
+   * Words said, for the screen. Fragments with the same `line` are one line and a new number starts
+   * the next: a new turn of the user's, another speaker, a new session, or a task between.
+   */
+  | { type: "transcript"; role: "user" | "assistant"; text: string; line: number; source?: "announcer" }
+  /**
+   * The words the user is saying, for the screen only (CallConfig.captions): each replaces the
+   * last, and null takes the caption down (the `transcript` that follows has the words, or
+   * nothing came of them). Never part of the conversation.
+   */
+  | { type: "caption"; text: string | null }
   /** A task's state for the screen. */
   | { type: "task"; id: string; label: string; agent: Agent; request: string; state: string; progress: string | null; question: string | null }
   /** Tasks waiting for the user's answer, by key, with what Hermes asked. */

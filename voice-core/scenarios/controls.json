@@ -65,6 +65,7 @@
   "steering": [
    "hermes"
   ],
+  "handOff": "tone",
   "announce": {
    "by": "model",
    "engaged": 12,
@@ -75,6 +76,7 @@
    "maxWords": 28
   },
   "supervise": false,
+  "captions": null,
   "attention": {
    "mode": "open",
    "afterWake": 8,
@@ -96,6 +98,7 @@
    "speechLevel": 0.03,
    "wakeSpeech": 0.5,
    "wakePreRoll": 1.5,
+   "wakeGap": 3,
    "holdMax": 15
   }
  },

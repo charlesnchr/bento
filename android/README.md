@@ -19,6 +19,8 @@ android/
     voicesync/  the `voice` collection: dictionary entries, instructions, modes
     assistant/  the Hermes API client (sessions, streamed turns), the chat transcript, Markdown
                 for reading, and live/: voice calls on Gemini Live that hand requests to Hermes
+                (CoreCall hosts the shared voice core; AssistantCall is the Kotlin call it replaces)
+    voicecore/  the shared voice core (voice-core/ at the repo's root) in QuickJS
     voice/      Gemini transcription (batch + live), cleanup, validation, voice edits,
                 history and crash recovery, meetings; wake/: the "Pennyworth" wake word detector
   app/    the Android app
@@ -120,9 +122,17 @@ through Android's activity manager, which can log it, key included.
 scripts/hermes-phone-link    # on the Hermes machine: a QR code (with qrencode) or the link
 ```
 
-Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the paired key,
-with the Mac's call setup (`helper/gemini_live_setup.json`, phone wording; the tests hold the
-phone's instruction to the Mac's safety rules). Gemini supervises Hermes tasks as sub-agents:
+Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the paired key.
+The call's logic is the shared voice core (`voice-core/` at the repo's root, the code the web
+page at voice.charlesnchr.com runs): the build copies `voice-core/dist/voice-core.js` into the
+APK's assets, QuickJS runs it, and `CoreCall` gives it the phone's sockets, microphone, speaker
+and Hermes. So a change to how calls behave is made in `voice-core/src`, tried on the web page,
+and reaches the phone with the rebuilt bundle. With the core, saying "stop" cuts a reply short,
+"goodbye" hangs up, Gemini answers what it knows without Hermes, and a connection lost to the
+network resumes the session. Settings → Hermes → Call engine switches back to the Kotlin call
+the core was ported from (`AssistantCall`, with the Mac's call setup,
+`helper/gemini_live_setup.json`, in phone wording), kept until the core has proved itself.
+Either way, Gemini supervises Hermes tasks as sub-agents:
 a new request starts a task in a Hermes session of its own, with the user's own transcribed
 words for that turn, and several run at once. Tasks are named by what they're about (Gemini's
 `label`, or a few of the user's words), never numbered, so Gemini talks about "the Pennyworth

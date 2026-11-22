@@ -1,0 +1,13 @@
+== eval/runs/threads-tone
+scenario          n  score  ±  collide  lost  repeat  stray   checks  ambient s  reply s  announce s  brief s  words  judge
+parallel-threads  3     67  1      0.0   0.0     0.0    0.0  12.0/14        0.0     1.51         7.2        -     66    6.7
+ALL               3   67.3         0.0   0.0     0.0    0.0  12.0/14        0.0     1.51         7.2        -     66    6.7
+
+failed checks:
+  parallel-threads-1: {"said":"\\w","after":"threads","before":"coding"} (the model said: )
+  parallel-threads-1: {"said":"coding|agent|bento|voice core","after":"coding","before":"result:threads"} (the model said: Your Fluide services are all up and running, but there isn't any active activity. You've got seventeen unarchived sessions r)
+  parallel-threads-2: {"said":"\\w","after":"threads","before":"coding"} (the model said: )
+  parallel-threads-2: {"said":"coding|agent|bento|voice core","after":"coding","before":"result:threads"} (the model said: Regarding your Fluido sessions, all three services are up and running, and you have seventeen unarchived sessions, with five)
+  parallel-threads-3: {"said":"\\w","after":"threads","before":"coding"} (the model said: )
+  parallel-threads-3: {"said":"coding|agent|bento|voice core","after":"coding","before":"result:threads"} (the model said: All three Fluide services are up, and you have seventeen unarchived sessions with five awake and idle and twelve asleep, tho)
+

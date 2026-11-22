@@ -88,6 +88,8 @@ class Prefs(context: Context) {
      * the middle of one, and one said in standby is heard from its first word.
      */
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
+    /** What runs a voice call: "core", the shared voice core (voice-core/), or "builtin", the Kotlin call it was ported from. */
+    val hermesCallEngine = string("hermes.callEngine", "core")
 
     // Wake word ("Pennyworth" starts a voice call with Hermes)
     val wakeWord = bool("wake.enabled", false)

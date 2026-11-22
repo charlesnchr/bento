@@ -46,8 +46,8 @@ the call's config, so two variants can run on the same scripts.
 }
 ```
 
-`config` is merged over the bench's defaults (`BASE_CONFIG` in `run.ts`: Vertex, the web preset,
-standby after 30 s) and is the core's `CallConfig`.
+`config` is merged over the bench's defaults (`BASE_CONFIG` in `run.ts`: Vertex, the web preset
+with its `handOff: "named"`, standby after 30 s) and is the core's `CallConfig`.
 
 ### Agents
 
@@ -75,7 +75,9 @@ matching agent.
 
 - `"turn"` (default): once the model has answered or handed off what was said last (or `patience`
   seconds passed, default 8) and has been silent for `gap` seconds (default 1.2). This is a user
-  taking their turn properly, so the model starting to speak as they do is its collision.
+  taking their turn properly, so the model starting to speak as they do is its collision. Where
+  the core asked the model to name a hand-off in words (`handOff: "named"`), the user gives that
+  3 s to start after the tone.
 - `"now"`: at once, over whatever is playing.
 - `{"speaking": 1.5}`: once the model has been speaking for that long (a barge-in).
 - `{"after": "result:trains", "delay": 0.3}`: after a condition.

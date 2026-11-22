@@ -315,6 +315,34 @@ test("silence while Hermes works leaves Gemini, and its answer brings the call b
   assert.deepEqual(s.cues(), ["taskStarted", "resultArrived"]);
 });
 
+test("a request longer than the standby time isn't cut off, and starts a second task", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.advance(0.3);
+  // The model says the user started, then nothing until they stop: five standby times of speech.
+  s.activity("ACTIVITY_START");
+  s.advance(2.5);
+  assert.notEqual(s.statuses().at(-1), "standby");
+  assert.ok(!s.sockets.get(1)!.closed, "the session the request is being said to stays open");
+  s.heard("And check the token counts for the Hermes session too."); s.activity("ACTIVITY_END");
+  s.toolCall("c2");
+  s.advance(0.2);
+  assert.equal(s.hermes().length, 2, "the follow-up became a task of its own, beside the first");
+  // Then it's quiet, and the call leaves as before.
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+});
+
+test("a turn the model never ends doesn't keep the call from standing by for good", () => {
+  const s = sim({ standbyAfter: 0.5, limits: { ...fast, deliverMax: 1 } });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.activity("ACTIVITY_START");
+  s.advance(2.5);
+  assert.notEqual(s.statuses().at(-1), "standby");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+});
+
 test("talking in standby brings the call back with the first words", () => {
   const s = sim({ standbyAfter: 0.5 });
   s.turn("Book a table"); s.toolCall("c1");
@@ -325,6 +353,89 @@ test("talking in standby brings the call back with the first words", () => {
   assert.equal(s.statuses().at(-1), "working");
   const audio = s.sent(2).filter((f) => f.includes("realtimeInput"));
   assert.ok(audio.length >= 25, "the words that woke it go to the new session");
+});
+
+/** Microphone frames as the call was given them since [from], and the audio frames [sid] was sent, as base64 PCM. */
+function micSince(s: Sim, from: number): string[] {
+  return s.events.flatMap((e) => (e.type === "mic" && e.t >= from ? [e.pcm] : []));
+}
+function audioSent(s: Sim, sid: number): string[] {
+  return s.sent(sid).filter((f) => f.includes("realtimeInput")).map((f) => JSON.parse(f).realtimeInput.audio.data);
+}
+
+test("halting speech in standby reaches the model from its first word", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.advance(4);
+  assert.equal(s.statuses().at(-1), "standby");
+  // Words with gaps between them: the call takes seconds to be sure this is speech.
+  const began = s.t + 1e-6;
+  for (let i = 0; s.statuses().at(-1) === "standby"; i++) {
+    s.mic = i % 2 === 0 ? "loud" : "quiet";
+    s.advance(i % 2 === 0 ? 0.16 : 0.24);
+    assert.ok(s.t - began < 10, "the speech wakes the call");
+  }
+  assert.ok(s.t - began > 3, "it took longer than the audio kept before a wake");
+  s.advance(0.1);
+  assert.equal(s.statuses().at(-1), "working");
+  const said = micSince(s, began);
+  assert.deepEqual(audioSent(s, 2).slice(-said.length), said, "everything since the first word goes to the new session");
+  assert.ok(audioSent(s, 2).length - said.length >= 70, "with the moments before it");
+});
+
+test("a sound that ended before the words that woke the call isn't sent", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.advance(1.5);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.mic = "loud"; s.advance(0.2);
+  s.mic = "quiet"; s.advance(3.5);
+  const began = s.t + 1e-6;
+  s.mic = "loud"; s.advance(0.6);
+  assert.equal(s.statuses().at(-1), "working");
+  const sent = audioSent(s, 2);
+  const words = micSince(s, began);
+  assert.deepEqual(sent.slice(-words.length), words);
+  const before = sent.slice(0, -words.length);
+  assert.ok(before.length >= 70 && before.length <= 80, `1.5 s before the words, not the sound before that (${before.length} frames)`);
+  assert.ok(before.every((f) => f !== words[0]), "the earlier sound is left out");
+});
+
+test("words after a pause are a new line, on the screen and in the recap", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  const lines = () => s.commands.flatMap((c) => (c.type === "transcript" ? [`${c.line} ${c.role}: ${c.text}`] : []));
+  s.activity("ACTIVITY_START"); s.heard("Book a"); s.heard(" table"); s.activity("ACTIVITY_END");
+  s.toolCall("c1");
+  s.said("On"); s.said(" it."); s.generated(); s.turnComplete();
+  s.turn("I need you to check something else.");
+  s.advance(0.4);
+  s.turn("The token counts.");
+  assert.deepEqual(lines(), [
+    "1 user: Book a", "1 user:  table", "2 assistant: On", "2 assistant:  it.",
+    "3 user: I need you to check something else.", "4 user: The token counts.",
+  ]);
+  // Standby and back: the recap has the same lines, and what's said to the new session starts another.
+  s.advance(2);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.mic = "loud"; s.advance(0.8); s.mic = "quiet";
+  assert.equal(s.statuses().at(-1), "working");
+  assert.ok(turnText(s.turns()[0]).includes("User: I need you to check something else.\nUser: The token counts.\n"), turnText(s.turns()[0]));
+  s.turn("And one more thing.");
+  assert.equal(lines().at(-1), "5 user: And one more thing.");
+});
+
+test("a new session's words don't join the last session's line", () => {
+  const s = sim({ standbyAfter: 0.5 });
+  s.turn("Book a table"); s.toolCall("c1");
+  s.said("Working on it."); s.generated(); s.turnComplete();
+  s.advance(2);
+  assert.equal(s.statuses().at(-1), "standby");
+  s.mic = "loud"; s.advance(0.8); s.mic = "quiet";
+  assert.equal(s.statuses().at(-1), "working");
+  s.said("Still working on it.");
+  const lines = s.commands.flatMap((c) => (c.type === "transcript" && c.role === "assistant" ? [c.line] : []));
+  assert.equal(lines.length, 2);
+  assert.notEqual(lines[0], lines[1]);
 });
 
 test("a call with nothing left hangs up after the quiet", () => {

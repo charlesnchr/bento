@@ -9,8 +9,8 @@
 // what was kept since its last call: a recording any host can replay (replay.ts).
 
 import { Call } from "./call.ts";
-import { MODEL, VOICE } from "./setup.ts";
-import type { CallConfig, Command, Event } from "./types.ts";
+import { CAPTIONS_MODEL, MODEL, VOICE } from "./setup.ts";
+import type { CallConfig, Captions, Command, Event } from "./types.ts";
 
 declare const __VERSION__: string;
 export const VERSION = typeof __VERSION__ === "string" ? __VERSION__ : "dev";
@@ -39,8 +39,10 @@ export function defaults(): CallConfig {
     },
     codingAgent: null,
     steering: [],
+    handOff: "tone",
     announce: { by: "model", engaged: 12, lull: 4, attach: 0.4, briefWait: 3, maxWait: 6, maxWords: 28 },
     supervise: false,
+    captions: null,
     attention: { mode: "open", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 3, afterAnnouncement: 0 },
     limits: {
       connect: 25,
@@ -55,10 +57,14 @@ export function defaults(): CallConfig {
       speechLevel: 0.03,
       wakeSpeech: 0.5,
       wakePreRoll: 1.5,
+      wakeGap: 3,
       holdMax: 15,
     },
   };
 }
+
+/** What `captions: {}` stands for. */
+const CAPTIONS: Captions = { model: CAPTIONS_MODEL, idle: 20, linger: 4 };
 
 /** [given] over the defaults; nested objects (mic, voiceCommands, limits) merge a level deep. */
 export function configFrom(given: Partial<CallConfig> & Record<string, unknown>): CallConfig {
@@ -70,6 +76,7 @@ export function configFrom(given: Partial<CallConfig> & Record<string, unknown>)
     voiceCommands: { ...base.voiceCommands, ...(given.voiceCommands ?? {}) },
     announce: { ...base.announce, ...(given.announce ?? {}) },
     attention: { ...base.attention, ...(given.attention ?? {}) },
+    captions: given.captions ? { ...CAPTIONS, ...given.captions } : null,
     limits: { ...base.limits, ...(given.limits ?? {}) },
   } as CallConfig;
 }

@@ -1,0 +1,83 @@
+== eval/runs/suite-tone
+scenario                    n  score   ±  collide  lost  repeat  stray     checks  ambient s  reply s  announce s  brief s  words  judge
+agent-question              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0     0.75         0.7        -     61    9.0
+ambient-during-task         2     35   0      0.0   0.0     0.0    0.0      3.0/6        7.0        -        10.4        -     57    3.5
+ambient-tv                  2     48  35      0.0   0.0     0.0    0.5      2.5/4        5.8        -         0.6        -     45    3.5
+away-and-back               2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.72         0.7        -     58    9.5
+burst-three                 2     63  15      0.0   0.0     0.0    0.0      4.5/7        0.0     0.80         7.7        -     59    7.5
+cancel-one                  2     88  20      0.0   0.0     0.0    0.0      7.5/8        0.0     1.38         0.7        -     64    9.0
+coding-handoff              2     85   0      0.0   0.0     0.0    0.0      7.0/8        0.0     0.99         0.7        -     67    6.5
+correction                  2     92  17      0.0   0.0     0.0    0.0      5.5/6        0.0     1.39         6.6        -     29    6.5
+echo-wake-barge-in          2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.73           -        -     17   10.0
+failed-task                 2     85   0      0.0   0.0     0.0    0.0      6.0/7        0.0     0.61           -        -     30    9.0
+interrupted-reply           2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0     0.91           -        -     17    9.5
+long-result                 2     85   0      0.0   0.0     0.0    0.0      6.0/7        0.0     0.66         0.7        -     83    9.0
+multitask-interrupt         2     70  26      0.0   0.5     0.0    0.0    11.0/12        0.0     1.50         2.3        -     82    8.0
+names-fidelity              2    100   0      0.0   0.0     0.0    0.0      8.0/8        0.0        -         2.7        -     62    9.0
+noisy-request               2     70   0      0.0   0.0     0.0    0.0      3.0/4        0.0        -         0.7        -     16    5.5
+parallel-threads            2     34  67      0.0   0.0     0.0    0.5    10.5/14        0.0     1.59         7.2        -     70    6.0
+question-while-busy         2     93  15      0.0   0.0     0.0    0.0     9.5/10        0.0     0.85        14.3        -    102    9.0
+quick-chat                  2     93  15      0.0   0.0     0.0    0.0      6.5/7        0.0     0.83           -        -     57   10.0
+rambling-request            2     85   0      0.0   0.0     0.0    0.0      4.0/5        0.0        -         0.7        -     16    5.0
+result-during-dialogue      2     45  10      3.0   0.0     0.5    0.0      4.0/5        0.0     0.82        47.6        -    159    5.0
+result-during-user-speech   2     68  65      0.0   0.0     0.0    0.5      4.5/6        0.0     0.75        12.9        -     41    6.5
+side-speech                 2     20   0      1.0   0.0     0.0    1.0      3.0/5        3.4        -         0.7        -     63    2.5
+silence-then-continue       2    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.91           -        -     80    9.5
+single-task                 2     93  15      0.0   0.0     0.0    0.0      6.5/7        0.0     0.75         0.6        -     28    9.5
+standby-resume              2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.84         1.7        -     50   10.0
+status-check                2     98   0      0.0   0.0     0.0    0.0    11.0/11        0.0     1.43         7.9        -    112    9.0
+steer-running               2    100   0      0.0   0.0     0.0    0.0      7.0/7        0.0     0.80         0.6        -     54    9.0
+stop-mid-announcement       2    100   0      0.0   0.0     0.0    0.0      6.0/6        0.0     0.66           -        -     29    9.5
+wake-from-standby-speech    2    100   0      0.0   0.0     0.0    0.0      5.0/5        0.0        -         0.7        -     22    9.5
+ALL                        58   80.9          4.0   0.5     0.5    2.5  177.5/201       16.1     0.83         0.7        -   1626    7.8
+
+failed checks:
+  ambient-during-task-1: {"noSpeech":true,"after":"start:tv1","before":"result:tariffs"} (4 segment(s):  Parboiling them with a bit of baking soda helps, then roughing up the edges before tossing them By the way, the  Just l)
+  ambient-during-task-1: {"status":"standby"} (status standby)
+  ambient-during-task-1: {"connected":"tariffs","max":40} (connected 75.0 s of the task's 75.0 s)
+  ambient-during-task-2: {"noSpeech":true,"after":"start:tv1","before":"result:tariffs"} (2 segment(s): Boiling them until just tender, then shaking them up to rough up the edges before roasting in hot fat until golden )
+  ambient-during-task-2: {"status":"standby"} (status standby)
+  ambient-during-task-2: {"connected":"tariffs","max":40} (connected 75.0 s of the task's 75.0 s)
+  ambient-tv-1: {"noSpeech":true,"before":"ask"} (2 segment(s): Good evening! How can I help you tonight? That sounds quite serious. Hopefully, the situation gets under control soon. L)
+  ambient-tv-2: {"noSpeech":true,"before":"ask"} (2 segment(s): Good evening! How can I help you tonight? That sounds like )
+  ambient-tv-2: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  burst-three-1: {"voiced":"arsenal","within":6} (said 1x, delay 7.54)
+  burst-three-1: {"voiced":"post","within":6} (said 1x, delay 7.67)
+  burst-three-1: {"maxModelWords":55,"after":"r3","before":"thanks"} (58 words)
+  burst-three-2: {"voiced":"arsenal","within":6} (said 1x, delay 8.12)
+  burst-three-2: {"voiced":"post","within":6} (said 1x, delay 8.31)
+  cancel-one-1: {"maxModelWords":50,"after":"cancel","before":"thanks"} (58 words)
+  coding-handoff-1: {"maxModelWords":25,"after":"result:fix","before":"thanks"} (29 words)
+  coding-handoff-2: {"maxModelWords":25,"after":"result:fix","before":"thanks"} (35 words)
+  correction-2: {"anyOf":[{"cancel":"lidl"},{"followUp":"lidl","match":"tesco"}]} (fail: cancel of lidl | fail: 0 follow-up(s) reached lidl)
+  failed-task-1: {"maxModelWords":10,"after":"ok"} (13 words)
+  failed-task-2: {"maxModelWords":10,"after":"ok"} (13 words)
+  long-result-1: {"maxModelWords":45,"after":"ask","before":"socks"} (59 words)
+  long-result-2: {"maxModelWords":45,"after":"ask","before":"socks"} (50 words)
+  multitask-interrupt-1: {"request":"christmas","contains":["christmas","flights"]} (missing: flights in "Separately, while that's happening, can you ask Hermes how many days it is until Christmas?")
+  multitask-interrupt-2: {"request":"christmas","contains":["christmas","flights"]} (missing: flights in "Separately, while that's happening, can you ask Hermes how many days it is until Christmas?")
+  noisy-request-1: {"dispatch":"coffee","count":1,"within":4} (1 task(s) started for coffee, 19.6 s after the request)
+  noisy-request-2: {"dispatch":"coffee","count":1,"within":4} (1 task(s) started for coffee, 18.9 s after the request)
+  parallel-threads-1: {"dispatch":"threads","count":1} (0 task(s) started for threads)
+  parallel-threads-1: {"dispatch":"?","count":0} (1 task(s) started for ?)
+  parallel-threads-1: {"dispatch":"threads","within":5} (0 task(s) started for threads)
+  parallel-threads-1: {"voiced":"threads","within":15} (no such result)
+  parallel-threads-1: {"maxModelWords":20,"after":"threads","before":"coding"} (23 words)
+  parallel-threads-2: {"said":"\\w","after":"threads","before":"coding"} (the model said: )
+  parallel-threads-2: {"said":"coding|agent|bento|voice core","after":"coding","before":"result:threads"} (the model said: Regarding your Fluido sessions, all three services are up but nothing is actively running. You have seventeen unarchived ses)
+  question-while-busy-2: {"said":"(should i|shall i|want me to|do you want|would you like|ok(ay)? to|go ahead)[^.!?]*[.!?]?\\W*$","after":"bike","before":"yes"} (the model said: Given the rough roads and park shortcuts, a gravel bike would probably be better. The wider tires will absorb shocks from po)
+  quick-chat-2: {"maxModelWords":12,"after":"thanks"} (15 words)
+  rambling-request-1: {"request":"haircut","contains":["hair|barber","green lanes","friday","morning|before ten|10"]} (missing: friday, morning|before ten|10 in "Can you ask Hermes to book me a haircut at the barber on Green Lanes?")
+  rambling-request-2: {"request":"haircut","contains":["hair|barber","green lanes","friday","morning|before ten|10"]} (missing: friday, morning|before ten|10 in "Can you ask Hermes to book me a haircut at the barber on Green Lanes?")
+  result-during-dialogue-1: {"voiced":"trains","within":30} (said 2x, delay 39.34)
+  result-during-dialogue-2: {"voiced":"trains","within":30} (said 1x, delay 47.64)
+  result-during-user-speech-1: {"dispatch":"dentist","count":1} (0 task(s) started for dentist)
+  result-during-user-speech-1: {"request":"dentist","contains":["dentist","thursday","friday","before ten|before 10"]} (missing: dentist, thursday, friday, before ten|before 10 in "")
+  result-during-user-speech-1: {"voiced":"dentist","within":20} (no such result)
+  side-speech-1: {"noSpeech":true,"before":"ask"} (1 segment(s): 
+)
+  side-speech-1: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  side-speech-2: {"noSpeech":true,"before":"ask"} (2 segment(s):  I'm not sure if you're talking to me.)
+  side-speech-2: {"dispatch":"?","count":0,"before":"ask"} (1 task(s) started for ?)
+  single-task-1: {"maxModelWords":8,"after":"thanks"} (10 words)
+

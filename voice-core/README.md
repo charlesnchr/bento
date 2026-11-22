@@ -21,7 +21,7 @@ host                                   core (dist/voice-core.js)
                                   ◄──   ws.connect / ws.send / ws.close
                                   ◄──   play / flush / cue / mic.start
                                   ◄──   tool.call (Hermes or a host tool)
-                                  ◄──   status / transcript / task
+                                  ◄──   status / transcript / caption / task
 ```
 
 `src/types.ts` defines both directions. Every event carries the host's time, so a recorded call
@@ -30,7 +30,7 @@ replays to the same commands on any engine.
 | Surface | Engine | Host code |
 |---|---|---|
 | Web (`dev/server.mjs`) | the browser's | `web/` |
-| Android | QuickJS (Zipline) | `android/core/.../voicecore/VoiceCore.kt` |
+| Android | QuickJS (Zipline) | `android/core/.../assistant/live/CoreCall.kt` (the engine: `voicecore/VoiceCore.kt`) |
 | macOS | JavaScriptCore | `Sources/VoiceCore/SharedCore/SharedCallCore.swift` |
 | Echo bridge | QuickJS (`quickjs` on PyPI) | `hosts/python/voice_core.py` |
 | Scripts | Node | `dev/talk.ts` |
@@ -44,7 +44,8 @@ The dev server runs as a user service on homelab. Open **https://voice.charlesnc
 Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf93d.ts.net:8770.
 
 1. Press Call and talk. Work goes to Hermes and code changes to a coding agent in T3 while the
-   conversation goes on; each task gets a card with its live progress.
+   conversation goes on; each task gets a card with its live progress. Tasks that are finished
+   or cancelled, and earlier calls' coding agents that are done, fold away under Finished.
 2. The controls:
    - Say "stop" (or "Woodhouse, stop", "that's enough", "quiet") to cut a reply short: the model
      stays quiet until you speak again. The stop button and Esc do the same.
@@ -67,11 +68,11 @@ Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf
 Without a microphone:
 
 ```sh
-node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav] [--preset echo] [--hermes] [--out reply.wav]
+node dev/talk.ts question.wav [@2.5:talk_over.wav] [next.wav] [--preset echo] [--hermes] [--captions] [--out reply.wav]
 ```
 
 It says the WAVs into a real call through the same relay and prints the conversation, with how
-long each reply took to start. Hermes is faked unless `--hermes` is given; `--coding` gives the call
+long each reply took to start. `--captions` turns captions on and prints each one as it comes. Hermes is faked unless `--hermes` is given; `--coding` gives the call
 the T3 coding agent. Echo test clips are in `home-assistant/live-bridge/testdata/`; make more with
 `node dev/tts.mjs out.wav "Words to say"` (Gemini TTS on GSK Vertex).
 
@@ -102,10 +103,61 @@ journalctl --user -u voice-core-dev -f
 tailscale serve --https=8770 off            # take it off the tailnet (needs sudo here)
 ```
 
+## Captions: the user's words while they speak
+
+Gemini Live sends a turn's transcript in one piece once the user has stopped. On Vertex on
+2026-11-22, 8.8 s of speech came as one `inputTranscription` 0.84 s after it ended, with nothing
+during it, and `inputAudioTranscription.mode` made no difference. Someone talking for ten seconds
+sees nothing of it on screen until they stop.
+
+With `captions` set in `CallConfig` (off by default; `{}` takes the defaults), the core sends the
+audio the model hears to Gemini's transcription model (`gemini-3.5-transcribe-live`) over a second
+socket, and shows its growing guess meanwhile. That is a port of Android's `LiveCaptions` and of
+`AssistantCall`'s caption bookkeeping, in `src/captions.ts`. A host does two things:
+
+- `ws.connect` with `purpose: "captions"` opens a socket to the transcription model named in
+  `model`, with the host's own URL and credentials; its `ws.open`, `ws.message` and `ws.closed`
+  events go to the core like the model socket's.
+- `caption` carries the words for the screen. Each replaces the last, and `text: null` takes the
+  caption down. A caption is never part of the conversation: the `transcript` that follows is.
+
+The rest is the core's:
+
+- The captioner hears frame for frame what the model is sent, so nothing is captioned that the
+  model didn't hear (muted, standby, dormant, or silence over a reply where the policy says so).
+- The model's transcript replaces a caption, and is all an agent gets. Where the two disagree
+  about pauses, only the words the model hasn't transcribed yet are shown.
+- A caption nothing replaces comes down `linger` seconds (4) after its utterance ended.
+- The socket opens with the first audio, closes after `idle` seconds (20) without any, and is
+  replaced at the next audio when the server rotates it. One that breaks waits 5 s; three in a row
+  without a single caption and the call goes on without captions. Losing them never ends a call.
+
+Measured on 2026-11-22 through the dev server on Vertex, seven scripted calls: the first caption
+came 0.73 to 0.93 s after the speech began, with 4 to 11 updates an utterance. The dev server
+relays the socket at `/live?for=captions` to the global endpoint (us-central1 doesn't serve the
+model), and the web page has the setting "Show my words as I speak", on by default.
+
+In two of three calls with one 8.8 s clip, the Live model's own transcript left out the last
+clause ("and don't change anything else") that the caption had shown. The caption makes that
+visible when it happens, since the transcript takes its place; the agent still gets the model's
+transcript.
+
 ## Who tells results, when the model listens, and closer supervision
 
-Three settings in `CallConfig` (`src/types.ts`), all off by default, so a host that sets none
+Four settings in `CallConfig` (`src/types.ts`), all off by default, so a host that sets none
 behaves as before. `eval/` measures them (see below).
+
+**`handOff: "named"`**: when a tone can't say which request was taken, because another task is
+running or a result is still to be told, the model says in a few words after the tone what it
+started and who has it ("Hermes is looking at your T3 sessions too"), unless it said so as it
+called. The core asks for that in the task's "started" answer and holds results back until the
+model has said it (for `limits.settleMax` seconds if it says nothing), so a result that was ready
+never takes the place of the answer to the user's newest request. A hand-off the user talks
+straight over gets only its tone, and the next confirmation names it too. A follow-up to one of
+several running tasks is confirmed the same way. A call's only task still gets the tone alone:
+on the bench, words after every hand-off cost more in talking over the user than they gave
+(`eval/results/README.md`). The web page sets it; the default, "tone", is Android's silent
+hand-off. It has been measured on Vertex only.
 
 **`announce.by: "host"`**: the core tells the user each task's result itself, instead of handing
 the full reply to the speech model to word and time. For each result it sends the host a `brief`
@@ -148,7 +200,7 @@ reaches its agent whole.
 
 ## Measuring a change
 
-`eval/` runs scripted calls against the real model and scores them: 28 scenarios of real use
+`eval/` runs scripted calls against the real model and scores them: 29 scenarios of real use
 (results landing mid-conversation, several tasks at once, corrections, status checks, a television
 in the room, standby and coming back), a simulated user, scripted agents, metrics from the trace
 and a judge. See `eval/README.md`. Run the suite on the build before and after a change, three
@@ -173,8 +225,19 @@ scripts/test VoiceCoreTests                                               # Java
 ```
 
 When a change alters behaviour on purpose, `npm run golden` rewrites the expected answers. Read
-the diff. Commit `dist/voice-core.js` with the change, since the Mac and the Echo use the built
-file without Node.
+the diff. Commit `dist/voice-core.js` with the change, since the Mac, the Echo and the Android
+build (which copies it into the APK's assets) use the built file without Node.
+
+The phone's host has tests of its own, against a scripted Gemini socket and, when the dev server
+is named, in a real call spoken with its clips through the relay (GSK Vertex, not the phone's
+Gemini key); a third runs the bundle from the APK on a device:
+
+```sh
+cd android
+~/android-toolchain/env.sh gradle :core:test --tests '*CoreCallTest'
+VOICE_CORE_RELAY=http://127.0.0.1:8770 ~/android-toolchain/env.sh gradle :core:test --tests '*CoreCallLiveTest'
+ANDROID_SERIAL=emulator-5554 ~/android-toolchain/env.sh gradle :app:connectedDebugAndroidTest
+```
 
 Things that differ between the Gemini API and Vertex are in the core. For example, Vertex has no
 `willContinue`, so with `api: "vertex"` a task's "started" answer closes its call and the
@@ -182,11 +245,17 @@ result goes in as a turn.
 
 ## Not done yet
 
-- The web page is the only surface that uses the core for real calls. The other engines run it
-  and pass conformance; the next step is to wire each call screen's I/O to it behind a setting, Android first (its
-  `AssistantCall` is what this ports). After that the Mac (it gains multiple tasks, earcons,
-  standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
-- Captions (Android's second transcription socket) aren't ported.
+- The web page and Bento on Android use the core for real calls. On the phone it is the default
+  (`CoreCall`), with Settings → Hermes → Call engine to go back to the Kotlin `AssistantCall` this
+  ports; once the core has proved itself there, `AssistantCall` and its tests can go. The Mac and
+  the Echo run the core and pass conformance but don't call with it yet: next the Mac (it gains
+  multiple tasks, earcons, standby and hang-up), then the Echo (`woodhouse_live.py`'s Gemini route).
+- The phone doesn't use everything the web page does: no coding agent (T3 runs on homelab, not
+  the phone), no typing to the call or to a task, and a follow-up to a running Hermes task waits
+  for its run to end, since the phone's Hermes client has no steer.
+- Captions are in the core (`src/captions.ts`) for the web page and `dev/talk.ts`. The phone
+  doesn't set `captions` yet: its host keeps its own (`LiveCaptions`, `CaptionTracker`), from the
+  audio the core sends and Gemini's voice activity. The Mac and the Echo have none.
 - Only Gemini Live. GPT-Live and Grok, which the Echo and the Mac also use, would be provider
   adapters next to the Gemini one in `call.ts`.
 - Loading the dev server's build from Android and the Mac at call start (a debug setting) is

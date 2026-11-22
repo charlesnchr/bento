@@ -10,6 +10,8 @@ import { tidy } from "./taskNames.ts";
 
 export const MODEL = "models/gemini-3.8-live";
 export const VOICE = "Charon";
+/** Gemini's transcription model, for captions of the user's speech (captions.ts). */
+export const CAPTIONS_MODEL = "models/gemini-3.5-transcribe-live";
 
 /** Android's instruction; other surfaces get it with their own name in place of Android's. */
 export const INSTRUCTION =
@@ -53,8 +55,17 @@ const RESULT_BY_BENTO =
   "note of what it said with Hermes's full reply. Never announce or repeat a result Bento has told the user, and don't " +
   "comment on it; answer their questions about it from the full reply.";
 
-export function instructionFor(platform: string, api: "gemini" | "vertex" = "gemini", byHost = false): string {
-  const text = INSTRUCTION.replace("in Bento on Android.", `in Bento on ${platform}.`);
+/** What the instruction says of a hand-off, and what it says instead when the model names one among others (handOff "named"). */
+const HAND_OFF_TONE =
+  "Bento answers at once, silently, and plays the user a short tone that says Hermes has it, so don't announce that Hermes is working on it.";
+const HAND_OFF_NAMED =
+  "Bento answers at once and plays the user a short tone that says Hermes has it, so don't announce that Hermes is working " +
+  "on it, unless Bento's answer asks you to: while other tasks run a tone doesn't say which request was taken, so Bento then " +
+  "asks you to tell the user in a few words what you started and who has it (\"Hermes is checking your calendar too\").";
+
+export function instructionFor(platform: string, api: "gemini" | "vertex" = "gemini", byHost = false, named = false): string {
+  let text = INSTRUCTION.replace("in Bento on Android.", `in Bento on ${platform}.`);
+  if (named) text = text.replace(HAND_OFF_TONE, HAND_OFF_NAMED);
   if (byHost) return text.replace(RESULT_LATER, RESULT_BY_BENTO);
   return api === "vertex" ? text.replace(RESULT_LATER, RESULT_LATER_TURN) : text;
 }
@@ -121,7 +132,10 @@ export function codingInstruction(projects: string[]): string {
     "works in its own branch and can take many minutes. Its tasks work like Hermes tasks, with continue_task, list_tasks, " +
     "check_task and cancel_task, and its result arrives the same way. Pass the project when the user names one or it is " +
     "clear from the conversation" + (projects.length > 0 ? `; the projects are ${projects.map((p) => `"${p}"`).join(", ")}` : "") + ". " +
-    "Everything else still goes to Hermes.";
+    "Everything else still goes to Hermes. list_tasks, check_task and cancel_task know only the tasks this call started. " +
+    "Sessions, threads and agents the user runs elsewhere (their other T3 Code threads, sessions of other tools, anything on " +
+    "their machines) are not this call's tasks: a request to look at them, list them or check on them is a new request for " +
+    "Hermes, also while other tasks run. \"Another one\" or \"also\" asks for a new task beside those running.";
 }
 
 const CODE_TOOL_DESCRIPTION =
@@ -205,6 +219,16 @@ export function setupFrame(s: Setup, resume: Resume | null = null, handle: strin
       sessionResumption: resumption,
     },
   });
+}
+
+/**
+ * The captions socket's setup: text only, the server's own activity detection (its pauses are
+ * where utterances end) and VERBATIM, with the call's vocabulary.
+ */
+export function captionsSetupFrame(model: string, vocabulary: string[]): string {
+  const transcription: Record<string, unknown> = { mode: "VERBATIM" };
+  if (vocabulary.length > 0) transcription.customVocabulary = vocabulary;
+  return JSON.stringify({ setup: { model, generationConfig: { responseModalities: ["TEXT"] }, inputAudioTranscription: transcription } });
 }
 
 function userTurn(text: string, turnComplete: boolean): string {

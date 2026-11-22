@@ -22,12 +22,17 @@
 // the microphone keeps running unheard. A task finishing, the user speaking or `resume` brings it
 // back on a new session with the conversation so far.
 //
+// With `captions` set, the audio the model hears also goes to a transcription model, whose growing
+// guess at the user's words is shown while they speak (captions.ts): the model itself sends a
+// turn's words only once it has ended.
+//
 // Kotlin's coroutines become a small scheduler: `defer` runs after the current event (as a launch
 // on the call's one thread would), `sleep` on the first event at or after its time. Hosts tick
 // every 100 ms, the period Android's loops poll at.
 
 import { RESULT_ARRIVED, TASK_STARTED } from "./earcons.ts";
 import { base64Size, codePoints, decodeBase64, encodeBase64, gain, level, looksBase64, silent64 } from "./bytes.ts";
+import { Captions } from "./captions.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
 import { commandIn } from "./commands.ts";
 import {
@@ -258,6 +263,9 @@ export class Call {
   private waking = false;
   private lent = false;
   private wakeHeld = false;
+  /** In standby: the audio since the sound the microphone hears began, and since it was last loud, in bytes. */
+  private soundBytes = 0;
+  private quietBytes = 0;
   private wakeStarted = 0;
   private held: Uint8Array[] = [];
   private heldBytes = 0;
@@ -320,9 +328,20 @@ export class Call {
   private attendUntil = 0;
   private replyEnded = false;
   private replyAsked = false;
+  /**
+   * handOff "named": when the model last spoke; the hand-offs it has just been asked to tell the user of, and when;
+   * and those it was to name but the user has heard only a tone for, which the next confirmation names too.
+   */
+  private modelSpokeAt = -Infinity;
+  private confirming: { tasks: Task[]; at: number } | null = null;
+  private unconfirmed: Task[] = [];
   /** The conversation for a recap: the history the call started on, and what was said since. */
   private readonly chat: ChatLine[];
   private boundary = true;
+  /** The line of the transcript the latest fragment went on: the screen breaks its lines where the recap does. */
+  private line = 0;
+  /** The user's words on screen while they speak (CallConfig.captions). */
+  private readonly captions: Captions | null;
 
   constructor(config: CallConfig) {
     this.c = config;
@@ -333,12 +352,24 @@ export class Call {
       api: config.api,
       model: config.model,
       voice: config.voice,
-      instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host")) +
+      instruction: (config.instruction ?? instructionFor(config.platform, config.api, config.announce.by === "host", config.handOff === "named")) +
         (config.codingAgent ? codingInstruction(config.codingAgent.projects) : "") + (config.supervise ? SUPERVISE : ""),
       vocabulary: config.vocabulary,
       hostTools: config.hostTools,
       codingProjects: config.codingAgent?.projects ?? null,
     };
+    this.captions = config.captions == null ? null : new Captions(config.captions, config.vocabulary, {
+      connect: (model) => {
+        const sid = this.nextSid++;
+        this.emit({ type: "ws.connect", sid, model, purpose: "captions" });
+        return sid;
+      },
+      send: (sid, data) => this.emit({ type: "ws.send", sid, data }),
+      close: (sid) => this.emit({ type: "ws.close", sid }),
+      show: (text) => this.emit({ type: "caption", text }),
+      log: (level, message) => this.log(level, message),
+      away: () => this.standby,
+    });
   }
 
   // The scheduler.
@@ -474,6 +505,7 @@ export class Call {
   }
 
   private opened(sid: number): void {
+    if (this.captions?.opened(sid)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       rotation.sock.open = true;
@@ -490,6 +522,7 @@ export class Call {
   }
 
   private message(sid: number, data: string): void {
+    if (this.captions?.message(sid, data, this.t)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       // The resumed session already has the recap and the microphone: wait for it to take input.
@@ -504,6 +537,7 @@ export class Call {
   }
 
   private closed(sid: number, e: { code?: number; reason?: string; httpStatus?: number }): void {
+    if (this.captions?.closed(sid, this.t)) return;
     const rotation = this.rotation;
     if (rotation && rotation.sock.sid === sid) {
       rotation.sock.closed = true;
@@ -533,8 +567,11 @@ export class Call {
     // Timers run in drain(); a rotation that never set up runs out here.
     if (this.rotation && this.t >= this.rotation.deadline - EPSILON) this.rotated(false);
     if (this.c.mic.whileSpeaking === "wake") this.updateWakeword();
+    // A confirmation the model never gave: results stop waiting for it, and the next one names its hand-offs.
+    if (this.confirming && this.t - this.confirming.at >= this.c.limits.settleMax && !this.geminiSpeaking && this.t >= this.speechUntil) this.confirmed(false);
     this.announce();
     this.attend();
+    this.captions?.tick(this.t);
   }
 
   private get windowed(): boolean {
@@ -570,7 +607,7 @@ export class Call {
     this.dormant = true;
     this.held = [];
     this.heldBytes = 0;
-    if (!this.streamEnded) { this.streamEnded = true; this.send(STREAM_END); }
+    if (!this.streamEnded) { this.streamEnded = true; this.send(STREAM_END); this.captions?.pause(t); }
     this.setStatus("dormant");
     this.updateWakeword();
   }
@@ -600,7 +637,7 @@ export class Call {
     this.log("info", "listening again");
     if (this.standby) { this.voiceWoke = true; this.comeBack(); }
     else {
-      for (const pcm of this.held) this.send(audioFrame(pcm));
+      for (const pcm of this.held) this.hear(audioFrame(pcm), pcm.length);
       this.held = [];
       this.heldBytes = 0;
       this.settled();
@@ -712,12 +749,16 @@ export class Call {
       this.unheard.length === 0 && !this.userTalking && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after;
   }
 
-  /** Only Hermes is left to wait for and nobody has spoken for the standby time. */
+  /**
+   * Only Hermes is left to wait for and nobody has spoken for the standby time. The model says once
+   * that the user started speaking and sends their words when they stop, so a turn still open is
+   * someone speaking, however long ago it started (until it counts as stuck, as for results).
+   */
   private idleWhileHermesWorks(t: number): boolean {
     const after = this.c.standbyAfter;
     return after > 0 && (this.running > 0 || this.dormant) && this.settling === 0 && this.waiting().length === 0 && this.listening && !this.standby &&
       !this.waking && !this.rotating && this.c.reconnect && t - Math.max(this.lastSpeech, this.speechUntil, this.toneAt) >= after &&
-      (this.unspokenSince == null || t - this.unspokenSince >= after * 3);
+      !this.talking(t) && (this.unspokenSince == null || t - this.unspokenSince >= after * 3);
   }
 
   // Results and what the user has heard.
@@ -841,7 +882,7 @@ export class Call {
    */
   private fits(item: Unheard, t: number): boolean {
     const a = this.c.announce;
-    if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null) return false;
+    if (t < item.notBefore || t < this.speechUntil || t - this.toneAt < 0.6 || this.hush != null || this.confirming != null) return false;
     // A room that is never quiet (a television) holds a brief back only so long.
     const waited = item.briefAt != null && t - item.briefAt >= a.maxWait;
     // Off the model the microphone's level is all there is to go by.
@@ -873,7 +914,7 @@ export class Call {
     this.announcing = { item, from: t, until: this.speechUntil };
     this.lastSpeech = t;
     this.replyEnded = false;
-    this.emit({ type: "transcript", role: "assistant", text: brief.text, source: "announcer" });
+    this.emit({ type: "transcript", role: "assistant", text: brief.text, line: ++this.line, source: "announcer" });
     this.chat.push({ role: "assistant", speaker: "Bento", text: brief.text });
     this.boundary = true;
     this.tellModel(item);
@@ -956,6 +997,7 @@ export class Call {
       if (value && !this.streamEnded) {
         this.streamEnded = true;
         this.send(STREAM_END);
+        this.captions?.pause(this.t);
       } else if (!value) this.streamEnded = false;
     });
   }
@@ -976,6 +1018,7 @@ export class Call {
 
   private newSession(): void {
     this.turnEnded(!this.dropTurn && this.spokeSince && !this.skipTurn && (this.generated || !this.geminiSpeaking));
+    this.confirmed(false);
     this.geminiSpeaking = false;
     this.skipTurn = false;
     this.dropTurn = false;
@@ -983,6 +1026,7 @@ export class Call {
     this.replyDue = null;
     this.generated = false;
     this.geminiSaid = "";
+    this.boundary = true;
   }
 
   private silentAbout(): void {
@@ -1009,6 +1053,7 @@ export class Call {
   }
 
   private geminiSpoke(): void {
+    this.modelSpokeAt = this.t;
     this.geminiSpeaking = true;
     if (!this.skipTurn) this.spokeSince = true;
   }
@@ -1017,19 +1062,28 @@ export class Call {
 
   private standBy(): void {
     this.standby = true;
+    this.soundBytes = 0;
+    this.quietBytes = 0;
     this.played();
     for (const item of this.unheard) { item.told = false; item.playing = null; item.questionSaid = true; }
     this.goingAway = false;
     this.resumeHandle = null;
     this.closeSocket(this.socket);
     this.setStatus("standby");
+    this.captions?.pause(this.t);
+    this.captions?.takeDown();
   }
 
   private lend(): boolean {
     if (!this.active || !this.standby || this.waking || this.lent) return false;
     this.lent = true;
-    this.held = []; this.heldBytes = 0; this.voiced = 0; this.voiceWoke = false;
+    this.unhold(); this.voiceWoke = false;
     return true;
+  }
+
+  /** Nothing the microphone has picked up so far is kept or counts as speech. */
+  private unhold(): void {
+    this.held = []; this.heldBytes = 0; this.voiced = 0; this.soundBytes = 0; this.quietBytes = 0;
   }
 
   private reclaim(): void {
@@ -1037,7 +1091,7 @@ export class Call {
     this.micWatchFrom = this.t;
     this.lent = false;
     this.defer(() => {
-      this.held = []; this.heldBytes = 0; this.voiced = 0; this.voiceWoke = false;
+      this.unhold(); this.voiceWoke = false;
       const wasHeld = this.wakeHeld;
       this.wakeHeld = false;
       if (wasHeld) this.comeBack();
@@ -1069,7 +1123,7 @@ export class Call {
     this.speechUntil = this.announcing?.until ?? 0;
     this.newSession();
     // Back for a result while dormant, not for the user: the model still hears nothing of the room.
-    if (!this.dormant) for (const pcm of this.held) this.send(audioFrame(pcm));
+    if (!this.dormant) for (const pcm of this.held) this.hear(audioFrame(pcm), pcm.length);
     for (const frame of this.typedLater.splice(0)) this.send(frame);
     const away = this.saidAway.splice(0).map((a) => a.line);
     if (away.length > 0) {
@@ -1084,6 +1138,8 @@ export class Call {
       this.heldBytes = 0;
     }
     this.voiced = 0;
+    this.soundBytes = 0;
+    this.quietBytes = 0;
     this.voiceWoke = false;
     this.rejoining = false;
     this.sendDeliveries();
@@ -1092,17 +1148,31 @@ export class Call {
 
   /** Microphone audio while the call is off the model: in standby it listens for speech; coming back it keeps it all. */
   private hold(pcm: Uint8Array): void {
-    if (this.lent) { this.held = []; this.heldBytes = 0; this.voiced = 0; return; }
+    if (this.lent) { this.unhold(); return; }
+    const limits = this.c.limits;
+    const back = this.waking || this.rejoining;
+    // Without echo cancellation the microphone hears a brief playing: that isn't the user.
+    const hears = !back && limits.wakeLevel > 0 && !(this.c.mic.whileSpeaking !== "send" && this.replyAudible());
+    const loud = hears && level(pcm) >= limits.wakeLevel;
     this.held.push(this.kept(pcm));
     this.heldBytes += pcm.length;
+    // In standby, what's kept reaches back to where the sound began: speech takes a few seconds to
+    // tell from noise, and the words said meanwhile are the start of the request. A pause of
+    // wakeGap ends the sound.
+    if (!back && !this.dormant) {
+      if (loud) { this.soundBytes += pcm.length; this.quietBytes = 0; }
+      else if (this.soundBytes > 0) {
+        this.soundBytes += pcm.length;
+        this.quietBytes += pcm.length;
+        if (this.quietBytes >= limits.wakeGap * 32_000) this.soundBytes = 0;
+      }
+    }
     // Coming back for the user, all they say meanwhile is kept; dormant, only what a wake word would need.
-    const keep = (this.waking || this.rejoining) && !this.dormant ? this.c.limits.holdMax : this.c.limits.wakePreRoll;
+    const keep = this.dormant ? limits.wakePreRoll : back ? limits.holdMax : Math.min(limits.holdMax, limits.wakePreRoll + this.soundBytes / 32_000);
     while (this.heldBytes > keep * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
-    if (this.waking || this.rejoining || this.c.limits.wakeLevel <= 0) return;
-    // Without echo cancellation the microphone hears a brief playing: that isn't the user.
-    if (this.c.mic.whileSpeaking !== "send" && this.replyAudible()) return;
+    if (!hears) return;
     const seconds = pcm.length / 32_000;
-    this.voiced = level(pcm) >= this.c.limits.wakeLevel ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
+    this.voiced = loud ? this.voiced + seconds : Math.max(0, this.voiced - seconds / 2);
     // Dormant, only the wake word brings the call back: a television is loud too.
     if (this.dormant) { this.voiced = Math.min(this.voiced, this.c.limits.wakeSpeech); return; }
     if (this.voiced >= this.c.limits.wakeSpeech) {
@@ -1233,8 +1303,11 @@ export class Call {
     for (const source of [content, event]) {
       const input = str(obj(source.inputTranscription), "text");
       if (input) {
+        // These words take the caption's place; a caption of later words comes straight back.
+        const captionBack = this.captions?.transcribed(input, this.t);
         this.protocol.transcript("user", input, this.t);
         this.heardWords("user", input);
+        captionBack?.();
         this.lastSpeech = this.t;
         this.lastUserSpeech = this.t;
         this.replyEnded = false;
@@ -1279,6 +1352,8 @@ export class Call {
       else if (!this.skipTurn) { if (this.spokeSince) this.turnEnded(true); else this.silentAbout(); }
       else if (this.heardRelayed().length > 0 && !this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
       if (this.spokeSince) this.unspokenSince = null;
+      // The turn after a hand-off's "started" answer said something: the user has their confirmation.
+      if (this.spokeSince && !this.dropTurn) this.confirmed(true);
       this.geminiSaid = "";
       this.geminiSpeaking = false;
       this.skipTurn = false;
@@ -1306,7 +1381,11 @@ export class Call {
     this.lastUserSpeech = at;
     this.replyEnded = false;
     this.cutAnnouncement();
+    // The user spoke before the model had confirmed a hand-off: the next confirmation names it.
+    this.confirmed(this.spokeSince && this.generated && this.speechUntil - at <= INTERRUPT_GRACE);
     this.utterance = "";
+    // What the user says now is a new line, however long ago and to whichever session they last spoke.
+    this.boundary = true;
     this.cancelledAll = false;
     if (this.hush?.afterEnd) this.hush = null;
     this.protocol.activityStarted(at);
@@ -1320,6 +1399,7 @@ export class Call {
     else { this.heardRelayed(); this.again(this.unheard.filter((u) => u.awaiting)); }
     this.answerFor.push([at, this.asking().map((t) => t.id)]);
     if (this.answerFor.length > 8) this.answerFor.shift();
+    this.captions?.turnStarted(at);
   }
 
   private activityEnd(): void {
@@ -1329,6 +1409,7 @@ export class Call {
     this.lastSpeech = this.t;
     this.userTalking = false;
     this.replyDue = this.t;
+    this.captions?.turnEnded(this.t);
   }
 
   private interrupted(): void {
@@ -1341,6 +1422,7 @@ export class Call {
     this.played();
     this.again(this.unheard.filter((u) => u.playing != null));
     if (!this.skipTurn) this.turnEnded(playedOut);
+    this.confirmed(playedOut);
     this.geminiSaid = "";
     this.speechUntil = this.t;
     this.geminiSpeaking = false;
@@ -1376,12 +1458,12 @@ export class Call {
 
   /** A transcript fragment for the screen and the recap: adjacent fragments of one speaker join. */
   private heardWords(role: "user" | "assistant", text: string): void {
-    this.emit({ type: "transcript", role, text });
     const speaker = role === "assistant" ? "Gemini" : undefined;
     const last = lastOrNull(this.chat);
     if (!this.boundary && last != null && last.role === role && last.speaker === speaker) last.text += text;
-    else this.chat.push(speaker ? { role, speaker, text } : { role, text });
+    else { this.chat.push(speaker ? { role, speaker, text } : { role, text }); this.line++; }
     this.boundary = false;
+    this.emit({ type: "transcript", role, text, line: this.line });
   }
 
   // The microphone.
@@ -1395,7 +1477,10 @@ export class Call {
     const before = this.c.opening ? decodeBase64(this.c.opening) : null;
     if (before != null && before.length > 0 && !this.mutedNow) {
       this.log("info", `the call starts with ${Math.trunc(before.length / 32)} ms said before it connected`);
-      for (let at = 0; at < before.length; at += OPENING_CHUNK) this.send(audioFrame(before.subarray(at, Math.min(before.length, at + OPENING_CHUNK))));
+      for (let at = 0; at < before.length; at += OPENING_CHUNK) {
+        const chunk = before.subarray(at, Math.min(before.length, at + OPENING_CHUNK));
+        this.hear(audioFrame(chunk), chunk.length);
+      }
     }
     this.emit({ type: "mic.start" });
     for (const frame of this.typedLater.splice(0)) this.send(frame);
@@ -1418,7 +1503,13 @@ export class Call {
       while (this.heldBytes > this.c.limits.wakePreRoll * 32_000 && this.held.length > 1) this.heldBytes -= this.held.shift()!.length;
       return;
     }
-    this.send(this.forModel(pcm64));
+    this.hear(this.forModel(pcm64), base64Size(pcm64));
+  }
+
+  /** Microphone audio for the model ([bytes] of it, as a frame), and for the captioner: it hears what the model hears. */
+  private hear(frame: string, bytes: number): void {
+    this.send(frame);
+    if (this.active) this.captions?.feed(frame, bytes, this.t);
   }
 
   /** What the model hears of a frame: silence over its own reply if the policy says so, then the gain. */
@@ -1475,6 +1566,9 @@ export class Call {
     // The brief being said goes too, and one the user's "stop" itself cut a moment ago: their speech stopped it before the word was known.
     const cut = this.lastCut != null && this.t - this.lastCut.at < 6 ? this.lastCut.item : null;
     const stopped = this.unheard.filter((u) => u.toldOnce || u.playing != null || u.awaiting || this.announcing?.item === u || u === cut);
+    // Nor is a hand-off confirmed after a stop: the user has its tone and its card.
+    this.confirming = null;
+    this.unconfirmed = [];
     this.announcing = null;
     this.lastCut = null;
     for (const item of stopped) this.unheard.splice(this.unheard.indexOf(item), 1);
@@ -1765,8 +1859,9 @@ export class Call {
     task.runs++;
     const asAnswer = answer ? `Bento took this as the user's answer to "${task.label}": ${task.asked} ` : "";
     if (this.steerable(task)) {
+      const say = this.cancelledCalls.has(run.callId) ? null : this.confirmation(task, true);
       this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
-        "it works and takes it into account, and one result covers both. Don't announce it.", true, { task: task.label, scheduling: "SILENT" });
+        "it works and takes it into account, and one result covers both." + (say ?? " Don't announce it."), true, { task: task.label, scheduling: say != null ? "WHEN_IDLE" : "SILENT" });
       run.closed = true;
       this.steerInto(task, run.request.task);
       return;
@@ -1807,8 +1902,44 @@ export class Call {
     return capital ? text[0].toUpperCase() + text.slice(1) : text;
   }
 
+  /**
+   * handOff "named": what a hand-off's "started" answer adds so the model tells the user of it, or null when
+   * it stays silent. A tone says enough while nothing else is in flight: with another task running or a result
+   * still to be told, the user can't tell which request it was for. The model that spoke after the user's
+   * words has said so already. A hand-off the user is talking over gets only its tone, and the next
+   * confirmation names it too.
+   */
+  private confirmation(task: Task, followUp: boolean): string | null {
+    if (this.c.handOff !== "named" || this.modelSpokeAt > this.lastUserSpeech) return null;
+    const others = this.unheard.length > 0 || [...this.tasks.values()].some((t) => t !== task && t.state === RUNNING);
+    if (!others) return null;
+    if (this.talking(this.t)) {
+      if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
+      return null;
+    }
+    const who = task.agent === "t3" ? "the coding agent" : "Hermes";
+    const earlier = this.unconfirmed.filter((t) => t !== task && t.state === RUNNING);
+    this.unconfirmed = [];
+    this.confirming = { tasks: [...earlier, task], at: this.t };
+    const names = earlier.map((t) => `"${t.label}"`).join(" and ");
+    return " Other work is in flight, so tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
+      (earlier.length > 0 ? ` Say too that ${names} ${earlier.length > 1 ? "are" : "is"} under way, unless you have told them: they have heard only a tone for ${earlier.length > 1 ? "those" : "it"}.` : "") +
+      " Nothing else.";
+  }
+
+  /** The model's turn after a confirmation was asked for has ended ([heard]), or it won't come: the user spoke first, or the model said nothing. */
+  private confirmed(heard: boolean): void {
+    const asked = this.confirming;
+    if (asked == null) return;
+    this.confirming = null;
+    if (!heard) for (const task of asked.tasks) if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
+    // Nothing else is owed to the user: the call stands by on time.
+    if (!this.unheard.some((u) => u.awaiting)) this.unspokenSince = null;
+  }
+
   private acknowledge(task: Task, run: Run, message: string): void {
-    this.respond(run.callId, message, true, { task: task.label, status: "started", scheduling: "SILENT", willContinue: true });
+    const say = task.holds(run) && !this.cancelledCalls.has(run.callId) ? this.confirmation(task, run.followUp) : null;
+    this.respond(run.callId, message + (say ?? ""), true, { task: task.label, status: "started", scheduling: say != null ? "WHEN_IDLE" : "SILENT", willContinue: true });
     run.acknowledged = true;
     run.answered = this.c.api === "vertex";
     this.showTask(task);
@@ -2134,6 +2265,7 @@ export class Call {
     this.closeSocket(this.rotation?.sock ?? null);
     this.rotation = null;
     this.closeSocket(this.socket);
+    this.captions?.stop();
     this.setStatus("ended", message);
   }
 }
