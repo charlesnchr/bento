@@ -17,6 +17,8 @@ import com.charles.bento.core.assistant.live.AssistantCall
 import com.charles.bento.core.assistant.live.CallError
 import com.charles.bento.core.assistant.live.CallSetup
 import com.charles.bento.core.assistant.live.CoreCall
+import com.charles.bento.core.assistant.live.CoreChat
+import com.charles.bento.core.assistant.live.GeminiChatModel
 import com.charles.bento.core.assistant.live.TaskLabel
 import com.charles.bento.core.assistant.live.HermesCall
 import com.charles.bento.core.assistant.live.LiveCaptions
@@ -37,10 +39,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import java.io.File
 import java.time.LocalDate
 import java.util.UUID
 
@@ -56,7 +63,16 @@ data class AssistantUi(
     val call: CallUi? = null,
     /** In a call, what the user is saying before Gemini transcribes it: shown, never sent anywhere. */
     val caption: String? = null,
-)
+    /** In the chat's main thread, Gemini is writing its answer (or handing the message to Hermes). */
+    val thinking: Boolean = false,
+    /** The chat's Hermes tasks, in the order they started: what typed messages were handed to Hermes, while no call is on. */
+    val tasks: List<TaskUi> = emptyList(),
+) {
+    /** The chat's main thread has something under way: Gemini is answering, or a task is running. */
+    val chatBusy: Boolean get() = thinking || tasks.any { it.active }
+    /** Something is under way that a new conversation or a call would cut off. */
+    val busy: Boolean get() = working || chatBusy
+}
 
 /**
  * A call's latest exchange: what the user is saying or said last, and the reply to it, if there's one
@@ -125,19 +141,24 @@ data class PeekUi(val sessionId: String, val messages: List<ChatMessage> = empty
 data class HistoryUi(val items: List<HermesSession> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
 /**
- * Bento's assistant on the phone: chats with Hermes through its API server (one Hermes
- * session per conversation, kept by Hermes), and voice calls through Gemini Live on the
- * Gemini API, which hand each spoken request to Hermes as a task in a session of its own,
- * several at once. The call's logic is the shared voice core's ([CoreCall], `voice-core/`),
- * or with Settings → Hermes → Call engine the Kotlin call it was ported from ([AssistantCall]).
- * Port of the Mac's `AssistantController`, minus the desktop: everything here runs on the
- * main thread.
+ * Bento's assistant on the phone. Typed or spoken, the conversation is a main thread: Gemini
+ * answers what it can itself and hands the rest to Hermes as tasks in sessions of their own,
+ * several at once, so nothing waits for Hermes. By voice that is a call on Gemini Live
+ * ([CoreCall]); typed, a chat on a Gemini text model ([CoreChat]). Both run the shared voice
+ * core's logic (`voice-core/`), so tasks, follow-ups and cancelling work the same either way.
+ *
+ * Two older ways remain. A conversation opened from the list is a Hermes session, and typing
+ * there goes straight into it, one message at a time (as every typed message does with
+ * Settings → Hermes → Typed messages on "Straight to Hermes", or without a Gemini key). And
+ * Settings → Hermes → Call engine switches calls back to the Kotlin call the core was ported
+ * from ([AssistantCall]). Port of the Mac's `AssistantController`, minus the desktop:
+ * everything here runs on the main thread.
  */
 class AssistantController(
     private val context: Context,
     private val prefs: Prefs,
     private val secrets: SecretStore,
-    http: OkHttpClient,
+    private val http: OkHttpClient,
     private val scope: CoroutineScope,
     /** Dictation or a meeting has the microphone. */
     private val microphoneBusy: () -> Boolean,
@@ -163,6 +184,31 @@ class AssistantController(
     private var lentFrom: VoiceCall? = null
     /** The next voice fragment starts a new row (after a Hermes reply, say). */
     private var voiceBoundary = true
+    /** The chat's main thread, once a message has been typed to it ([say]); null again when a call or another conversation takes over. */
+    private var chat: CoreChat? = null
+    private var chatJob: Job? = null
+    /** Messages typed while the chat's core was loading. */
+    private val typedEarly = ArrayList<String>()
+    /** The row Gemini's words of one of the core's transcript lines go on. */
+    private var chatLine: Pair<Int, String>? = null
+    /** The voice core's bundle couldn't be read: typed messages go straight to Hermes. */
+    private var chatUnavailable = false
+    /** Where the main thread's conversation is kept between runs of the app: Hermes stores only each task's own session. */
+    private val mainFile = File(context.filesDir, MAIN_THREAD_FILE)
+
+    init {
+        scope.launch {
+            // The main thread as it was left, unless a Hermes session is the conversation on screen.
+            val saved = withContext(Dispatchers.IO) { runCatching { AssistantTranscript.decode(mainFile.readText()) }.getOrDefault(emptyList()) }
+            if (saved.isNotEmpty() && _state.value.sessionId == null && _state.value.messages.isEmpty()) set { it.copy(messages = saved) }
+            _state.map { if (it.sessionId == null) it.messages else null }.distinctUntilChanged().collectLatest { rows ->
+                delay(SAVE_DELAY_MILLIS)
+                withContext(Dispatchers.IO) {
+                    runCatching { if (rows.isNullOrEmpty()) mainFile.delete() else mainFile.writeText(AssistantTranscript.encode(rows)) }
+                }
+            }
+        }
+    }
 
     fun endpoint(): HermesEndpoint? = HermesEndpoint.of(prefs.hermesUrl.value, secrets.hermesToken)
     val configured: Boolean get() = endpoint() != null
@@ -203,7 +249,8 @@ class AssistantController(
     fun dismissError() = set { it.copy(error = null) }
 
     fun newChat() {
-        if (_state.value.working || call != null) return
+        if (_state.value.busy || call != null) return
+        endChat()
         prefs.hermesSession.value = ""
         loadedSession = null
         set { AssistantUi() }
@@ -216,6 +263,7 @@ class AssistantController(
      */
     fun leaveServer(switching: Boolean) {
         endCall()
+        endChat()
         _peek.value = null
         turnJob?.cancel() // closing the stream stops the turn on the old server
         if (!switching) return
@@ -241,7 +289,8 @@ class AssistantController(
     }
 
     fun open(id: String) {
-        if (_state.value.working || call != null) return
+        if (_state.value.busy || call != null) return
+        endChat()
         prefs.hermesSession.value = id
         set { it.copy(sessionId = id, messages = emptyList(), title = null, error = null) }
         load(id)
@@ -306,7 +355,7 @@ class AssistantController(
             }
             forget(id)
             _history.update { h -> h.copy(items = h.items.filterNot { it.id == id }) }
-            if (_state.value.sessionId == id && !_state.value.working && call == null) newChat()
+            if (_state.value.sessionId == id && !_state.value.busy && call == null) newChat()
         }
     }
 
@@ -388,24 +437,123 @@ class AssistantController(
         if (prefs.hermesSession.value == id) prefs.hermesSession.value = ""
     }
 
+    /**
+     * A typed message goes to the chat's main thread ([say]) unless the conversation on screen is a
+     * Hermes session, the setting says straight to Hermes, or there's no Gemini key: then it is
+     * one turn in that session, and the next message waits for it.
+     */
+    val mainThread: Boolean
+        get() = _state.value.sessionId == null && prefs.hermesChatMode.value != CHAT_DIRECT && secrets.geminiKey != null && !chatUnavailable
+
     /** A typed message. */
     fun send(text: String) {
         val message = text.trim()
-        if (message.isEmpty() || _state.value.working || !configured) return
+        if (message.isEmpty() || !configured || call != null || callJob != null) return
+        if (mainThread && !_state.value.working) { say(message); return }
+        if (_state.value.busy) return
         turnJob = scope.launch {
             runTurn(message, TYPED_INSTRUCTIONS + callContext(_state.value.messages), ChatMessage(UUID.randomUUID().toString(), "user", message))
         }
     }
 
-    /** Stops the running turn: Hermes interrupts the agent when its stream closes, and is told to stop as well. */
+    /**
+     * A message for the chat's main thread: Gemini answers it or hands it to Hermes as a task, and
+     * the composer is free again at once. The first one starts the chat on the conversation on screen.
+     */
+    private fun say(message: String) {
+        val history = callHistory(_state.value.messages)
+        set { it.copy(error = null) }
+        messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
+        chatLine = null
+        voiceBoundary = true
+        chat?.let { it.say(message); return }
+        typedEarly.add(message)
+        if (chatJob != null) return // its core is loading: the message goes with the first
+        chatJob = scope.launch {
+            val bundle = withContext(Dispatchers.IO) {
+                runCatching { context.assets.open(CORE_BUNDLE).bufferedReader().use { it.readText() } }
+                    .onFailure { Log.w(TAG, "the voice core's bundle couldn't be read: typed messages go straight to Hermes", it) }.getOrNull()
+            }
+            if (bundle == null) { chatFailed(null); return@launch }
+            val c = CoreChat(bundle, CoreChat.config(history, LocalDate.now().toString()), GeminiChatModel({ secrets.geminiKey }, http),
+                             onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request, chatBoard) } })
+            c.onWords = { line, text -> scope.launch { if (chat === c) wrote(line, text) } }
+            c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
+            chat = c
+            c.start()
+            for (typed in typedEarly) c.say(typed)
+            typedEarly.clear()
+            launch {
+                c.thinking.collect { thinking ->
+                    // Gemini's turn is over: its message is whole.
+                    set { s -> s.copy(thinking = thinking, messages = if (thinking) s.messages else s.messages.map { if (it.streaming && it.speaker == GEMINI) it.copy(streaming = false) else it }) }
+                }
+            }
+            launch { c.questions.collect { asked -> set { s -> s.copy(tasks = s.tasks.map { it.copy(question = asked[it.id]) }) } } }
+            val why = c.ended.first { it != null }
+            if (chat === c) {
+                chat = null
+                chatJob = null
+                if (why == CoreChat.LOAD_FAILED) chatFailed(why)
+                else set { it.copy(thinking = false, error = why?.takeIf { w -> w.isNotEmpty() } ?: it.error) }
+            }
+            coroutineContext[Job]?.cancel()
+        }
+    }
+
+    /** The chat's core can't run on this phone: what was typed goes straight to Hermes, as before there was a main thread. */
+    private fun chatFailed(why: String?) {
+        chatUnavailable = true
+        chatJob = null
+        val typed = typedEarly.joinToString("\n\n")
+        typedEarly.clear()
+        set { it.copy(thinking = false, error = why) }
+        if (typed.isNotEmpty() && !_state.value.working) {
+            turnJob = scope.launch { runTurn(typed, TYPED_INSTRUCTIONS + callContext(_state.value.messages), null) }
+        }
+    }
+
+    /** Gemini's words in the chat: fragments of one of the core's lines are one message. */
+    private fun wrote(line: Int, text: String) {
+        val row = chatLine?.takeIf { it.first == line }?.second
+        if (row != null && _state.value.messages.lastOrNull()?.id == row) {
+            messages { list -> list.dropLast(1) + list.last().let { it.copy(text = it.text + text) } }
+            return
+        }
+        val id = UUID.randomUUID().toString()
+        chatLine = line to id
+        messages { it + ChatMessage(id, "assistant", text, speaker = GEMINI, streaming = true, call = true) }
+    }
+
+    /** Something the chat's core says the user should see: Gemini didn't answer. */
+    private fun chatNotice(why: String) {
+        chatLine = null
+        messages { it + ChatMessage(UUID.randomUUID().toString(), "assistant", why, speaker = GEMINI, failed = true, call = true) }
+    }
+
+    /** Ends the chat's main thread: a call, another conversation or another server takes over. Its tasks stop with it. */
+    private fun endChat() {
+        val c = chat
+        chat = null
+        chatJob?.cancel()
+        chatJob = null
+        typedEarly.clear()
+        chatLine = null
+        c?.stop()
+        set { s -> s.copy(thinking = false, tasks = emptyList(), messages = s.messages.map { if (it.streaming && it.speaker == GEMINI) it.copy(streaming = false) else it }) }
+    }
+
+    /** Stops what's being written: Gemini's answer in the main thread (tasks go on), or the turn Hermes is on. */
     fun stop() {
+        if (_state.value.thinking) { chat?.interrupt(); return }
         val run = runId
         turnJob?.cancel()
         if (run != null) scope.launch { runCatching { client.stop(run) } }
     }
 
     fun answer(messageId: String, choice: String) {
-        val m = (_state.value.messages + _state.value.call?.tasks.orEmpty().flatMap { it.messages }).firstOrNull { it.id == messageId } ?: return
+        val tasks = _state.value.call?.tasks.orEmpty() + _state.value.tasks
+        val m = (_state.value.messages + tasks.flatMap { it.messages }).firstOrNull { it.id == messageId } ?: return
         val run = m.runId ?: return
         if (m.status != "pending") return
         approval(messageId, choice)
@@ -419,10 +567,11 @@ class AssistantController(
         }
     }
 
-    /** An approval's status, in the chat and in the call task it came from. */
+    /** An approval's status, in the chat and in the task it came from. */
     private fun approval(messageId: String, status: String) {
         fun List<ChatMessage>.mark() = map { if (it.id == messageId) it.copy(status = status) else it }
-        set { s -> s.copy(messages = s.messages.mark(), call = s.call?.copy(tasks = s.call.tasks.map { t -> t.copy(messages = t.messages.mark()) })) }
+        fun List<TaskUi>.marked() = map { t -> t.copy(messages = t.messages.mark()) }
+        set { s -> s.copy(messages = s.messages.mark(), tasks = s.tasks.marked(), call = s.call?.copy(tasks = s.call.tasks.marked())) }
     }
 
     private suspend fun ensureSession(): String {
@@ -514,7 +663,7 @@ class AssistantController(
     fun callFromWake(opening: () -> ByteArray?, ended: (error: String?) -> Unit): String? {
         when {
             call != null || callJob != null -> return "A call is already on"
-            _state.value.working -> return "Hermes is still working on your last request"
+            _state.value.busy -> return "Hermes is still working on your last request"
             microphoneBusy() -> return "A dictation or a meeting has the microphone"
             !canCall -> return "Set up Hermes and a Gemini API key first"
         }
@@ -529,7 +678,11 @@ class AssistantController(
             key == null -> { set { it.copy(error = "Voice calls need a Gemini API key: pair with your Mac or add one in Settings → Dictation.") }; return false }
             microphoneBusy() -> { set { it.copy(error = "Finish the dictation or meeting first.") }; return false }
             _state.value.working -> { set { it.copy(error = "Wait for Hermes to finish, or stop it, before calling.") }; return false }
+            // A call can't take over the chat's tasks, and ending the chat would stop them.
+            _state.value.chatBusy -> { set { it.copy(error = "Wait for Hermes to finish, or cancel its tasks, before calling.") }; return false }
         }
+        // The call is the main thread from here: it continues the conversation, and starts its own tasks.
+        endChat()
         val resume = try {
             CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages))
         } catch (e: CallError) {
@@ -559,12 +712,12 @@ class AssistantController(
                 val config = CoreCall.config(callHistory(_state.value.messages), LocalDate.now().toString(),
                                              standbyAfter = prefs.hermesStandbySeconds.value.toDouble(), hangUpAfter = hangUpAfter)
                 CoreCall(bundle, config, { OkHttpLiveTransport({ key }) }, audio,
-                         onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request) } },
+                         onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request, callBoard) } },
                          ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() },
                          captions = captions, opening = wake?.opening)
             } else {
                 AssistantCall(OkHttpLiveTransport({ key }), audio, resume, onTool = { request ->
-                    withContext(Dispatchers.Main) { runVoiceTask(request).text }
+                    withContext(Dispatchers.Main) { runVoiceTask(request, callBoard).text }
                 }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
                     standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
                     // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
@@ -618,8 +771,8 @@ class AssistantController(
     /** Back from standby before Hermes finishes, to talk. */
     fun wakeCall() { call?.wake() }
 
-    /** Cancels one of the call's tasks; the call and the other tasks go on, and Gemini is told. */
-    fun cancelTask(id: String) { call?.cancelTask(id) }
+    /** Cancels one of the call's tasks, or with no call on one of the chat's; the rest goes on, and Gemini is told. */
+    fun cancelTask(id: String) { call?.cancelTask(id) ?: chat?.cancelTask(id) }
 
     fun endCall() {
         val c = call
@@ -665,31 +818,46 @@ class AssistantController(
         noticeSoon()
     }
 
-    private fun task(id: String, f: (TaskUi) -> TaskUi) =
-        set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks.map { if (it.id == id) f(it) else it })) }
+    /** Where a main thread's tasks show: the call's bar, or the chat's strip above the composer. */
+    private inner class Board(private val typed: Boolean) {
+        /** The user's words on the task's own page: spoken in a call, typed in the chat. */
+        val spoken: Boolean get() = !typed
+        fun tasks(): List<TaskUi> = if (typed) _state.value.tasks else _state.value.call?.tasks.orEmpty()
+        fun find(id: String): TaskUi? = tasks().firstOrNull { it.id == id }
+        fun update(f: (List<TaskUi>) -> List<TaskUi>) =
+            set { s -> if (typed) s.copy(tasks = f(s.tasks)) else s.copy(call = s.call?.copy(tasks = f(s.call.tasks))) }
+        fun task(id: String, f: (TaskUi) -> TaskUi) = update { list -> list.map { if (it.id == id) f(it) else it } }
+        /** The task's latest step, for Gemini's check_task and list_tasks. */
+        fun progress(id: String, text: String) { if (typed) chat?.progress(id, text) else call?.progress(id, text) }
+    }
+
+    private val callBoard = Board(typed = false)
+    private val chatBoard = Board(typed = true)
 
     /**
      * Gemini's `ask_hermes`: the user's words go to Hermes as a task in a session of its own, so
      * several run at once, and a follow-up goes into its task's session, so Hermes has what it did.
-     * The call bar shows the task and its progress; the chat gets only what needs the user (an
-     * approval) and Hermes's reply. Returns the reply for Gemini to speak.
+     * The [board] shows the task and its progress (the call's bar, or the chat's strip); the chat
+     * gets only what needs the user (an approval) and Hermes's reply. Returns the reply for Gemini.
      */
-    private suspend fun runVoiceTask(request: HermesCall): ToolReply {
+    private suspend fun runVoiceTask(request: HermesCall, board: Board): ToolReply {
         val id = request.taskId
-        val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = true)
-        val known = _state.value.call?.tasks?.firstOrNull { it.id == id }
+        val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = board.spoken)
+        val known = board.find(id)
         val now = SystemClock.elapsedRealtime()
         val label = request.label.ifEmpty { TaskLabel.short(request.task) }
-        if (known == null) set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks + TaskUi(id, request.task, label, messages = listOf(ask), startedAt = now))) }
-        else task(id) { it.copy(status = "running", progress = null, question = null, messages = it.messages + ask, startedAt = now) }
+        if (known == null) board.update { it + TaskUi(id, request.task, label, messages = listOf(ask), startedAt = now) }
+        else board.task(id) { it.copy(status = "running", progress = null, question = null, messages = it.messages + ask, startedAt = now) }
         voiceBoundary = true
+        chatLine = null
+        fun task(id: String, f: (TaskUi) -> TaskUi) = board.task(id, f)
         var turn = TurnState()
         var run: String? = null
-        fun shown() = _state.value.call?.tasks?.firstOrNull { it.id == id }?.messages.orEmpty()
+        fun shown() = board.find(id)?.messages.orEmpty()
         fun apply(event: HermesEvent) {
             val (list, t) = AssistantTranscript.apply(shown(), turn, event)
             turn = t
-            show(id, list, t)
+            show(board, id, list, t)
         }
         try {
             val sid = known?.sessionId?.takeIf { request.followUp } ?: try {
@@ -699,7 +867,7 @@ class AssistantController(
                 }
             } catch (e: HermesError) {
                 apply(HermesEvent.Failed(e.message.orEmpty()))
-                return finished(id, turn.copy(status = "failed"))
+                return finished(board, id, turn.copy(status = "failed"))
             }
             turn = turn.copy(sessionId = sid)
             val choice = choiceFor(sid)
@@ -725,7 +893,7 @@ class AssistantController(
                     delay(1_000)
                 }
             }
-            if (!turn.finished) AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(id, list, t) }
+            if (!turn.finished) AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(board, id, list, t) }
             val newId = turn.sessionId
             if (newId != null && newId != sid) {
                 // Hermes compressed the task's conversation into a new session: the task and its link follow.
@@ -736,21 +904,21 @@ class AssistantController(
         } catch (e: HermesError) {
             if (e.code == "session_not_found") turn.sessionId?.let { sid -> forget(sid); task(id) { it.copy(sessionId = null) } }
             apply(HermesEvent.Failed(e.message.orEmpty()))
-            AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(id, list, t) }
+            AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(board, id, list, t) }
         } catch (e: CancellationException) {
             // Cancelled by the user, Gemini or the call ending: closing the stream stops the turn, and Hermes is told too.
             withContext(NonCancellable) {
                 run?.let { r -> scope.launch { runCatching { client.stop(r) } } }
                 apply(HermesEvent.Finished("cancelled", null, null))
-                finished(id, turn)
+                finished(board, id, turn)
             }
             throw e
         }
-        return finished(id, turn)
+        return finished(board, id, turn)
     }
 
     /** The task's conversation after an event: its progress for Gemini and the screen, and approvals in the chat. */
-    private fun show(id: String, list: List<ChatMessage>, turn: TurnState) {
+    private fun show(board: Board, id: String, list: List<ChatMessage>, turn: TurnState) {
         val mine = list.filter { it.id in turn.ids }
         val waiting = mine.any { it.role == "approval" && it.status == "pending" }
         val latest = mine.lastOrNull { it.role == "tool" || it.role == "approval" || it.role == "assistant" }
@@ -760,8 +928,8 @@ class AssistantController(
             latest?.role == "assistant" && latest.streaming -> "Writing its reply"
             else -> null
         }
-        task(id) { t -> t.copy(messages = list, progress = progress ?: t.progress, status = if (t.active) (if (waiting) "waiting" else "running") else t.status) }
-        progress?.let { call?.progress(id, it) }
+        board.task(id) { t -> t.copy(messages = list, progress = progress ?: t.progress, status = if (t.active) (if (waiting) "waiting" else "running") else t.status) }
+        progress?.let { board.progress(id, it) }
         // An approval waits for the user wherever they look: the chat shows it too.
         val known = _state.value.messages.map { it.id }.toSet()
         val approvals = mine.filter { it.role == "approval" && it.id !in known }
@@ -769,16 +937,16 @@ class AssistantController(
     }
 
     /** Marks the task's request done; the reply (or why it failed) joins the chat, linked to the task's session. Returns what Gemini hears. */
-    private fun finished(id: String, turn: TurnState): ToolReply {
+    private fun finished(board: Board, id: String, turn: TurnState): ToolReply {
         val status = when (turn.status) {
             "completed" -> "completed"
             "cancelled" -> "cancelled"
             null -> if (turn.answer.isNotBlank()) "completed" else "failed"
             else -> "failed"
         }
-        val task = _state.value.call?.tasks?.firstOrNull { it.id == id }
+        val task = board.find(id)
         val failure = task?.messages?.lastOrNull { it.failed && it.id in turn.ids }?.text
-        task(id) { it.copy(status = status, progress = null) }
+        board.task(id) { it.copy(status = status, progress = null) }
         val label = task?.label ?: id
         messages { list ->
             // Approvals nobody answered lapse with the request.
@@ -793,6 +961,7 @@ class AssistantController(
             }
         }
         voiceBoundary = true
+        chatLine = null
         return when {
             status == "cancelled" -> ToolReply("Cancelled. Completed actions were not undone.", failed = true)
             turn.answer.isNotBlank() -> ToolReply(turn.answer)
@@ -818,6 +987,17 @@ class AssistantController(
 
         /** The shared voice core's bundle in the app's assets (voice-core/dist/voice-core.js, copied in by the build). */
         const val CORE_BUNDLE = "voice-core.js"
+
+        /** `Prefs.hermesChatMode`: typed messages go to the main thread (Gemini hands work to Hermes as tasks), or straight into one Hermes session. */
+        const val CHAT_MAIN = "main"
+        const val CHAT_DIRECT = "direct"
+
+        /** Who the main thread's own messages are from, in a call and in the chat. */
+        const val GEMINI = "Gemini"
+
+        /** The main thread's conversation, in the app's files ([AssistantTranscript.encode]). */
+        const val MAIN_THREAD_FILE = "assistant-main.json"
+        private const val SAVE_DELAY_MILLIS = 800L
 
         /** `Prefs.hermesCallEngine`: the shared voice core, or the Kotlin call it was ported from. */
         const val ENGINE_CORE = "core"

@@ -86,6 +86,11 @@ class Prefs(context: Context) {
     val hermesStandbySeconds = int("hermes.standbySeconds", 20)
     /** What runs a voice call: "core", the shared voice core (voice-core/), or "builtin", the Kotlin call it was ported from. */
     val hermesCallEngine = string("hermes.callEngine", "core")
+    /**
+     * Where a typed message goes: "main", the chat's main thread (Gemini answers or hands it to Hermes as a task,
+     * as in a call), or "direct", straight into one Hermes session, one message at a time.
+     */
+    val hermesChatMode = string("hermes.chatMode", "main")
 
     // Wake word ("Pennyworth" starts a voice call with Hermes)
     val wakeWord = bool("wake.enabled", false)

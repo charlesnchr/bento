@@ -1,8 +1,14 @@
 package com.charles.bento.core.assistant
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 /**
@@ -234,5 +240,38 @@ object AssistantTranscript {
             size += scalars
         }
         return if (lines.isEmpty()) null else lines.asReversed().joinToString("\n")
+    }
+
+    /**
+     * The main thread's conversation for the phone's own file: what was said and the replies, the
+     * latest [limit] of them. Hermes keeps each task's session, not the thread that started them,
+     * so this is what brings it back after the app restarts. Tool steps and approvals belong to a
+     * turn that is over by then, and are left out.
+     */
+    fun encode(messages: List<ChatMessage>, limit: Int = 200): String = buildJsonArray {
+        for (m in messages.filter { (it.role == "user" || it.role == "assistant") && it.text.isNotBlank() }.takeLast(limit)) addJsonObject {
+            put("id", m.id)
+            put("role", m.role)
+            put("text", m.text)
+            m.speaker?.let { put("speaker", it) }
+            if (m.voice) put("voice", true)
+            if (m.failed) put("failed", true)
+            m.link?.let { put("link", it) }
+            if (m.call) put("call", true)
+        }
+    }.toString()
+
+    /** The rows [encode] wrote; anything that isn't one of its rows is skipped. */
+    fun decode(text: String): List<ChatMessage> {
+        val rows = runCatching { Json.parseToJsonElement(text) as? JsonArray }.getOrNull() ?: return emptyList()
+        return rows.mapNotNull { row ->
+            val o = row as? JsonObject ?: return@mapNotNull null
+            fun string(key: String) = (o[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            fun flag(key: String) = (o[key] as? JsonPrimitive)?.booleanOrNull == true
+            val role = string("role")?.takeIf { it == "user" || it == "assistant" } ?: return@mapNotNull null
+            val body = string("text")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            ChatMessage(string("id") ?: UUID.randomUUID().toString(), role, body, speaker = string("speaker"), voice = flag("voice"),
+                        failed = flag("failed"), link = string("link"), call = flag("call"))
+        }
     }
 }

@@ -18,8 +18,9 @@ android/
     todo/       TodoDoc accessors, queries, quick-add and date parsers, TodoActions
     voicesync/  the `voice` collection: dictionary entries, instructions, modes
     assistant/  the Hermes API client (sessions, streamed turns), the chat transcript, Markdown
-                for reading, and live/: voice calls on Gemini Live that hand requests to Hermes
-                (CoreCall hosts the shared voice core; AssistantCall is the Kotlin call it replaces)
+                for reading, and live/: voice calls on Gemini Live and typed chats on a Gemini text
+                model that hand requests to Hermes (CoreCall and CoreChat host the shared voice
+                core; AssistantCall is the Kotlin call it replaces)
     voicecore/  the shared voice core (voice-core/ at the repo's root) in QuickJS
     voice/      Gemini transcription (batch + live), cleanup, validation, voice edits,
                 history and crash recovery, meetings; wake/: the "Pennyworth" wake word detector
@@ -30,7 +31,7 @@ android/
                 BentoAccessibilityService + DictationOverlay (bubble, held Volume Down,
                 text insertion), CaptureActivity + Quick Settings tile
     keyboard/   the voice-first keyboard (InputMethodService)
-    assistant/  AssistantController (chat and calls), the call's audio (echo-cancelled, speaker or headset)
+    assistant/  AssistantController (the main thread: typed chat and calls), the call's audio (echo-cancelled, speaker or headset)
     widget/     Glance widgets: notes, one note, tasks, capture
     update/     self-update from GitHub releases tagged android-v*
     ui/         Compose screens
@@ -107,8 +108,8 @@ installs only through Android's advanced install flow or `adb`.
 ## Hermes
 
 The Assistant tab talks to Hermes's API server (the gateway's `api_server` platform), the
-same one Open WebUI-style clients use: each conversation is a Hermes session, a message is
-`POST /api/sessions/{id}/chat/stream`, and Stop closes the stream (Hermes interrupts the
+same one Open WebUI-style clients use: a Hermes conversation is a session, a message to it is
+`POST /api/sessions/{id}/chat/stream`, and stopping one closes the stream (Hermes interrupts the
 agent) and calls `POST /v1/runs/{run}/stop`. Serve it only on your tailnet: bind
 `API_SERVER_HOST` to the machine's Tailscale address, or to loopback behind
 `tailscale serve`, never a public interface or tunnel. The phone needs the address and
@@ -121,6 +122,30 @@ through Android's activity manager, which can log it, key included.
 ```sh
 scripts/hermes-phone-link    # on the Hermes machine: a QR code (with qrencode) or the link
 ```
+
+Typed or spoken, the conversation on the tab is a main thread. Gemini answers what it knows
+and hands the rest to Hermes as tasks, each in a Hermes session of its own and several at once,
+so nothing waits for Hermes: you can type the next message while a task runs. Typed, that is a
+chat on `gemini-3.8-flash` over the Gemini API with the paired key (`CoreChat`, the shared voice
+core's `medium: "text"`, see voice-core/README.md); spoken, a call on Gemini Live. Both run the
+same logic, so a follow-up continues its task, an answer goes to the task that asked, and
+"what's running?" or "cancel the taxi" work either way. In the chat a strip above the composer
+shows what's in flight, with a Done chip for the rest; a chip opens the task's live Hermes
+conversation and its Cancel button. Hermes's reply joins the chat in full under the task's
+name, and Gemini gets a note of it for your questions, so it doesn't repeat it. The send
+button is never blocked by a task; while Gemini is writing, the empty field's button stops it.
+
+The main thread isn't a Hermes session: its lines (yours, Gemini's and the tasks' replies) are
+kept in the app's files and come back when the app restarts, until New chat. Each task's
+session is in the conversation list. Opening a conversation from the list makes that Hermes
+session the conversation on screen, and typing there goes straight into it, one message at a
+time, as all typed messages did before. Settings → Hermes → Typed messages switches every new
+chat back to that ("Straight to Hermes"), which is also what happens without a Gemini key. A
+chat and a call are separate main threads: a call continues the conversation on screen but
+starts its own tasks, so it doesn't start while a chat's task is running, and after an app
+restart a follow-up to an earlier task starts a new one, with the conversation as reference.
+Tasks run while Bento is open: leaving it for long lets Android close their connection, which
+stops them, as it did a typed message before.
 
 Voice calls run on Gemini Live (`gemini-3.8-live`) over the Gemini API with the paired key.
 The call's logic is the shared voice core (`voice-core/` at the repo's root, the code the web
