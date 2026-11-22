@@ -3611,8 +3611,8 @@ class AssistantCallTest {
         val after = After()
         val call = multitasking(first, { second }, CopyOnWriteArrayList(), twoResults(), after, audio = audio)
         firstTaskRunning(call, first)
-        // Tap to talk: muted, the call stands by. "Talk now" opens the microphone and brings it back; the user
-        // speaks while it reconnects, on a socket slow to take what was held, and taps "Done talking".
+        // Muted, the call stands by. It is woken with the microphone opened as well; the user speaks while it
+        // reconnects, on a socket slow to take what was held, and mutes again.
         call.muted = true
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
@@ -3753,7 +3753,7 @@ class AssistantCallTest {
         after.seconds = 0.3
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
         after.seconds = 0.0
-        // "Talk now", a few words, and "Done talking" before the new session is even set up.
+        // Woken with the microphone opened, a few words, and muted again before the new session is even set up.
         audio.loud = true
         call.muted = false
         call.wake()
@@ -3792,10 +3792,16 @@ class AssistantCallTest {
         call.muted = false
         call.wake()
         assertTrue(busy.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // A last word, marked, reaches the microphone's queue before the mute, behind the call's busy thread.
+        audio.play('m' to 1)
+        audio.emit(2)
         call.muted = true
         second.awaitSent { s -> s.any { "audioStreamEnd" in it } }
         delay(400)
-        assertEquals(1, second.sent.count { "audioStreamEnd" in it }, "Gemini is told once that the stream paused")
+        val sent = second.sent
+        assertEquals(1, sent.count { "audioStreamEnd" in it }, "Gemini is told once that the stream paused")
+        assertTrue(FakeAudio.MARK in second.micNumbers(), "the last word before the mute went to Gemini")
+        assertTrue(sent.indexOfFirst { "audioStreamEnd" in it } > sent.indexOfLast { "\"audio\"" in it }, "and the stream ended after it")
         call.stop()
     }
 
@@ -3821,9 +3827,13 @@ class AssistantCallTest {
         after.stall = 800
         withTimeout(5_000) { while (after.stall > 0) delay(2) }
         results.getValue("1").complete("Booked for 8pm.")
+        audio.play('l' to 5) // what it gives when it starts again
         audio.quiet = false
+        audio.emit(1) // given, behind the result, while the thread is still held up
         second.awaitSent { s -> s.any { "turnComplete\":true" in it } }
-        assertFalse(FakeAudio.MARK in second.micNumbers(), "what the microphone left before it stopped isn't the moment before it started again")
+        val loud = Base64.getEncoder().encodeToString(FakeAudio.LOUD)
+        assertTrue(second.sent.any { loud in it }, "what the microphone gave once it started again went to Gemini")
+        assertFalse(FakeAudio.MARK in second.micNumbers(), "what it left before it stopped isn't the moment before that")
         call.stop()
     }
 
@@ -3835,6 +3845,49 @@ class AssistantCallTest {
         withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
         transport.push(Live.activity("ACTIVITY_START"))
         assertNull(call.ended().message)
+    }
+
+    @Test fun aTurnGeminiNeverEndsKeepsACallFromHangingUpWhileItStillHearsTheUser() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val audio = FakeAudio()
+        // A turn Gemini never ends stops holding results back once it's three times deliverMax old.
+        val call = AssistantCall(transport, audio, null, { "" }, limits = fast.copy(deliverMax = 0.3), hangUpAfter = { 0.5 })
+        call.start()
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+        // A long request: Gemini says it began and nothing more, and the microphone hears the user all the while.
+        audio.loud = true
+        transport.push(Live.activity("ACTIVITY_START"))
+        delay(3_000) // past the stuck time, the time Gemini has to answer, and the hang-up time
+        assertEquals(AssistantCall.Status.Listening, call.status.value, "the user is still talking")
+        // They stop, and still Gemini never ends the turn: now there's nothing left.
+        audio.loud = false
+        assertNull(call.ended().message)
+    }
+
+    @Test fun wordsThatWokeTheCallAreOwedAReplyBeforeItStandsByAgain() = blocking {
+        val first = FakeTransport(listOf(Frames.setupComplete()))
+        val second = FakeTransport(listOf(Frames.setupComplete()))
+        val started = CopyOnWriteArrayList<String>()
+        val audio = FakeAudio()
+        val after = After()
+        val call = multitasking(first, { second }, started, twoResults(), after, audio = audio)
+        firstTaskRunning(call, first)
+        after.seconds = 0.3
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Standby } }
+        after.seconds = 1.0
+        // A second request, said in standby: it wakes the call, and Gemini is slow to say anything about it.
+        audio.loud = true
+        withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+        audio.loud = false
+        delay(2_200) // over twice the standby time since the user stopped, and nothing from Gemini
+        assertEquals(AssistantCall.Status.Working, call.status.value, "Gemini owes the words that woke the call a reply")
+        assertEquals(0, second.closeCount)
+        // Then it hears them, and hands them to Hermes.
+        Live.turn(second, "Also find me a taxi"); second.push(Live.call("c2"))
+        withTimeout(5_000) { while (started.size < 2) delay(10) }
+        after.seconds = 0.0
+        assertEquals(listOf("Book a table", "Also find me a taxi"), started.toList())
+        call.stop()
     }
 
     @Test fun neverMeansNoStandby() = blocking {

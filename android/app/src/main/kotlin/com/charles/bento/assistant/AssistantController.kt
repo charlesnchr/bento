@@ -497,7 +497,10 @@ class AssistantController(
         set { s -> s.copy(call = s.call?.let { ui -> ui.copy(muted = muted, status = if (ui.standby) standbyStatus(muted) else ui.status) }) }
     }
 
-    /** A muted microphone (tap to talk, or muted by hand) hears nothing, so speaking doesn't bring the call back: the button does. */
+    /**
+     * A muted microphone (tap to talk, or muted by hand) hears nothing, so speaking doesn't bring the
+     * call back: "Talk now" does, and the microphone's own button opens it once the call is back.
+     */
     private fun standbyStatus(muted: Boolean) = if (muted) STANDBY_MUTED_STATUS else STANDBY_STATUS
 
     /** Starts a call on the conversation on screen, or ends the running one. The screen has the microphone permission. */
@@ -619,16 +622,8 @@ class AssistantController(
         return true
     }
 
-    /**
-     * Back from standby before Hermes finishes, to talk. A muted microphone opens too (tap to talk,
-     * or muted by hand), as "Talk now" says: what's said while the call reconnects is held for it,
-     * not lost to the mute.
-     */
-    fun wakeCall() {
-        val c = call ?: return
-        if (c.muted) setMuted(false)
-        c.wake()
-    }
+    /** Back from standby before Hermes finishes, to talk. */
+    fun wakeCall() { call?.wake() }
 
     /** Cancels one of the call's tasks; the call and the other tasks go on, and Gemini is told. */
     fun cancelTask(id: String) { call?.cancelTask(id) }
@@ -847,7 +842,7 @@ class AssistantController(
 
         /** What the call bar says while Gemini is paused; the running tasks show under it. */
         const val STANDBY_STATUS = "Paused while Hermes works. Speak to resume."
-        const val STANDBY_MUTED_STATUS = "Paused while Hermes works. Tap Talk now to speak."
+        const val STANDBY_MUTED_STATUS = "Paused while Hermes works. Tap Talk now, then the microphone to speak."
 
         /** Who a call task's reply in the chat is from: by the task's name, since a recap of the chat goes back to Gemini. */
         internal fun taskSpeaker(label: String) = "Hermes · $label"

@@ -493,9 +493,9 @@ class AssistantCall(
                 if (!active || !listening) return@launch
                 if (value && !streamEnded) {
                     streamEnded = true
-                    captions?.pause()
-                    // Audio held through a comeback is still going out: the end of the stream goes after it ([rejoin]).
-                    if (!rejoining) send(STREAM_END)
+                    // Through the microphone's own queue, so that Gemini hears the stream paused after the audio captured
+                    // before the mute, wherever that still is: queued, held for a comeback, or on its way ([paused]).
+                    offer(Triple(lends, PAUSE, now()))
                 } else if (!value) streamEnded = false
             }
         }
@@ -635,8 +635,12 @@ class AssistantCall(
      */
     private fun nothingLeft(t: Double): Boolean {
         val after = hangUpAfter()
+        // The user's turn counts while it holds results back ([talking]), and past that for as long as the call still
+        // hears them for itself: Gemini says nothing more of a long turn until it ends. One it never ends, with
+        // nobody speaking, doesn't keep the call.
+        val speaking = userTalking && (talking(t) || t - maxOf(spokeAt, wordsAt) < after)
         return after > 0 && listening && !standby && !waking && !rotating && running == 0 && settling == 0 && unheard.isEmpty() &&
-            !talking(t) && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
+            !speaking && t - maxOf(lastSpeech, speechUntil, toneAt) >= after
     }
 
     /**
@@ -864,13 +868,17 @@ class AssistantCall(
         suspend fun replay() {
             while (held.isNotEmpty()) {
                 val pcm = held.removeFirst()
-                heldBytes -= pcm.size
-                replayed += pcm.size
-                peak = maxOf(peak, level(pcm))
                 replaying = now()
-                send(audioFrame(pcm))
+                if (pcm.isEmpty()) {
+                    send(STREAM_END) // where the microphone was muted ([paused])
+                } else {
+                    heldBytes -= pcm.size
+                    replayed += pcm.size
+                    peak = maxOf(peak, level(pcm))
+                    send(audioFrame(pcm))
+                    captions?.feed(pcm)
+                }
                 replaying = null
-                captions?.feed(pcm)
             }
         }
         replay()
@@ -894,12 +902,19 @@ class AssistantCall(
         lastSpeech = maxOf(lastSpeech, now())
         replayUntil = if (peak >= limits.wakeLevel / MURMUR) now() + minOf(replayed / 32_000.0, limits.settleMax) else 0.0
         // A turn Gemini opened for them during the replay holds results itself, and ends with a reply due.
-        if (spoke && userTurns == turns) replyDue = now()
+        if (spoke && userTurns == turns) { replyDue = now(); unanswered = now() }
         if (waiting().isNotEmpty()) deliverWhenIdle()
         settled()
-        // The microphone is muted by now (in standby, as the call came back, or while this went out), so Gemini was
-        // never told the stream it has just been given had paused: it is told now, after the audio.
-        if (mutedNow && replayed > 0) { streamEnded = true; send(STREAM_END) }
+    }
+
+    /**
+     * The call has come to where the microphone was muted, in the order its frames were captured:
+     * Gemini is told the stream paused, so it answers. Off Gemini, or with audio still held for
+     * it, that goes after the held audio ([rejoin]); with none held, there's nothing it would follow.
+     */
+    private suspend fun paused() {
+        captions?.pause()
+        if (!standby && !rejoining) send(STREAM_END) else if (held.isNotEmpty()) held.addLast(PAUSE)
     }
 
     /**
@@ -1286,6 +1301,7 @@ class AssistantCall(
                 if (!active) return@launch
                 if (captured != lends) continue
                 freshAudio(captured)
+                if (pcm.isEmpty()) { paused(); continue }
                 afterGap(at)
                 if (standby || rejoining) { hold(pcm); continue }
                 hear(pcm)
@@ -1867,6 +1883,8 @@ class AssistantCall(
         /** Room kept for the words around results list_tasks or check_task reads out. */
         private const val UNHEARD_HEADER = 400
         internal const val STREAM_END = """{"realtimeInput":{"audioStreamEnd":true}}"""
+        /** In the microphone's queue and in what's held, where it was muted: no audio ([paused]). */
+        private val PAUSE = ByteArray(0)
         const val RUNNING = "running"
         const val FINISHED = "finished"
         const val CANCELLED = "cancelled"
