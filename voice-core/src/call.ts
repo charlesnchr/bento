@@ -91,19 +91,32 @@ const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
 const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(cancel|abort|kill|halt|drop|end|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
-const BAD_IDIOM_NP_WORD = /\b(?:don'?t|do|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it|it'll|it'd|that'll|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|restaurants|hotels|airlines|carriers|agencies|companies|vendors|stores|places|sites|services|teams|managers|management|staff|crew|chefs|parents|children|police|men|women|agents|bots|users|customers|clients|folks|guys|others|said|told|asked|know|think|want|need|mean|really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always)\b/i;
-const HABITUAL_STATEMENT = /\b(?:all\s+the\s+time|every\s+time|when\s+needed|at\s+their\s+discretion|on\s+their\s+own|by\s+default)\b/i;
+const BAD_IDIOM_NP_WORD = /\b(?:don'?t|do|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it|it'll|it'd|that'll|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|staff|crew|management|police|children|men|women|folks|guys|others|said|told|asked|know|think|want|need|mean|really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always)\b/i;
+const HABITUAL_STATEMENT = /\b(?:all\s+the\s+time|every\s+time|when\s+needed|at\s+their\s+discretion|on\s+their\s+own|by\s+default)\b/gi;
+const TITLE_BEFORE_HABITUAL = /\b(?:for|titled|called|named)\s+$/i;
+const IS_PLURAL_WORD = /^[a-z]{3,}(?:[^aious]s|ies|oes|ees|eys|ays|oys)$/i;
+const PRONOUN_CANCEL_OBJ = /^\s+(?:it|them|these|those|that|this)\b/i;
 const RESTARTED_NP = /\s+(?:the|a|an|my|our|their|those|these|some|his|her|its|every|each|all|both|many|most|several|other)\b/i;
 const DIRECT_TASK_OBJECT_START = /^\s+(?:the|this|that|my|our|it|them|all|both|every)\b/i;
 const DIRECT_OBJECT_PRONOUN = /^(?:it|them|that|this|all|both|everything)(?:\s+(?:one|task|tasks))?$/i;
 const DIRECT_OBJECT_BOUNDARY = /\b(?:with|about|for|at|in|on|by|to|from|of)\b/i;
+const DIRECT_OBJECT_CLAUSE_END = /\b(?:since|because|so|then|leaving|while|though|although)\b/i;
+
+function hasHabitualStatement(text: string): boolean {
+  HABITUAL_STATEMENT.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HABITUAL_STATEMENT.exec(text)) != null) {
+    if (!TITLE_BEFORE_HABITUAL.test(text.slice(0, m.index))) return true;
+  }
+  return false;
+}
 
 /**
  * Span `[start, end)` of a standalone cancel command/request inside [text] right after a single verb-free
- * noun phrase (0 to 4 words, no modals/negations/pronouns/wh-words/adverbs/restarted determiners/actor subjects),
- * or null. For ambiguous verbs ("drop", "end"), delegates direct-object resolution to [resolveDirectObjectEnd]
- * so complete task labels (including prepositions like "Dinner at Noma") are preserved while trailing
- * prepositional phrases ("with the Noma table") are trimmed out.
+ * noun phrase (0 to 4 words, no modals/negations/pronouns/wh-words/adverbs/restarted determiners/fused
+ * subjects), or null. For ambiguous verbs ("drop", "end"), delegates direct-object resolution to
+ * [resolveDirectObjectEnd] so complete task labels (including prepositions like "Dinner at Noma") are
+ * preserved while trailing prepositional/clause phrases ("with the Noma table", "since ...") are trimmed out.
  */
 function findLaterCancelCmd(text: string, resolveDirectObjectEnd?: (afterVerb: string) => number): { start: number; end: number } | null {
   LATER_CANCEL_RE.lastIndex = 0;
@@ -115,7 +128,13 @@ function findLaterCancelCmd(text: string, resolveDirectObjectEnd?: (afterVerb: s
     if (prefixWords.length >= 2 && RESTARTED_NP.test(prefix)) continue;
     const afterVerbStart = m.index + m[0].length;
     const afterVerb = text.slice(afterVerbStart);
-    if (HABITUAL_STATEMENT.test(afterVerb)) continue;
+    if (hasHabitualStatement(afterVerb)) continue;
+    if (prefixWords.length > 0 && IS_PLURAL_WORD.test(prefixWords[prefixWords.length - 1])) {
+      if (PRONOUN_CANCEL_OBJ.test(afterVerb)) continue;
+      if (prefixWords.length >= 3 && !/\b(?:of|for|in|at|on|to|from|with|by)\b/i.test(prefix)) continue;
+      if (prefixWords.length >= 2 && IS_PLURAL_WORD.test(prefixWords[prefixWords.length - 2])) continue;
+      if (prefixWords.length >= 2 && prefixWords.slice(0, -1).some((w) => w.length >= 4 && new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(afterVerb))) continue;
+    }
     const verb = m[1].toLowerCase();
     if (verb === "drop" || verb === "end") {
       if (!DIRECT_TASK_OBJECT_START.test(afterVerb)) continue;
@@ -212,8 +231,8 @@ const PERSON_REPORTING_VERB = /^(?:telling|asking)$/i;
 const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|told|asked)\b/i;
 /** Reported-speech `that <clause>` complementizer immediately after a reporting verb ("Stop repeating that some restaurants..."), allowing bare object "Stop repeating that and/then cancel" and non-reporting "Stop reading that report and cancel". */
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
-/** Reported-speech `that <actor/pronoun>` clause immediately after any speaking verb ("Stop reading that staff waive the fee and cancel..."), without blocking nouns like "Stop reading that report" or "Stop talking about that team". */
-const THAT_SUBJECT_CLAUSE = /^\s+that\s+(?:(?:the|some|all|most|many|our|their|my)\s+)?(?:staff|management|managers|restaurants|hotels|airlines|carriers|agencies|companies|vendors|teams|crew|chefs|parents|children|police|men|women|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|agents|bots|users|customers|clients|they|we|you|he|she|it|i)\b/i;
+/** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
+const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
 /** Trailing adverbs stripped before testing whether a proposed split point sits inside an infinitive or modal ("to maybe", "will probably"). */
 const TRAILING_ADVS = /(?:\s+(?:really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always|never|still|also|only|ever|basically|literally|honestly|apparently|supposedly|obviously|clearly|surely|totally|completely|quickly|easily|immediately|directly|automatically|accidentally|prematurely))+$/i;
 /** Embedded-clause markers (indirect wh-questions, reported `that <subject> <aux>` clauses, modals/reported verbs, pronoun clauses, infinitive cancel complements) kept inside stop-speaking spans without blocking nouns like "that report" or "that Noma table". */
@@ -2912,15 +2931,20 @@ export class Call {
 
   private clauseScore(clause: string, label: string, extra: string): number {
     const stripPossessive = (s: string): string => s.replace(/['\u2019]s\b/gi, "");
-    const words = [...TaskNames.distinctive(stripPossessive(clause))].filter((w) => !CANCEL_ACTION_WORDS.has(w));
-    if (words.length === 0) return 0;
-    const labelWords = TaskNames.distinctive(stripPossessive(label));
-    const extraWords = TaskNames.distinctive(stripPossessive(extra));
+    const rawWords = [...TaskNames.distinctive(clause)].filter((w) => !CANCEL_ACTION_WORDS.has(w));
+    if (rawWords.length === 0) return 0;
+    const rawLabel = TaskNames.distinctive(label);
+    const rawExtra = TaskNames.distinctive(extra);
+    const normLabel = TaskNames.distinctive(stripPossessive(label));
+    const normExtra = TaskNames.distinctive(stripPossessive(extra));
     let score = 0;
-    for (const w of words) {
-      // Exact task-label words always count (even verbs like "email"); extra request/summary words still filter generic confirmation verbs.
-      if (labelWords.has(w)) score += 2;
-      else if (!QUESTION_VERBS.has(w) && extraWords.has(w)) score += 1;
+    for (const w of rawWords) {
+      const base = stripPossessive(w);
+      // Rank exact wording ahead of possessive-insensitive matches ("Sarah's booking" beats "Sarah booking"), while still letting "Dinner at Noma's booking" match "Dinner at Noma".
+      if (rawLabel.has(w)) score += 4;
+      else if (base !== w && normLabel.has(base) || (base === w && normLabel.has(w))) score += 3;
+      else if (!QUESTION_VERBS.has(w) && rawExtra.has(w)) score += 2;
+      else if (!QUESTION_VERBS.has(w) && !QUESTION_VERBS.has(base) && normExtra.has(base)) score += 1;
     }
     return score;
   }
@@ -2954,13 +2978,15 @@ export class Call {
     parts: string[];
   }[] {
     const resolveDirectObjectEnd = (afterVerb: string): number => {
-      // Base direct-object boundary stops before a trailing preposition ("the summary with the Noma table"), while a full known task label (owned or detached, including prepositions like "Dinner at Noma" or possessives/hyphens like "Dinner at Noma's booking") can extend the object across a preposition but never shorten it.
-      const boundary = DIRECT_OBJECT_BOUNDARY.exec(afterVerb);
-      const baseRaw = boundary != null ? afterVerb.slice(0, boundary.index) : afterVerb;
+      // Stop before trailing clause conjunctions ("since the Geranium table is booked") and base prepositions ("the summary with the Noma table"), while letting a full known task label (owned or detached, including prepositions like "Dinner at Noma" or possessives/hyphens like "Dinner at Noma's booking") extend across a preposition without shortening below baseEnd.
+      const clauseEnd = DIRECT_OBJECT_CLAUSE_END.exec(afterVerb);
+      const objText = clauseEnd != null ? afterVerb.slice(0, clauseEnd.index).trimEnd() : afterVerb;
+      const boundary = DIRECT_OBJECT_BOUNDARY.exec(objText);
+      const baseRaw = boundary != null ? objText.slice(0, boundary.index) : objText;
       const baseEnd = baseRaw.trimEnd().length;
-      const det = /^\s+(?:(?:the|this|that|my|our)\s+)?/i.exec(afterVerb);
+      const det = /^\s+(?:(?:the|this|that|my|our)\s+)?/i.exec(objText);
       const detEnd = det != null ? det[0].length : 0;
-      const lowerAfter = afterVerb.slice(detEnd).toLowerCase();
+      const lowerAfter = objText.slice(detEnd).toLowerCase();
       let bestLabelEnd = -1;
       const allLabels = [
         ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label),
@@ -2975,7 +3001,7 @@ export class Call {
         }
       }
       if (bestLabelEnd > 0) {
-        const tailAfterLabel = afterVerb.slice(bestLabelEnd);
+        const tailAfterLabel = objText.slice(bestLabelEnd);
         const nextBoundary = DIRECT_OBJECT_BOUNDARY.exec(tailAfterLabel);
         const extRaw = nextBoundary != null ? tailAfterLabel.slice(0, nextBoundary.index) : tailAfterLabel;
         const extendedEnd = bestLabelEnd + extRaw.trimEnd().length;
@@ -2983,21 +3009,35 @@ export class Call {
       }
       const directObj = baseRaw.trim();
       if (DIRECT_OBJECT_PRONOUN.test(directObj)) return baseEnd;
-      let matchedRunning = 0;
+      let bestRunningScore = 0;
+      let bestRunningCount = 0;
+      let bestRunningTask: Task | null = null;
       for (const t of this.tasks.values()) {
-        if (t.state === RUNNING && this.clauseScore(directObj, t.label, t.latest + " " + t.request) > 0) matchedRunning++;
+        if (t.state !== RUNNING) continue;
+        const sc = this.clauseScore(directObj, t.label, t.latest + " " + t.request);
+        if (sc > bestRunningScore) { bestRunningScore = sc; bestRunningCount = 1; bestRunningTask = t; }
+        else if (sc > 0 && sc === bestRunningScore) bestRunningCount++;
       }
-      let matchedExternal = 0;
+      if (bestRunningScore === 0) return -1;
+      if (boundary == null) return baseEnd;
+      let bestExternalScore = 0;
       for (const ext of this.externalTasks) {
-        if (this.clauseScore(directObj, ext.label, `${ext.request} ${ext.summary}`.trim()) > 0) matchedExternal++;
+        bestExternalScore = Math.max(bestExternalScore, this.clauseScore(directObj, ext.label, `${ext.request} ${ext.summary}`.trim()));
       }
-      if ((matchedRunning === 1 && matchedExternal === 0) || (matchedRunning > 0 && boundary == null)) return baseEnd;
-      return -1;
+      if (bestRunningCount !== 1 || bestExternalScore >= bestRunningScore || bestRunningTask == null) return -1;
+      // Also check the untrimmed object wording before the preposition so a detached task named after the preposition ("the dinner at Noma") cannot be stripped away.
+      const fullRunningScore = this.clauseScore(objText, bestRunningTask.label, bestRunningTask.latest + " " + bestRunningTask.request);
+      let fullExternalScore = 0;
+      for (const ext of this.externalTasks) {
+        fullExternalScore = Math.max(fullExternalScore, this.clauseScore(objText, ext.label, `${ext.request} ${ext.summary}`.trim()));
+      }
+      if (fullExternalScore >= fullRunningScore) return -1;
+      return baseEnd;
     };
     const isSafeSplitPrefix = (prefix: string, isSplit: boolean, speakVerb?: string): boolean => {
       const isReporting = speakVerb != null && REPORTING_SPEAK_VERB.test(speakVerb);
       if (isReporting && THAT_COMPLEMENT.test(prefix)) return false;
-      if (speakVerb != null && THAT_SUBJECT_CLAUSE.test(prefix)) return false;
+      if (speakVerb != null && THAT_PREDICATE_CLAUSE.test(prefix)) return false;
       if (speakVerb != null && PERSON_REPORTING_VERB.test(speakVerb) && prefix.trim().length > 0 && !/\babout\b/i.test(prefix)) return false;
       if (speakVerb == null && REPORTING_IN_CONTINUATION.test(prefix)) return false;
       if (EMBEDDED_CLAUSE.test(prefix)) return false;
@@ -3025,9 +3065,11 @@ export class Call {
           };
           spans.push(cur);
         } else if (speakMatch != null) {
-          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") and embedded/reported clauses out of active cancel scope, while splitting standalone cancel commands after plain topics (and requiring "then"/"so" for inline splits after reporting verbs).
+          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") and embedded/reported clauses out of active cancel scope, while splitting standalone cancel commands after plain topics (and requiring "then"/"so" for inline splits after reporting verbs, except bare "explaining" or reflexive forms).
           const tail = part.slice(speakMatch.index + speakMatch[0].length);
-          const bareOrReflexiveReporting = /^(?:\s+(?:yourself|myself|himself|herself|themselves|ourselves))?\s+(?:(?:just|please|now)\s+)+(?:cancel|stop|abort|kill|drop|end|halt)\b/i.test(tail);
+          const bareOrReflexiveReporting = (
+            /^explaining$/i.test(speakMatch[1]) && /^\s+(?:(?:just|please|now)\s+)+(?:cancel|stop|abort|kill|drop|end|halt)\b/i.test(tail)
+          ) || /^\s+(?:yourself|myself|himself|herself|themselves|ourselves)\s+(?:(?:just|please|now)\s+)+(?:cancel|stop|abort|kill|drop|end|halt)\b/i.test(tail);
           const splitRe = REPORTING_SPEAK_VERB.test(speakMatch[1]) && !bareOrReflexiveReporting ? SPLIT_AFTER_REPORTING : SPLIT_AFTER_SPEAKING;
           const split = splitRe.exec(tail);
           const between = split != null ? tail.slice(0, split.index) : tail;
@@ -3035,19 +3077,14 @@ export class Call {
           if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
-            if (HABITUAL_STATEMENT.test(after)) {
-              cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: false, parts: [part] };
-              spans.push(cur);
-            } else {
-              if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
-              cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
-              spans.push(cur);
-            }
+            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+            spans.push(cur);
           } else {
             cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: safeTopic, parts: [part] };
             spans.push(cur);
           }
-        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit && !HABITUAL_STATEMENT.test(part))) && CANCEL_VERB_START.test(part))) {
+        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit)) && CANCEL_VERB_START.test(part))) {
           // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), keep only the standalone cancel command (and for drop/end, its resolved direct object) in the active span.
           const idiomSpan = idiomCancelSplitSpan(part, resolveDirectObjectEnd);
           if (idiomSpan != null) {
@@ -3068,14 +3105,9 @@ export class Call {
           if (split != null && isSafeSplitPrefix(prefix, true)) {
             const before = prefix.trim();
             const after = part.slice(split.index + split[0].length).trim();
-            if (HABITUAL_STATEMENT.test(after)) {
-              cur.canSplit = false;
-              cur.parts.push(part);
-            } else {
-              if (before.length > 0) cur.parts.push(before);
-              cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
-              spans.push(cur);
-            }
+            if (before.length > 0) cur.parts.push(before);
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+            spans.push(cur);
           } else {
             if (!isSafeSplitPrefix(prefix, split != null)) cur.canSplit = false;
             cur.parts.push(part);
@@ -3129,19 +3161,28 @@ export class Call {
   /** Whether [said] contains a distinctive non-verb word unique to [task] (not shared with any other owned or detached task). */
   private identifiesOwnedTask(said: string, task: Task): boolean {
     const stripPossessive = (s: string): string => s.replace(/['\u2019]s\b/gi, "");
-    const otherWords = new Set<string>();
+    const otherRaw = new Set<string>();
+    const otherNorm = new Set<string>();
     for (const other of this.tasks.values()) {
       if (other.id === task.id) continue;
-      for (const w of TaskNames.distinctive(stripPossessive(`${other.label} ${other.request}`))) otherWords.add(w);
+      for (const w of TaskNames.distinctive(`${other.label} ${other.request}`)) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
     }
     for (const ext of this.externalTasks) {
-      for (const w of TaskNames.distinctive(stripPossessive(`${ext.label} ${ext.request} ${ext.summary}`))) otherWords.add(w);
+      for (const w of TaskNames.distinctive(`${ext.label} ${ext.request} ${ext.summary}`)) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
     }
-    const ownedUnique = new Set<string>(
-      [...TaskNames.distinctive(stripPossessive(`${task.label} ${task.latest} ${task.request}`))].filter((w) => !QUESTION_VERBS.has(w) && !otherWords.has(w)),
+    const ownedRaw = new Set<string>(
+      [...TaskNames.distinctive(`${task.label} ${task.latest} ${task.request}`)].filter((w) => !QUESTION_VERBS.has(w) && !otherRaw.has(w)),
     );
-    const saidWords = [...TaskNames.distinctive(stripPossessive(said))].filter((w) => !QUESTION_VERBS.has(w));
-    return saidWords.some((w) => ownedUnique.has(w));
+    const ownedNorm = new Set<string>(
+      [...TaskNames.distinctive(stripPossessive(`${task.label} ${task.latest} ${task.request}`))].filter((w) => !QUESTION_VERBS.has(w) && !otherNorm.has(w)),
+    );
+    for (const w of TaskNames.distinctive(said)) {
+      if (QUESTION_VERBS.has(w) || otherRaw.has(w)) continue;
+      if (ownedRaw.has(w)) return true;
+      const base = stripPossessive(w);
+      if (!QUESTION_VERBS.has(base) && !otherNorm.has(base) && ownedNorm.has(base)) return true;
+    }
+    return false;
   }
 
   /**

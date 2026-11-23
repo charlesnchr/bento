@@ -1627,6 +1627,18 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Never mind the cancelled restaurants just cancel them all the time",
     "Don't worry about the cancelled flight crew just cancel them all the time",
     "Don't worry about the cancelled Noma table management just cancel the Noma table",
+    "Never mind the cancelled order suppliers just cancel it",
+    "Don't worry about the cancelled Noma table guests just cancel them",
+    "Don't worry about the cancelled Noma table owners just cancel the Noma table",
+    "Never mind the cancelled flights travellers just cancel them",
+    "Never mind the cancelled bookings diners just cancel them",
+    "Don't worry about the cancelled Noma table waiters just cancel them",
+    "Don't worry about the cancelled Noma table hosts just cancel them",
+    "Never mind the cancelled flights pilots just cancel them",
+    "Stop repeating just cancel the Noma table",
+    "Stop asking please cancel the Noma table",
+    "Stop reading that hosts waive the fee and cancel the Noma table",
+    "Stop reading that staff waive the fee and cancel the Noma table",
     "Don't worry about the cancelled Noma table why would you cancel the Noma table",
     "Never mind the dropped call why would you cancel the Noma table",
     "Never mind the dropped call just drop me a note about the Noma table",
@@ -2052,6 +2064,58 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10x.advance(0.1);
   assert.equal(s10x.commands.filter((c) => c.type === "tool.cancel").length, 0, "shorter label 'Dinner' must not truncate 'the dinner reservation' and bypass detached conflict");
 
+  // 8o) Exact possessive label ("Sarah's booking") beats non-possessive ("Sarah booking"), and trailing clauses ("since ...") after drop/end never widen into another task.
+  const s10y = chat();
+  s10y.type("Book a table for Sarah");
+  s10y.calls("ask_hermes", { label: "Sarah booking" });
+  s10y.advance(0.1);
+  s10y.type("Check Sarah's existing booking");
+  s10y.calls("ask_hermes", { label: "Sarah's booking" });
+  s10y.advance(0.1);
+  s10y.type("Cancel Sarah's booking");
+  s10y.calls("cancel_task", { task: "Sarah booking" });
+  s10y.advance(0.1);
+  assert.equal(s10y.commands.filter((c) => c.type === "tool.cancel").length, 0, "exact possessive 'Sarah's booking' must not cancel 'Sarah booking'");
+  s10y.calls("cancel_task", { task: "Sarah's booking" });
+  s10y.advance(0.1);
+  assert.equal(s10y.commands.filter((c) => c.type === "tool.cancel").length, 1, "exact possessive 'Sarah's booking' must cancel 'Sarah's booking'");
+
+  const s10z = chat();
+  s10z.type("Book a table at Noma");
+  s10z.calls("ask_hermes", { label: "Noma table" });
+  s10z.advance(0.1);
+  s10z.type("Book a table at Geranium");
+  s10z.calls("ask_hermes", { label: "Geranium table" });
+  s10z.advance(0.1);
+  s10z.type("Never mind the dropped call just end the Noma table since the Geranium table is booked");
+  s10z.calls("cancel_task", { task: "Geranium table" });
+  s10z.advance(0.1);
+  assert.equal(s10z.commands.filter((c) => c.type === "tool.cancel").length, 0, "trailing 'since' clause must not widen drop/end into Geranium table");
+  s10z.calls("cancel_task", { task: "Noma table" });
+  s10z.advance(0.1);
+  assert.equal(s10z.commands.filter((c) => c.type === "tool.cancel").length, 1, "direct object 'the Noma table' before 'since' must still cancel Noma table");
+
+  // 8p) Stronger owned match ("London forecast") beats weaker shared-word detached match ("Trip planning" requesting "Plan my London trip"), and a song title containing "All the Time" still cancels.
+  const s10aa = chat();
+  s10aa.push({ type: "note", id: "call-1-22", label: "Trip planning", text: "Planning.", active: true, request: "Plan my London trip" });
+  s10aa.advance(0.1);
+  s10aa.type("Check London weather");
+  s10aa.calls("ask_hermes", { label: "London forecast" });
+  s10aa.advance(0.1);
+  s10aa.type("Never mind the dropped call just end the London weather check for tomorrow");
+  s10aa.calls("cancel_task", { task: "London forecast" });
+  s10aa.advance(0.1);
+  assert.equal(s10aa.commands.filter((c) => c.type === "tool.cancel").length, 1, "stronger owned match 'London forecast' must cancel despite shared word 'London' in detached Trip planning");
+
+  const s10ab = chat();
+  s10ab.type("Search for All the Time by The Strokes");
+  s10ab.calls("ask_hermes", { label: "Song search" });
+  s10ab.advance(0.1);
+  s10ab.type("Stop talking and cancel the search for All the Time by The Strokes");
+  s10ab.calls("cancel_task", { task: "Song search" });
+  s10ab.advance(0.1);
+  assert.equal(s10ab.commands.filter((c) => c.type === "tool.cancel").length, 1, "song title containing 'All the Time' must still cancel Song search");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2059,6 +2123,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't worry about the cancelled Copenhagen dinner reservation just cancel the weather",
     "Never mind the cancelled trip from Paris just cancel the weather",
     "Never mind the cancelled Lisbon flights just cancel the weather",
+    "Never mind the cancelled hotels just cancel the weather",
     "Don't worry about the cancelled Noma bookings just cancel the weather",
     "Don't worry about the cancelled Noma bus just cancel the weather",
     "Never mind the dropped call just cancel the weather",
@@ -2073,6 +2138,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop rambling please cancel the weather",
     "Stop talking about flights to Paris and cancel the weather",
     "Stop mentioning Noma and cancel the weather",
+    "Stop mentioning that staff meeting and cancel the weather",
     "Stop explaining the Noma policy and cancel the weather",
     "Stop explaining just cancel the weather",
     "Stop repeating yourself just cancel the weather",
