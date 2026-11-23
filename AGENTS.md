@@ -17,8 +17,25 @@ and setup; SPEC.md and QA.md go deeper.
 - Tests run one target at a time: `scripts/test VoiceCoreTests`, `scripts/test VoiceTests`,
   `scripts/test LauncherTests` and so on (Swift Testing, a scratch dir per target). Don't
   edit sources while a test build runs: it fails with "modified during the build".
-- The loop: edit, test the target, `scripts/build.sh --install`, let the user try it,
-  commit locally. Ask before pushing or opening a PR.
+- The loop on macOS: edit, test the target, `scripts/build.sh --install`, then ship via the PR workflow below.
+
+## Shipping changes (never leave PRs open)
+
+Never leave a Bento PR open as the finished state. Work is not done until the PR is reviewed by two independent agents, merged to `main`, and released or deployed for every surface it touched. This applies to every Bento task, including tasks dispatched from the voice app whose boilerplate prompt says not to merge, release, or start other agents.
+
+1. Implement and verify locally (run the affected test targets, typechecks, and builds).
+2. Commit, push the branch, and open a PR against `main` using Charles's personal GitHub account (`GH_ACCOUNT=personal`, repo `charlesnchr/bento`). Note that `origin/voice` exists on GitHub, so push `voice/...` branches to a hyphenated remote ref such as `voice-<slug>`.
+3. Run a dual-agent review loop on the PR in parallel using `delegate_task` (`role: "review"`):
+   - One Codex reviewer (latest GPT Sol model, e.g. `gpt-6.2-sol`)
+   - One Claude reviewer (Claude Opus 5.5, `claude-opus-5-5`)
+   Confirm provider IDs and model slugs with `orchestrator_capabilities` first. Address every material finding, re-run verification, push, and launch a new review round (new `delegate_task` calls with the original brief, prior findings, and responses) until both reviewers approve.
+4. Merge the PR into `main` (squash or merge, and delete the feature branch).
+5. Release or deploy what changed from updated `main`:
+   - macOS (`Sources/`): `scripts/release.sh X.Y.Z` on a Mac (bump patch from latest `vX.Y.Z` tag).
+   - Android (`android/` or `voice-core/dist/voice-core.js`): `scripts/release-android.sh X.Y.Z` (bump patch from latest `android-vX.Y.Z` tag).
+   - Sync server (`server/`): `scripts/deploy-server.sh`.
+   - Voice web surface (`voice-core/web/` or `voice-core/dev/`): fast-forward `~/workspace/bento-voice-core` to `origin/main` (and run `systemctl --user restart voice-core-dev` if `dev/` changed) so https://voice.charlesnchr.com serves the merged change.
+   - If a surface cannot be released from the current host (for example, macOS builds on Linux), state that explicitly and complete every release/deploy step reachable from this host.
 
 ## Seeing and driving the UI
 
