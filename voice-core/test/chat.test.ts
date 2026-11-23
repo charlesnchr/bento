@@ -1620,6 +1620,13 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't worry about the cancelled Noma table the chefs just cancel the Noma table",
     "Don't worry about the cancelled Noma table my parents just cancel the Noma table",
     "Don't worry about the cancelled flight bookings travel agencies just cancel these all the time",
+    "Don't worry about the cancelled flight staff just cancel the Noma table when needed",
+    "Don't worry about the cancelled Noma table staff just cancel them all the time",
+    "Don't worry about the cancelled Noma table kitchen staff just cancel them all the time",
+    "Never mind the cancelled airlines just cancel them all the time",
+    "Never mind the cancelled restaurants just cancel them all the time",
+    "Don't worry about the cancelled flight crew just cancel them all the time",
+    "Don't worry about the cancelled Noma table management just cancel the Noma table",
     "Don't worry about the cancelled Noma table why would you cancel the Noma table",
     "Never mind the dropped call why would you cancel the Noma table",
     "Never mind the dropped call just drop me a note about the Noma table",
@@ -1631,6 +1638,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
+    "Stop reading that staff can waive the fee and cancel the Noma table at their discretion",
     "Stop repeating that some restaurants just cancel the Noma table all the time",
     "Stop repeating to me that restaurants just cancel the Noma table",
     "Stop repeating restaurants just cancel the Noma table",
@@ -2020,11 +2028,39 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10v.advance(0.1);
   assert.equal(s10v.commands.filter((c) => c.type === "tool.cancel").length, 0, "detached Dinner at Noma must block cancelling owned Dinner at Geranium");
 
+  // 8n) Possessive/hyphenated label ("Dinner at Noma's booking") and shorter owned label ("Dinner" vs detached "Noma reservation" with request "dinner reservation") never shorten away distinguishing words.
+  const s10w = chat();
+  s10w.type("Book dinner at Noma");
+  s10w.calls("ask_hermes", { label: "Dinner at Noma" });
+  s10w.advance(0.1);
+  s10w.type("Book dinner at Geranium");
+  s10w.calls("ask_hermes", { label: "Dinner at Geranium" });
+  s10w.advance(0.1);
+  s10w.type("Never mind the dropped call just end the Dinner at Noma's booking");
+  s10w.calls("cancel_task", { task: "Dinner at Geranium" });
+  s10w.advance(0.1);
+  assert.equal(s10w.commands.filter((c) => c.type === "tool.cancel").length, 0, "possessive Dinner at Noma's booking must not cancel Dinner at Geranium");
+
+  const s10x = chat();
+  s10x.push({ type: "note", id: "call-1-21", label: "Noma reservation", text: "Checking.", active: true, request: "Book a dinner reservation at Noma" });
+  s10x.advance(0.1);
+  s10x.type("Plan dinner");
+  s10x.calls("ask_hermes", { label: "Dinner" });
+  s10x.advance(0.1);
+  s10x.type("Never mind the dropped call just end the dinner reservation");
+  s10x.calls("cancel_task", { task: "Dinner" });
+  s10x.advance(0.1);
+  assert.equal(s10x.commands.filter((c) => c.type === "tool.cancel").length, 0, "shorter label 'Dinner' must not truncate 'the dinner reservation' and bypass detached conflict");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
     "Don't worry about the cancellation fee just cancel the weather",
     "Don't worry about the cancelled Copenhagen dinner reservation just cancel the weather",
+    "Never mind the cancelled trip from Paris just cancel the weather",
+    "Never mind the cancelled Lisbon flights just cancel the weather",
+    "Don't worry about the cancelled Noma bookings just cancel the weather",
+    "Don't worry about the cancelled Noma bus just cancel the weather",
     "Never mind the dropped call just cancel the weather",
     "Never mind the dropped call can you cancel the weather",
     "Never mind the dropped call just end the weather task",
@@ -2038,6 +2074,8 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop talking about flights to Paris and cancel the weather",
     "Stop mentioning Noma and cancel the weather",
     "Stop explaining the Noma policy and cancel the weather",
+    "Stop explaining just cancel the weather",
+    "Stop repeating yourself just cancel the weather",
     "Stop reading that report and cancel the weather",
     "Stop repeating that and cancel the weather",
     "Stop repeating that then cancel the weather",
