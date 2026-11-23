@@ -1600,6 +1600,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "I don't want the Noma table cancelled",
     "Please don't go cancelling the Noma table",
     "Don't let the Noma table get cancelled",
+    "Don't forget the cancelled Noma table policy",
+    "Don't worry about the cancelled Noma table",
+    "Don't wait for the stopped Noma table",
+    "Don't worry about a stopped Noma table",
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
@@ -1756,17 +1760,24 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   const resp10i: string = s10i.sentTurns().at(-1).parts[0].functionResponse.response.message;
   assert.ok(resp10i.includes('"C build"') && !resp10i.includes('"C++ build rollout"'), `expected redirect to C build, got: ${resp10i}`);
 
-  // 8i) A detached label subsumed inside a longer owned label ("Email" inside "Landlord email"), or a weak detached request word ("table" vs owned "Noma table"), does not hijack the follow-up.
+  // 8i) A detached label subsumed inside a longer owned label ("Email" inside "Landlord email"), or a weak detached request word ("table" vs owned "Noma table"), queues/continues the owned task instead of hijacking or starting a fresh run.
   const s10j = chat();
   s10j.push({ type: "note", id: "call-1-13", label: "Email", text: "Drafted.", active: false, request: "Email Sam about the table booking" });
   s10j.advance(0.1);
   s10j.type("Draft an email to the landlord");
   s10j.calls("ask_hermes", { label: "Landlord email" });
   s10j.advance(0.1);
+  assert.equal(s10j.hermes().length, 1);
+  const firstLandlord = s10j.hermes()[0];
   s10j.type("Make the landlord email shorter");
   s10j.calls("ask_hermes", { continue_task: "Revision" });
   s10j.advance(0.1);
-  assert.equal(s10j.hermes().length, 2, "detached 'Email' subsumed inside owned 'Landlord email' must not hijack");
+  assert.equal(s10j.hermes().length, 1, "follow-up to active owned 'Landlord email' must queue instead of starting a second concurrent run");
+  s10j.complete("Draft ready.", firstLandlord.run);
+  s10j.advance(0.1);
+  assert.equal(s10j.hermes().length, 2, "queued follow-up runs once active owned task completes");
+  assert.equal(s10j.hermes()[1].taskId, firstLandlord.taskId, "follow-up keeps original Landlord email taskId");
+  assert.equal(s10j.hermes()[1].followUp, true, "follow-up runs with followUp=true");
 
   const s10k = chat();
   s10k.push({ type: "note", id: "call-1-14", label: "Email", text: "Drafted.", active: false, request: "Email Sam about the table booking" });
@@ -1774,12 +1785,46 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10k.type("Book a table at Noma");
   s10k.calls("ask_hermes", { label: "Noma table" });
   s10k.advance(0.1);
+  assert.equal(s10k.hermes().length, 1);
+  const firstNoma = s10k.hermes()[0];
   s10k.type("Move the Noma table to Friday");
   s10k.calls("ask_hermes", { continue_task: "Revision" });
   s10k.advance(0.1);
-  assert.equal(s10k.hermes().length, 2, "weak detached request word 'table' must not hijack owned 'Noma table'");
+  assert.equal(s10k.hermes().length, 1, "follow-up to active owned 'Noma table' must queue instead of starting a second concurrent run");
+  s10k.complete("Booked.", firstNoma.run);
+  s10k.advance(0.1);
+  assert.equal(s10k.hermes().length, 2, "queued follow-up runs once active Noma task completes");
+  assert.equal(s10k.hermes()[1].taskId, firstNoma.taskId, "follow-up keeps original Noma table taskId");
+  assert.equal(s10k.hermes()[1].followUp, true, "follow-up runs with followUp=true");
 
-  // 8j) "Stop talking about the Noma table and cancel the weather" protects Noma and cancels Weather.
+  // 8i-2) Symmetric span subsumption: owned "Email" nested inside detached "Landlord email" directs to "Landlord email", while a separate mention of "Email" stays ambiguous.
+  const s10m = chat();
+  s10m.push({ type: "note", id: "call-1-15", label: "Landlord email", text: "Drafted.", active: false, request: "Email the landlord" });
+  s10m.advance(0.1);
+  s10m.type("Draft a quick email");
+  s10m.calls("ask_hermes", { label: "Email" });
+  s10m.advance(0.1);
+  s10m.type("Make the landlord email shorter");
+  s10m.calls("ask_hermes", { continue_task: "Revision" });
+  s10m.advance(0.1);
+  assert.equal(s10m.hermes().length, 1, "nested owned 'Email' must not create a new run");
+  const resp10m: string = s10m.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10m.includes('"Landlord email"') && !resp10m.includes("is ambiguous"), `expected direct redirect to Landlord email, got: ${resp10m}`);
+
+  const s10n = chat();
+  s10n.push({ type: "note", id: "call-1-16", label: "Landlord email", text: "Drafted.", active: false, request: "Email the landlord" });
+  s10n.advance(0.1);
+  s10n.type("Draft a quick email");
+  s10n.calls("ask_hermes", { label: "Email" });
+  s10n.advance(0.1);
+  s10n.type("For the email, make the landlord email shorter");
+  s10n.calls("ask_hermes", { continue_task: "Revision" });
+  s10n.advance(0.1);
+  assert.equal(s10n.hermes().length, 1, "disjoint owned + detached labels must refuse");
+  const resp10n: string = s10n.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10n.includes("is ambiguous") && resp10n.includes('"Email"') && resp10n.includes('"Landlord email"'), `expected ambiguity naming both, got: ${resp10n}`);
+
+  // 8j) Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") out of active cancel scope, while splitting explicit "and cancel" / "then cancel".
   const s10l = chat();
   s10l.type("Book a table at Noma");
   s10l.calls("ask_hermes", { label: "Noma table" });
@@ -1787,13 +1832,40 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10l.type("Check Copenhagen weather");
   s10l.calls("ask_hermes", { label: "Weather" });
   s10l.advance(0.1);
-  s10l.type("Stop talking about the Noma table and cancel the weather");
-  s10l.calls("cancel_task", { task: "Noma table" });
-  s10l.advance(0.1);
-  assert.equal(s10l.commands.filter((c) => c.type === "tool.cancel").length, 0, "stop-talking clause must not authorize cancelling Noma");
+  s10l.type("Stop talking about Noma and the weather");
   s10l.calls("cancel_task", { task: "Weather" });
   s10l.advance(0.1);
-  assert.equal(s10l.commands.filter((c) => c.type === "tool.cancel").length, 1, "separate cancel clause must still cancel Weather");
+  assert.equal(s10l.commands.filter((c) => c.type === "tool.cancel").length, 0, "coordinated object under stop-talking must not cancel Weather");
+
+  const s10l2 = chat();
+  s10l2.type("Book a table at Noma");
+  s10l2.calls("ask_hermes", { label: "Noma table" });
+  s10l2.advance(0.1);
+  s10l2.type("Check Copenhagen weather");
+  s10l2.calls("ask_hermes", { label: "Weather" });
+  s10l2.advance(0.1);
+  s10l2.type("Stop talking about the Noma table and cancel the weather");
+  s10l2.calls("cancel_task", { task: "Noma table" });
+  s10l2.advance(0.1);
+  assert.equal(s10l2.commands.filter((c) => c.type === "tool.cancel").length, 0, "stop-talking clause must not authorize cancelling Noma");
+  s10l2.calls("cancel_task", { task: "Weather" });
+  s10l2.advance(0.1);
+  assert.equal(s10l2.commands.filter((c) => c.type === "tool.cancel").length, 1, "separate cancel clause must still cancel Weather");
+
+  const s10o = chat();
+  s10o.type("Book a table at Noma");
+  s10o.calls("ask_hermes", { label: "Noma table" });
+  s10o.advance(0.1);
+  s10o.type("Check Copenhagen weather");
+  s10o.calls("ask_hermes", { label: "Weather" });
+  s10o.advance(0.1);
+  s10o.type("Stop talking about Noma then cancel the weather");
+  s10o.calls("cancel_task", { task: "Noma table" });
+  s10o.advance(0.1);
+  assert.equal(s10o.commands.filter((c) => c.type === "tool.cancel").length, 0, "'then cancel the weather' must not cancel Noma");
+  s10o.calls("cancel_task", { task: "Weather" });
+  s10o.advance(0.1);
+  assert.equal(s10o.commands.filter((c) => c.type === "tool.cancel").length, 1, "'then cancel the weather' must cancel Weather");
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
@@ -1804,6 +1876,8 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't worry about the stopwatch cancel the weather",
     "Stop the weather check and stop talking about it",
     "Stop talking and stop the weather",
+    "Stop talking about it just cancel the weather",
+    "Stop rambling please cancel the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",

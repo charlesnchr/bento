@@ -103,9 +103,10 @@ function isDontCancel(clause: string): boolean {
     const tail = words.slice(start + 1).join(" ");
     const full = words.join(" ");
     if (!BASE_CANCEL_VERB.test(m[2])) {
-      // Allow a direct lead-in idiom ("Never mind the dropped call...", "Don't worry about the ending...") to skip a noun/adjective preceded by an article.
+      // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if a separate base-form cancel imperative follows in the same clause.
       const prev = words[words.length - 1] ?? "";
-      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev)) continue;
+      const after = rest.slice(m.index + m[0].length);
+      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && /\b(?:cancel|stop|abort|kill|drop|end|halt)\b/i.test(after)) continue;
       return true;
     }
     if (open[2] != null) {
@@ -140,6 +141,8 @@ const CANCEL_ACTION_WORDS = new Set(["cancel", "stop", "abort", "kill", "drop", 
 const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|abort|kill|drop|end|halt|forget|never\s+mind|don'?t\s+bother)\b/i;
 /** Clause or conjunct asking the assistant to stop speaking about a topic rather than cancelling a task. */
 const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/i;
+/** Transition before an explicit cancel command following a stop-speaking phrase in the same clause ("Stop talking about Noma then cancel the weather", "Stop talking about it just cancel the weather"). */
+const SPLIT_AFTER_SPEAKING = /\s+(?:(?:then|so|now|just|please)\s+)+(?=(?:please\s+|just\s+|now\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
@@ -2050,10 +2053,10 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Give contiguous punctuation-preserving whole-label detached mentions priority (unless subsumed by a longer owned label), then score combined owned + detached partial labels and details together.
-        const byExtWhole = this.findWholeLabelExternal(request.task);
-        if (byExtWhole != null) {
-          target = byExtWhole;
+        // Give contiguous punctuation-preserving whole-label mentions priority (with symmetric span subsumption across owned and detached tasks), then fall back to combined partial-label/detail scoring for detached conflicts.
+        const byWhole = this.findWholeLabelTarget(request.task);
+        if (byWhole != null) {
+          target = byWhole;
         } else {
           const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
           const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
@@ -2306,13 +2309,14 @@ export class Call {
   }
 
   /**
-   * Matches detached tasks whose entire label appears contiguously in [ref] (preserving meaningful symbols
-   * such as `C++`), ignoring detached spans subsumed inside a longer owned label ("Email" inside "Landlord email")
-   * and returning ambiguous when a disjoint owned label also matches or multiple detached labels tie.
+   * Matches owned and detached tasks whose entire label appears contiguously in [ref] (preserving meaningful
+   * symbols such as `C++`), dropping spans strictly contained inside a longer match from the other side
+   * ("Email" inside "Landlord email" in either direction) and returning ambiguous on disjoint or tied matches.
    */
-  private findWholeLabelExternal(
+  private findWholeLabelTarget(
     ref: string,
   ):
+    | { kind: "owned"; task: Task }
     | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
     | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
     | null {
@@ -2332,27 +2336,30 @@ export class Call {
       }
       return out;
     };
+    const subsumedBy = ([s, e]: [number, number], others: [number, number][]) =>
+      others.some(([os, oe]) => os <= s && e <= oe && (oe - os) > (e - s));
     const said = tokens(ref);
     if (said.length === 0) return null;
-    const ownedWhole: { task: Task; spans: [number, number][] }[] = [];
-    for (const t of this.tasks.values()) {
-      const spans = spansOf(said, tokens(t.label));
-      if (spans.length > 0) ownedWhole.push({ task: t, spans });
-    }
-    const ownedSpans = ownedWhole.flatMap((o) => o.spans);
-    let bestLen = 0;
-    const bestExt: typeof this.externalTasks = [];
-    for (const ext of this.externalTasks) {
-      const labelTokens = tokens(ext.label);
-      const spans = spansOf(said, labelTokens).filter(([s, e]) => !ownedSpans.some(([os, oe]) => os <= s && e <= oe && (oe - os) > (e - s)));
-      if (spans.length === 0) continue;
-      if (labelTokens.length > bestLen) { bestLen = labelTokens.length; bestExt.length = 0; bestExt.push(ext); }
-      else if (labelTokens.length === bestLen) bestExt.push(ext);
-    }
-    if (bestExt.length === 0) return null;
-    if (ownedWhole.length > 0) return { kind: "ambiguous", owned: ownedWhole.map((o) => o.task), external: bestExt };
+    const rawOwned = [...this.tasks.values()]
+      .map((t) => { const lt = tokens(t.label); return { task: t, len: lt.length, spans: spansOf(said, lt) }; })
+      .filter((o) => o.spans.length > 0);
+    const rawExt = this.externalTasks
+      .map((ext) => { const lt = tokens(ext.label); return { ext, len: lt.length, spans: spansOf(said, lt) }; })
+      .filter((e) => e.spans.length > 0);
+    const ownedSpans = rawOwned.flatMap((o) => o.spans);
+    const extSpans = rawExt.flatMap((e) => e.spans);
+    const liveOwned = rawOwned.filter((o) => o.spans.some((sp) => !subsumedBy(sp, extSpans)));
+    const liveExt = rawExt.filter((e) => e.spans.some((sp) => !subsumedBy(sp, ownedSpans)));
+    const bestOwnedLen = liveOwned.reduce((m, o) => Math.max(m, o.len), 0);
+    const bestExtLen = liveExt.reduce((m, e) => Math.max(m, e.len), 0);
+    const bestOwned = liveOwned.filter((o) => o.len === bestOwnedLen).map((o) => o.task);
+    const bestExt = liveExt.filter((e) => e.len === bestExtLen).map((e) => e.ext);
+    if (bestOwned.length === 0 && bestExt.length === 0) return null;
+    if (bestOwned.length > 0 && bestExt.length > 0) return { kind: "ambiguous", owned: bestOwned, external: bestExt };
     if (bestExt.length === 1) return { kind: "external", task: bestExt[0] };
-    return { kind: "ambiguous", owned: [], external: bestExt };
+    if (bestExt.length > 1) return { kind: "ambiguous", owned: [], external: bestExt };
+    if (bestOwned.length === 1) return { kind: "owned", task: bestOwned[0] };
+    return { kind: "ambiguous", owned: bestOwned, external: [] };
   }
 
   private asking(): Task[] {
@@ -2867,18 +2874,19 @@ export class Call {
    * weather" splits into a protect span followed by an active cancel span).
    */
   private parseCancelSpans(said: string): {
-    kind: "active" | "protect";
+    kind: "active" | "protect" | "ignore";
     explicitDontOrKeep: boolean;
     explicitExcl: boolean;
     restOnly: boolean;
     parts: string[];
   }[] {
-    const spans: { kind: "active" | "protect"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] }[] = [];
+    const spans: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] }[] = [];
     for (const clause of this.splitClauses(said)) {
-      let cur: { kind: "active" | "protect"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] } | null = null;
+      let cur: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] } | null = null;
       for (const part of this.splitAnd(clause)) {
         const explicitDontOrKeep = isDontCancel(part) || KEEP_RUNNING.test(part);
         const targetOnlyProtect = KEEP_TARGET.test(part) || EXCLUDE_TASK.test(part);
+        const speakMatch = !explicitDontOrKeep && !targetOnlyProtect ? STOP_SPEAKING_PART.exec(part) : null;
         if (explicitDontOrKeep || targetOnlyProtect) {
           cur = {
             kind: "protect",
@@ -2888,15 +2896,26 @@ export class Call {
             parts: [part],
           };
           spans.push(cur);
-        } else if (STOP_SPEAKING_PART.test(part)) {
-          // Stop-speaking requests ("stop talking about X") neither authorize cancellation nor score X as a cancel target.
-          cur = null;
-        } else if (cur == null || (cur.kind === "protect" && CANCEL_VERB_START.test(part))) {
+        } else if (speakMatch != null) {
+          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") out of active cancel scope, while splitting out an explicit cancel command after "then/just/please/now/so".
+          const tail = part.slice(speakMatch.index + speakMatch[0].length);
+          const split = SPLIT_AFTER_SPEAKING.exec(tail);
+          if (split != null) {
+            const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
+            const after = tail.slice(split.index + split[0].length).trim();
+            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [before] });
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [after] };
+            spans.push(cur);
+          } else {
+            cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
+            spans.push(cur);
+          }
+        } else if (cur == null || ((cur.kind === "protect" || cur.kind === "ignore") && CANCEL_VERB_START.test(part))) {
           cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
           spans.push(cur);
         } else {
           cur.parts.push(part);
-          if (KEEP_THE_REST.test(part)) cur.restOnly = true;
+          if (cur.kind === "protect" && KEEP_THE_REST.test(part)) cur.restOnly = true;
         }
       }
     }

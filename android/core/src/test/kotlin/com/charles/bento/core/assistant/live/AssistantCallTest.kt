@@ -4907,15 +4907,36 @@ class AssistantCallTest {
         val msg11 = transport.responses()[15].message()
         assertTrue("\"C build\"" in msg11 && "\"C++ build rollout\"" !in msg11, msg11)
 
-        // Detached "Email" subsumed inside owned "Landlord email" must not hijack follow-up.
+        // Detached "Email" subsumed inside owned "Landlord email" queues behind the active owned run instead of hijacking or starting a fresh run.
         Live.turn(transport, "Draft an email to the landlord")
         transport.push(Live.call("c12", args = mapOf("label" to "Landlord email")))
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 17 }
         assertEquals(3, asked.size)
+        val landlordTaskId = asked[2].taskId
         Live.turn(transport, "Make the landlord email shorter")
         transport.push(Live.call("c13", args = mapOf("continue_task" to "Revision")))
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 18 }
-        assertEquals(4, asked.size, "detached 'Email' subsumed inside owned 'Landlord email' must not hijack")
+        assertEquals(3, asked.size, "follow-up to active owned 'Landlord email' must queue instead of starting a fresh run")
+        gate.complete("Done.")
+        withTimeout(5_000) { while (asked.size < 4) delay(20) }
+        assertEquals(landlordTaskId, asked[3].taskId, "queued follow-up must keep original Landlord email taskId")
+        assertTrue(asked[3].followUp, "queued follow-up must run with followUp=true")
+
+        // Symmetric span subsumption: owned "Note" nested inside detached "Landlord note" directs directly to "Landlord note", while a separate mention stays ambiguous.
+        call.note("Landlord note", "Drafted.", inHistory = true, id = "call-1-10", active = false, request = "Write landlord note")
+        Live.turn(transport, "Draft a quick note")
+        transport.push(Live.call("c14", args = mapOf("label" to "Note")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 19 }
+        Live.turn(transport, "Make the landlord note shorter")
+        transport.push(Live.call("c15", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 20 }
+        val msg15 = transport.responses().first { it.id() == "c15" }.message()
+        assertTrue("\"Landlord note\"" in msg15 && "is ambiguous" !in msg15, msg15)
+        Live.turn(transport, "For the note, make the landlord note shorter")
+        transport.push(Live.call("c16", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 21 }
+        val msg16 = transport.responses().first { it.id() == "c16" }.message()
+        assertTrue("is ambiguous" in msg16 && "\"Note\"" in msg16 && "\"Landlord note\"" in msg16, msg16)
         call.stop()
     }
 }

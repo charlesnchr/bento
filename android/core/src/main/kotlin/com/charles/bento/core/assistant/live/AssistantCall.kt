@@ -1493,9 +1493,9 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val byExtWhole = findWholeLabelExternal(request.task)
-                        if (byExtWhole != null) {
-                            target = byExtWhole
+                        val byWhole = findWholeLabelTarget(request.task)
+                        if (byWhole != null) {
+                            target = byWhole
                         } else {
                             val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
                             val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
@@ -1686,14 +1686,14 @@ class AssistantCall(
     }
 
     /**
-     * Matches detached tasks whose entire label appears contiguously in [ref] (preserving meaningful symbols
-     * such as `C++`), ignoring detached spans subsumed inside a longer owned label ("Email" inside "Landlord email")
-     * and returning ambiguous when a disjoint owned label also matches or multiple detached labels tie.
+     * Matches owned and detached tasks whose entire label appears contiguously in [ref] (preserving meaningful
+     * symbols such as `C++`), dropping spans strictly contained inside a longer match from the other side
+     * ("Email" inside "Landlord email" in either direction) and returning ambiguous on disjoint or tied matches.
      */
-    private fun findWholeLabelExternal(ref: String): Target? {
+    private fun findWholeLabelTarget(ref: String): Target? {
         if (externalTasks.isEmpty()) return null
         fun tokens(s: String) = s.lowercase().replace('’', '\'')
-            .split(Regex("[\\s,;:!?()\\[\\]{}\"“”`]+"))
+            .split(Regex("(?U)[\\s,;:!?()\\[\\]{}\"“”`]+"))
             .map { it.trim('.', '\'', '’').removeSuffix("'s") }
             .filter { it.isNotEmpty() }
         fun spansOf(haystack: List<String>, needle: List<String>): List<IntRange> {
@@ -1704,28 +1704,36 @@ class AssistantCall(
             }
             return out
         }
+        fun subsumedBy(sp: IntRange, others: List<IntRange>) =
+            others.any { osp -> osp.first <= sp.first && sp.last <= osp.last && (osp.last - osp.first) > (sp.last - sp.first) }
         val said = tokens(ref)
         if (said.isEmpty()) return null
-        val ownedWhole = tasks.values.mapNotNull { t ->
-            val spans = spansOf(said, tokens(t.label))
-            if (spans.isNotEmpty()) t to spans else null
+        val rawOwned = tasks.values.mapNotNull { t ->
+            val lt = tokens(t.label)
+            val spans = spansOf(said, lt)
+            if (spans.isNotEmpty()) Triple(t, lt.size, spans) else null
         }
-        val ownedSpans = ownedWhole.flatMap { it.second }
-        var bestLen = 0
-        val bestExt = ArrayList<String>()
-        for ((label, _) in externalTasks.values) {
-            val labelTokens = tokens(label)
-            val spans = spansOf(said, labelTokens).filter { sp ->
-                ownedSpans.none { osp -> osp.first <= sp.first && sp.last <= osp.last && (osp.last - osp.first) > (sp.last - sp.first) }
-            }
-            if (spans.isEmpty()) continue
-            if (labelTokens.size > bestLen) { bestLen = labelTokens.size; bestExt.clear(); bestExt.add(label) }
-            else if (labelTokens.size == bestLen) bestExt.add(label)
+        val rawExt = externalTasks.values.mapNotNull { (label, _) ->
+            val lt = tokens(label)
+            val spans = spansOf(said, lt)
+            if (spans.isNotEmpty()) Triple(label, lt.size, spans) else null
         }
-        if (bestExt.isEmpty()) return null
-        if (ownedWhole.isNotEmpty()) return Target.Ambiguous(ownedWhole.map { it.first }, bestExt)
-        if (bestExt.size == 1) return Target.External(bestExt.single())
-        return Target.Ambiguous(emptyList(), bestExt)
+        val ownedSpans = rawOwned.flatMap { it.third }
+        val extSpans = rawExt.flatMap { it.third }
+        val liveOwned = rawOwned.filter { o -> o.third.any { !subsumedBy(it, extSpans) } }
+        val liveExt = rawExt.filter { e -> e.third.any { !subsumedBy(it, ownedSpans) } }
+        val bestOwnedLen = liveOwned.maxOfOrNull { it.second } ?: 0
+        val bestExtLen = liveExt.maxOfOrNull { it.second } ?: 0
+        val bestOwned = liveOwned.filter { it.second == bestOwnedLen }.map { it.first }
+        val bestExt = liveExt.filter { it.second == bestExtLen }.map { it.first }
+        return when {
+            bestOwned.isEmpty() && bestExt.isEmpty() -> null
+            bestOwned.isNotEmpty() && bestExt.isNotEmpty() -> Target.Ambiguous(bestOwned, bestExt)
+            bestExt.size == 1 -> Target.External(bestExt.single())
+            bestExt.size > 1 -> Target.Ambiguous(emptyList(), bestExt)
+            bestOwned.size == 1 -> Target.Owned(bestOwned.single())
+            else -> Target.Ambiguous(bestOwned, emptyList())
+        }
     }
 
     /**
