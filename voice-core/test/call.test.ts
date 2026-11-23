@@ -1179,6 +1179,18 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both London hotel bookings", "Find a London hotel, then book it in the morning", "London stay", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Find a London hotel and book it for two nights at the best rate", "London stay", "Cancel both London hotel bookings in progress", 1],
     ["Both cheap hotel bookings", "Find a cheap hotel and book a room in London", "London stay", "Cancel both cheap hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in NYC", "NYC stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "find a london hotel and book a room in paris", "paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "book a hotel in london and a flight to paris", "trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant with a table for two, then find a table at the Paris wedding venue and book it for Friday", "Paris wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a restaurant in London with a table for two and book it for Friday", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both London hotel bookings", "Book a flight to Paris, the London hotel closes early", "Paris flight", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, a cheap boutique hotel in London", "Euro trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London, no hotel", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, skip hotels", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, without hotel", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, hotel already sorted", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, the hotel later", "London flight", "Cancel both hotel bookings in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
