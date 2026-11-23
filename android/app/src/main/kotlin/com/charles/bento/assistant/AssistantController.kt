@@ -192,14 +192,14 @@ class AssistantController(
     /** The chat's main thread, once a message has been typed to it ([say]); null again when a call or another conversation takes over. */
     private var chat: CoreChat? = null
     private var chatJob: Job? = null
-    private data class DetachedNote(val label: String, val text: String, val failed: Boolean)
+    private data class DetachedNote(val id: String, val label: String, val text: String, val failed: Boolean)
 
     /** Messages typed while the chat's core was loading. */
     private val typedEarly = ArrayList<String>()
     /** Detached voice-call results that arrived while the chat's core was loading, replayed into CoreChat as notes. */
     private val notedEarly = ArrayList<DetachedNote>()
-    /** Detached voice-call results that arrived before typed chat started: already in history recap, registered on chat startup so routing knows their labels and questions. */
-    private val detachedBeforeChat = ArrayList<DetachedNote>()
+    /** Detached voice-call results in this conversation: kept until leaving the conversation so every CoreChat startup registers their labels and questions. */
+    private val conversationDetached = ArrayList<DetachedNote>()
     /** The row Gemini's words of one of the core's transcript lines go on. */
     private var chatLine: Pair<Int, String>? = null
     /** The voice core's bundle couldn't be read: typed messages go straight to Hermes. */
@@ -275,7 +275,7 @@ class AssistantController(
     fun newChat() {
         if (_state.value.busy || call != null) return
         conversationEpoch++
-        detachedBeforeChat.clear()
+        conversationDetached.clear()
         endChat()
         prefs.hermesSession.value = ""
         loadedSession = null
@@ -291,7 +291,7 @@ class AssistantController(
         // Cancel the server-owned task scope synchronously first so any tool run already queued on Main never starts against a new server.
         serverScope.cancel()
         serverScope = newServerScope()
-        detachedBeforeChat.clear()
+        conversationDetached.clear()
         endCall()
         endChat()
         for (job in taskJobs.values.toList()) job.cancel()
@@ -331,7 +331,7 @@ class AssistantController(
         if (_state.value.busy || call != null) return
         if (activeTaskForSession(id) != null) return
         conversationEpoch++
-        detachedBeforeChat.clear()
+        conversationDetached.clear()
         endChat()
         prefs.hermesSession.value = id
         set { s -> s.copy(sessionId = id, messages = emptyList(), title = null, error = null, tasks = s.tasks.filter { it.detached && it.active }) }
@@ -504,6 +504,7 @@ class AssistantController(
      */
     private fun say(message: String) {
         val history = callHistory(_state.value.messages)
+        val preChatNotes = conversationDetached.toList()
         set { it.copy(error = null) }
         messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
         chatLine = null
@@ -526,9 +527,8 @@ class AssistantController(
             c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
             chat = c
             c.start()
-            for (n in detachedBeforeChat) c.note(n.label, n.text, n.failed, inHistory = true)
-            detachedBeforeChat.clear()
-            for (n in notedEarly) c.note(n.label, n.text, n.failed)
+            for (n in preChatNotes) c.note(n.label, n.text, n.failed, inHistory = true, id = n.id)
+            for (n in notedEarly) c.note(n.label, n.text, n.failed, id = n.id)
             notedEarly.clear()
             for (typed in typedEarly) c.say(typed)
             typedEarly.clear()
@@ -568,7 +568,6 @@ class AssistantController(
         val typed = typedEarly.joinToString("\n\n")
         typedEarly.clear()
         notedEarly.clear()
-        detachedBeforeChat.clear()
         set { it.copy(thinking = false, error = why) }
         if (typed.isNotEmpty() && !_state.value.working) {
             turnJob = scope.launch { runTurn(typed, TYPED_INSTRUCTIONS + callContext(_state.value.messages), null) }
@@ -1089,14 +1088,14 @@ class AssistantController(
                 val noteText = if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
                 if (noteText.isNotBlank()) {
                     val failed = status == "failed" && turn.answer.isBlank()
+                    val note = DetachedNote(uiId, label, noteText, failed)
+                    conversationDetached.removeAll { it.id == uiId }
+                    conversationDetached.add(note)
+                    if (conversationDetached.size > 20) conversationDetached.removeAt(0)
                     val openChat = chat
                     when {
-                        openChat != null -> openChat.note(label, noteText, failed)
-                        chatJob != null -> notedEarly.add(DetachedNote(label, noteText, failed))
-                        else -> {
-                            detachedBeforeChat.add(DetachedNote(label, noteText, failed))
-                            if (detachedBeforeChat.size > 20) detachedBeforeChat.removeAt(0)
-                        }
+                        openChat != null -> openChat.note(label, noteText, failed, id = uiId)
+                        chatJob != null -> notedEarly.add(note)
                     }
                 }
             }

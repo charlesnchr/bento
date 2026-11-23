@@ -302,11 +302,35 @@ class CoreChatTest {
             ),
         ) { call -> asked2.add(call); ToolReply("Should not run") }
         c2.start()
-        c2.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true)
+        c2.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true, id = "call-1-1")
         c2.say("Yes, book it")
         until("inHistory Continue it reply") { heard2.said() == listOf("Open Alchemist table's reply and tap Continue it.") }
         assertEquals(0, asked2.size, "pre-chat detached question must block opening a blank Hermes session")
         assertTrue(model2.texts(0).none { it.startsWith("<bento_note>") }, model2.texts(0).toString())
         c2.stop()
+
+        // 3. Shared label between owned and detached task refuses as ambiguous, and a model-supplied label on a bare answer still refuses.
+        val model3 = Scripted(
+            calls("ask_hermes", """{"label":"Dinner booking"}"""),
+            calls("ask_hermes", """{"continue_task":"Dinner booking"}"""),
+            words("Which Dinner booking did you mean?"),
+            calls("ask_hermes", """{"label":"Alchemist table"}"""),
+            words("Tap Continue it on Alchemist's reply."),
+        )
+        val heard3 = Heard()
+        val asked3 = CopyOnWriteArrayList<HermesCall>()
+        val c3 = chat(model3, heard3) { call -> asked3.add(call); ToolReply("Table at Noma at eight. Shall I book it?") }
+        c3.start()
+        c3.say("Book Noma for dinner")
+        until("owned Dinner booking question") { c3.questions.value == mapOf("1" to "Shall I book it?") }
+        c3.note("Dinner booking", "Table at Alchemist at nine. Shall I book it?", id = "call-2-1")
+        delay(100)
+        c3.say("Yes, book Alchemist")
+        until("ambiguous shared label reply") { heard3.said().size == 1 }
+        assertEquals(1, asked3.size, "shared label must not misroute to owned Noma session")
+        c3.say("Yes, book it")
+        until("label-supplied bare answer reply") { heard3.said().size == 2 }
+        assertEquals(1, asked3.size, "model-supplied label must not bypass bare-answer guard")
+        c3.stop()
     }
 }

@@ -526,3 +526,37 @@ test("a detached result registered with inHistory guards bare and named answers 
   assert.match(refusal, /Alchemist table/);
   assert.match(refusal, /Continue it/);
 });
+
+test("shared label between owned and detached task is refused as ambiguous instead of misrouting", () => {
+  const s = chat();
+  s.type("Book Noma for dinner");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.complete("There is a table at eight at Noma. Shall I book it?");
+  // A detached voice task arrives with the exact same label.
+  s.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "There is a table at nine at Alchemist. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes", { continue_task: "Dinner booking" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "ambiguous shared label must not dispatch to owned Noma session");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Dinner booking" is ambiguous'), refusal);
+  assert.match(refusal, /Continue it/);
+});
+
+test("two detached tasks with the same label keep both pending questions and a model-supplied label cannot bypass the bare-answer guard", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "There is a table at nine at Alchemist. Shall I book it?" });
+  s.push({ type: "note", id: "call-2-1", label: "Dinner booking", text: "Confirmed your lunch reservation." });
+  s.advance(0.1);
+  s.type("Yes, book it");
+  // Model supplies a label instead of leaving it blank: must still be blocked by the detached question guard.
+  s.calls("ask_hermes", { label: "Alchemist table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 0, "second same-label detached note must not erase the first question and label must not bypass the guard");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed:"), refusal);
+  assert.match(refusal, /Dinner booking/);
+  assert.match(refusal, /Continue it/);
+});

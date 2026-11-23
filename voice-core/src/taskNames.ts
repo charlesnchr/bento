@@ -155,6 +155,21 @@ function forms(whole: string): string[] {
   return out.length > 0 ? out : [whole];
 }
 
+/** Keys whose task name matches [ref] exactly (or word-for-word after trimming "the"/"task"/"one"). */
+export function exactMatches(ref: string, tasks: Map<string, [string, string]>): string[] {
+  const whole = norm(ref);
+  if (whole.length === 0) return [];
+  const entries = [...tasks.entries()];
+  for (const r of forms(whole)) {
+    const exact = entries.filter(([, v]) => norm(v[0]) === r).map(([k]) => k);
+    if (exact.length > 0) return exact;
+    const b = bare(r);
+    const loose = entries.filter(([, v]) => sameWords(bare(v[0]), b)).map(([k]) => k);
+    if (loose.length > 0) return loose;
+  }
+  return [];
+}
+
 /**
  * The task the model means by [ref] among (name, request) pairs by key: its name, more or less
  * as given, or the one whose name and request share the most distinctive words with it.
@@ -163,14 +178,10 @@ function forms(whole: string): string[] {
 export function find(ref: string, tasks: Map<string, [string, string]>): string | null {
   const whole = norm(ref);
   if (whole.length === 0) return null;
+  const exact = exactMatches(ref, tasks);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
   const entries = [...tasks.entries()];
-  for (const r of forms(whole)) {
-    const exact = entries.find(([, v]) => norm(v[0]) === r);
-    if (exact) return exact[0];
-    const b = bare(r);
-    const loose = entries.find(([, v]) => sameWords(bare(v[0]), b));
-    if (loose) return loose[0];
-  }
   const all = forms(whole);
   const r = all[all.length - 1];
   if (r.length === 0) return null;

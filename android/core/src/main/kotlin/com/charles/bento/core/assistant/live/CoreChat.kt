@@ -121,9 +121,10 @@ class CoreChat(
     /** What the user typed. */
     fun say(text: String) = post { push(event("say") { put("text", text) }) }
 
-    /** A task reply that landed outside this chat (e.g. a detached voice-call task): added to model context without triggering a turn. With [inHistory], the text is already in the startup recap. */
-    fun note(label: String, text: String, failed: Boolean = false, inHistory: Boolean = false) = post {
+    /** A task reply that landed outside this chat (e.g. a detached voice-call task): added to model context without triggering a turn. With [inHistory], the text is already in the startup recap; [id] identifies the task across updates and restarts. */
+    fun note(label: String, text: String, failed: Boolean = false, inHistory: Boolean = false, id: String? = null) = post {
         push(event("note") {
+            if (!id.isNullOrBlank()) put("id", id)
             put("label", label)
             put("text", text)
             if (failed) put("failed", true)

@@ -336,7 +336,7 @@ export class Call {
   private asks = 0;
   private readonly answerFor: [number, string[], { label: string; asked: string }[]][] = [];
   /** External detached tasks (via `note`): they can't be continued here, but still guard against fuzzy-matching or misrouting answers. */
-  private externalTasks: { key: string; label: string; asked: string | null; askedAt: number; askedTurn: number }[] = [];
+  private externalTasks: { key: string; id: string | null; label: string; asked: string | null; askedAt: number; askedTurn: number }[] = [];
   private nextExternal = 1;
   /** Tool runs in flight: a Hermes task's request, or a host tool's call. */
   private readonly jobs = new Map<string, { task: Task; run: Run } | { hostCall: string; name: string }>();
@@ -554,7 +554,7 @@ export class Call {
       case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
-      case "note": return this.note(e.label, e.text, e.failed === true, e.inHistory === true);
+      case "note": return this.note(e.label, e.text, e.failed === true, e.inHistory === true, typeof e.id === "string" && e.id.trim().length > 0 ? e.id.trim() : null);
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
@@ -1935,11 +1935,20 @@ export class Call {
         `Tell the user to open "${ext.label}"'s reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.`, false);
       return;
     }
+    if (target?.kind === "ambiguous") {
+      const ownedNames = target.owned.map((t) => `"${t.label}"`).join(", ");
+      const extNames = target.external.map((e) => `"${e.label}"`).join(", ");
+      this.respond(d.id, `Not executed: "${named}" is ambiguous because both this chat (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
+        "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply and tap Continue it. No action was run.", false);
+      return;
+    }
     const found = target?.kind === "owned" ? target.task : null;
-    const { tasks: answering, external: externalAnswering } =
-      named == null && label == null && TaskNames.isAnswer(request.task)
-        ? this.answering(d)
-        : { tasks: [], external: [] };
+    const rawAnswering = named == null && TaskNames.isAnswer(request.task)
+      ? this.answering(d)
+      : { tasks: [], external: [] };
+    // A model-supplied label must never bypass the bare-answer guard when an external detached question is pending.
+    const externalAnswering = rawAnswering.external;
+    const answering = externalAnswering.length > 0 || label == null ? rawAnswering.tasks : [];
     if (found == null && (answering.length > 1 || (answering.length > 0 && externalAnswering.length > 0))) {
       const parts = [
         ...answering.map((t) => `"${t.label}" asked: ${t.asked}`),
@@ -1960,12 +1969,22 @@ export class Call {
         "Tell the user to open that reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.", false);
       return;
     }
+    if (found == null && named == null && label != null && TaskNames.isAnswer(request.task)) {
+      const labelTarget = this.findTarget(label, false);
+      if (labelTarget?.kind === "external") {
+        const ext = labelTarget.task;
+        this.respond(d.id, `Not executed: "${ext.label}" ran in an earlier call, so this chat cannot continue that session directly. ` +
+          `Tell the user to open "${ext.label}"'s reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.`, false);
+        return;
+      }
+    }
     const answered = answering.length === 1 ? answering[0] : null;
     const task = found ?? answered;
     const run = new Run(d.id, request, this.session, d.turn, task != null);
     if (task != null) this.followUp(task, run, found == null);
     else {
-      const name = TaskNames.unique(label ?? TaskNames.fromRequest(request.task), request.task, [...this.tasks.values()].map((t) => t.label));
+      const taken = [...this.tasks.values()].map((t) => t.label).concat(this.externalTasks.map((e) => e.label));
+      const name = TaskNames.unique(label ?? TaskNames.fromRequest(request.task), request.task, taken);
       const task = new Task(String(this.nextTask++), name, run);
       task.agent = agent;
       task.project = project;
@@ -1978,23 +1997,63 @@ export class Call {
     return target?.kind === "owned" ? target.task : null;
   }
 
-  private findTarget(ref: string, byRequest = true): { kind: "owned"; task: Task } | { kind: "external"; task: { key: string; label: string; asked: string | null; askedAt: number; askedTurn: number } } | null {
+  private findTarget(
+    ref: string,
+    byRequest = true,
+  ):
+    | { kind: "owned"; task: Task }
+    | { kind: "external"; task: { key: string; id: string | null; label: string; asked: string | null; askedAt: number; askedTurn: number } }
+    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; asked: string | null; askedAt: number; askedTurn: number }[] }
+    | null {
     const trimmed = ref.trim();
     if (trimmed.length > 0 && /^\d+$/.test(trimmed)) {
       const task = this.tasks.get(trimmed);
       return task ? { kind: "owned", task } : null;
     }
-    const pairs = new Map<string, [string, string]>();
-    for (const [key, t] of this.tasks) pairs.set(key, [t.label, byRequest ? t.request : ""]);
-    for (const ext of this.externalTasks) pairs.set(ext.key, [ext.label, ""]);
-    const key = TaskNames.find(ref, pairs);
-    if (key == null) return null;
-    if (key.startsWith("ext:")) {
-      const ext = this.externalTasks.find((e) => e.key === key);
-      return ext ? { kind: "external", task: ext } : null;
+    const ownedPairs = new Map<string, [string, string]>();
+    for (const [key, t] of this.tasks) ownedPairs.set(key, [t.label, byRequest ? t.request : ""]);
+    const extPairs = new Map<string, [string, string]>();
+    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, ""]);
+    const combined = new Map<string, [string, string]>([...ownedPairs, ...extPairs]);
+
+    const exact = TaskNames.exactMatches(ref, combined);
+    if (exact.length === 1) {
+      const k = exact[0];
+      if (k.startsWith("ext:")) {
+        const ext = this.externalTasks.find((e) => e.key === k);
+        return ext ? { kind: "external", task: ext } : null;
+      }
+      const task = this.tasks.get(k);
+      return task ? { kind: "owned", task } : null;
     }
-    const task = this.tasks.get(key);
-    return task ? { kind: "owned", task } : null;
+    if (exact.length > 1) {
+      const owned = exact.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
+      const external = exact.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
+      if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
+      if (owned.length > 0 && external.length > 0) return { kind: "ambiguous", owned, external };
+      return null;
+    }
+
+    const key = TaskNames.find(ref, combined);
+    if (key != null) {
+      if (key.startsWith("ext:")) {
+        const ext = this.externalTasks.find((e) => e.key === key);
+        return ext ? { kind: "external", task: ext } : null;
+      }
+      const task = this.tasks.get(key);
+      return task ? { kind: "owned", task } : null;
+    }
+
+    // Combined fuzzy lookup returned null: check whether owned and external tasks tied (or multiple externals tied).
+    const ownedKey = TaskNames.find(ref, ownedPairs);
+    const extKey = TaskNames.find(ref, extPairs);
+    const extHits = extKey != null
+      ? this.externalTasks.filter((e) => e.key === extKey)
+      : this.externalTasks.filter((e) => TaskNames.find(ref, new Map([[e.key, [e.label, ""]]])) != null);
+    const ownedHit = ownedKey != null ? this.tasks.get(ownedKey) ?? null : null;
+    if (ownedHit != null && extHits.length > 0) return { kind: "ambiguous", owned: [ownedHit], external: extHits };
+    if (ownedHit == null && extHits.length > 0) return { kind: "external", task: extHits[extHits.length - 1] };
+    return null;
   }
 
   private asking(): Task[] {
@@ -2008,7 +2067,7 @@ export class Call {
     const owned = this.asking();
     const latestOwned = owned[0]?.askedAt ?? 0;
     const external = this.externalTasks
-      .filter((q): q is { key: string; label: string; asked: string; askedAt: number; askedTurn: number } => q.asked != null && q.askedAt > 0 && q.askedAt >= latestOwned)
+      .filter((q): q is { key: string; id: string | null; label: string; asked: string; askedAt: number; askedTurn: number } => q.asked != null && q.askedAt > 0 && q.askedAt >= latestOwned)
       .map(({ label, asked }) => ({ label, asked }));
     this.answerFor.push([at, owned.map((t) => t.id), external]);
     if (this.answerFor.length > 8) this.answerFor.shift();
@@ -2221,7 +2280,7 @@ export class Call {
   }
 
   /** A result that arrived outside this call/chat (e.g. a detached voice task): kept in history and fenced into text chat context. */
-  private note(label: string, text: string, failed: boolean, inHistory = false): void {
+  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null): void {
     if (!this.active) return;
     if (!inHistory && !failed && text.trim().length > 0) {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
@@ -2231,11 +2290,14 @@ export class Call {
     if (this.textLine) {
       const cleanLabel = label.trim();
       if (cleanLabel.length > 0) {
-        const lower = cleanLabel.toLowerCase();
-        const existing = this.externalTasks.findIndex((e) => e.label.toLowerCase() === lower);
-        if (existing >= 0) this.externalTasks.splice(existing, 1);
+        // Deduplicate only by stable external id; two separate detached tasks with the same label both remain tracked.
+        if (id != null) {
+          const existing = this.externalTasks.findIndex((e) => e.id === id);
+          if (existing >= 0) this.externalTasks.splice(existing, 1);
+        }
         this.externalTasks.push({
           key: `ext:${this.nextExternal++}`,
+          id,
           label: cleanLabel,
           asked,
           askedAt: asked != null ? ++this.asks : 0,
