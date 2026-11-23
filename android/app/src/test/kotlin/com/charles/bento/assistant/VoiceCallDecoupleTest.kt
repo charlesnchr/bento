@@ -136,19 +136,25 @@ class VoiceCallDecoupleTest {
         // Hang up drops completed rows from UI, but the board retains session identity, original display request, and bounded head+tail history.
         val longOriginal = "Find somewhere for dinner " + "x".repeat(1100)
         board.accumulateRequest(uiId, longOriginal)
+        // Follow-up 2: seeding an already-seeded board must be a no-op so it never wipes earlier follow-ups.
+        board.seedRequest(uiId, longOriginal)
         val merged = board.accumulateRequest(uiId, "Book that Alchemist option")
         assertTrue(merged.length <= 1000)
         assertTrue(merged.contains("Find somewhere for dinner"), "head of original prompt must survive cap")
         assertTrue(merged.contains("Book that Alchemist option"), "latest follow-up must survive cap")
         assertEquals(longOriginal, board.firstRequest(uiId, "Yes, book it"))
+        // Follow-up 3: re-seeding with full original prompt must NOT displace "Book that Alchemist option" before "Yes, book it".
+        board.seedRequest(uiId, longOriginal)
+        val third = board.accumulateRequest(uiId, "Yes, book it")
+        assertTrue(third.length <= 1000)
+        assertTrue(third.contains("Find somewhere for dinner"), "head of original prompt must survive 3rd follow-up")
+        assertTrue(third.contains("Book that Alchemist option"), "Alchemist follow-up must survive 3rd follow-up")
+        assertTrue(third.contains("Yes, book it"), "3rd follow-up must survive cap")
         board.detach()
         state = AssistantController.endCallState(state, error = null)
         assertNull(board.find(uiId))
         assertEquals("sid-original", board.sessionId(uiId))
-        assertEquals(merged, board.requestHistory(uiId, "fallback"))
-        val afterFollowUp = board.accumulateRequest(uiId, "Yes, book it")
-        assertTrue(afterFollowUp.contains("Book that Alchemist option"))
-        assertTrue(afterFollowUp.contains("Yes, book it"))
+        assertEquals(third, board.requestHistory(uiId, "fallback"))
     }
 
     @Test fun activeTaskForSessionMatchesRunningCallOrDetachedTasksOnly() {

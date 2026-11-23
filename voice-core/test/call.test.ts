@@ -554,3 +554,25 @@ test("cancelling a task that failed: 'already finished' as before, 'already fail
     assert.ok(message.includes(supervise ? "has already failed" : "is already finished"), message);
   }
 });
+
+test("a voice call with a registered detached task refuses cancel_task for the detached task instead of cancelling its own run", () => {
+  const s = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s.advance(0.1);
+  // Detached task from an earlier call registered via note.
+  s.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Book a table at Alchemist", inHistory: true, active: true, request: "Book a table at Alchemist" });
+  s.advance(0.1);
+  s.turn("Book a table at Noma");
+  s.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  s.advance(0.3);
+  // User asks to cancel Alchemist; Gemini calls cancel_task("Alchemist table") or cancel_task("Noma table").
+  s.turn("Cancel the Alchemist table");
+  s.toolCall("x1", "cancel_task", { task: "Alchemist table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "cancel_task('Alchemist table') must not fuzzy-match and cancel owned Noma table");
+  const r1 = s.responses().find((r) => r.id === "x1").response;
+  assert.equal(r1.status, "not_executed");
+  assert.ok(r1.message.includes("ran in an earlier call"), r1.message);
+  s.toolCall("x2", "cancel_task", { task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "cancel_task('Noma table') when user said 'Cancel the Alchemist table' must refuse");
+});

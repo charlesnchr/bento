@@ -218,6 +218,37 @@ class CoreCall(
 
     override fun progress(taskId: String, text: String) = post { push(event("task.progress") { put("task", taskId); put("text", text) }) }
 
+    override fun note(
+        label: String,
+        text: String,
+        failed: Boolean,
+        inHistory: Boolean,
+        id: String?,
+        turnsAgo: Int,
+        active: Boolean,
+        request: String?,
+    ) = post {
+        push(event("note") {
+            put("label", label)
+            put("text", text)
+            if (failed) put("failed", true)
+            if (inHistory) put("inHistory", true)
+            if (id != null) put("id", id)
+            if (turnsAgo > 0) put("turnsAgo", turnsAgo)
+            if (active) put("active", true)
+            if (!request.isNullOrBlank()) put("request", request)
+        })
+    }
+
+    override fun removeNote(id: String) = post {
+        push(event("note") {
+            put("id", id)
+            put("label", "")
+            put("text", "")
+            put("remove", true)
+        })
+    }
+
     override fun cancelTask(taskId: String) = post { push(event("cancelTask") { put("task", taskId) }) }
 
     override fun stop(message: String?) = post {

@@ -1342,3 +1342,73 @@ test("long detached request preserves latest follow-up across 1000-char cap, and
   }
   assert.ok(!s3.commands.some((c) => c.type === "tool.cancel"), "repeated bare 'Yes' turns after cross-session refusal must not cancel Noma");
 });
+
+test("bare 'Keep Noma' protects Noma, shared-word exclusions resolve to the named task, and incidental 'all/every/not/keep' phrases stay safe", () => {
+  // 1) "Keep Noma" and "Cancel everything but keep Noma" protect Noma.
+  for (const phrase of ["Keep Noma", "Cancel everything but keep Noma"]) {
+    const s = chat();
+    s.type("Book a table at Noma");
+    s.calls("ask_hermes", { label: "Noma table" });
+    s.advance(0.1);
+    s.type("Book a table at Alchemist");
+    s.calls("ask_hermes", { label: "Alchemist table" });
+    s.advance(0.1);
+    s.type(phrase);
+    s.calls("cancel_task", { task: "Noma table" });
+    s.advance(0.1);
+    assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, `must protect Noma on: ${phrase}`);
+  }
+
+  // 2) "Cancel the Alchemist table, not the Noma table" cancels Alchemist (shared "table" must not protect Alchemist) and protects Noma.
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Noma table" });
+  s2.advance(0.1);
+  s2.type("Book a table at Alchemist");
+  s2.calls("ask_hermes", { label: "Alchemist table" });
+  s2.advance(0.1);
+  s2.type("Cancel the Alchemist table, not the Noma table");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, "must protect Noma");
+  s2.calls("cancel_task", { task: "Alchemist table" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "must cancel Alchemist");
+
+  // 3) Incidental "that's all", "after all", "every option", "all your help" must not bypass target scoping to cancel Weather.
+  for (const phrase of [
+    "Cancel the Noma table, that's all",
+    "Cancel the Noma table after all",
+    "Cancel the Noma table, I tried every option",
+    "Cancel the Noma table, thanks for all your help",
+  ]) {
+    const s3 = chat();
+    s3.type("Book a table at Noma");
+    s3.calls("ask_hermes", { label: "Noma table" });
+    s3.advance(0.1);
+    s3.type("Check Copenhagen weather");
+    s3.calls("ask_hermes", { label: "Copenhagen weather" });
+    s3.advance(0.1);
+    s3.type(phrase);
+    s3.calls("cancel_task", { task: "Copenhagen weather" });
+    s3.advance(0.1);
+    assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 0, `must not cancel Weather on: ${phrase}`);
+  }
+
+  // 4) Non-task "Not now", "Not sure...", "keep looking for another place", and "let me continue on my own" still cancel Noma.
+  for (const phrase of [
+    "Not now, cancel the Noma table",
+    "Not sure what happened, cancel the Noma table",
+    "Cancel the Noma table, I'll keep looking for another place",
+    "Cancel the Noma table, let me continue on my own",
+  ]) {
+    const s4 = chat();
+    s4.type("Book a table at Noma");
+    s4.calls("ask_hermes", { label: "Noma table" });
+    s4.advance(0.1);
+    s4.type(phrase);
+    s4.calls("cancel_task", { task: "Noma table" });
+    s4.advance(0.1);
+    assert.ok(s4.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), `should cancel Noma on: ${phrase}`);
+  }
+});

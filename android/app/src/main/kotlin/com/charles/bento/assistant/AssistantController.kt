@@ -830,6 +830,19 @@ class AssistantController(
             call = c
             voiceBoundary = true
             c.start()
+            // Register detached tasks from earlier calls so cancel_task/continue_task in this call won't fuzzy-match them onto this call's runs.
+            val turnsNow = _state.value.messages.count { it.role == "user" }
+            val registeredIds = HashSet<String>()
+            for (n in conversationDetached) {
+                val age = (turnsNow - n.userTurnsAt).coerceAtLeast(0)
+                c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age, active = n.active, request = n.request.ifBlank { null })
+                registeredIds.add(n.id)
+            }
+            for (t in _state.value.tasks) {
+                if (t.detached && t.active && registeredIds.add(t.id)) {
+                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = t.request)
+                }
+            }
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
             // Which tasks wait for the user's answer is the call's to say: a question lapses there once the user talks past it.
             launch {
@@ -967,7 +980,7 @@ class AssistantController(
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = board.spoken)
         val known = board.find(uiId)
         val priorSid = (known?.sessionId ?: board.sessionId(uiId))?.takeIf { request.followUp }
-        if (known != null && known.request.isNotBlank()) board.accumulateRequest(uiId, known.request)
+        if (known != null && known.request.isNotBlank()) board.seedRequest(uiId, known.request)
         val combinedRequest = board.accumulateRequest(uiId, request.task)
         val displayRequest = known?.request?.takeIf { it.isNotBlank() } ?: board.firstRequest(uiId, request.task)
         val now = SystemClock.elapsedRealtime()
@@ -989,6 +1002,7 @@ class AssistantController(
                     openChat != null -> openChat.note(label, displayRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
                     chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(activeNote))
                 }
+                call?.note(label, displayRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
             }
         }
         val myJob = coroutineContext[Job]
@@ -1138,6 +1152,7 @@ class AssistantController(
                         openChat != null -> openChat.note(label, noteText, failed, id = uiId, request = requestText)
                         chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(note))
                     }
+                    call?.note(label, noteText, failed, inHistory = true, id = uiId, request = requestText)
                 } else {
                     conversationDetached.removeAll { it.id == uiId }
                     val openChat = chat
@@ -1145,8 +1160,12 @@ class AssistantController(
                         openChat != null -> openChat.removeNote(uiId)
                         chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Removed(uiId))
                     }
+                    call?.removeNote(uiId)
                 }
             }
+        } else if (board.detached) {
+            // An earlier-epoch detached task registered as active in a later call leaves that call once it finishes or cancels.
+            call?.removeNote(uiId)
         }
         return when {
             status == "cancelled" -> ToolReply("Cancelled. Completed actions were not undone.", failed = true)
@@ -1289,6 +1308,10 @@ internal class TaskBoard(
 
     fun firstRequest(uiId: String, fallback: String): String =
         firstRequests[uiId] ?: fallback
+
+    fun seedRequest(uiId: String, request: String) {
+        if (uiId !in taskRequests) accumulateRequest(uiId, request)
+    }
 
     fun accumulateRequest(uiId: String, request: String): String {
         val clean = request.trim()

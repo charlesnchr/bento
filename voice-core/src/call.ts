@@ -76,12 +76,15 @@ const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|co
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
 /** Clause-level phrasing that explicitly forbids cancelling (distinct from "Don't bother with..." or "Never mind"). */
 const DONT_CANCEL = /\b(?:don'?t|do\s+not|doesn'?t|never|not)\s+(?:\w+\s+){0,3}?(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
-/** Clause-level phrasing asking to keep or leave a task running (narrow enough not to misfire on "Let me be clear" or "leave the rest to me"). */
-const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+looking\s+(?:at|into|for)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
-/** Clause-level exclusion ("not the Noma one", "except Noma"). */
+/** Clause-level phrasing asking to keep or leave a task running (applies even without naming a task, e.g. "Keep it running", "Leave it alone"). */
+const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|(?!me\b|us\b)[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
+/** Clause-level "keep <task>" phrasing (protects a task only when the clause resolves to that task, never via the unnamed fallback). */
+const KEEP_TARGET = /\bkeep\b/i;
+/** Clause-level exclusion ("not the Noma one", "except Noma"): protects a task only when the clause resolves to that task. */
 const EXCLUDE_TASK = /^(?:not|except(?:\s+for)?)\b/i;
 const REFUSE_NO_CANCEL = /^(?:no|nope|nah)\b/i;
-const CANCEL_ALL_SCOPE = /\b(?:all|every(?:thing)?|both)\b/i;
+/** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
+const CANCEL_ALL_SCOPE = /\b(?:(?:cancel|stop|abort|kill|drop|end|clear)\s+(?:\w+\s+){0,2}?(?:all|both|everything)\b|(?:all|both|every)\s+(?:of\s+)?(?:them|the\s+tasks|tasks|runs|searches|bookings|requests|jobs)\b)/i;
 
 /** Merges request prompts within [max] characters, preserving both the original prompt head and the newest follow-up tail. */
 function mergeRequest(prev: string, next: string, max = 1000): string {
@@ -2445,39 +2448,37 @@ export class Call {
     }
     const rawAsked = !active && !failed ? TaskNames.question(text) : null;
     const asked = rawAsked != null && turnsAgo <= ANSWER_TURNS ? rawAsked : null;
-    if (this.textLine) {
-      const cleanLabel = label.trim();
-      if (cleanLabel.length > 0) {
-        // Deduplicate only by stable external id; preserve and accumulate the original request across follow-ups and completion updates.
-        let priorRequest = "";
-        if (id != null) {
-          const existing = this.externalTasks.findIndex((e) => e.id === id);
-          if (existing >= 0) {
-            priorRequest = this.externalTasks[existing].request;
-            this.externalTasks.splice(existing, 1);
-          }
+    const cleanLabel = label.trim();
+    if (cleanLabel.length > 0) {
+      // Deduplicate only by stable external id; preserve and accumulate the original request across follow-ups and completion updates (in both voice calls and typed chats).
+      let priorRequest = "";
+      if (id != null) {
+        const existing = this.externalTasks.findIndex((e) => e.id === id);
+        if (existing >= 0) {
+          priorRequest = this.externalTasks[existing].request;
+          this.externalTasks.splice(existing, 1);
         }
-        const incomingRequest = (request ?? (active ? text.trim() : "")).trim();
-        const savedRequest = mergeRequest(priorRequest, incomingRequest);
-        const savedSummary = active ? "" : (text.trim().split(/\n\s*\n/)[0] ?? "");
-        this.externalTasks.push({
-          key: `ext:${this.nextExternal++}`,
-          id,
-          label: cleanLabel,
-          request: savedRequest,
-          summary: savedSummary,
-          asked,
-          askedAt: asked != null ? ++this.asks : 0,
-          askedTurn: this.userTurns - turnsAgo,
-        });
-        if (this.externalTasks.length > MAX_TASKS) this.externalTasks.shift();
       }
-      if (!active && !inHistory) {
-        const extra = asked != null
-          ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
-          : "";
-        this.send(noteFrame(resultNote(label, text, null, failed) + extra), true);
-      }
+      const incomingRequest = (request ?? (active ? text.trim() : "")).trim();
+      const savedRequest = mergeRequest(priorRequest, incomingRequest);
+      const savedSummary = active ? "" : (text.trim().split(/\n\s*\n/)[0] ?? "");
+      this.externalTasks.push({
+        key: `ext:${this.nextExternal++}`,
+        id,
+        label: cleanLabel,
+        request: savedRequest,
+        summary: savedSummary,
+        asked,
+        askedAt: asked != null ? ++this.asks : 0,
+        askedTurn: this.userTurns - turnsAgo,
+      });
+      if (this.externalTasks.length > MAX_TASKS) this.externalTasks.shift();
+    }
+    if (this.textLine && !active && !inHistory) {
+      const extra = asked != null
+        ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
+        : "";
+      this.send(noteFrame(resultNote(label, text, null, failed) + extra), true);
     }
   }
 
@@ -2618,9 +2619,10 @@ export class Call {
       } else if (task.state === RUNNING && !this.allowCancel(task)) {
         const said = collapse(this.wordsAnswered);
         this.log("info", `cancel_task for "${task.label}" refused: the user said "${said}"`);
+        const askByName = this.textLine && AFFIRMATIVE_CANCEL.test(said.trim());
         message = this.textLine
           ? `Not executed: the user didn't ask to cancel "${task.label}". They wrote "${said}". Nothing was cancelled. If they may ` +
-            "have meant to cancel it, ask them to confirm, then call cancel_task again."
+            (askByName ? `have meant to cancel it, ask them to confirm by naming "${task.label}", then call cancel_task again.` : "have meant to cancel it, ask them to confirm, then call cancel_task again.")
           : `Not executed: the user didn't ask to cancel "${task.label}". They said "${said}", and "stop" or ` +
             "\"quiet\" only means stop talking. Nothing was cancelled: say nothing more now. If they did mean to cancel it, ask them " +
             "to confirm, then call cancel_task again.";
@@ -2643,8 +2645,8 @@ export class Call {
   }
 
   /**
-   * Splits [said] into clauses and reports whether any clause forbidding cancellation, keeping a
-   * task running, or excluding a task ("not Noma", "except Noma") applies to [task].
+   * Splits [said] into clauses and resolves whether any clause forbidding cancellation, keeping a
+   * task running, or excluding a task ("not Noma", "except Noma") targets [task].
    */
   private splitClauses(said: string): string[] {
     return said.split(/[.?!;]+|\s*,\s*|\s+\b(?:but|and|while|though|although)\b\s+|\s+(?=\bexcept\b)/i)
@@ -2652,21 +2654,49 @@ export class Call {
       .filter((c) => c.length > 0);
   }
 
+  private clauseScore(clause: string, label: string, extra: string): number {
+    const words = [...TaskNames.distinctive(clause)].filter((w) => !QUESTION_VERBS.has(w));
+    if (words.length === 0) return 0;
+    const labelWords = TaskNames.distinctive(label);
+    const extraWords = TaskNames.distinctive(extra);
+    let score = 0;
+    for (const w of words) {
+      if (labelWords.has(w)) score += 2;
+      else if (extraWords.has(w)) score += 1;
+    }
+    return score;
+  }
+
+  /** Resolves which task(s) [clause] names by highest non-verb word overlap across all owned and detached tasks. */
+  private clauseResolution(clause: string, task: Task): { namedThis: boolean; namedOther: boolean } {
+    const myScore = this.clauseScore(clause, task.label, task.latest + " " + task.request);
+    let otherBest = 0;
+    for (const other of this.tasks.values()) {
+      if (other.id === task.id) continue;
+      otherBest = Math.max(otherBest, this.clauseScore(clause, other.label, other.latest + " " + other.request));
+    }
+    for (const ext of this.externalTasks) {
+      otherBest = Math.max(otherBest, this.clauseScore(clause, ext.label, `${ext.request} ${ext.summary}`.trim()));
+    }
+    const best = Math.max(myScore, otherBest);
+    if (best === 0) return { namedThis: false, namedOther: false };
+    return { namedThis: myScore === best, namedOther: otherBest === best };
+  }
+
   private isProtectingClause(clause: string): boolean {
-    return DONT_CANCEL.test(clause) || KEEP_RUNNING.test(clause) || EXCLUDE_TASK.test(clause);
+    return DONT_CANCEL.test(clause) || KEEP_RUNNING.test(clause) || KEEP_TARGET.test(clause) || EXCLUDE_TASK.test(clause);
   }
 
   private protectsTask(said: string, task: Task): boolean {
     for (const clause of this.splitClauses(said)) {
-      if (!this.isProtectingClause(clause)) continue;
-      if (TaskNames.mentions(clause, task.label, task.latest + " " + task.request)) return true;
-      const namesOtherOwned = [...this.tasks.values()].some(
-        (other) => other.id !== task.id && TaskNames.mentions(clause, other.label, other.latest + " " + other.request),
-      );
-      const namesOtherExt = this.externalTasks.some(
-        (ext) => TaskNames.mentions(clause, ext.label, `${ext.request} ${ext.summary}`.trim()),
-      );
-      if (!namesOtherOwned && !namesOtherExt) return true;
+      const explicitDontOrKeep = DONT_CANCEL.test(clause) || KEEP_RUNNING.test(clause);
+      const targetOnlyProtect = KEEP_TARGET.test(clause) || EXCLUDE_TASK.test(clause);
+      if (!explicitDontOrKeep && !targetOnlyProtect) continue;
+      const { namedThis, namedOther } = this.clauseResolution(clause, task);
+      if (namedThis) return true;
+      // Only explicit "don't cancel / keep it running / leave it alone" falls back to protecting an unnamed task;
+      // bare "not ..." ("Not now, ...") or incidental "keep ..." ("I'll keep looking for another place") require naming the task.
+      if (explicitDontOrKeep && !namedOther) return true;
     }
     return false;
   }
@@ -2767,11 +2797,9 @@ export class Call {
       this.cancelRefusedTurn.set(task.id, answeredSeq);
       return false;
     }
-    const mentionsThis = activeText.length > 0 && TaskNames.mentions(activeText, task.label, task.latest + " " + task.request);
-    const mentionsOtherOwned = activeText.length > 0 && [...this.tasks.values()].some(
-      (other) => other.id !== task.id && TaskNames.mentions(activeText, other.label, other.latest + " " + other.request),
-    );
-    const targetsOnlyOther = !mentionsThis && mentionsOtherOwned && !CANCEL_ALL_SCOPE.test(activeText);
+    const activeRes = activeText.length > 0 ? this.clauseResolution(activeText, task) : { namedThis: false, namedOther: false };
+    const mentionsThis = activeRes.namedThis;
+    const targetsOnlyOther = !activeRes.namedThis && activeRes.namedOther && !CANCEL_ALL_SCOPE.test(activeText);
     if (activeText.length > 0 && !targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, mentionsThis)) {
       this.cancelDoubt = null;
       return true;
