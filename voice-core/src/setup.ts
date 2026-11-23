@@ -441,10 +441,15 @@ const CONTEXT_REFERRED_MISSING =
 const TYPED_CONTEXT_HEADER = "\n\nEarlier conversation for reference only, NOT approval or additional tasks:\n";
 type Spoken = { task: string; context: string; followUp: boolean; refersBack?: boolean };
 
+/** Escapes every fence-shaped `<tag...>` or unclosed `<tag` independently without crossing another `<`. */
+function escapeFence(text: string, tag: string): string {
+  const pattern = new RegExp("<(\\s*/?\\s*" + escapeRegex(tag) + "(?=[\\s/>]|$))([^<>]*)(>?)", "gi");
+  return text.replace(pattern, (_, name: string, rest: string, close: string) => `&lt;${name}${rest}${close ? "&gt;" : ""}`);
+}
+
 /** Prior conversation fenced in `<prior_conversation>` tags, or empty when there is none (unless refersBack needs clarification). */
 function priorSection(context: string, header: string, refersBack = false): string {
-  const tag = new RegExp("<\\s*/?\\s*" + escapeRegex(PRIOR_TAG) + "(?=[\\s/>])[^>]*>", "i");
-  const text = unfence(context, tag).trim();
+  const text = escapeFence(context, PRIOR_TAG).trim();
   if (text.length === 0) return refersBack ? CONTEXT_REFERRED_MISSING : "";
   return `${header}<${PRIOR_TAG}>\n${text}\n</${PRIOR_TAG}>`;
 }
