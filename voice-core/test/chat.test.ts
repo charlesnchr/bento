@@ -1669,6 +1669,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that hotels cancel aloud and cancel the Noma table",
     "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Stop reading that airlines catalog complaints and cancel the Noma table",
+    "Stop reading that engineers spec parts and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2495,20 +2496,62 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10bc.advance(0.1);
   assert.equal(s10bc.commands.filter((c) => c.type === "tool.cancel").length, 1, "leading 'Not that one, cancel All the Time' must cancel 'All the Time'");
 
-  // 8y) A finished task named "All the Time" still masks "All" on bare "Cancel All the Time" (so unrelated "Weather" is refused), whether it finished before the user spoke or before the model called cancel_task.
-  const s10bd = chat();
-  s10bd.type("Search All the Time");
-  s10bd.calls("ask_hermes", { label: "All the Time" });
-  s10bd.advance(0.1);
-  s10bd.complete("Found it.", s10bd.hermes()[0].run);
-  s10bd.advance(0.1);
-  s10bd.type("Check Paris weather");
-  s10bd.calls("ask_hermes", { label: "Weather" });
-  s10bd.advance(0.1);
-  s10bd.type("Cancel All the Time");
-  s10bd.calls("cancel_task", { task: "Weather" });
-  s10bd.advance(0.1);
-  assert.equal(s10bd.commands.filter((c) => c.type === "tool.cancel").length, 0, "finished 'All the Time' must still prevent bare 'Cancel All the Time' from cancelling unrelated Weather");
+  // 8y) A finished task named "All the Time" still masks "All" even with separate remarks ("if it's still running", "I think it is still running") or when it finishes between user speech and cancel_task, while direct group modifiers ("Cancel both bookings in progress") still cancel active bookings.
+  for (const phrase of [
+    "Cancel All the Time",
+    "Cancel All the Time, I think it is still running",
+    "Cancel All the Time if it's still running",
+    "Cancel All the Time if it is still going",
+    "Stop All the Time if it's currently running",
+    "Cancel All the Time, the one that's still running",
+  ]) {
+    const s10bd = chat();
+    s10bd.type("Search All the Time");
+    s10bd.calls("ask_hermes", { label: "All the Time" });
+    s10bd.advance(0.1);
+    s10bd.complete("Found it.", s10bd.hermes()[0].run);
+    s10bd.advance(0.1);
+    s10bd.type("Check Paris weather");
+    s10bd.calls("ask_hermes", { label: "Weather" });
+    s10bd.advance(0.1);
+    s10bd.type(phrase);
+    s10bd.calls("cancel_task", { task: "Weather" });
+    s10bd.advance(0.1);
+    assert.equal(s10bd.commands.filter((c) => c.type === "tool.cancel").length, 0, `finished 'All the Time' must not cancel Weather on: ${phrase}`);
+  }
+
+  const s10bd2 = chat();
+  s10bd2.type("Search All the Time");
+  s10bd2.calls("ask_hermes", { label: "All the Time" });
+  s10bd2.advance(0.1);
+  const allTimeRun = s10bd2.hermes()[0].run;
+  s10bd2.type("Check Paris weather");
+  s10bd2.calls("ask_hermes", { label: "Weather" });
+  s10bd2.advance(0.1);
+  s10bd2.type("Cancel All the Time if it's still running");
+  s10bd2.complete("Found it.", allTimeRun);
+  s10bd2.advance(0.1);
+  s10bd2.calls("cancel_task", { task: "Weather" });
+  s10bd2.advance(0.1);
+  assert.equal(s10bd2.commands.filter((c) => c.type === "tool.cancel").length, 0, "same-turn completion of 'All the Time' must not let 'if it's still running' cancel Weather");
+
+  const s10be = chat();
+  s10be.type("Check both bookings");
+  s10be.calls("ask_hermes", { label: "Both bookings" });
+  s10be.advance(0.1);
+  s10be.complete("Done.", s10be.hermes()[0].run);
+  s10be.advance(0.1);
+  s10be.type("Book a hotel");
+  s10be.calls("ask_hermes", { label: "Hotel booking" });
+  s10be.advance(0.1);
+  s10be.type("Book a flight");
+  s10be.calls("ask_hermes", { label: "Flight booking" });
+  s10be.advance(0.1);
+  s10be.type("Cancel both bookings in progress");
+  s10be.calls("cancel_task", { task: "Hotel booking" });
+  s10be.calls("cancel_task", { task: "Flight booking" });
+  s10be.advance(0.1);
+  assert.equal(s10be.commands.filter((c) => c.type === "tool.cancel").length, 2, "direct modifier 'in progress' on finished 'Both bookings' must cancel both active bookings");
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
@@ -2542,6 +2585,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff report aloud then cancel the weather",
     "Stop reading that sales order confirmation aloud then cancel the weather",
     "Stop reading that benefits brochure aloud then cancel the weather",
+    "Stop reading that benefits catalog introduction aloud then cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
     "Stop reading that sales report summary and cancel the weather",

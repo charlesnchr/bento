@@ -274,10 +274,10 @@ const THAT_COMPLEMENT = /^\s+that\s+\S/i;
 const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
 /** Strictly singular document-compound heads that cannot act as a finite transitive verb or an uncountable bare object ("that sales report summary", "that staff meeting agenda"). */
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
-const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech)$/i;
-const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event)$/i;
+const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|preface|foreword|prologue|epilogue|conclusion|abstract|overview|outline)$/i;
+const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event|catalog|catalogue|brochure|manual|handbook|guide|newsletter|bulletin|dossier|prospectus|syllabus|booklet|pamphlet)$/i;
 const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
-const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb)$/i;
+const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|spec|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
@@ -3310,23 +3310,22 @@ export class Call {
     return [...this.cancelTurnLabels.labels];
   }
 
-  /** Explicit running-only qualifier ("that are still running", "still active", "active ones") that lets a broad cancel ignore finished task labels from earlier turns. */
-  private static readonly RUNNING_SCOPE_QUALIFIER = /\b(?:still\s+(?:running|going|open|in\s+progress|active)|that\s+are\s+(?:still\s+)?(?:running|active|open|in\s+progress)|currently\s+(?:running|active)|active\s+(?:ones|tasks|runs|bookings|searches))\b/i;
+  /** Direct post-modifier immediately following a plural group scope ("both bookings that are still running", "both bookings in progress") that lets a broad cancel ignore a finished task with that same plural label, without letting separate remarks ("if it's still running", "I think it is still running") override an exact task name. */
+  private static readonly DIRECT_RUNNING_MODIFIER = /^\s+(?:(?:that|which)\s+are\s+(?:(?:still|currently)\s+)?(?:running|active|open|in\s+progress|going)|(?:still|currently)\s+(?:running|active|open|in\s+progress|going)|in\s+progress)\b/i;
 
-  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless [text] explicitly qualifies running/active tasks so a finished label cannot mask them). */
+  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier). */
   private isBroadCancel(text: string): boolean {
     const lower = text.toLowerCase();
     const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
     const seq = this.turnAnswered?.[0] ?? this.userTurns;
-    const labels = Call.RUNNING_SCOPE_QUALIFIER.test(text)
-      ? this.snapshotCancelTurnLabels(seq)
-      : [
-          ...new Set([
-            ...this.snapshotCancelTurnLabels(seq),
-            ...[...this.tasks.values()].map((t) => t.label.trim().toLowerCase()),
-            ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
-          ]),
-        ].filter((l) => l.length > 0);
+    const activeLabels = new Set(this.snapshotCancelTurnLabels(seq));
+    const labels = [
+      ...new Set([
+        ...activeLabels,
+        ...[...this.tasks.values()].map((t) => t.label.trim().toLowerCase()),
+        ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
+      ]),
+    ].filter((l) => l.length > 0);
     CANCEL_ALL_SCOPE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CANCEL_ALL_SCOPE.exec(lower)) != null) {
@@ -3341,6 +3340,11 @@ export class Call {
           if (idx < 0) break;
           const end = idx + lbl.length;
           if (idx <= wordStart && wordEnd <= end && !isWordChar(lower[idx - 1]) && !isWordChar(lower[end])) {
+            const isFinishedPluralGroup = !activeLabels.has(lbl) && /\b(?:all|both|every)\s+\S+s$/i.test(lbl);
+            if (isFinishedPluralGroup && Call.DIRECT_RUNNING_MODIFIER.test(lower.slice(end))) {
+              from = idx + 1;
+              continue;
+            }
             insideLabel = true;
             break;
           }

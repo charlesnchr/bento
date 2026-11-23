@@ -775,6 +775,7 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop reading that hotels cancel aloud and cancel the Noma table",
     "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Stop reading that airlines catalog complaints and cancel the Noma table",
+    "Stop reading that engineers spec parts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
@@ -942,18 +943,27 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv9.advance(0.1);
   assert.equal(sv9.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode owned Payroll requesting 'PDF with HR' must block cancelling QA 'PDF export'");
 
-  const sv10 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
-  sv10.advance(0.1);
-  sv10.turn("Search All the Time");
-  sv10.toolCall("c1", "ask_hermes", { label: "All the Time" });
-  sv10.advance(0.3);
-  sv10.complete("Found it.", sv10.hermes()[0].run);
-  sv10.advance(0.3);
-  sv10.turn("Check Paris weather");
-  sv10.toolCall("c2", "ask_hermes", { label: "Weather" });
-  sv10.advance(0.3);
-  sv10.turn("Cancel All the Time");
-  sv10.toolCall("x1", "cancel_task", { task: "Weather" });
-  sv10.advance(0.1);
-  assert.equal(sv10.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode finished 'All the Time' must still prevent bare 'Cancel All the Time' from cancelling Weather");
+  for (const phrase of [
+    "Cancel All the Time",
+    "Cancel All the Time, I think it is still running",
+    "Cancel All the Time if it's still running",
+    "Cancel All the Time if it is still going",
+    "Stop All the Time if it's currently running",
+    "Cancel All the Time, the one that's still running",
+  ]) {
+    const sv10 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv10.advance(0.1);
+    sv10.turn("Search All the Time");
+    sv10.toolCall("c1", "ask_hermes", { label: "All the Time" });
+    sv10.advance(0.3);
+    sv10.complete("Found it.", sv10.hermes()[0].run);
+    sv10.advance(0.3);
+    sv10.turn("Check Paris weather");
+    sv10.toolCall("c2", "ask_hermes", { label: "Weather" });
+    sv10.advance(0.3);
+    sv10.turn(phrase);
+    sv10.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv10.advance(0.1);
+    assert.equal(sv10.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode finished 'All the Time' must not cancel Weather on: ${phrase}`);
+  }
 });
