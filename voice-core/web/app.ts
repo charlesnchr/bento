@@ -187,14 +187,19 @@ function syncResumeButtons(show: boolean) {
   $("hero-resume").hidden = !show;
 }
 
+function parsePrefix(text: string): { mode: "hermes" | "t3" | null; rest: string } {
+  const m = text.match(/^\/(t3|code|h|hermes)\s+(.*)$/is);
+  if (!m) return { mode: null, rest: text };
+  return { mode: /^(t3|code)$/i.test(m[1]) ? "t3" : "hermes", rest: m[2].trim() };
+}
+
 function syncComposer() {
   const input = $<HTMLInputElement>("text");
   const raw = input.value;
   const trimmed = raw.trim();
   $("sendbtn").classList.toggle("ready", trimmed.length > 0);
-  const prefix = trimmed.match(/^\/(t3|code|h|hermes)\b/i);
-  const effective = prefix ? (/^(t3|code)$/i.test(prefix[1]) ? "t3" : "hermes") : $<HTMLSelectElement>("mode").value;
-  $("mode-wrap").dataset.mode = effective;
+  const parsed = parsePrefix(raw.trimStart());
+  $("mode-wrap").dataset.mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
 }
 
 function updateJumpButton() {
@@ -1105,6 +1110,9 @@ function setTasksOpen(open: boolean, opener?: HTMLElement | null) {
   const next = open && canOpen;
   const wasOpen = document.body.classList.contains("tasks-open");
   document.body.classList.toggle("tasks-open", next);
+  const header = document.querySelector("header") as HTMLElement | null;
+  if (header) header.inert = next;
+  $("convo").inert = next;
   $("side").inert = mobileLayout.matches && !next;
   $("tasks-toggle").setAttribute("aria-expanded", String(next));
   $("mobile-tasks-bar").setAttribute("aria-expanded", String(next));
@@ -1178,9 +1186,9 @@ async function submitText(e: Event) {
     if (!callId) { input.value = text; syncComposer(); return; }
   }
   // "/t3 …" and "/h …" pick the agent whatever the selector says.
-  let mode = $<HTMLSelectElement>("mode").value;
-  const prefix = text.match(/^\/(t3|code|h|hermes)\s+/i);
-  if (prefix) { mode = /^(t3|code)$/i.test(prefix[1]) ? "t3" : "hermes"; text = text.slice(prefix[0].length).trim(); }
+  const parsed = parsePrefix(text);
+  const mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
+  text = parsed.rest;
   if (!text) return;
   if (mode === "say") push({ type: "say", text });
   else {
