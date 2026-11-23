@@ -3342,7 +3342,8 @@ export class Call {
   ]);
   private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b|\s+as\s+well\s+as\b|\s+&(?=\s)/gi;
   private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/i;
-  private static readonly AMP_NAME_CONT = /^\s+\p{Lu}\p{Ll}+(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
+  private static readonly AMP_NAME_PREV = /\bat\s+(?:the\s+)?\p{Lu}[\p{Ll}'.-]*$/u;
+  private static readonly AMP_NAME_CONT = /^\s+(?!(?:Meet|Book|Reserve|Check|Find|See|Visit|Stay|Fly|Drive|Dine|Eat|Call|Email|Send|Compare|Review|Cancel|Stop|Ask|Tell|Show|Pick|Get|Go|Plan|Schedule|Confirm|Verify|Inspect|Photograph|Summarize|Summarise)\b)\p{Lu}\p{Ll}+(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
   /** Complete coordinated booking-item grammar after a comma: positive determiner/quantifier + up to 3 descriptive words + bookable noun (or bare bookable noun), followed ONLY by bounded place, venue, or date/duration prepositional phrases (no open lowercase catch-all, rejecting "at capacity", "in progress", "in flux", "hotel to close", "hotel to decide", "on hold", "in London costs more"). */
   private static readonly COORD_BOOK_ITEM_PREFIX = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b/iu;
   private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?![\p{L}\p{N}])/u;
@@ -3356,16 +3357,16 @@ export class Call {
   /** Unambiguous region codes safe to pair with calendar words ("Spring, TX", "Spring TX"), excluding 2-letter English words ("OK", "OR", "IN", "ME", "HI", "OH") so "in May, OK" and "in Summer, OK?" stay calendar phrases. */
   private static readonly UNAMBIG_REGION_CODE = /^(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|ID|IL|IA|KS|KY|LA|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|UK|US|EU|AU|NZ|QC|ON|BC|AB|NSW|VIC|QLD)$/;
   private static readonly CLAUSE_PREDICATE = /\b(?:no|not|never|skip|without|except|already|later|soon|still|instead|needed|sorted|hold|follow|can|could|will|would|should|may|might|must|is|are|was|were|be|been|has|have|had|do|does|did|i|we|you|they|he|she)\b/i;
-  /** Fail-closed colon allow-lists: a colon after a comma-coordinated booking item stays attached ONLY when followed by a definite venue name ("the Savoy", "The Ritz London"), an explicit hospitality venue ("Ritz Hotel", "Claridge's"), or a short booking constraint ("refundable only", "under 200 pounds") — never Title-Case instructions ("Photograph the Lobby", "Summarize the Reviews", "Who Owns It"). */
-  private static readonly COLON_BOOK_VENUE = /^(?:[Tt]he\s+\p{Lu}[\p{Ll}'.-]*(?:\s+\p{Lu}[\p{Ll}'.-]*){0,2}|(?!(?:Check|Find|See|Look|Tell|Show|Ask|List|Compare|Summarize|Summarise|Explain|Research|Confirm|Verify|Cancel|Skip|Ignore|Avoid|Note|Remember|Call|Email|Send|Figure|Dig|Track|Work|Photograph|Who|What|Where|When|Why|How)\b)(?:\p{Lu}[\p{Ll}'.-]*\s+){0,2}(?:Hotel|Inn|Lodge|Resort|Suites|Palace|House|Arms|Tavern|Bistro|Grill|Cafe|Café|Bar|Kitchen|Club|Spa|Towers|Plaza|Grand|Marriott|Hilton|Hyatt|Sheraton|Westin|InterContinental|Claridge's|Savoy|Ritz))$/u;
+  /** Fail-closed colon allow-lists: a colon after a comma-coordinated booking item stays attached ONLY when followed by a definite venue name ("the Savoy", "The Ritz London"), an explicit hospitality venue without an imperative verb or internal determiner ("Ritz Hotel", "Claridge's", never "Inspect The Hotel"), or a short booking constraint ("refundable only", "under 200 pounds") — never Title-Case instructions ("Photograph the Lobby", "Summarize the Reviews", "Who Owns It"). */
+  private static readonly COLON_BOOK_VENUE = /^(?:[Tt]he\s+\p{Lu}[\p{Ll}'.-]*(?:\s+\p{Lu}[\p{Ll}'.-]*){0,2}|(?!(?:Check|Find|See|Look|Tell|Show|Ask|List|Compare|Summarize|Summarise|Explain|Research|Confirm|Verify|Cancel|Skip|Ignore|Avoid|Note|Remember|Call|Email|Send|Figure|Dig|Track|Work|Photograph|Inspect|Audit|Visit|Tour|Rate|Rank|Grade|Evaluate|Assess|Examine|Investigate|Explore|Scout|Survey|Film|Shoot|Document|Map|Monitor|Watch|Follow|Contact|Message|Notify|Remind|Update|Edit|Fix|Clean|Repair|Restore|Rebuild|Renovate|Sell|Buy|Rent|Lease|Own|Manage|Run|Operate|Close|Open|Reopen|Evacuate|Demolish|Report|Describe|Profile|Analyze|Analyse|Study|Get|Read|Write|Draft|Fetch|Gather|Browse|Search|Locate|Review|Who|What|Where|When|Why|How)\b)(?:(?!(?:The|A|An|This|That|These|Those|My|Our|Your|Their|His|Her|Its)\b)\p{Lu}[\p{Ll}'.-]*\s+){0,2}(?:Hotel|Inn|Lodge|Resort|Suites|Palace|House|Arms|Tavern|Bistro|Grill|Cafe|Café|Bar|Kitchen|Club|Spa|Towers|Plaza|Grand|Marriott|Hilton|Hyatt|Sheraton|Westin|InterContinental|Claridge's|Savoy|Ritz))$/u;
   private static readonly COLON_RESEARCH_NOUN = /\b(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies)|options?|details?|info|information|history|owner|owners|ownership|background|summary|summaries|report|reports|notes?|list|pros|cons|ratings?|feedback|comments?)\b/i;
   private static readonly COLON_BOOK_CONSTRAINT = /^(?:(?:free|fully|non)?-?(?:refundable|cancellable|cancelable|flexible|non-?smoking|smoking|quiet|central|direct|nonstop|window|aisle|king|queen|double|twin|single|standard|deluxe|balcony|breakfast|wifi|parking|pool|gym|pet-?friendly|wheelchair|accessible|early|late|cheap|budget|luxury|boutique)(?:\s+(?:only|included|preferred|please|room|suite|bed|rate|rates|option|options))?|(?:under|below|max|around|about)\s+[$£€]?\d+(?:\s*(?:pounds?|dollars?|euros?|gbp|usd|eur|per\s+night|a\s+night|\/night))?)$/i;
-  private static readonly BOOK_ITEM_HEAD_WORD = /^(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?|concerts?|shows?|spas?|vehicles?|rentals?|spots?)$/;
+  private static readonly BOOK_ITEM_HEAD_WORD = /^(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?|concerts?|shows?|spas?|vehicles?|rentals?|nights?|spots?)$/;
   /** Descriptive non-place pre-nominal adjectives/quantifiers allowed before a bookable head noun ("a 5-star hotel", "a cozy hotel", "a charming hotel", "a compact car", "a second flight") without counting as a distinct destination. */
   private static readonly PRENOMINAL_NON_PLACE = /^(?:another|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|star|stars|bedroom|bedrooms|bed|beds|person|people|guest|guests|night|nights|day|days|week|weeks|way|class|tier|level|grade|rated|style|friendly|free|only|non|no|sub|mid|top|high|low|big|small|large|tiny|little|central|downtown|uptown|midtown|airport|station|beach|beachfront|waterfront|riverside|lakeside|harbor|harbour|park|city|town|village|urban|suburban|rural|modern|historic|classic|cozy|cosy|clean|comfy|comfortable|decent|basic|simple|fancy|posh|swanky|affordable|inexpensive|economical|reasonable|pricey|expensive|upscale|premium|executive|corporate|compact|economy|midsize|fullsize|suv|sedan|convertible|electric|hybrid|automatic|manual|overnight|main|local|nearby|close|convenient|great|better|cheaper|nicer|nicest|quieter|quietest|newer|newest|older|oldest|bigger|smaller|larger|closer|nearest|favorite|favourite|preferred|usual|regular|normal|similar|matching|corresponding|separate|spare|alt|alternative|open|available|paid|confirmed|booked|reserved|active|charming|relaxing|welcoming|stunning|amazing|lovely|quaint|stylish|sleek|plush|lavish|spacious|bright|sunny|airy|peaceful|serene|tranquil|intimate|lively|vibrant|trendy|hip|chic|cool|fun|prime|ideal|perfect|solid|reliable|trusted|popular|famous|courtyard|garden|terrace|penthouse|loft|villa|resort|inn|lodge|hostel|motel|bnb)$/;
-  /** Unambiguous lowercase English descriptive adjective suffixes (never city names) plus lowercase hyphenated compounds ("non-smoking", "pet-friendly", "family-run", "all-inclusive", "red-eye", "long-haul", "two-night"). */
+  /** Unambiguous lowercase English descriptive adjective suffixes (never city names) plus known descriptive hyphenated compounds ("non-smoking", "pet-friendly", "family-run", "all-inclusive", "red-eye", "long-haul", "two-night"), never matching hyphenated place names ("stratford-upon-avon", "paris-based"). */
   private static readonly LOWERCASE_ADJ_SUFFIX = /(?:ic|ful|ous|less|side|top|front|view)$/;
-  private static readonly LOWERCASE_HYPHEN_COMPOUND = /^[a-z0-9]+(?:-[a-z0-9]+)+$/;
+  private static readonly DESCRIPTIVE_HYPHEN_COMPOUND = /^(?:(?:non|no|self|all|full|half|low|high|mid|top|well|best|most|newly|recently|short|long|quick|last|first|second|third|one|two|three|four|five|six|seven|eight|nine|ten|\d+)-[a-z0-9-]+|[a-z0-9]+-(?:friendly|run|owned|inclusive|star|stars|night|nights|day|days|week|weeks|bed|beds|bedroom|bedrooms|room|rooms|person|people|guest|guests|way|trip|stay|haul|eye|smoking|refundable|cancellable|cancelable|catering|service|board|range|cost|end|class|tier|rated|renovated|priced|style|size|sized|air|view|facing|accessible|only|free|minute|minutes|hour|hours|grade|level))$/;
   private static readonly NON_BOOK_TAIL = /^\s+(?:(?:a|an|the|my|our|your)\s+)?(?:\w+\s+){0,2}(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies))\b/i;
   private static readonly COMMA_PLACE_CONT = /^\s+(?!(?:And|But|Then|Also|Plus|Please|Or|So|Yet|While|Because|Since|Check|Find|Gather|See|Fetch|Compare|Summarize|Summarise|Book|Reserve)\b)(?:[A-Z][a-z]+\b(?:\s+[A-Z][a-z]+\b)?|(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|UK|US|EU|AU|NZ|QC|ON|BC|AB|NSW|VIC|QLD)\b)(?=\s*(?:$|[.?!;:,]|\s+(?:[Aa]nd|for|on|at|in|from|to|with|next|this|tonight|tomorrow|[Pp]lease|[Mm]onday|[Tt]uesday|[Ww]ednesday|[Tt]hursday|[Ff]riday|[Ss]aturday|[Ss]unday)\b))/;
   /** Bare anaphoric pronoun object right after a booking verb ("book it", "book it for Friday"), never a determiner + noun ("book that tour", "book one tour"). */
@@ -3579,14 +3580,14 @@ export class Call {
             const isVenue = Call.COLON_BOOK_VENUE.test(afterColon) && !Call.COLON_RESEARCH_NOUN.test(afterColon);
             isColonTask = !isVenue && !Call.COLON_BOOK_CONSTRAINT.test(afterColon);
           }
-          const allowIndefIn = fragEnd?.[0] !== ";" && fragEnd?.[0] !== ":";
+          const allowIndefIn = fragEnd?.[0] !== ";";
           if (!isColonTask && isCoordBookItem(nextFrag, allowIndefIn)) continue;
           if (Call.COMMA_PLACE_CONT.test(after)) continue;
           return tail.slice(0, bm.index).trim();
         }
         if (/^\s*(?:and|as\s+well\s+as|&)$/i.test(sep)) {
           if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
-          if (/^\s*&$/i.test(sep) && Call.AMP_NAME_CONT.test(after)) continue;
+          if (/^\s*&$/i.test(sep) && Call.AMP_NAME_PREV.test(tail.slice(0, bm.index)) && Call.AMP_NAME_CONT.test(after)) continue;
           return tail.slice(0, bm.index).trim();
         }
         return tail.slice(0, bm.index).trim();
@@ -3624,17 +3625,24 @@ export class Call {
               !Call.NON_PLACE_MODIFIER.has(mod) &&
               (!Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(mod) || properModifiers.has(mod)),
           );
-          // Inspect only hyphen-preserving Unicode tokens BEFORE the first bookable head noun (excluding "night(s)" so "two-night Paris hotel" reaches "hotel", and ignoring trailing words like "ASAP", "OK", "Thanks"): lowercase hyphenated compounds ("two-night", "non-smoking", "pet-friendly", "red-eye") and descriptive adjective suffixes ("romantic", "seaside", "rooftop") stay placeless while proper/accented/lowercase place tokens ("Paris", "Québec", "Nice", "paris") count as places.
+          // Inspect only hyphen-preserving Unicode tokens BEFORE the last bookable head noun in the item's head phrase (before any preposition, so "two-night Paris hotel", "two night Paris hotel", and "two Paris nights" all see "Paris" while trailing words like "ASAP", "OK", "Thanks", or "for 3 nights" are ignored): known descriptive hyphenated compounds ("two-night", "non-smoking", "pet-friendly", "red-eye") and descriptive adjective suffixes ("romantic", "seaside", "rooftop") stay placeless while proper/accented/lowercase/hyphenated place tokens ("Paris", "Québec", "Nice", "paris", "stratford-upon-avon", "paris-based") count as places.
           const hasPrenominalPlace = (part: string): boolean => {
-            const toks = part.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [];
-            const headIdx = toks.findIndex((t) => Call.BOOK_ITEM_HEAD_WORD.test(t.toLowerCase()));
+            const headClause = part.split(/\s+(?:in|at|to|near|for|from|on|with)\b/i)[0] ?? part;
+            const toks = headClause.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [];
+            let headIdx = -1;
+            for (let i = toks.length - 1; i >= 0; i--) {
+              if (Call.BOOK_ITEM_HEAD_WORD.test(toks[i].toLowerCase())) {
+                headIdx = i;
+                break;
+              }
+            }
             if (headIdx <= 0) return false;
             return toks.slice(0, headIdx).some((tok) => {
               if (tok.length < 2 || /^\d+$/.test(tok)) return false;
-              if (Call.LOWERCASE_HYPHEN_COMPOUND.test(tok)) return false;
+              if (Call.DESCRIPTIVE_HYPHEN_COMPOUND.test(tok)) return false;
               const low = tok.toLowerCase();
               const isCap = /^\p{Lu}/u.test(tok);
-              if (Call.GROUP_STOP.has(low) || Call.NON_PLACE_MODIFIER.has(low) || Call.PRENOMINAL_NON_PLACE.test(low)) return false;
+              if (Call.GROUP_STOP.has(low) || Call.NON_PLACE_MODIFIER.has(low) || Call.PRENOMINAL_NON_PLACE.test(low) || Call.BOOK_ITEM_HEAD_WORD.test(low)) return false;
               if (!isCap && Call.LOWERCASE_ADJ_SUFFIX.test(low)) return false;
               if (Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(low) && !isCap) return false;
               if (Call.CALENDAR_PROPER_WORD.test(tok) || (!isCap && Call.NON_PLACE_HEAD.has(low))) return false;
