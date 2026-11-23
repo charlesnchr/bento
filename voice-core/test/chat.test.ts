@@ -920,3 +920,88 @@ test("generic verb 'book' in an older detached statement does not block 'Yes, bo
   assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
   assert.equal(s.hermes()[1].followUp, true);
 });
+
+test("refused cross-session cancel never unlocks on negation, repeating the detached task, or a queued message", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s.advance(0.1);
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  // Turn 1: refused because Alchemist is mentioned.
+  s.type("Cancel the Alchemist dinner booking. Keep Noma running.");
+  const req1 = s.requests().at(-1)!.id;
+  s.calls("cancel_task", { task: "Dinner booking" }, req1);
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  // Queued "What time is it?" before the model finishes Turn 1 must not unlock a retry on Turn 1.
+  s.type("What time is it?");
+  s.calls("cancel_task", { task: "Dinner booking" }, s.requests().at(-1)!.id);
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  s.writes("It is 3pm. Did you want me to cancel Dinner booking?");
+  // Turn 3: "No, keep Noma running. Cancel Alchemist." must still refuse.
+  s.type("No, keep Noma running. Cancel Alchemist.");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  s.writes("Okay, keeping Dinner booking running.");
+  // Turn 4: "No, the Alchemist one" must still refuse.
+  s.type("No, the Alchemist one");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  s.writes("Tap Cancel on Dinner reservation's card.");
+  // Turn 5: "No, keep Noma running." (no Alchemist) must still refuse.
+  s.type("No, keep Noma running.");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
+  s.writes("Understood.");
+  // Turn 6: explicit affirmative "Yes, cancel Noma" succeeds.
+  s.type("Yes, cancel Noma");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(s.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"));
+});
+
+test("continue_task does not let a shared detail ('Friday') override Alchemist or override a more recent detached question on bare 'Yes, book it'", () => {
+  const s = chat();
+  s.type("Book a table at Noma for Friday");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Shall I book it?");
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Alchemist has a table at nine. Shall I book it?" });
+  s.advance(0.1);
+  // 1) "Yes, book Alchemist on Friday" with continue_task: "Noma table" must be refused despite "Friday" in Noma's request.
+  s.type("Yes, book Alchemist on Friday");
+  s.calls("ask_hermes", { continue_task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  s.writes("Tap Continue it on Alchemist's reply.");
+  // 2) Bare "Yes, book it" with continue_task: "Noma table" while detached Alchemist asked more recently must be refused.
+  s.type("Yes, book it");
+  s.calls("ask_hermes", { continue_task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed: the user's answer could be to more than one question:"), refusal);
+  assert.match(refusal, /Continue it/);
+});
+
+test("detached task completion preserves its original request for cancel_task conflict matching", () => {
+  const s = chat();
+  // Active detached task registered with original prompt naming Alchemist.
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s.advance(0.1);
+  // Task finishes with a reply that does NOT repeat the word "Alchemist".
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Done. I have booked your table." });
+  s.advance(0.1);
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.type("Cancel the Alchemist dinner booking. Keep Noma running.");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "preserved original request 'Book a table at Alchemist' must keep blocking Noma cancel after completion");
+});

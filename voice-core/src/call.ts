@@ -71,6 +71,9 @@ const MAX_TASKS = 32;
 const PROGRESS_LIMIT = 300;
 /** User turns after hearing a task's question within which an answer the model doesn't place still goes to it. */
 const ANSWER_TURNS = 2;
+/** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
+const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
+const NEGATIVE_OR_KEEP = /\b(?:no|don't|do not|keep|leave|not|never|still)\b/i;
 /** Generic action verbs common in Hermes confirmation questions and statements: excluded when matching bare answers or cross-session references so "Yes, book it" doesn't misfire on another task. */
 const QUESTION_VERBS = new Set([
   "book", "booking", "reserve", "confirm", "send", "cancel", "proceed", "continue", "ahead",
@@ -349,7 +352,7 @@ export class Call {
     { key: string; label: string; asked: string; summary: string }[],
   ][] = [];
   /** External detached tasks (via `note`): they can't be continued here, but still guard against fuzzy-matching or misrouting answers. */
-  private externalTasks: { key: string; id: string | null; label: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] = [];
+  private externalTasks: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] = [];
   private nextExternal = 1;
   /** Tool runs in flight: a Hermes task's request, or a host tool's call. */
   private readonly jobs = new Map<string, { task: Task; run: Run } | { hostCall: string; name: string }>();
@@ -363,8 +366,10 @@ export class Call {
   private utterance = "";
   /** The user's latest words, spoken or typed, until they say more: what a cancel_task is judged against. */
   private lastWords = "";
-  /** A cancel_task the user's words didn't ask for, and the user turns there had been: the model may confirm and call again. */
-  private cancelDoubt: { task: string; turn: number } | null = null;
+  /** A cancel_task the user's words didn't ask for, and the answered-turn stamp: the model may confirm on a later turn and call again. */
+  private cancelDoubt: { task: string; at: number } | null = null;
+  /** A cancel_task refused because the user's words mentioned a detached task: only an affirmative reply on a newer model-received turn confirms it. */
+  private cancelExternalDoubt: { task: string; at: number } | null = null;
   /** Delegating calls still settling, oldest first: with `join` set they are handed over in the order they came. */
   private readonly pending: Delegation[] = [];
   /** The tool each delegating call was made with, by call: its responses carry that name. */
@@ -575,6 +580,7 @@ export class Call {
         typeof e.id === "string" && e.id.trim().length > 0 ? e.id.trim() : null,
         typeof e.turnsAgo === "number" && Number.isFinite(e.turnsAgo) ? Math.max(0, Math.floor(e.turnsAgo)) : 0,
         e.active === true,
+        typeof e.request === "string" && e.request.trim().length > 0 ? e.request.trim() : null,
       );
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
@@ -1972,16 +1978,27 @@ export class Call {
     if (found != null) {
       const conflicts = this.externalConflicts(request.task, found);
       if (conflicts.length > 0) {
-        const extAll = new Set<string>();
-        for (const e of conflicts) for (const w of TaskNames.distinctive(`${e.label} ${e.summary}`)) extAll.add(w);
-        const ownedWords = TaskNames.distinctive(`${found.label} ${found.request}`);
-        const saidWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
-        const namesOwned = saidWords.some((w) => ownedWords.has(w) && !extAll.has(w));
-        if (!namesOwned) {
-          const extNames = conflicts.map((e) => `"${e.label}"`).join(", ");
-          this.respond(d.id, `Not executed: the user's message appears to refer to ${extNames} from an earlier call, so this chat cannot continue that session directly. ` +
-            "Tell the user to open that reply and tap Continue it, or ask them to clarify if they meant \"" + found.label + "\". No action was run.", false);
-          return;
+        const extNames = conflicts.map((e) => `"${e.label}"`).join(", ");
+        this.respond(d.id, `Not executed: the user's message mentions ${extNames} from an earlier call, so this chat cannot continue that session directly. ` +
+          `Tell the user to open that reply and tap Continue it, or ask them to clarify if they meant "${found.label}". No action was run.`, false);
+        return;
+      }
+      // A bare answer ("Yes, book it") without naming this owned task must still be refused when a detached task asked more recently.
+      if (TaskNames.isAnswer(request.task)) {
+        const { external: newerExt } = this.answering(d);
+        if (newerExt.length > 0) {
+          const saidWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+          const labelWords = TaskNames.distinctive(found.label);
+          const namesFoundLabel = saidWords.some((w) => labelWords.has(w));
+          if (!namesFoundLabel) {
+            const parts = [
+              ...(found.asked != null ? [`"${found.label}" asked: ${found.asked}`] : [`"${found.label}"`]),
+              ...newerExt.map((q) => `"${q.label}" (from an earlier call; open its reply and tap Continue it) asked: ${q.asked}`),
+            ];
+            this.respond(d.id, "Not executed: the user's answer could be to more than one question: " +
+              parts.join("; ") + `. Ask the user which they mean and to say their answer again with it; for "${found.label}", call ask_hermes with continue_task "${found.label}"; for a task from an earlier call, tell the user to open its reply and tap Continue it. No action was run.`, false);
+            return;
+          }
         }
       }
     }
@@ -2101,15 +2118,16 @@ export class Call {
     if (uniqueToText.length === 0) return [];
     return this.externalTasks.filter((e) => {
       const extLabelWords = TaskNames.distinctive(e.label);
-      const extSummaryWords = TaskNames.distinctive(e.summary);
-      const extAll = new Set([...extLabelWords, ...extSummaryWords]);
+      const extDetail = `${e.request} ${e.summary}`.trim();
+      const extDetailWords = TaskNames.distinctive(extDetail);
+      const extAll = new Set([...extLabelWords, ...extDetailWords]);
       const hasOwnedUnique = textWords.some((w) => ownedWords.has(w) && !extAll.has(w));
       return uniqueToText.some((w) => {
         if (extLabelWords.has(w)) return true;
-        if (!extSummaryWords.has(w)) return false;
+        if (!extDetailWords.has(w)) return false;
         if (!hasOwnedUnique) return true;
         const cap = w[0].toUpperCase() + w.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return new RegExp(`(?<![\\p{L}\\p{N}])${cap}(?![\\p{L}\\p{N}])`, "u").test(e.summary);
+        return new RegExp(`(?<![\\p{L}\\p{N}])${cap}(?![\\p{L}\\p{N}])`, "u").test(extDetail);
       });
     });
   }
@@ -2119,8 +2137,8 @@ export class Call {
     byRequest = true,
   ):
     | { kind: "owned"; task: Task }
-    | { kind: "external"; task: { key: string; id: string | null; label: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
-    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
+    | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
+    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
     | null {
     const trimmed = ref.trim();
     if (trimmed.length > 0 && /^\d+$/.test(trimmed)) {
@@ -2130,7 +2148,7 @@ export class Call {
     const ownedPairs = new Map<string, [string, string]>();
     for (const [key, t] of this.tasks) ownedPairs.set(key, [t.label, byRequest ? t.request : ""]);
     const extPairs = new Map<string, [string, string]>();
-    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, byRequest ? ext.summary : ""]);
+    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, byRequest ? `${ext.request} ${ext.summary}`.trim() : ""]);
     // Cross-session exact/possessive-loose collision ("Sarah booking" vs "Sarah's booking"): refuse rather than misrouting across sessions, while preserving exact owned-only matching.
     if (extPairs.size > 0) {
       const looseOwned = TaskNames.looseMatches(ref, ownedPairs).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
@@ -2163,8 +2181,8 @@ export class Call {
     const owned = this.asking();
     const latestOwned = owned[0]?.askedAt ?? 0;
     const allExternal = this.externalTasks
-      .filter((q): q is { key: string; id: string | null; label: string; summary: string; asked: string; askedAt: number; askedTurn: number } => q.asked != null && q.askedAt > 0)
-      .map(({ key, label, asked, summary, askedAt }) => ({ key, label, asked, summary, askedAt }));
+      .filter((q): q is { key: string; id: string | null; label: string; request: string; summary: string; asked: string; askedAt: number; askedTurn: number } => q.asked != null && q.askedAt > 0)
+      .map(({ key, label, asked, request, summary, askedAt }) => ({ key, label, asked, summary: `${request} ${summary}`.trim(), askedAt }));
     const external = allExternal.filter((q) => q.askedAt >= latestOwned).map(({ key, label, asked, summary }) => ({ key, label, asked, summary }));
     const all = allExternal.map(({ key, label, asked, summary }) => ({ key, label, asked, summary }));
     this.answerFor.push([at, owned.map((t) => t.id), external, all]);
@@ -2387,7 +2405,7 @@ export class Call {
   }
 
   /** A result (or active detached task with [active]) that lives outside this call/chat: kept in history and fenced into text chat context. */
-  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null, turnsAgo = 0, active = false): void {
+  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null, turnsAgo = 0, active = false, request: string | null = null): void {
     if (!this.active) return;
     if (!active && !inHistory && !failed && text.trim().length > 0) {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
@@ -2398,16 +2416,23 @@ export class Call {
     if (this.textLine) {
       const cleanLabel = label.trim();
       if (cleanLabel.length > 0) {
-        // Deduplicate only by stable external id; two separate detached tasks with the same label both remain tracked.
+        // Deduplicate only by stable external id; preserve the original request across completion updates.
+        let priorRequest = "";
         if (id != null) {
           const existing = this.externalTasks.findIndex((e) => e.id === id);
-          if (existing >= 0) this.externalTasks.splice(existing, 1);
+          if (existing >= 0) {
+            priorRequest = this.externalTasks[existing].request;
+            this.externalTasks.splice(existing, 1);
+          }
         }
+        const savedRequest = request ?? (active ? text.trim() : priorRequest);
+        const savedSummary = active ? "" : (text.trim().split(/\n\s*\n/)[0] ?? "");
         this.externalTasks.push({
           key: `ext:${this.nextExternal++}`,
           id,
           label: cleanLabel,
-          summary: text.trim().split(/\n\s*\n/)[0] ?? "",
+          request: savedRequest,
+          summary: savedSummary,
           asked,
           askedAt: asked != null ? ++this.asks : 0,
           askedTurn: this.userTurns - turnsAgo,
@@ -2548,14 +2573,21 @@ export class Call {
       } else if (target?.kind === "external") {
         message = `Not executed: "${target.task.label}" ran in an earlier call, so cancel_task cannot cancel it here. Nothing was cancelled.`;
       } else if (task == null) message = "Not executed: " + missing;
-      else if (
-        this.externalTasks.length > 0 &&
-        !(this.cancelDoubt != null && this.cancelDoubt.task === task.id && this.userTurns > this.cancelDoubt.turn) &&
-        this.externalConflicts(this.wordsAnswered, task).length > 0
-      ) {
-        const extNames = this.externalConflicts(this.wordsAnswered, task).map((e) => `"${e.label}"`).join(", ");
-        this.cancelDoubt = { task: task.id, turn: this.userTurns };
+      else if (this.externalTasks.length > 0 && this.externalConflicts(this.wordsAnswered, task).length > 0) {
+        const [answeredAt, said] = this.turnAnswered;
+        const extNames = this.externalConflicts(said, task).map((e) => `"${e.label}"`).join(", ");
+        this.cancelExternalDoubt = { task: task.id, at: answeredAt };
         message = `Not executed: the user's words mention an earlier call's task (${extNames}), which cancel_task cannot cancel here. Nothing was cancelled. Ask the user to confirm if they meant to cancel "${task.label}", or tap Cancel on the detached task's card.`;
+      } else if (task.state === RUNNING && this.cancelExternalDoubt?.task === task.id) {
+        if (this.cancelConfirmedAfterExternal(task)) {
+          message = this.cancelNow(task.id);
+          if (message.startsWith("Cancelled")) {
+            message += ` If the user didn't mean that, call ${task.agent === "t3" ? CODE_TOOL : TOOL} with continue_task "${task.label}" to carry on with it.`;
+          }
+        } else {
+          const said = collapse(this.wordsAnswered);
+          message = `Not executed: the user did not confirm cancelling "${task.label}". They wrote "${said}". Nothing was cancelled. Ask them to confirm explicitly before calling cancel_task again.`;
+        }
       } else if (task.state === RUNNING && !this.cancelAsked(task)) {
         const said = collapse(this.wordsAnswered);
         this.log("info", `cancel_task for "${task.label}" refused: the user said "${said}"`);
@@ -2566,6 +2598,7 @@ export class Call {
             "\"quiet\" only means stop talking. Nothing was cancelled: say nothing more now. If they did mean to cancel it, ask them " +
             "to confirm, then call cancel_task again.";
       } else {
+        this.cancelExternalDoubt = null;
         message = this.cancelNow(task.id);
         if (message.startsWith("Cancelled")) {
           message += ` If the user didn't mean that, call ${task.agent === "t3" ? CODE_TOOL : TOOL} with continue_task "${task.label}" to carry on with it.`;
@@ -2581,6 +2614,17 @@ export class Call {
     });
   }
 
+  /** Whether the user affirmatively confirmed cancelling [task] on a newer model-received turn after a cross-session refusal. */
+  private cancelConfirmedAfterExternal(task: Task): boolean {
+    const doubt = this.cancelExternalDoubt;
+    if (doubt == null) return false;
+    const [answeredAt, said] = this.turnAnswered;
+    if (doubt.task !== task.id || answeredAt <= doubt.at) return false;
+    this.cancelExternalDoubt = null;
+    const trimmed = said.trim();
+    return AFFIRMATIVE_CANCEL.test(trimmed) && !NEGATIVE_OR_KEEP.test(trimmed);
+  }
+
   /**
    * Whether the user's latest words ask for [task] to be cancelled: in words, or by naming it. A bare "stop", or a
    * mishearing of one ("Stabit"), doesn't: the model once cancelled six minutes of work on that. A cancel refused
@@ -2589,20 +2633,32 @@ export class Call {
   private cancelAsked(task: Task): boolean {
     const doubt = this.cancelDoubt;
     this.cancelDoubt = null;
-    if (doubt != null && doubt.task === task.id && this.userTurns > doubt.turn) return true;
+    const [answeredAt, said] = this.turnAnswered;
+    if (doubt != null && doubt.task === task.id && answeredAt > doubt.at) {
+      const trimmed = said.trim();
+      if (!this.textLine || (AFFIRMATIVE_CANCEL.test(trimmed) && !NEGATIVE_OR_KEEP.test(trimmed))) return true;
+    }
+    if (this.textLine && /^(?:no|nope|nah|don't|do not|keep|leave)\b/i.test(said.trim())) {
+      this.cancelDoubt = { task: task.id, at: answeredAt };
+      return false;
+    }
     const names = [...this.c.vocabulary, "Woodhouse"];
-    const said = this.wordsAnswered;
     if (asksToCancel(said, this.c.voiceCommands, names, TaskNames.mentions(said, task.label, task.latest + " " + task.request))) return true;
-    this.cancelDoubt = { task: task.id, turn: this.userTurns };
+    this.cancelDoubt = { task: task.id, at: answeredAt };
     return false;
+  }
+
+  /** The turn stamp and words a call of the model's answers: in a typed chat, the message it actually received (not one queued since). */
+  private get turnAnswered(): [number, string] {
+    if (!this.textLine) return [this.userTurns, this.lastWords];
+    const asOf = this.textLine.asOf;
+    for (let i = this.typedWords.length - 1; i >= 0; i--) if (this.typedWords[i][0] <= asOf) return this.typedWords[i];
+    return [0, this.lastWords];
   }
 
   /** The user's words a call of the model's answers: their latest, or in a typed chat the message it had when it was asked. */
   private get wordsAnswered(): string {
-    if (!this.textLine) return this.lastWords;
-    const asOf = this.textLine.asOf;
-    for (let i = this.typedWords.length - 1; i >= 0; i--) if (this.typedWords[i][0] <= asOf) return this.typedWords[i][1];
-    return this.lastWords;
+    return this.turnAnswered[1];
   }
 
   private overview(): [Task | null, string][] {
