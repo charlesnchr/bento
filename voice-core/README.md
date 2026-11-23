@@ -54,6 +54,15 @@ Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf
      stays quiet until you speak again. The stop button and Esc do the same.
    - Say "goodbye" or "hang up" to end the call.
    - Mute with M or the microphone button; with Settings → Start muted, hold Space to talk.
+   - Arm the local wake word loop with W, the wake button, or Settings → Wake word and signaling:
+     a LiveKit WakeWord v2 ONNX model runs in a browser Web Worker (`web/wake.worker.ts`) behind
+     an adaptive noise-floor gate (`web/wakeDetector.ts`, same gate as Android's `WakeDetector.kt`).
+     Between calls it listens for the selected wake word and starts a call with the audio spoken
+     immediately after it; inside a call it handles `wakeword` commands from `attention.mode: "window"`
+     (dormant) and `mic.whileSpeaking: "wake"` (Echo-style barge-in). Settings lets you switch models
+     (`pennyworth` from the repo plus any `.onnx` models in `VOICE_CORE_WAKE_DIR` or
+     `~/workspace/home-assistant/wakeword/models/lkww`), adjust threshold live, and compare
+     beginning/end signaling modes (`open`, `window`, and `echo`).
    - Type to the call (Enter), or pick "New Hermes task" / "New coding task" to start one without
      saying it. With no call on, typing starts a chat instead (see "Typed chat"): the same main
      thread in text, with the same task cards. Call then ends the chat and carries its

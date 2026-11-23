@@ -130,6 +130,8 @@ export class CallAudio {
   private capture: AudioWorkletNode | null = null;
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private micOpts: MicOptions | null = null;
+  private onMicFrame: ((samples: Int16Array, level: number) => void) | null = null;
   /** Seconds of speech queued, as the worklet last said. */
   queued = 0;
   /** The microphone's level, RMS of the last frame (0 to 1). */
@@ -151,11 +153,33 @@ export class CallAudio {
     return this.context.baseLatency + ((this.context as AudioContext & { outputLatency?: number }).outputLatency ?? 0);
   }
 
-  async startMic(onFrame: (pcm64: string, level: number) => void, options: MicOptions): Promise<void> {
+  get micActive(): boolean {
+    return this.capture != null && this.stream != null && this.stream.getTracks().some((t) => t.readyState === "live");
+  }
+
+  /** Starts the microphone if it isn't already running with the same options; otherwise swaps the frame callback cleanly. */
+  async ensureMic(onFrame: (samples: Int16Array, level: number) => void, options: MicOptions): Promise<void> {
+    if (
+      this.micActive &&
+      this.micOpts &&
+      this.micOpts.echoCancellation === options.echoCancellation &&
+      this.micOpts.noiseSuppression === options.noiseSuppression &&
+      this.micOpts.autoGainControl === options.autoGainControl
+    ) {
+      await this.open();
+      this.onMicFrame = onFrame;
+      return;
+    }
+    await this.startMic(onFrame, options);
+  }
+
+  async startMic(onFrame: (samples: Int16Array, level: number) => void, options: MicOptions): Promise<void> {
     await this.open();
     this.stopMic();
     const context = this.context!;
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, ...options } });
+    this.micOpts = { ...options };
+    this.onMicFrame = onFrame;
     this.source = context.createMediaStreamSource(this.stream);
     this.capture = new AudioWorkletNode(context, "capture", { numberOfOutputs: 0 });
     this.capture.port.onmessage = (e) => {
@@ -163,7 +187,7 @@ export class CallAudio {
       let sum = 0;
       for (const s of frame) sum += s * s;
       this.level = Math.sqrt(sum / frame.length) / 32768;
-      onFrame(bytesToBase64(new Uint8Array(e.data as ArrayBuffer)), this.level);
+      this.onMicFrame?.(frame, this.level);
     };
     this.source.connect(this.capture);
   }
@@ -175,6 +199,9 @@ export class CallAudio {
     this.source = null;
     this.capture = null;
     this.stream = null;
+    this.micOpts = null;
+    this.onMicFrame = null;
+    this.level = 0;
   }
 
   play(pcm64: string): void {
@@ -193,8 +220,13 @@ export class CallAudio {
     this.playback?.port.postMessage({ type: "flush" });
   }
 
+  stopPlayback(): void {
+    this.playback?.port.postMessage({ type: "stop" });
+    this.queued = 0;
+  }
+
   stop(): void {
     this.stopMic();
-    this.playback?.port.postMessage({ type: "stop" });
+    this.stopPlayback();
   }
 }

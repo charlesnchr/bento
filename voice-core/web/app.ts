@@ -10,9 +10,10 @@
 // in a call. Pressing Call ends the chat and carries its conversation on by voice.
 
 import { commandIn } from "../src/commands.ts";
-import { CallAudio } from "./audio.ts";
+import { CallAudio, bytesToBase64 } from "./audio.ts";
 import { Replay } from "./replay.ts";
 import { AutoScroller } from "./scroll.ts";
+import { WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
 
 interface Core {
   version: string;
@@ -23,7 +24,8 @@ interface Core {
   dispose(id: number): void;
 }
 type Command = Record<string, any> & { type: string };
-interface ServerConfig { route: string; model: string; captionsModel?: string; textModel?: string; version: string; hermes: boolean; t3: string[] | null }
+interface WakeModelInfo { id: string; label: string }
+interface ServerConfig { route: string; model: string; captionsModel?: string; textModel?: string; version: string; hermes: boolean; t3: string[] | null; wakeModels?: WakeModelInfo[] }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const now = () => performance.now() / 1000;
@@ -46,7 +48,12 @@ const FAKE_TV = [
 ];
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, handOff: "named", supervise: true, vocabulary: ["Hermes", "Bento", "Woodhouse", "T3"] },
+  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, handOff: "named", supervise: true, vocabulary: ["Hermes", "Bento", "Woodhouse", "Pennyworth", "T3"] },
+  "web wake word": {
+    platform: "web", device: "browser", standbyAfter: 20, hangUpAfter: 120, handOff: "named", supervise: true,
+    attention: { mode: "window", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 3, afterAnnouncement: 0 },
+    vocabulary: ["Hermes", "Bento", "Woodhouse", "Pennyworth", "T3"],
+  },
   android: { platform: "Android", device: "phone", standbyAfter: 20 },
   "android wake word": { platform: "Android", device: "phone", standbyAfter: 20, hangUpAfter: 15 },
   macos: { platform: "macOS", device: "Mac", standbyAfter: 20 },
@@ -80,6 +87,15 @@ let coreStatus = "idle";
 let muted = false;
 let holding = false;
 let wakeLock: { release(): Promise<void> } | null = null;
+/** Wake word loop state: armed between calls, requested by core while dormant/speaking, or mid-handoff. */
+let wakeArmed = false;
+let coreWantsWake = false;
+let wakeLoading = false;
+let wakeStarting = false;
+let openingChunks: Uint8Array[] = [];
+let openingBytes = 0;
+const OPENING_MAX_BYTES = 10 * 32_000;
+let wakeLastTel: WakeTelemetry | null = null;
 /** What the session on screen is: a voice call, or a typed chat (the core's medium "text"). */
 let medium: "voice" | "text" = "voice";
 /** A chat's model is writing its answer. */
@@ -114,18 +130,24 @@ function savedHistory(): ChatLine[] {
   }
 }
 
-/** Two rising notes: something on the screen needs the user. PCM16 at 24 kHz, base64. */
-const APPROVAL_TONE = (() => {
-  const rate = 24000, out = new Int16Array(rate * 0.32);
-  for (let i = 0; i < out.length; i++) {
-    const t = i / rate, f = t < 0.16 ? 660 : 880, local = t < 0.16 ? t : t - 0.16;
-    out[i] = Math.round(Math.sin(2 * Math.PI * f * t) * Math.min(1, local * 60, (0.16 - local) * 60) * 6000);
+/** Two-note chime, PCM16 mono at 24 kHz, base64. */
+function twoNoteTone(f1: number, f2: number, noteSec: number, amp: number): string {
+  const rate = 24000, n = Math.round(rate * noteSec * 2), half = Math.round(rate * noteSec), out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const first = i < half;
+    const t = i / rate, f = first ? f1 : f2, local = first ? t : t - noteSec;
+    const env = Math.min(1, local * 60, (noteSec - local) * 60);
+    out[i] = Math.round(Math.sin(2 * Math.PI * f * t) * Math.max(0, env) * amp);
   }
-  let bin = "";
-  const bytes = new Uint8Array(out.buffer);
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-})();
+  return bytesToBase64(new Uint8Array(out.buffer));
+}
+
+/** Two rising notes: something on the screen needs the user. */
+const APPROVAL_TONE = twoNoteTone(660, 880, 0.16, 6000);
+/** Crisp rising chime: the wake word fired (start signal). */
+const WAKE_TONE = twoNoteTone(587.33, 880, 0.11, 5500);
+/** Soft falling chime: the attention window closed and the call went dormant (end signal). */
+const SLEEP_TONE = twoNoteTone(659.25, 493.88, 0.11, 3400);
 
 // Latency: the network's round trip, and how long after the user stops talking the reply starts.
 const metrics = { rtt: [] as number[], reply: [] as number[], lastVoice: 0, lastPlay: 0, replied: true };
@@ -597,26 +619,36 @@ async function showEarlier() {
 
 const STATUS_TEXT: Record<string, string> = {
   idle: "Idle", connecting: "Connecting…", listening: "Listening", working: "Listening · tasks running",
+  dormant: "Dormant · waiting for wake word",
   standby: "Paused while tasks run · speak to resume", waking: "Resuming…", ended: "Ended",
 };
 
 function showStatus(message?: string) {
   const typed = Boolean(callId) && medium === "text";
-  const speaking = Boolean(callId) && !typed && coreStatus !== "standby" && audio.queued > 0.05;
-  const shown = speaking || (typed && thinking) ? "speaking" : coreStatus;
+  const speaking = Boolean(callId) && !typed && coreStatus !== "standby" && coreStatus !== "dormant" && audio.queued > 0.05;
+  const armedIdle = !callId && wakeArmed;
+  const shown = callId
+    ? (speaking || (typed && thinking) ? "speaking" : coreStatus)
+    : armedIdle ? "armed" : coreStatus;
   $("status").className = shown;
-  document.body.dataset.state = callId ? shown : "idle";
+  document.body.dataset.state = callId ? shown : armedIdle ? "armed" : "idle";
   document.body.classList.toggle("in-session", Boolean(callId));
-  let text = speaking ? "Speaking" : STATUS_TEXT[coreStatus] ?? coreStatus;
+  const wakeLabel = selectedWakeModel()?.label ?? "wake word";
+  let text = armedIdle
+    ? (wakeLoading ? `Loading “${wakeLabel}”…` : `Waiting for “${wakeLabel}”`)
+    : speaking ? "Speaking"
+    : coreStatus === "dormant" ? `Dormant · say “${wakeLabel}”`
+    : STATUS_TEXT[coreStatus] ?? coreStatus;
   if (typed && coreStatus !== "ended") text = thinking ? "Writing…" : coreStatus === "working" ? "Chat · tasks running" : "Chat";
   if (callId && !typed && muted && !holding && !speaking) text += " · muted";
   if (holding) text = "Talking (hold)";
   if (message) text = `${text}: ${message}`;
-  if (coreStatus !== "ended" || message) $("statustext").textContent = text;
+  if (coreStatus !== "ended" || message || armedIdle) $("statustext").textContent = text;
   $<HTMLButtonElement>("hush").classList.toggle("live", speaking || (typed && thinking));
 
   const bar = $("callbar");
   bar.hidden = !callId;
+  $("wake-now").hidden = !(callId && !typed && (coreStatus === "dormant" || coreStatus === "standby"));
   if (callId) {
     $("callbar-state").textContent = text;
     $("calltimer").hidden = typed;
@@ -650,12 +682,33 @@ function run(commands: Command[]) {
         break;
       }
       case "ws.close": sockets.get(c.sid)?.close(); sockets.delete(c.sid); log("out", `ws ${c.sid} close`, "out"); break;
-      case "mic.start":
+      case "mic.start": {
+        log("out", c.type, "out");
+        const pendingOpening = wakeStarting ? openingChunks.splice(0) : [];
+        openingBytes = 0;
+        wakeStarting = false;
+        void audio.ensureMic(onMic, micOptions()).catch((err) => { log("error", `microphone: ${err.message}`, "err"); toast(`Microphone: ${err.message}`); });
+        if (pendingOpening.length > 0) {
+          const totalMs = Math.round(pendingOpening.reduce((s, b) => s + b.byteLength, 0) / 32);
+          log("out", `flushing ${totalMs} ms spoken after wake word`, "out");
+          queueMicrotask(() => {
+            if (!callId) return;
+            for (const chunk of pendingOpening) {
+              if (!callId) break;
+              counts.mic++;
+              push({ type: "mic", pcm: bytesToBase64(chunk) });
+            }
+          });
+        }
+        break;
+      }
       case "mic.restart":
         log("out", c.type, "out");
         void audio.startMic(onMic, micOptions()).catch((err) => { log("error", `microphone: ${err.message}`, "err"); toast(`Microphone: ${err.message}`); });
         break;
-      case "mic.stop": audio.stopMic(); break;
+      case "mic.stop":
+        if (!wakeArmed) audio.stopMic();
+        break;
       case "play": {
         const t = now();
         // A reply starting: from the end of the user's speech to its first sound.
@@ -677,16 +730,19 @@ function run(commands: Command[]) {
         // A request that became a task gets a tone, not a spoken reply: nothing to time.
         if (c.earcon === "taskStarted") metrics.replied = true;
         break;
-      case "wakeword": log("out", `wake word ${c.on ? "listening" : "off"}`, "out"); break;
+      case "wakeword": ensureCoreWake(Boolean(c.on)); break;
       case "tool.call": void tool(c); break;
       case "tool.cancel": cancelRun(c.run, c.reason); break;
       case "tool.steer": void steerRun(c); break;
-      case "status":
+      case "status": {
+        const prev = coreStatus;
         coreStatus = c.status;
+        if (c.status === "dormant" && prev !== "dormant" && checked("wake-cue")) audio.cue(SLEEP_TONE);
         showStatus(c.status === "ended" ? c.message ?? undefined : undefined);
         log("status", c.status + (c.message ? `: ${c.message}` : ""), "status");
         if (c.status === "ended") { if (c.message) note(c.message); end(); }
         break;
+      }
       case "llm.request": void generate(c.id, c.body); break;
       case "llm.cancel": requests.get(c.id)?.abort(); requests.delete(c.id); log("out", `request ${c.id} dropped`, "out"); break;
       case "thinking": thinking = c.on; showStatus(); break;
@@ -718,13 +774,25 @@ function run(commands: Command[]) {
   }
 }
 
-function onMic(pcm: string, level: number) {
+function onMic(samples: Int16Array, level: number) {
+  if (shouldFeedWake()) wakeClient.feed(samples);
+  if (wakeStarting) {
+    const copy = new Uint8Array(samples.byteLength);
+    copy.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+    openingChunks.push(copy);
+    openingBytes += copy.byteLength;
+    while (openingBytes > OPENING_MAX_BYTES && openingChunks.length > 1) {
+      openingBytes -= openingChunks.shift()!.byteLength;
+    }
+    return;
+  }
+  if (!callId || medium !== "voice") return;
   counts.mic++;
   if (level > 0.03 && !(muted && !holding)) {
     metrics.lastVoice = now();
     if (audio.queued < 0.05) metrics.replied = false;
   }
-  push({ type: "mic", pcm });
+  push({ type: "mic", pcm: bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)) });
 }
 
 function connect(sid: number, captions: boolean) {
@@ -867,6 +935,11 @@ function micOptions() {
   return { echoCancellation: aec, noiseSuppression: aec, autoGainControl: aec };
 }
 
+function numberSetting(id: string, fallback: number, min = 0, max = 3600): number {
+  const n = Number($<HTMLInputElement>(id).value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
 function readConfig(): Record<string, unknown> {
   const given = JSON.parse($<HTMLTextAreaElement>("config").value);
   const config: Record<string, unknown> = {
@@ -882,6 +955,37 @@ function readConfig(): Record<string, unknown> {
   if (config.supervise === undefined && config.platform === "web") config.supervise = true;
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
+  // Apply Settings signaling controls when using the default web preset without raw Developer JSON overrides.
+  const customJson = localStorage.getItem("voice-core.config") != null;
+  const presetName = $<HTMLSelectElement>("preset").value;
+  const signaling = $<HTMLSelectElement>("signaling").value;
+  if (!customJson && presetName === "web") {
+    config.hangUpAfter = numberSetting("hangup-after", signaling === "echo" ? 15 : 300, 0, 3600);
+    if (signaling === "window" || signaling === "echo") {
+      config.attention = {
+        mode: "window",
+        afterWake: numberSetting("attn-after-wake", 8, 1, 60),
+        window: numberSetting("attn-window", 5, 0, 60),
+        afterQuestion: numberSetting("attn-after-question", 10, 0, 60),
+        afterHandOff: 3,
+        afterAnnouncement: 0,
+      };
+      if (signaling === "echo") config.standbyAfter = 8;
+    }
+    if (checked("wake-barge") || signaling === "echo") {
+      const mic = (config.mic && typeof config.mic === "object" ? config.mic : {}) as Record<string, unknown>;
+      config.mic = { gainDb: 0, ...mic, whileSpeaking: "wake" };
+    }
+  } else if (given.attention === undefined && (signaling === "window" || signaling === "echo")) {
+    config.attention = {
+      mode: "window",
+      afterWake: numberSetting("attn-after-wake", 8, 1, 60),
+      window: numberSetting("attn-window", 5, 0, 60),
+      afterQuestion: numberSetting("attn-after-question", 10, 0, 60),
+      afterHandOff: 3,
+      afterAnnouncement: 0,
+    };
+  }
   return config;
 }
 
@@ -900,6 +1004,7 @@ async function start(carryOn = false, typed = false) {
     if (!server.textModel) { toast("This server has no text model for a chat: start a call to type to it"); return; }
     given = { ...given, medium: "text", muted: false };
     delete given.captions;
+    if (wakeArmed) audio.stopMic();
   }
   $<HTMLButtonElement>("call").disabled = true;
   $<HTMLButtonElement>("hero-call").disabled = true;
@@ -957,7 +1062,7 @@ async function start(carryOn = false, typed = false) {
   void ping();
   if (typed) return;
   stopWords.start();
-  try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
+  await acquireWakeLock();
 }
 
 /** The Call button: hangs up a call; starts one; or, with a chat on, ends the chat and carries its conversation on by voice. */
@@ -981,8 +1086,26 @@ function end() {
   window.clearInterval(ticker);
   window.clearInterval(traceTimer);
   stopWords.stop();
-  ending = saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); showStatus(); });
-  audio.stop();
+  coreWantsWake = false;
+  wakeStarting = false;
+  openingChunks = [];
+  openingBytes = 0;
+  const finishedId = callId;
+  const finishedCore = core;
+  callId = 0;
+  ending = saveTrace(finishedId, finishedCore).then(() => { if (finishedCore && finishedId) finishedCore.dispose(finishedId); showTasks(); syncWakeUi(); });
+  if (wakeArmed) {
+    audio.stopPlayback();
+    wakeClient.reset();
+    void audio.ensureMic(onMic, micOptions()).catch((err) => {
+      log("error", `wake microphone: ${err.message}`, "err");
+      toast(`Wake microphone: ${err.message}`);
+      void armWake(false);
+    });
+  } else {
+    audio.stop();
+    releaseWakeLock();
+  }
   for (const ws of sockets.values()) ws.close();
   sockets.clear();
   for (const r of runs.values()) r.abort.abort();
@@ -996,12 +1119,11 @@ function end() {
   $("ring").style.transform = "";
   $("callbar").hidden = true;
   $("micwarn").hidden = true;
-  document.body.dataset.state = "idle";
+  document.body.dataset.state = wakeArmed ? "armed" : "idle";
   document.body.classList.remove("in-session");
   syncResumeButtons(chat.length > 0);
   void showEarlier();
-  void wakeLock?.release().catch(() => {});
-  wakeLock = null;
+  syncWakeUi();
 }
 
 function setMuted(value: boolean) {
@@ -1013,9 +1135,9 @@ function setMuted(value: boolean) {
 }
 
 /** Sends what the trace kept since last time to the dev server, as JSON lines: a header, then events. */
-async function saveTrace() {
-  if (!core || !callId || !checked("trace")) return;
-  const kept = JSON.parse(core.trace(callId));
+async function saveTrace(id = callId, targetCore = core) {
+  if (!targetCore || !id || !checked("trace")) return;
+  const kept = JSON.parse(targetCore.trace(id));
   if (!kept) return;
   const lines: string[] = [];
   if (kept.config) lines.push(JSON.stringify({ version: kept.version, config: kept.config, start: kept.start }));
@@ -1077,17 +1199,258 @@ class StopWords {
 }
 const stopWords = new StopWords();
 
+// Local wake word loop (LiveKit WakeWord ONNX in a Web Worker): listens between calls when armed,
+// and inside an active call whenever the core asks (`wakeword: on`: dormant or whileSpeaking "wake").
+
+async function acquireWakeLock() {
+  if (wakeLock || document.hidden) return;
+  try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
+}
+
+function releaseWakeLock() {
+  void wakeLock?.release().catch(() => {});
+  wakeLock = null;
+}
+
+function selectedWakeModel(): WakeModelInfo | null {
+  const models = server?.wakeModels ?? [];
+  if (models.length === 0) return null;
+  const pick = $<HTMLSelectElement>("wake-model").value;
+  return models.find((m) => m.id === pick) ?? models.find((m) => m.id === "pennyworth") ?? models[0];
+}
+
+function wakeThreshold(): number {
+  const n = Number($<HTMLInputElement>("wake-threshold").value);
+  return Number.isFinite(n) ? Math.max(0.1, Math.min(0.99, n)) : 0.7;
+}
+
+function shouldFeedWake(): boolean {
+  if (wakeStarting) return false;
+  if (callId === 0) return wakeArmed;
+  return medium === "voice" && coreWantsWake && !(muted && !holding);
+}
+
+function renderWakeTelemetry() {
+  const active = (callId === 0 && wakeArmed) || (callId !== 0 && medium === "voice" && coreWantsWake);
+  if (!active) { $("heard").textContent = ""; return; }
+  const label = selectedWakeModel()?.label ?? "wake word";
+  if (wakeLoading) { $("heard").textContent = `Loading wake word “${label}”…`; return; }
+  if (!wakeLastTel) { $("heard").textContent = `Wake “${label}” ready (threshold ${wakeThreshold().toFixed(2)})`; return; }
+  const state = wakeLastTel.gateOpen ? `scoring ${wakeLastTel.score.toFixed(2)}` : "quiet";
+  const speed = wakeLastTel.inferMs > 0 ? ` · ${wakeLastTel.inferMs.toFixed(1)} ms` : "";
+  $("heard").textContent = `Wake “${label}” · ${state} · peak ${wakeLastTel.peak.toFixed(2)}${speed}`;
+}
+
+function syncWakeUi() {
+  const model = selectedWakeModel();
+  const hasModels = model != null;
+  const label = model?.label ?? "wake word";
+  const btn = $<HTMLButtonElement>("wakebtn");
+  btn.hidden = !hasModels;
+  btn.classList.toggle("on", wakeArmed);
+  btn.classList.toggle("loading", wakeLoading && (wakeArmed || coreWantsWake));
+  btn.setAttribute("aria-pressed", String(wakeArmed));
+  btn.title = wakeArmed ? `Stop wake word “${label}” (W)` : `Listen for “${label}” (W)`;
+  const hero = $<HTMLButtonElement>("hero-wake");
+  hero.hidden = !hasModels;
+  hero.classList.toggle("on", wakeArmed);
+  hero.textContent = wakeArmed
+    ? (wakeLoading ? `Loading “${label}”…` : `Listening for “${label}”`)
+    : `Listen for “${label}”`;
+  $<HTMLInputElement>("wake-enabled").checked = wakeArmed;
+  renderWakeTelemetry();
+  showStatus();
+}
+
+function syncSignalingUi() {
+  const signaling = $<HTMLSelectElement>("signaling").value;
+  const customJson = localStorage.getItem("voice-core.config") != null;
+  const isWeb = $<HTMLSelectElement>("preset").value === "web";
+  const windowControls = signaling === "window" || signaling === "echo";
+  for (const id of ["attn-after-wake", "attn-window", "attn-after-question"]) {
+    $<HTMLInputElement>(id).disabled = !windowControls;
+  }
+  const barge = $<HTMLInputElement>("wake-barge");
+  if (signaling === "echo" && !customJson && isWeb) {
+    barge.checked = true;
+    barge.disabled = true;
+  } else {
+    barge.disabled = false;
+    barge.checked = localStorage.getItem("voice.wake-barge") === "1";
+  }
+}
+
+const wakeClient = new WakeClient({
+  onReady(modelId, warmupMs) {
+    wakeLoading = false;
+    log("out", `wake word ready: ${modelId}${warmupMs > 0 ? ` (${warmupMs} ms)` : ""}`, "out");
+    syncWakeUi();
+  },
+  onDetected(hit) {
+    onWakeDetected(hit);
+  },
+  onTelemetry(tel) {
+    wakeLastTel = tel;
+    renderWakeTelemetry();
+  },
+  onError(message) {
+    wakeLoading = false;
+    log("error", `wake word: ${message}`, "err");
+    toast(`Wake word error: ${message}`);
+    if (wakeArmed) void armWake(false);
+    else syncWakeUi();
+  },
+});
+
+async function armWake(on: boolean, persist = true) {
+  const model = selectedWakeModel();
+  if (on && !model) {
+    toast("No wake word models found on the server");
+    $<HTMLInputElement>("wake-enabled").checked = false;
+    return;
+  }
+  wakeArmed = on;
+  if (persist) localStorage.setItem("voice.wake-enabled", on ? "1" : "0");
+  if (on && model) {
+    wakeLastTel = null;
+    if (!wakeClient.ready || wakeClient.modelId !== model.id) wakeLoading = true;
+    wakeClient.load(model.id, wakeThreshold());
+    if (!callId) {
+      try {
+        await audio.ensureMic(onMic, micOptions());
+        wakeClient.reset();
+        await acquireWakeLock();
+      } catch (err) {
+        wakeArmed = false;
+        wakeLoading = false;
+        if (persist) localStorage.setItem("voice.wake-enabled", "0");
+        toast(`Microphone: ${(err as Error).message}`);
+        log("error", `wake microphone: ${(err as Error).message}`, "err");
+      }
+    }
+  } else {
+    wakeLoading = false;
+    wakeLastTel = null;
+    if (!callId) {
+      audio.stopMic();
+      releaseWakeLock();
+      wakeClient.reset();
+    }
+  }
+  syncWakeUi();
+}
+
+function ensureCoreWake(on: boolean) {
+  coreWantsWake = on;
+  const model = selectedWakeModel();
+  if (on) {
+    if (!model) {
+      log("warn", "core asked for wake word, but no models are available", "warn");
+    } else {
+      wakeLastTel = null;
+      if (!wakeClient.ready || wakeClient.modelId !== model.id) wakeLoading = true;
+      wakeClient.load(model.id, wakeThreshold());
+      wakeClient.reset();
+      log("out", `wake word listening (${model.label})`, "out");
+    }
+  } else {
+    if (!wakeArmed) wakeLastTel = null;
+    log("out", "wake word off", "out");
+  }
+  syncWakeUi();
+}
+
+function onWakeDetected(hit: WakeDetectionEvent) {
+  if (!shouldFeedWake()) return;
+  const label = selectedWakeModel()?.label ?? "wake word";
+  log("out", `wake detected “${label}” (score ${hit.score.toFixed(2)}, ${hit.inferMs.toFixed(1)} ms)`, "out");
+  if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
+  toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
+  if (callId !== 0) {
+    push({ type: "wake" });
+    return;
+  }
+  wakeStarting = true;
+  openingChunks = [];
+  openingBytes = 0;
+  if (hit.rest.byteLength > 0) {
+    openingChunks.push(hit.rest);
+    openingBytes = hit.rest.byteLength;
+  }
+  void start(chat.length > 0).then(() => {
+    if (!callId && wakeStarting) {
+      wakeStarting = false;
+      openingChunks = [];
+      openingBytes = 0;
+      syncWakeUi();
+    }
+  }).catch((err) => {
+    wakeStarting = false;
+    openingChunks = [];
+    openingBytes = 0;
+    toast((err as Error).message);
+    log("error", (err as Error).message, "err");
+    syncWakeUi();
+  });
+}
+
 // Wiring.
 
 function settingsFromStorage() {
-  for (const id of ["aec", "stopword", "ptt", "captions", "coding", "fakehermes", "trace"]) {
+  for (const id of ["aec", "stopword", "ptt", "captions", "coding", "fakehermes", "trace", "wake-cue", "wake-barge"]) {
     const v = localStorage.getItem(`voice.${id}`);
     if (v != null) $<HTMLInputElement>(id).checked = v === "1";
-    $(id).addEventListener("change", () => localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0"));
+    $(id).addEventListener("change", () => {
+      localStorage.setItem(`voice.${id}`, checked(id) ? "1" : "0");
+      if (id === "aec" && wakeArmed && !callId) {
+        void audio.startMic(onMic, micOptions()).catch((err) => toast(`Microphone: ${err.message}`));
+      }
+    });
   }
-  const delay = localStorage.getItem("voice.fakedelay");
-  if (delay) $<HTMLInputElement>("fakedelay").value = delay;
-  $("fakedelay").addEventListener("change", () => localStorage.setItem("voice.fakedelay", $<HTMLInputElement>("fakedelay").value));
+  for (const [id, key] of [
+    ["fakedelay", "voice.fakedelay"],
+    ["attn-after-wake", "voice.attn-after-wake"],
+    ["attn-window", "voice.attn-window"],
+    ["attn-after-question", "voice.attn-after-question"],
+    ["hangup-after", "voice.hangup-after"],
+  ] as const) {
+    const saved = localStorage.getItem(key);
+    if (saved != null) $<HTMLInputElement>(id).value = saved;
+    $(id).addEventListener("change", () => localStorage.setItem(key, $<HTMLInputElement>(id).value));
+  }
+  const thresh = localStorage.getItem("voice.wake-threshold");
+  if (thresh != null) $<HTMLInputElement>("wake-threshold").value = thresh;
+  $("wake-threshold-val").textContent = wakeThreshold().toFixed(2);
+  $("wake-threshold").addEventListener("input", () => {
+    const v = wakeThreshold();
+    $("wake-threshold-val").textContent = v.toFixed(2);
+    localStorage.setItem("voice.wake-threshold", v.toFixed(2));
+    wakeClient.setThreshold(v);
+    renderWakeTelemetry();
+  });
+  const signaling = localStorage.getItem("voice.signaling");
+  if (signaling) $<HTMLSelectElement>("signaling").value = signaling;
+  $("signaling").addEventListener("change", () => {
+    const mode = $<HTMLSelectElement>("signaling").value;
+    localStorage.setItem("voice.signaling", mode);
+    const def = mode === "echo" ? "15" : "300";
+    $<HTMLInputElement>("hangup-after").value = def;
+    localStorage.setItem("voice.hangup-after", def);
+    syncSignalingUi();
+  });
+  $("wake-enabled").addEventListener("change", () => void armWake(checked("wake-enabled")));
+  $("wake-model").addEventListener("change", () => {
+    const id = $<HTMLSelectElement>("wake-model").value;
+    localStorage.setItem("voice.wake-model", id);
+    if (wakeArmed || coreWantsWake) {
+      wakeLoading = true;
+      wakeLastTel = null;
+      wakeClient.load(id, wakeThreshold());
+      syncWakeUi();
+    } else {
+      syncWakeUi();
+    }
+  });
   const voice = localStorage.getItem("voice.voice");
   if (voice) $<HTMLSelectElement>("voice").value = voice;
   $("voice").addEventListener("change", () => localStorage.setItem("voice.voice", $<HTMLSelectElement>("voice").value));
@@ -1109,6 +1472,10 @@ function settingsFromStorage() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if ((localStorage.getItem("voice.theme") ?? "system") === "system") applyTheme("system");
   });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && (callId || wakeArmed)) void acquireWakeLock();
+  });
+  syncSignalingUi();
 }
 
 const mobileLayout = matchMedia("(max-width: 920px)");
@@ -1174,6 +1541,7 @@ function keys() {
     }
     if (typing() || !$("settings").hidden || document.body.classList.contains("tasks-open") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") { setMuted(!muted); e.preventDefault(); }
+    else if (e.key === "w" || e.key === "W") { void armWake(!wakeArmed); e.preventDefault(); }
     else if (e.key === "/") { $("text").focus(); e.preventDefault(); }
     else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
   });
@@ -1218,6 +1586,17 @@ async function main() {
   $("version").textContent = server.version;
   $("build").textContent = `core ${server.version}`;
   settingsFromStorage();
+  const wakeSelect = $<HTMLSelectElement>("wake-model");
+  const wakeList = server.wakeModels ?? [];
+  for (const m of wakeList) wakeSelect.add(new Option(m.label, m.id));
+  const savedWakeModel = localStorage.getItem("voice.wake-model");
+  if (savedWakeModel && wakeList.some((m) => m.id === savedWakeModel)) wakeSelect.value = savedWakeModel;
+  else if (wakeList.some((m) => m.id === "pennyworth")) wakeSelect.value = "pennyworth";
+  if (wakeList.length === 0) {
+    $<HTMLInputElement>("wake-enabled").disabled = true;
+    wakeSelect.disabled = true;
+    $("wake-help").textContent = "No .onnx wake word models found on the server.";
+  }
   if (!server.hermes) { $<HTMLInputElement>("fakehermes").checked = true; $<HTMLInputElement>("fakehermes").disabled = true; }
   if (!server.t3) $("codinghelp").textContent = "T3 isn't available on the server: only with fake answers.";
   else $("codinghelp").textContent = `Code changes go to a T3 Code thread in one of: ${server.t3.join(", ")}.`;
@@ -1231,8 +1610,9 @@ async function main() {
     $<HTMLTextAreaElement>("config").value = JSON.stringify(PRESETS[preset.value], null, 2);
     localStorage.setItem("voice-core.preset", preset.value);
     localStorage.removeItem("voice-core.config");
+    syncSignalingUi();
   };
-  $("config").oninput = () => localStorage.setItem("voice-core.config", $<HTMLTextAreaElement>("config").value);
+  $("config").oninput = () => { localStorage.setItem("voice-core.config", $<HTMLTextAreaElement>("config").value); syncSignalingUi(); };
   $("defaults").onclick = async () => {
     const c = core ?? (await loadCore());
     $("defaultsview").textContent = JSON.stringify(JSON.parse(c.defaults()), null, 2);
@@ -1243,8 +1623,18 @@ async function main() {
   const onResumeClick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
   $("call").onclick = onCallClick;
   $("hero-call").onclick = onHeroCallClick;
+  $("hero-wake").onclick = () => void armWake(!wakeArmed);
+  $("wakebtn").onclick = () => void armWake(!wakeArmed);
+  $("wake-now").onclick = () => { if (callId) push({ type: "resume" }); };
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;
+  syncWakeUi();
+  if (localStorage.getItem("voice.wake-enabled") === "1" && wakeList.length > 0) {
+    // Re-arm automatically on reload only when microphone permission is already granted.
+    void navigator.permissions?.query({ name: "microphone" as PermissionName })
+      .then((p) => { if (p.state === "granted") void armWake(true, false); })
+      .catch(() => {});
+  }
   if (savedHistory().length > 0) {
     syncResumeButtons(true);
     $("resume").title = "Call again, carrying on from the last conversation";

@@ -172,11 +172,15 @@ body[data-state="listening"]::before,
 body[data-state="working"]::before,
 body[data-state="speaking"]::before { opacity: 1; }
 body[data-state="standby"],
+body[data-state="dormant"],
+body[data-state="armed"],
 body[data-state="waking"],
 body[data-state="connecting"] {
   --ambient: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 body[data-state="standby"]::before,
+body[data-state="dormant"]::before,
+body[data-state="armed"]::before,
 body[data-state="waking"]::before,
 body[data-state="connecting"]::before { opacity: 1; }
 
@@ -525,6 +529,7 @@ main {
 .viz[data-mode="thinking"] i:nth-child(5) { animation-delay: 0.56s; }
 
 .viz[data-mode="standby"] i,
+.viz[data-mode="dormant"] i,
 .viz[data-mode="waking"] i,
 .viz[data-mode="connecting"] i {
   background: var(--warn);
@@ -548,6 +553,21 @@ main {
 @keyframes standby-pulse {
   0%, 100% { transform: scaleY(0.22); opacity: 0.38; }
   50% { transform: scaleY(0.42); opacity: 0.8; }
+}
+
+#wake-now {
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+#wake-now:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
 }
 
 #calltimer {
@@ -1062,8 +1082,11 @@ body.in-session #empty { display: none; }
 #status.working .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 #status.speaking .dot { background: var(--accent); animation: pulse 0.85s infinite; box-shadow: 0 0 0 4px var(--accent-soft); }
 #status.standby .dot,
+#status.dormant .dot,
+#status.armed .dot,
 #status.waking .dot,
 #status.connecting .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+#status.armed .dot { animation: standby-pulse 2.2s ease-in-out infinite; }
 #status.ended .dot { background: var(--bad); }
 
 .controls {
@@ -1085,6 +1108,21 @@ body.in-session #empty { display: none; }
   color: var(--ink);
 }
 .round svg { width: 18px; height: 18px; }
+
+#wakebtn.on {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+#wakebtn.loading {
+  opacity: 0.7;
+  animation: standby-pulse 1.4s ease-in-out infinite;
+}
+#hero-wake.on {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-soft);
+}
 
 #mic .ic-off { display: none; }
 #mic.muted .ic-on { display: none; }
@@ -1643,6 +1681,24 @@ label.setting-row,
   padding: 4px 8px;
   font-size: 12.5px;
   font-family: var(--font-mono);
+}
+.setting-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.setting-range input[type="range"] {
+  width: 112px;
+  accent-color: var(--accent);
+}
+.setting-val {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Toggle switch styling on real checkboxes */
