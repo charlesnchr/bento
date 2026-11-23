@@ -334,7 +334,9 @@ export class Call {
   private turnBytes = 0;
   private turnAudible = false;
   private asks = 0;
-  private readonly answerFor: [number, string[]][] = [];
+  private readonly answerFor: [number, string[], { label: string; asked: string }[]][] = [];
+  /** Questions asked by external detached results (via `note`): they can't be continued here, but still guard against misrouting bare answers. */
+  private externalQuestions: { label: string; asked: string; askedAt: number; askedTurn: number }[] = [];
   /** Tool runs in flight: a Hermes task's request, or a host tool's call. */
   private readonly jobs = new Map<string, { task: Task; run: Run } | { hostCall: string; name: string }>();
   /** whileSpeaking: the reply was cut by the wake word; the rest of its turn isn't played. */
@@ -580,9 +582,9 @@ export class Call {
     this.emit({ type: "ws.close", sid: sock.sid });
   }
 
-  private sendOn(sock: Sock, frame: string): void {
+  private sendOn(sock: Sock, frame: string, recap = false): void {
     if (sock.closed) return;
-    if (this.textLine) { this.textLine.send(frame); return; }
+    if (this.textLine) { this.textLine.send(frame, recap); return; }
     if (!sock.open) { sock.queued.push(frame); return; }
     this.emit({ type: "ws.send", sid: sock.sid, data: frame });
   }
@@ -892,6 +894,7 @@ export class Call {
     for (const task of this.tasks.values()) {
       if (task.asked != null && task.askedAt > 0 && this.userTurns - task.askedTurn > ANSWER_TURNS) { task.asked = null; changed = true; }
     }
+    this.externalQuestions = this.externalQuestions.filter((q) => this.userTurns - q.askedTurn <= ANSWER_TURNS);
     if (changed) this.questionsChanged();
   }
 
@@ -1378,7 +1381,7 @@ export class Call {
     if (event.setupComplete !== undefined) {
       const back = this.waking;
       if (back) { this.waking = false; this.standby = false; this.rejoining = true; }
-      if (this.setupResume) this.send(recapFrame(this.setupResume.recap));
+      if (this.setupResume) this.send(recapFrame(this.setupResume.recap), false, true);
       if (back) this.cameBack(); else this.listen();
     }
     const activity = str(obj(event.voiceActivity), "type");
@@ -1490,8 +1493,7 @@ export class Call {
     this.lapseQuestions();
     if (this.spokeSince) { if (this.generated) this.heard(this.unheard.filter((u) => u.awaiting)); }
     else { this.heardRelayed(); this.again(this.unheard.filter((u) => u.awaiting)); }
-    this.answerFor.push([at, this.asking().map((t) => t.id)]);
-    if (this.answerFor.length > 8) this.answerFor.shift();
+    this.recordAnswerFor(at);
     this.captions?.turnStarted(at);
   }
 
@@ -1758,8 +1760,7 @@ export class Call {
     this.lastWords = take(text, 400);
     if (this.textLine) {
       // An answer the model sends without naming a task goes to the task whose question the user saw last.
-      this.answerFor.push([t, this.asking().map((task) => task.id)]);
-      if (this.answerFor.length > 8) this.answerFor.shift();
+      this.recordAnswerFor(t);
       this.typedWords.push([t, this.lastWords]);
       if (this.typedWords.length > 8) this.typedWords.shift();
     }
@@ -1924,11 +1925,28 @@ export class Call {
       return;
     }
     const found = named != null ? this.find(named, false) : null;
-    const answering = named == null && label == null && TaskNames.isAnswer(request.task) ? this.answering(d) : [];
-    if (found == null && answering.length > 1) {
+    const { tasks: answering, external: externalAnswering } =
+      named == null && label == null && TaskNames.isAnswer(request.task)
+        ? this.answering(d)
+        : { tasks: [], external: [] };
+    if (found == null && (answering.length > 1 || (answering.length > 0 && externalAnswering.length > 0))) {
+      const parts = [
+        ...answering.map((t) => `"${t.label}" asked: ${t.asked}`),
+        ...externalAnswering.map((q) => `"${q.label}" (from an earlier call; open its reply and tap Continue it) asked: ${q.asked}`),
+      ];
+      const how = answering.length === 1
+        ? `for "${answering[0].label}", call ask_hermes with continue_task "${answering[0].label}"; for a task from an earlier call, tell the user to open its reply and tap Continue it.`
+        : "for a task from this chat, call ask_hermes with that task as continue_task; for one from an earlier call, tell the user to open its reply and tap Continue it.";
       this.respond(d.id, "Not executed: the user's answer could be to more than one question: " +
-        answering.map((t) => `"${t.label}" asked: ${t.asked}`).join("; ") + ". Ask the user which they mean and to say their " +
-        "answer again with it; then call ask_hermes with that task as continue_task. No action was run.", false);
+        parts.join("; ") + ". Ask the user which they mean and to say their answer again with it; " +
+        (externalAnswering.length > 0 ? how : "then call ask_hermes with that task as continue_task.") +
+        " No action was run.", false);
+      return;
+    }
+    if (found == null && answering.length === 0 && externalAnswering.length > 0) {
+      const who = externalAnswering.map((q) => `"${q.label}" asked "${q.asked}"`).join("; ");
+      this.respond(d.id, `Not executed: ${who} in an earlier call, so this chat cannot continue that session directly. ` +
+        "Tell the user to open that reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.", false);
       return;
     }
     const answered = answering.length === 1 ? answering[0] : null;
@@ -1960,13 +1978,24 @@ export class Call {
     return heard.filter((t) => t.askedAt === latest);
   }
 
-  private answering(d: Delegation): Task[] {
+  private recordAnswerFor(at: number): void {
+    const owned = this.asking();
+    const latestOwned = owned[0]?.askedAt ?? 0;
+    const external = this.externalQuestions
+      .filter((q) => q.askedAt >= latestOwned)
+      .map(({ label, asked }) => ({ label, asked }));
+    this.answerFor.push([at, owned.map((t) => t.id), external]);
+    if (this.answerFor.length > 8) this.answerFor.shift();
+  }
+
+  private answering(d: Delegation): { tasks: Task[]; external: { label: string; asked: string }[] } {
     const started = this.protocol.startedAt(d);
-    if (started == null) return [];
-    let ids: string[] | null = null;
-    for (let i = this.answerFor.length - 1; i >= 0; i--) if (this.answerFor[i][0] === started) { ids = this.answerFor[i][1]; break; }
-    if (ids == null) return [];
-    return ids.map((id) => this.tasks.get(id)).filter((t): t is Task => t != null && t.asked != null && t.state === FINISHED);
+    if (started == null) return { tasks: [], external: [] };
+    let entry: [number, string[], { label: string; asked: string }[]] | null = null;
+    for (let i = this.answerFor.length - 1; i >= 0; i--) if (this.answerFor[i][0] === started) { entry = this.answerFor[i]; break; }
+    if (entry == null) return { tasks: [], external: [] };
+    const tasks = entry[1].map((id) => this.tasks.get(id)).filter((t): t is Task => t != null && t.asked != null && t.state === FINISHED);
+    return { tasks, external: entry[2] };
   }
 
   private startTask(task: Task, unknown: string | null): void {
@@ -2172,7 +2201,17 @@ export class Call {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
       this.boundary = true;
     }
-    if (this.textLine) this.send(noteFrame(resultNote(label, text, null, failed)), true);
+    const asked = !failed ? TaskNames.question(text) : null;
+    if (asked != null && this.textLine) {
+      this.externalQuestions.push({ label, asked, askedAt: ++this.asks, askedTurn: this.userTurns });
+      if (this.externalQuestions.length > MAX_TASKS) this.externalQuestions.shift();
+    }
+    if (this.textLine) {
+      const extra = asked != null
+        ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
+        : "";
+      this.send(noteFrame(resultNote(label, text, null, failed) + extra), true);
+    }
   }
 
   private cue(earcon: "taskStarted" | "resultArrived"): void {
@@ -2443,7 +2482,7 @@ export class Call {
   }
 
   /** A frame the old socket couldn't take while the call moves is dropped, or with [resend] sent on the new one. */
-  private send(frame: string, resend = false): void {
+  private send(frame: string, resend = false, recap = false): void {
     if (!this.active || this.standby) return;
     const to = this.socket;
     if (!to) return;
@@ -2452,7 +2491,7 @@ export class Call {
       if (resend) this.resend.push(frame);
       return;
     }
-    this.sendOn(to, frame);
+    this.sendOn(to, frame, recap);
   }
 
   /** Ends the call at once; running Hermes tasks are cancelled, not undone. */

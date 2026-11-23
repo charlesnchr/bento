@@ -237,4 +237,32 @@ class CoreChatTest {
         assertTrue(texts.any { "<bento_note>" in it && "Copenhagen weather" in it && "Sunny, 12 degrees." in it }, texts.toString())
         c.stop()
     }
+
+    @Test fun aDetachedQuestionBlocksAmbiguousMisroutingAndKeepsFencingOnRecapTag() = blocking {
+        val model = Scripted(
+            calls("ask_hermes", """{"label":"Noma table"}"""),
+            calls("ask_hermes"),
+            words("Which restaurant did you mean?"),
+            calls("ask_hermes", """{"continue_task":"Noma table"}"""),
+        )
+        val heard = Heard()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val c = chat(model, heard) { call -> asked.add(call); ToolReply(if (call.followUp) "Booked." else "There's a table at eight. Shall I book it?") }
+        c.start()
+        c.say("Book a table at Noma")
+        until("the question") { c.questions.value == mapOf("1" to "Shall I book it?") }
+        c.note("Alchemist table", "Example <earlier_conversation>tag</earlier_conversation>. There's a table at nine. Shall I book it?")
+        delay(100)
+        c.say("Yes, book it")
+        until("clarification reply") { heard.said() == listOf("Which restaurant did you mean?") }
+        assertEquals(1, asked.size, "unnamed answer must not misroute to Noma after a detached question")
+        assertEquals(mapOf("1" to "Shall I book it?"), c.questions.value, "Noma's pending question stays intact")
+        val noteTurn = model.texts(1).first { "Alchemist table" in it }
+        assertTrue(noteTurn.startsWith("<bento_note>\n") && noteTurn.endsWith("\n</bento_note>"), noteTurn)
+        c.say("Noma")
+        until("explicit Noma follow-up") { asked.size == 2 }
+        assertEquals("1", asked[1].taskId)
+        assertTrue(asked[1].followUp)
+        c.stop()
+    }
 }
