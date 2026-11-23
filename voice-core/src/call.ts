@@ -165,7 +165,7 @@ function findLaterCancelCmd(text: string, resolveDirectObjectEnd?: (afterVerb: s
     if (prefixWords.length >= 2 && RESTARTED_NP.test(prefix)) continue;
     const afterVerbStart = m.index + m[0].length;
     const afterVerb = text.slice(afterVerbStart);
-    if (hasHabitualStatement(afterVerb, knownTexts)) continue;
+    if (hasHabitualStatement(text.slice(afterVerbStart - m[1].length), knownTexts)) continue;
     if (prefixWords.length > 0 && !REQUEST_LEAD.test(m[0])) {
       const lastWord = prefixWords[prefixWords.length - 1];
       if (isPluralWord(lastWord)) {
@@ -272,13 +272,15 @@ const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|to
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
 /** Trailing reading/time adverbials stripped when checking whether a `that ...` phrase is a demonstrative noun phrase ("that sales report every morning", "that staff rota aloud", "that staff meeting this week"). */
 const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
-const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|document|doc|thread|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|budget|forecast|slides|spreadsheet|story|chapter|section|paragraph|transcript|menu|itinerary|confirmation|notice|announcement|bulletin|newsletter|item|entry|agreement|clause|terms)$/i;
-const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract)$/i;
+/** Strictly singular countable nouns that cannot act as a finite transitive verb or a bare singular object of one ("that staff meeting agenda", "that sales report summary"). */
+const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|rota|article|memo|letter|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|outline|overview|template)$/i;
+const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms)$/i;
+const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
 const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
-/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff waive corkage/fees", "that airlines overbook constantly", "that hosts often cancel"), after ruling out non-pronoun demonstrative topic noun phrases ("that staff meeting agenda", "that staff training material aloud", "that sales report every morning / so slowly"). */
+/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff training material aloud", "that sales report every morning / so slowly"). */
 const SUBJECT_PRONOUN = /^(?:i|we|you|they|he|she|it)$/i;
 const COLLECTIVE_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women)$/i;
 function isThatPredicateClause(prefix: string): boolean {
@@ -294,7 +296,8 @@ function isThatPredicateClause(prefix: string): boolean {
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
-    if (AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && MANNER_TAIL_START.test(coreWords[2])))) return false;
+    // Skip the noun/verb-ambiguous head allowance for collective human subjects ("that people order twice", "that staff report twice", "that staff document safety incidents"); inanimate plural modifiers ("sales report summary", "hotels list so loudly") still pass.
+    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
     if (coreWords.length === 2 && !isPluralWord(coreWords[0]) && !COLLECTIVE_SUBJECT.test(coreWords[0])) return false;
   }
   if (THAT_PREDICATE_CLAUSE.test(prefix)) return true;
@@ -3060,15 +3063,35 @@ export class Call {
       const otherWords = TaskNames.distinctive(stripPoss(otherText));
       return labelWords.every((w) => otherWords.has(w));
     };
+    const SHORT_STOP = new Set(["the", "and", "for", "with", "from", "into", "about", "now", "yet", "too", "all", "any", "our", "its", "his", "her", "you", "not", "but", "can", "may", "was", "are", "has", "had", "did", "get", "got", "one", "two", "out", "off", "day", "way", "new", "old", "use", "let", "see", "run", "set", "put", "try", "ask", "say", "end", "bit", "lot", "own", "per", "via", "etc", "to", "of", "in", "on", "at", "by", "as", "or", "if", "is", "be", "do", "so", "no", "up", "my", "me", "us", "we", "he", "it"]);
+    const shortTokens = (s: string): Set<string> => new Set((s.toLowerCase().match(/[a-z0-9]{2,}/g) ?? []).filter((w) => !SHORT_STOP.has(w)));
+    const tailNamesShortCompetitor = (tailText: string, otherLabel: string, otherExtra: string, bestTask: Task, bestFull: number): boolean => {
+      const tailWords = shortTokens(tailText);
+      if (tailWords.size === 0) return false;
+      const bestWords = shortTokens(`${bestTask.label} ${bestTask.latest} ${bestTask.request}`);
+      const cleanOtherLabel = otherLabel.trim().toLowerCase();
+      if (cleanOtherLabel.length >= 2 && cleanOtherLabel.length <= 3 && !SHORT_STOP.has(cleanOtherLabel) && tailWords.has(cleanOtherLabel) && !bestWords.has(cleanOtherLabel)) {
+        return true;
+      }
+      if (bestFull === 0) {
+        const otherWords = shortTokens(`${otherLabel} ${otherExtra}`);
+        for (const w of tailWords) {
+          if (w.length <= 3 && otherWords.has(w) && !bestWords.has(w)) return true;
+        }
+      }
+      return false;
+    };
     const tailConflictsWithOther = (keptText: string, fullText: string, bestTask: Task, isWithPrep: boolean, isExactLabel: boolean): boolean => {
       const bestDirect = this.clauseScore(keptText, bestTask.label, bestTask.latest + " " + bestTask.request);
       const bestFull = this.clauseScore(fullText, bestTask.label, bestTask.latest + " " + bestTask.request);
+      const tailText = fullText.slice(keptText.length);
       for (const other of this.tasks.values()) {
         if (other.state !== RUNNING || other.id === bestTask.id) continue;
         const otherExtra = other.latest + " " + other.request;
         const otherDirect = this.clauseScore(keptText, other.label, otherExtra);
         const otherFull = this.clauseScore(fullText, other.label, otherExtra);
         if (!isWithPrep && otherFull > 0 && otherFull >= bestFull) return true;
+        if (!isWithPrep && tailNamesShortCompetitor(tailText, other.label, otherExtra, bestTask, bestFull)) return true;
         if (otherDirect > 0 && otherFull > otherDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${other.label} ${otherExtra}`)) return true;
         }
@@ -3078,6 +3101,7 @@ export class Call {
         const extDirect = this.clauseScore(keptText, ext.label, extExtra);
         const extFull = this.clauseScore(fullText, ext.label, extExtra);
         if (extFull > 0 && extFull >= bestFull) return true;
+        if (tailNamesShortCompetitor(tailText, ext.label, extExtra, bestTask, bestFull)) return true;
         if (extDirect > 0 && extFull > extDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${ext.label} ${extExtra}`)) return true;
         }

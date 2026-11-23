@@ -1650,6 +1650,11 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop mentioning that they send notes and cancel the Noma table every morning",
     "Stop mentioning that staff rewrite policy and cancel the Noma table",
     "Stop mentioning that staff update policy and cancel the Noma table",
+    "Stop mentioning that staff document safety incidents and cancel the Noma table",
+    "Stop mentioning that people order twice and cancel the Noma table",
+    "Stop mentioning that staff report twice and cancel the Noma table",
+    "Stop mentioning that staff update so slowly and cancel the Noma table",
+    "Stop mentioning that people order again and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2333,6 +2338,39 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ar.advance(0.1);
   assert.equal(s10ar.commands.filter((c) => c.type === "tool.cancel").length, 0, "unrelated task named literally 'All the Time' must not disable habitual guard for Noma table");
 
+  // 8u) Exact habitual-phrase label ("All the Time") still cancels after a "Never mind" lead-in, and short competing recipients ("PDF for HR" vs "PDF for QA") block cancelling the wrong PDF run.
+  const s10as = chat();
+  s10as.type("Search All the Time");
+  s10as.calls("ask_hermes", { label: "All the Time" });
+  s10as.advance(0.1);
+  s10as.type("Never mind the dropped call just cancel All the Time");
+  s10as.calls("cancel_task", { task: "All the Time" });
+  s10as.advance(0.1);
+  assert.equal(s10as.commands.filter((c) => c.type === "tool.cancel").length, 1, "idiom lead-in 'Never mind the dropped call just cancel All the Time' must cancel exact label 'All the Time'");
+
+  const s10at = chat();
+  s10at.type("Export the PDF for QA");
+  s10at.calls("ask_hermes", { label: "PDF" });
+  s10at.advance(0.1);
+  s10at.type("Export the PDF for HR");
+  s10at.calls("ask_hermes", { label: "HR" });
+  s10at.advance(0.1);
+  s10at.type("Never mind the dropped call just end the PDF for HR");
+  s10at.calls("cancel_task", { task: "PDF" });
+  s10at.advance(0.1);
+  assert.equal(s10at.commands.filter((c) => c.type === "tool.cancel").length, 0, "owned short recipient 'HR' in 'PDF for HR' must block cancelling QA 'PDF'");
+
+  const s10au = chat();
+  s10au.push({ type: "note", id: "call-1-28", label: "HR", text: "Exporting.", active: true, request: "Export the PDF for HR" });
+  s10au.advance(0.1);
+  s10au.type("Export the PDF for QA");
+  s10au.calls("ask_hermes", { label: "PDF" });
+  s10au.advance(0.1);
+  s10au.type("Never mind the dropped call just end the PDF for HR");
+  s10au.calls("cancel_task", { task: "PDF" });
+  s10au.advance(0.1);
+  assert.equal(s10au.commands.filter((c) => c.type === "tool.cancel").length, 0, "detached short recipient 'HR' in 'PDF for HR' must block cancelling QA 'PDF'");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2364,6 +2402,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff rota aloud and cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
+    "Stop reading that sales report summary and cancel the weather",
     "Stop reading that sales report so slowly and cancel the weather",
     "Stop reading that sales report twice and cancel the weather",
     "Stop reading that sales report word for word and cancel the weather",
