@@ -6,8 +6,6 @@ export interface ResultEntry {
   label: string;
   text: string;
   failed: boolean;
-  taskId?: string;
-  at: number;
 }
 
 /**
@@ -58,13 +56,6 @@ export class ResultStore {
 
   byId(id: number): ResultEntry | null {
     return this.entries.find((e) => e.id === id) ?? null;
-  }
-
-  latestForTask(taskId: string): ResultEntry | null {
-    for (let i = this.entries.length - 1; i >= 0; i--) {
-      if (this.entries[i].taskId === taskId) return this.entries[i];
-    }
-    return null;
   }
 
   open(id?: number): ResultEntry | null {

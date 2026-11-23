@@ -880,7 +880,7 @@ body.in-session #empty { display: none; }
 }
 .res-title .res-snippet {
   display: none;
-  color: var(--mute);
+  color: var(--ink-2);
   font-weight: 450;
   font-size: 11.5px;
   overflow: hidden;
@@ -1098,6 +1098,7 @@ body.in-session #empty { display: none; }
   align-items: center;
   gap: 5px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .mode-wrap {
@@ -1144,7 +1145,7 @@ body.in-session #empty { display: none; }
 
 #text {
   flex: 1;
-  min-width: 100px;
+  min-width: 60px;
   border: 0;
   background: transparent;
   padding: 5px 5px;
@@ -2139,6 +2140,27 @@ textarea {
   margin: 0;
 }
 
+/* Responsive: narrow desktop stacks composer so status and Continue never crowd the input */
+@media (max-width: 1120px) {
+  .composer {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px;
+    gap: 6px;
+  }
+  #bar {
+    border-left: 0;
+    padding: 2px 2px 0;
+  }
+  #bar #status {
+    margin-right: auto;
+    max-width: none;
+  }
+  body.in-session #bar .controls {
+    margin-left: auto;
+  }
+}
+
 /* Responsive: tablet and mobile */
 @media (max-width: 920px) {
   header {
@@ -2193,6 +2215,8 @@ textarea {
   .line.result { margin-left: 0; width: 100%; max-width: 100%; }
   .line.result.collapsed .res-snippet { display: none; }
   .line.result.collapsed .res-label { max-width: none; flex: 1; }
+  .res-btn { min-height: 28px; padding: 3px 9px; font-size: 11.5px; }
+  .res-btn.res-fold { min-width: 28px; padding: 3px 8px; }
 
   #dock { padding: 6px 8px max(8px, env(safe-area-inset-bottom)); }
   .composer {

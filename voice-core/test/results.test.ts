@@ -35,12 +35,12 @@ describe("ResultStore", () => {
     const store = new ResultStore();
     assert.equal(store.open(), null);
 
-    const a = store.add({ agent: "hermes", label: "Lights", text: "Turned on.", failed: false, taskId: "t1", at: 1 });
-    const b = store.add({ agent: "t3", label: "Auto scroll", text: "Opened PR #94.", failed: false, taskId: "t2", at: 2 });
-    const c = store.add({ agent: "hermes", label: "Check model", text: "Vertex AI.", failed: false, taskId: "t1", at: 3 });
+    const a = store.add({ agent: "hermes", label: "Lights", text: "Turned on.", failed: false });
+    const b = store.add({ agent: "t3", label: "Auto scroll", text: "Opened PR #94.", failed: false });
+    const c = store.add({ agent: "hermes", label: "Check model", text: "Vertex AI.", failed: false });
 
     assert.equal(store.count, 3);
-    assert.equal(store.latestForTask("t1")?.id, c.id);
+    assert.equal(store.byId(b.id)?.label, "Auto scroll");
     assert.equal(store.open()?.id, c.id);
     assert.equal(store.currentIndex, 2);
 

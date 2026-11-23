@@ -76,6 +76,7 @@ const tasks = new Map<string, TaskView>();
 const resultStore = new ResultStore();
 const resultRows = new Map<number, HTMLElement>();
 let doneToggledByUser = false;
+let inspectorOpener: HTMLElement | null = null;
 let earlierActiveCount = 0;
 let earlierWaitingCount = 0;
 let counts = { mic: 0, play: 0, sent: 0 };
@@ -186,7 +187,7 @@ function applyDensity(choice: string) {
   for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#density-picker button"))) {
     btn.classList.toggle("on", btn.dataset.density === normalized);
   }
-  requestAnimationFrame(syncAllResultClamps);
+  requestAnimationFrame(() => syncAllResultClamps());
 }
 
 // The screen.
@@ -375,7 +376,7 @@ function note(text: string) {
 }
 
 function syncResultClamp(row: HTMLElement) {
-  if (row.classList.contains("collapsed")) return;
+  if ($("talk").hidden || row.classList.contains("collapsed")) return;
   const body = row.querySelector<HTMLElement>(".body");
   const foot = row.querySelector<HTMLElement>(".res-foot");
   const more = row.querySelector<HTMLButtonElement>(".more");
@@ -392,11 +393,25 @@ function syncResultClamp(row: HTMLElement) {
   more.textContent = "Show full";
 }
 
-function syncAllResultClamps() {
+function syncAllResultClamps(syncScroll = true) {
+  if ($("talk").hidden) return;
+  const measured: { row: HTMLElement; foot: HTMLElement; more: HTMLButtonElement; open: boolean; overflows: boolean }[] = [];
   for (const row of resultRows.values()) {
-    if (row.isConnected) syncResultClamp(row);
+    if (!row.isConnected || row.classList.contains("collapsed")) continue;
+    const body = row.querySelector<HTMLElement>(".body");
+    const foot = row.querySelector<HTMLElement>(".res-foot");
+    const more = row.querySelector<HTMLButtonElement>(".more");
+    if (!body || !foot || !more) continue;
+    const open = row.classList.contains("open");
+    const overflows = open || body.scrollHeight > body.clientHeight + 4;
+    measured.push({ row, foot, more, open, overflows });
   }
-  transcriptScroll.onResize();
+  for (const { row, foot, more, open, overflows } of measured) {
+    row.classList.toggle("clamped", overflows);
+    foot.hidden = !overflows;
+    more.textContent = open ? "Show less" : "Show full";
+  }
+  if (syncScroll) transcriptScroll.onResize();
 }
 
 function setResultCollapsed(row: HTMLElement, collapsed: boolean) {
@@ -415,15 +430,23 @@ function setResultCollapsed(row: HTMLElement, collapsed: boolean) {
 
 function syncResultsChrome() {
   const count = resultStore.count;
+  const isOpen = resultStore.current != null;
   const btn = $("results-btn");
   btn.hidden = count === 0;
   $("results-count").textContent = count > 0 ? String(count) : "";
-  btn.classList.toggle("on", resultStore.current != null);
-  if (resultStore.current) {
+  btn.classList.toggle("on", isOpen);
+  btn.setAttribute("aria-pressed", String(isOpen));
+  if (isOpen) {
     const idx = resultStore.currentIndex;
+    const prevBtn = $<HTMLButtonElement>("inspector-prev");
+    const nextBtn = $<HTMLButtonElement>("inspector-next");
+    const prevWasFocused = document.activeElement === prevBtn;
+    const nextWasFocused = document.activeElement === nextBtn;
     $("inspector-pos").textContent = `${idx + 1} / ${count}`;
-    $<HTMLButtonElement>("inspector-prev").disabled = idx <= 0;
-    $<HTMLButtonElement>("inspector-next").disabled = idx >= count - 1;
+    prevBtn.disabled = idx <= 0;
+    nextBtn.disabled = idx >= count - 1;
+    if (prevWasFocused && prevBtn.disabled) (nextBtn.disabled ? $("inspector-back") : nextBtn).focus();
+    else if (nextWasFocused && nextBtn.disabled) (prevBtn.disabled ? $("inspector-back") : prevBtn).focus();
   }
 }
 
@@ -443,11 +466,6 @@ function renderInspector() {
   const pill = $("inspector-pill");
   pill.hidden = !entry.failed;
   pill.textContent = entry.failed ? "Failed" : "";
-  const idx = resultStore.currentIndex;
-  const total = resultStore.count;
-  $("inspector-pos").textContent = `${idx + 1} / ${total}`;
-  $<HTMLButtonElement>("inspector-prev").disabled = idx <= 0;
-  $<HTMLButtonElement>("inspector-next").disabled = idx >= total - 1;
   $<HTMLButtonElement>("inspector-locate").disabled = !resultRows.get(entry.id)?.isConnected;
   const body = $("inspector-body");
   body.innerHTML = markdown(entry.text);
@@ -455,21 +473,42 @@ function renderInspector() {
 }
 
 function openInspector(id?: number, opener?: HTMLElement | null) {
+  const wasOpen = resultStore.current != null;
   const entry = resultStore.open(id);
   if (!entry) return;
+  if (!wasOpen || opener) inspectorOpener = opener ?? (document.activeElement as HTMLElement | null);
   renderInspector();
   if (mobileLayout.matches) setTasksOpen(true, opener);
+  $("inspector-back").focus();
 }
 
-function closeInspector() {
+function closeInspector(restoreFocus = false) {
+  const wasOpen = resultStore.current != null;
   resultStore.close();
   renderInspector();
+  if (!wasOpen) return;
+  const target = inspectorOpener;
+  inspectorOpener = null;
+  if (!restoreFocus) return;
+  const inDrawer = mobileLayout.matches && document.body.classList.contains("tasks-open");
+  const canFocusTarget = Boolean(
+    target && target.isConnected && !target.hidden && target.offsetParent !== null && (!inDrawer || $("side").contains(target)),
+  );
+  if (canFocusTarget) {
+    target!.focus();
+  } else if (!$("results-btn").hidden && $("results-btn").offsetParent !== null) {
+    $("results-btn").focus();
+  } else if (inDrawer) {
+    $("tasks-close").focus();
+  } else {
+    $("text").focus();
+  }
 }
 
-function result(agent: string, label: string, text: string, failed = false, taskId?: string): { row: HTMLElement; entry: ResultEntry } {
+function result(agent: string, label: string, text: string, failed = false): { row: HTMLElement; entry: ResultEntry } {
   $("empty").hidden = true;
   const normalizedAgent = agent === "t3" ? "t3" : "hermes";
-  const entry = resultStore.add({ agent: normalizedAgent, label, text, failed, taskId, at: Date.now() });
+  const entry = resultStore.add({ agent: normalizedAgent, label, text, failed });
   const row = document.createElement("div");
   row.className = `line result ${normalizedAgent === "t3" ? "t3" : ""} ${failed ? "failed" : ""}`.trim();
   row.dataset.resultId = String(entry.id);
@@ -543,7 +582,9 @@ function updateTaskChrome() {
   badge.hidden = activeTotal === 0;
   badge.textContent = String(activeTotal);
   badge.classList.toggle("warn", attentionTotal > 0);
-  $("inspector-back").classList.toggle("warn", attentionTotal > 0);
+  const backBtn = $("inspector-back");
+  backBtn.classList.toggle("warn", attentionTotal > 0);
+  backBtn.textContent = attentionTotal > 0 ? `← Tasks (${attentionTotal})` : "← Tasks";
 
   const bar = $("mobile-tasks-bar");
   const showBar = activeTotal > 0;
@@ -748,7 +789,7 @@ function showStatus(message?: string) {
   if (holding) text = "Talking (hold)";
   if (message) text = `${text}: ${message}`;
   if (coreStatus !== "ended" || message) {
-    $("statustext").textContent = text;
+    if ($("statustext").textContent !== text) $("statustext").textContent = text;
     $("status").title = text;
   }
   $<HTMLButtonElement>("hush").classList.toggle("live", speaking || (typed && thinking));
@@ -756,7 +797,7 @@ function showStatus(message?: string) {
   const bar = $("callbar");
   bar.hidden = !callId;
   if (callId) {
-    $("callbar-state").textContent = text;
+    if ($("callbar-state").textContent !== text) $("callbar-state").textContent = text;
     $("calltimer").hidden = typed;
     if (!typed) $("calltimer").textContent = formatClock(now() - startedAt);
     const vizMode = typed ? (thinking ? "thinking" : "idle")
@@ -951,7 +992,7 @@ async function tool(c: Command) {
     if (!runs.has(c.run)) return;
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
-    const { row, entry } = result(agent, c.label, text, failed, c.taskId);
+    const { row, entry } = result(agent, c.label, text, failed);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
     if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
     if (view) { view.result = row; view.resultId = entry.id; view.resultText = text; showTasks(); }
@@ -1292,6 +1333,7 @@ function tabs() {
       }
       $("tasks-toggle").hidden = name !== "talk";
       setTasksOpen(false);
+      if (name === "talk") requestAnimationFrame(() => syncAllResultClamps());
     };
   }
   $("gear").onclick = () => { $("settings").hidden = false; };
@@ -1315,18 +1357,26 @@ function typing(): boolean {
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
 }
 
+function interactiveFocus(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  return !!el && Boolean(el.closest("button, a[href], summary, [role='button'], [tabindex]:not([tabindex='-1'])"));
+}
+
 function keys() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!$("settings").hidden) { $("settings").hidden = true; return; }
       if (document.body.classList.contains("tasks-open") && mobileLayout.matches && !$("talk").hidden) { setTasksOpen(false); return; }
+      const speakingNow = Boolean(callId) && ((medium === "text" && thinking) || (medium !== "text" && audio.queued > 0.05));
+      if (speakingNow) { push({ type: "interrupt" }); audio.flush(); return; }
+      if (resultStore.current && !$("talk").hidden) { closeInspector(true); return; }
       if (callId) { push({ type: "interrupt" }); audio.flush(); return; }
       return;
     }
     if (typing() || !$("settings").hidden || document.body.classList.contains("tasks-open") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") { setMuted(!muted); e.preventDefault(); }
     else if (e.key === "/") { $("text").focus(); e.preventDefault(); }
-    else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
+    else if (e.code === "Space" && callId && muted && !e.repeat && !interactiveFocus()) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
   });
   document.addEventListener("keyup", (e) => {
     if (e.code === "Space" && holding) { holding = false; push({ type: "mute" }); showStatus(); }
@@ -1403,8 +1453,8 @@ async function main() {
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
-  $("results-btn").onclick = () => { if (resultStore.current) closeInspector(); else openInspector(undefined, $("results-btn")); };
-  $("inspector-back").onclick = () => closeInspector();
+  $("results-btn").onclick = () => { if (resultStore.current) closeInspector(true); else openInspector(undefined, $("results-btn")); };
+  $("inspector-back").onclick = () => closeInspector(true);
   $("inspector-prev").onclick = () => { resultStore.step(-1); renderInspector(); };
   $("inspector-next").onclick = () => { resultStore.step(1); renderInspector(); };
   $("inspector-copy").onclick = () => {
@@ -1425,14 +1475,14 @@ async function main() {
     if (row.classList.contains("collapsed")) setResultCollapsed(row, false);
     if (row !== $("transcript").lastElementChild) transcriptScroll.unpin();
     else transcriptScroll.syncFromPosition();
-    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.scrollIntoView({ behavior: "smooth", block: "start" });
     row.classList.remove("located");
     void row.offsetWidth;
     row.classList.add("located");
   };
   $("donebox").querySelector("summary")!.addEventListener("click", () => { doneToggledByUser = true; });
   $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open && doneToggledByUser) $("donebox").scrollIntoView({ block: "nearest" }); });
-  window.addEventListener("resize", () => requestAnimationFrame(syncAllResultClamps), { passive: true });
+  window.addEventListener("resize", () => requestAnimationFrame(() => syncAllResultClamps()), { passive: true });
   $("say").onsubmit = (e) => void submitText(e);
   $("text").addEventListener("input", syncComposer);
   const transcriptPane = $("transcript");
@@ -1440,7 +1490,7 @@ async function main() {
   transcriptPane.addEventListener("scrollend", () => transcriptScroll.onScrollEnd(), { passive: true });
   transcriptPane.addEventListener("wheel", (e) => { if (e.deltaY < 0) transcriptScroll.cancelJump(); }, { passive: true });
   transcriptPane.addEventListener("touchstart", () => transcriptScroll.cancelJump(), { passive: true });
-  if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => transcriptScroll.onResize()).observe(transcriptPane);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => { syncAllResultClamps(false); transcriptScroll.onResize(); }).observe(transcriptPane);
   $("jumpbottom").onclick = () => transcriptScroll.jumpToBottom();
   syncComposer();
   tabs();
