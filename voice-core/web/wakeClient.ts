@@ -306,13 +306,29 @@ export interface DeferredMicFrame {
  * a gap frame before new playback never silences gap audio, never discards a valid wake hit,
  * and never replays older suppressed audio after newer audio already sent to the core.
  */
+function validBriefPcmBytes(pcm: unknown): number {
+  if (typeof pcm !== "string" || pcm.length === 0 || pcm.length % 4 !== 0) return -1;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(pcm)) return -1;
+  const pad = pcm.endsWith("==") ? 2 : pcm.endsWith("=") ? 1 : 0;
+  const size = Math.floor((pcm.length * 3) / 4) - pad;
+  return size > 0 && size % 2 === 0 && size <= 2_880_000 ? size : -1;
+}
+
+export interface WakeAudioGateLimits {
+  deliverMax?: number;
+  briefWait?: number;
+}
+
 export class WakeAudioGate {
   private whileSpeaking = "send";
   private speechUntil = 0;
-  private announcerFrom = 0;
-  private announcerUntil = 0;
-  private pendingHostBriefs = 0;
-  private requestedBriefIds = new Set<string>();
+  private deliverMax = 30;
+  private briefWait = 3;
+  private activeBrief: { from: number; until: number; briefAt: number } | null = null;
+  private readyBriefs: number[] = [];
+  private requestedBriefs = new Map<string, number>();
+  private lastCut: { at: number; briefAt: number } | null = null;
+  private lastStoppedBriefAt: number | null = null;
   private replayFloorSeq = 0;
   private deferred: DeferredMicFrame[] = [];
   private readonly maxDeferred: number;
@@ -321,13 +337,16 @@ export class WakeAudioGate {
     this.maxDeferred = maxDeferred;
   }
 
-  reset(whileSpeaking = "send", floorSeq = 0): void {
+  reset(whileSpeaking = "send", floorSeq = 0, limits: WakeAudioGateLimits = {}): void {
     this.whileSpeaking = whileSpeaking;
     this.speechUntil = 0;
-    this.announcerFrom = 0;
-    this.announcerUntil = 0;
-    this.pendingHostBriefs = 0;
-    this.requestedBriefIds.clear();
+    this.deliverMax = typeof limits.deliverMax === "number" ? limits.deliverMax : 30;
+    this.briefWait = typeof limits.briefWait === "number" ? limits.briefWait : 3;
+    this.activeBrief = null;
+    this.readyBriefs = [];
+    this.requestedBriefs.clear();
+    this.lastCut = null;
+    this.lastStoppedBriefAt = null;
     this.replayFloorSeq = floorSeq;
     this.deferred = [];
   }
@@ -340,8 +359,8 @@ export class WakeAudioGate {
     return this.whileSpeaking !== "send" && t < this.speechUntil;
   }
 
-  onBriefRequest(id: string): void {
-    if (id) this.requestedBriefIds.add(id);
+  onBriefRequest(id: string, eventTime: number): void {
+    if (id) this.requestedBriefs.set(id, eventTime);
   }
 
   onPlay(pcmBase64: string, eventTime: number, source?: string): void {
@@ -349,22 +368,64 @@ export class WakeAudioGate {
     const pcmBytes = Math.max(0, Math.floor((pcmBase64.length * 3) / 4) - pad);
     this.speechUntil = Math.max(this.speechUntil, eventTime) + pcmBytes / 48_000;
     if (source === "announcer") {
-      this.pendingHostBriefs = Math.max(0, this.pendingHostBriefs - 1);
-      this.announcerFrom = eventTime;
-      this.announcerUntil = this.speechUntil;
+      const briefAt = this.readyBriefs.shift() ?? eventTime;
+      this.activeBrief = { from: eventTime, until: this.speechUntil, briefAt };
+      this.lastCut = null;
+      this.lastStoppedBriefAt = null;
     }
   }
 
-  onFlush(eventTime: number, cause?: string): void {
+  onFlush(eventTime: number, hushed = false): void {
     this.speechUntil = Math.min(this.speechUntil, eventTime);
-    if (eventTime < this.announcerUntil) {
-      // Match call.ts cutAnnouncement(): a brief cut at >= 80% (or explicitly stopped/hushed) is not re-queued.
-      const played = (eventTime - this.announcerFrom) / Math.max(0.1, this.announcerUntil - this.announcerFrom);
-      if (played < 0.8 && cause !== "interrupt" && cause !== "stop") {
-        this.pendingHostBriefs++;
+    if (this.activeBrief && eventTime >= this.activeBrief.until) {
+      this.activeBrief = null;
+    }
+    if (this.activeBrief) {
+      const a = this.activeBrief;
+      this.activeBrief = null;
+      // Match call.ts cutAnnouncement() and hushReply(): a brief hushed, >= 80% played,
+      // or past deliverMax is not re-queued.
+      const played = (eventTime - a.from) / Math.max(0.1, a.until - a.from);
+      if (!hushed && played < 0.8 && eventTime - a.briefAt < this.deliverMax) {
+        this.readyBriefs.push(a.briefAt);
+        this.lastCut = { at: eventTime, briefAt: a.briefAt };
+      } else {
+        this.lastCut = null;
       }
-      this.announcerFrom = 0;
-      this.announcerUntil = 0;
+      return;
+    }
+    // Saying "stop" over a brief cuts it on ACTIVITY_START and then hushes lastCut within 6 s.
+    if (hushed && this.lastCut && eventTime - this.lastCut.at < 6) {
+      const idx = this.readyBriefs.lastIndexOf(this.lastCut.briefAt);
+      if (idx >= 0) {
+        this.readyBriefs.splice(idx, 1);
+        this.lastStoppedBriefAt = this.lastCut.briefAt;
+      }
+      this.lastCut = null;
+    }
+  }
+
+  /** Mirrors core command side effects for playback, flushes, briefs, and voice stop commands. */
+  observeCommands(
+    commands: readonly { type: string; pcm?: unknown; source?: unknown; id?: unknown; command?: unknown; message?: unknown }[],
+    eventTime: number,
+    eventType?: string,
+  ): void {
+    const hushed =
+      eventType === "interrupt" ||
+      eventType === "stop" ||
+      commands.some((c) => c.type === "voiceCommand" && (c.command === "stop" || c.command === "cancelAll"));
+    for (const c of commands) {
+      if (c.type === "play" && typeof c.pcm === "string") {
+        this.onPlay(c.pcm, eventTime, typeof c.source === "string" ? c.source : undefined);
+      } else if (c.type === "flush") {
+        this.onFlush(eventTime, hushed);
+      } else if (c.type === "brief" && typeof c.id === "string") {
+        this.onBriefRequest(c.id, eventTime);
+      } else if (c.type === "log" && c.message === "not a stop after all" && this.lastStoppedBriefAt != null) {
+        this.readyBriefs.push(this.lastStoppedBriefAt);
+        this.lastStoppedBriefAt = null;
+      }
     }
   }
 
@@ -372,22 +433,30 @@ export class WakeAudioGate {
    * Called immediately before pushing an event to the core. Returns any deferred unsuppressed
    * gap frames that must reach the core first so new playback cannot silence them.
    */
-  beforePush(event: { type?: unknown; id?: unknown; pcm?: unknown; text?: unknown; data?: unknown }): { pcm: string; t: number }[] {
-    if (
-      event.type === "brief.ready" &&
-      typeof event.id === "string" &&
-      this.requestedBriefIds.delete(event.id) &&
-      typeof event.pcm === "string" &&
-      event.pcm.length > 0 &&
-      typeof event.text === "string" &&
-      event.text.trim().length > 0
-    ) {
-      this.pendingHostBriefs++;
+  beforePush(
+    event: { type?: unknown; id?: unknown; pcm?: unknown; text?: unknown; data?: unknown },
+    eventTime = 0,
+  ): { pcm: string; t: number }[] {
+    let acceptedBrief = false;
+    if (event.type === "brief.ready" && typeof event.id === "string") {
+      const askedAt = this.requestedBriefs.get(event.id);
+      if (askedAt !== undefined) {
+        this.requestedBriefs.delete(event.id);
+        const valid =
+          eventTime - askedAt < this.briefWait &&
+          validBriefPcmBytes(event.pcm) > 0 &&
+          typeof event.text === "string" &&
+          event.text.trim().length > 0;
+        if (valid) {
+          this.readyBriefs.push(eventTime);
+          acceptedBrief = true;
+        }
+      }
     }
     if (this.deferred.length === 0) return [];
     const canStartPlayback =
-      event.type === "brief.ready" ||
-      (this.pendingHostBriefs > 0 && event.type === "tick") ||
+      acceptedBrief ||
+      (this.readyBriefs.length > 0 && event.type === "tick") ||
       (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"'));
     return canStartPlayback ? this.flushDeferred() : [];
   }

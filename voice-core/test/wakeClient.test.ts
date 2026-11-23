@@ -367,7 +367,7 @@ test("CallAudio retries open() cleanly after an AudioContext constructor failure
 });
 
 /** Helper mirroring web/app.ts's Call + WakeClient + WakeAudioGate integration against the real Call core. */
-function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string, unknown> = {}) {
+function createCoreHarness(configOverrides: Record<string, unknown> = {}) {
   const worker = new MockWorker();
   const gate = new WakeAudioGate();
   let t = 0;
@@ -384,7 +384,10 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
     ...configOverrides,
   } as Partial<CallConfig> & Record<string, unknown>);
   const call = new Call(config);
-  gate.reset(config.mic.whileSpeaking, 0);
+  gate.reset(config.mic.whileSpeaking, 0, {
+    deliverMax: config.limits.deliverMax,
+    briefWait: config.announce.briefWait,
+  });
 
   const client = new WakeClient(
     {
@@ -409,6 +412,7 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
   worker.emit({ type: "ready", gen: gen(), modelId: "pennyworth", warmupMs: 10 });
 
   function run(out: Command[], eventTime: number, eventType?: string) {
+    gate.observeCommands(out, eventTime, eventType);
     for (const c of out) {
       commands.push(c);
       if (c.type === "ws.connect" && c.purpose !== "captions") {
@@ -420,12 +424,6 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
         const raw = Buffer.from(parsed.realtimeInput.audio.data, "base64");
         const firstSample = raw.length >= 2 ? raw.readInt16LE(0) : 0;
         sentAudioTags.push(firstSample);
-      } else if (c.type === "play") {
-        gate.onPlay(c.pcm, eventTime, c.source);
-      } else if (c.type === "flush") {
-        gate.onFlush(eventTime, eventType);
-      } else if (c.type === "brief") {
-        gate.onBriefRequest(c.id);
       } else if (c.type === "wakeword") {
         coreWantsWake = c.on;
         if (c.on) {
@@ -438,7 +436,7 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
   }
 
   function push(event: Record<string, unknown>, at = t): Command[] {
-    for (const item of gate.beforePush(event)) {
+    for (const item of gate.beforePush(event, at)) {
       push({ type: "mic", pcm: item.pcm }, item.t);
     }
     const out = call.push({ ...event, t: at } as Event);
@@ -542,25 +540,42 @@ test("WakeAudioGate: resuming playback during a gap keeps wake interruption work
 test("WakeAudioGate: queued brief.ready flushes gap audio without allowing a late wake hit to reverse audio", () => {
   const h = createCoreHarness({
     attention: { mode: "window", afterWake: 1.0, window: 1.0, afterQuestion: 2.0, afterHandOff: 0, afterAnnouncement: 0 },
-    announce: { by: "host", engaged: 6, lull: 3, attach: 0.4, briefWait: 2, maxWait: 8, maxWords: 28 },
+    announce: { by: "host", engaged: 6, lull: 3, attach: 0.4, briefWait: 5, maxWait: 8, maxWords: 28 },
   });
   h.start();
-  for (let step = 0.2; step <= 1.4; step += 0.2) h.advanceTo(step);
+  // Start a task before going dormant so a real host brief can be requested and delivered.
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 0.1);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "Check mail" } } }) }, 0.12);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 0.14);
+  h.push({
+    type: "ws.message",
+    sid: h.getSid(),
+    data: JSON.stringify({ toolCall: { functionCalls: [{ id: "tc_q", name: "ask_hermes", args: {} }] } }),
+  }, 0.2);
+  h.advanceTo(0.4);
+  h.advanceTo(0.6);
+  const tc = h.commands.find((c): c is Extract<Command, { type: "tool.call" }> => c.type === "tool.call")!;
+  for (let step = 0.8; step <= 2.2; step += 0.2) h.advanceTo(step);
+  assert.ok(h.commands.some((c) => c.type === "status" && c.status === "dormant"));
   h.sentAudioTags.length = 0;
 
-  h.modelAudio(0.2, 2.0);
-  const seq1 = h.micFrame(1001, 2.1);
-  const seq2 = h.micFrame(2002, 2.22);
+  h.modelAudio(0.2, 2.4); // plays until 2.6
+  const seq1 = h.micFrame(1001, 2.5);
+  // Task finishes at 2.55 (toneAt = 2.55, so brief.ready at 2.64 waits for tone < 0.6 s and queues without playing yet).
+  h.push({ type: "tool.result", run: tc.run, text: "No new mail." }, 2.55);
+  const briefReq = h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief")!;
+  h.micFrame(2002, 2.62);
   assert.equal(h.gate.hasDeferred, true);
 
-  // A brief.ready arrives at t = 2.24 (unknown/queued brief does not start playback immediately).
+  // A valid requested brief.ready arrives at t = 2.64 (queued while waiting out the result tone):
+  // flushes frame 2 into dormant pre-roll without playing yet.
   const briefPcm = Buffer.alloc(48_000, 1).toString("base64");
-  h.push({ type: "brief.ready", id: "unknown-or-queued", text: "Done.", pcm: briefPcm }, 2.24);
+  h.push({ type: "brief.ready", id: briefReq.id, text: "No new mail.", pcm: briefPcm }, 2.64);
   assert.equal(h.gate.hasDeferred, false);
 
-  // Late wake hit arrives at t = 2.26: wakes the dormant call, drains unsuppressed frame 2 from pre-roll,
+  // Late wake hit arrives at t = 2.66: wakes the dormant call, drains unsuppressed frame 2 from pre-roll,
   // and skips older suppressed frame 1 instead of appending it after frame 2.
-  h.setT(2.26);
+  h.setT(2.66);
   h.emitDetected(seq1, 1001);
 
   const nonzero = h.sentAudioTags.filter((tag) => tag !== 0);
@@ -716,4 +731,79 @@ test("WakeAudioGate: cutting a host brief at >= 80% played does not leave pendin
   assert.equal(h.gate.hasDeferred, true, "87.5% cut brief must not leave tick flushing deferred audio");
   h.emitDetected(seq1, 4004);
   assert.deepEqual(h.sentAudioTags.filter((tag) => tag !== 0), [4004, 5005]);
+});
+
+test("WakeAudioGate: rejected 1-byte PCM, deliverMax drop, and voice 'stop' over brief never leave tick flushing deferred audio", () => {
+  const triggerBrief = (h: ReturnType<typeof createCoreHarness>, id: string) => {
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 0.22);
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "Check status" } } }) }, 0.24);
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 0.26);
+    h.push({
+      type: "ws.message",
+      sid: h.getSid(),
+      data: JSON.stringify({ toolCall: { functionCalls: [{ id, name: "ask_hermes", args: {} }] } }),
+    }, 0.3);
+    h.advanceTo(0.45);
+    h.advanceTo(0.65);
+    const tc = h.commands.find((c): c is Extract<Command, { type: "tool.call" }> => c.type === "tool.call")!;
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 0.68);
+    h.push({ type: "tool.result", run: tc.run, text: "All green." }, 0.7);
+    return h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief")!;
+  };
+
+  const assertCleanPlaybackEndWake = (h: ReturnType<typeof createCoreHarness>, startAt: number, label: string) => {
+    h.sentAudioTags.length = 0;
+    h.modelAudio(0.2, startAt);
+    const seq1 = h.micFrame(4004, startAt + 0.1);
+    h.micFrame(5005, startAt + 0.22);
+    assert.equal(h.gate.hasDeferred, true, `${label}: gap frame should defer`);
+    h.advanceTo(startAt + 0.25);
+    assert.equal(h.gate.hasDeferred, true, `${label}: tick must not flush deferred audio`);
+    h.emitDetected(seq1, 4004);
+    assert.deepEqual(h.sentAudioTags.filter((tag) => tag !== 0), [4004, 5005], `${label}: full wake tail must replay`);
+  };
+
+  // Case 1: 1-byte PCM rejected by call.ts (odd byte length).
+  const badPcm = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  badPcm.start();
+  badPcm.advanceTo(0.2);
+  const badReq = triggerBrief(badPcm, "tc_bad");
+  badPcm.push({ type: "brief.ready", id: badReq.id, text: "All green.", pcm: Buffer.alloc(1, 1).toString("base64") }, 1.5);
+  assertCleanPlaybackEndWake(badPcm, 2.1, "1-byte PCM");
+
+  // Case 2: brief cut below 80% after deliverMax has elapsed (call.ts drops it instead of re-queueing).
+  const expired = createCoreHarness({
+    limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05, wakePreRoll: 1.0, deliverMax: 0.5 },
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  expired.start();
+  expired.advanceTo(0.2);
+  const expReq = triggerBrief(expired, "tc_exp");
+  // Hold the brief during a model reply (0.8 -> 1.6), delivering brief.ready at 0.9.
+  expired.modelAudio(0.8, 0.8);
+  const briefPcm = Buffer.alloc(Math.round(0.4 * 24_000) * 2, 1).toString("base64");
+  expired.push({ type: "brief.ready", id: expReq.id, text: "All green.", pcm: briefPcm }, 0.9);
+  expired.push({ type: "ws.message", sid: expired.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 1.0);
+  // Brief starts on tick at 2.0 (2.0 - 0.9 = 1.1 >= deliverMax 0.5), then is cut below 80% at 2.1.
+  expired.advanceTo(2.0);
+  assert.ok(expired.commands.some((c) => c.type === "play" && c.source === "announcer"), "expired brief should start");
+  expired.push({ type: "wake" }, 2.1);
+  assertCleanPlaybackEndWake(expired, 2.5, "deliverMax cut");
+
+  // Case 3: user says "stop" over a host brief (ACTIVITY_START cuts < 80%, then "stop" hushes lastCut within 6 s).
+  const stopped = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  stopped.start();
+  stopped.advanceTo(0.2);
+  const stopReq = triggerBrief(stopped, "tc_stop");
+  stopped.push({ type: "brief.ready", id: stopReq.id, text: "All green.", pcm: briefPcm }, 1.5);
+  assert.ok(stopped.commands.some((c) => c.type === "play" && c.source === "announcer"), "brief should play before stop");
+  stopped.push({ type: "ws.message", sid: stopped.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 1.6);
+  stopped.push({ type: "ws.message", sid: stopped.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "stop" } } }) }, 1.7);
+  stopped.push({ type: "ws.message", sid: stopped.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 1.8);
+  stopped.push({ type: "ws.message", sid: stopped.getSid(), data: JSON.stringify({ serverContent: { turnComplete: true } }) }, 1.9);
+  assertCleanPlaybackEndWake(stopped, 2.4, "voice stop");
 });

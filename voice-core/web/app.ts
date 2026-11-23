@@ -913,7 +913,7 @@ function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
   // Flush deferred unsuppressed gap frames before any event that can start new playback
   // (advancing replayFloorSeq without resetting wakeClient, so a valid wake hit still lands).
-  const flushed = wakeGate.beforePush(event);
+  const flushed = wakeGate.beforePush(event, t);
   if (medium === "voice") {
     for (const item of flushed) {
       if (!callId) break;
@@ -930,6 +930,7 @@ function push(event: Record<string, unknown>, t = now()): Command[] {
 }
 
 function run(commands: Command[], eventTime = now(), eventType?: string) {
+  wakeGate.observeCommands(commands, eventTime, eventType);
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
@@ -969,7 +970,6 @@ function run(commands: Command[], eventTime = now(), eventType?: string) {
         break;
       case "play": {
         const t = now();
-        wakeGate.onPlay(c.pcm, eventTime, typeof c.source === "string" ? c.source : undefined);
         // A reply starting: from the end of the user's speech to its first sound.
         if (!metrics.replied && audio.queued < 0.05 && t - metrics.lastPlay > 0.6 && metrics.lastVoice > 0 && t - metrics.lastVoice < 10) {
           metrics.reply.push(t - metrics.lastVoice);
@@ -983,12 +983,8 @@ function run(commands: Command[], eventTime = now(), eventType?: string) {
         break;
       }
       case "flush":
-        wakeGate.onFlush(eventTime, eventType);
         audio.flush();
         log("out", "flush", "out");
-        break;
-      case "brief":
-        if (typeof c.id === "string") wakeGate.onBriefRequest(c.id);
         break;
       case "cue":
         audio.cue(c.pcm);
@@ -1346,7 +1342,12 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     startedAt = now();
     muted = given.muted === true;
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
-    wakeGate.reset(typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send", wakeClient.lastSeq);
+    const limitsCfg = given.limits && typeof given.limits === "object" ? (given.limits as Record<string, unknown>) : null;
+    const announceCfg = given.announce && typeof given.announce === "object" ? (given.announce as Record<string, unknown>) : null;
+    wakeGate.reset(typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send", wakeClient.lastSeq, {
+      deliverMax: typeof limitsCfg?.deliverMax === "number" ? limitsCfg.deliverMax : 30,
+      briefWait: typeof announceCfg?.briefWait === "number" ? announceCfg.briefWait : 3,
+    });
     wakePeriodCallId = null;
     wakeClient.reset();
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
