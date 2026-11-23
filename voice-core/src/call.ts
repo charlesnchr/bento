@@ -3342,31 +3342,35 @@ export class Call {
   ]);
   private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b/gi;
   private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/i;
-  /** Complete coordinated booking-item grammar after a comma: either a positive determiner/quantifier + up to 3 descriptive words + bookable noun, or a bare bookable noun, followed ONLY by bounded place/time prepositional phrases (never "on hold", "to be confirmed", "to follow", "at my own expense", or trailing predicates like "in London costs more"). */
-  private static readonly COORD_BOOK_ITEM = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[A-Za-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)(?:\s+(?:(?:in|at|near|for|from)\s+(?:(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?|[A-Z]{2,})|to\s+(?:(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?|[A-Z]{2,})|for\s+(?:(?:the\s+)?(?:trip|weekend|week|tonight|tomorrow|today|next\s+\w+)|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|guests?))|(?:in|at|near|for|from)\s+[a-z]{3,}(?=\s*$)))*\s*$/;
+  /** Complete coordinated booking-item grammar after a comma: positive determiner/quantifier + up to 3 descriptive words + bookable noun (or bare bookable noun), followed ONLY by bounded place, venue, or date/duration prepositional phrases (never commentary tails like "at capacity", "in progress", "on hold", "to be confirmed", "in London costs more"). */
+  private static readonly COORD_BOOK_ITEM = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[A-Za-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)(?:\s+(?:(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?|[A-Z]{2,})|(?:in|at|near|to|from)\s+the\s+(?:airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront|coast|bay|lake|hill|old\s+town)|on\s+(?:(?:next|this)\s+)?(?:(?:Mon|Tue|Tues|Wed|Thu|Thurs|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|January|February|March|April|June|July|August|September|October|November|December)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?)|for\s+(?:(?:the\s+)?(?:trip|weekend|week|tonight|tomorrow|today|next\s+\w+)|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|guests?))))*\s*$/;
+  /** All-lowercase fallback for comma-coordinated booking items ("book a flight to paris, a cheap boutique hotel in london"), still rejecting commentary nouns ("in progress", "at capacity", "in limbo", "for now"). */
+  private static readonly COORD_BOOK_ITEM_LOWER = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[a-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)(?:\s+(?:(?:in|to)\s+(?!progress\b|limbo\b|doubt\b|mind\b|hand\b|place\b|reference\b|completion\b|capacity\b|hold\b|wait\b|risk\b|question\b|issue\b|review\b|fact\b|effect\b|general\b|short\b|brief\b|case\b|turn\b|future\b|detail\b|practice\b|theory\b|advance\b|person\b|full\b|total\b|now\b|later\b|work\b|home\b|time\b)[a-z]{3,}|(?:in|at|near|to|from)\s+the\s+(?:airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront)|on\s+(?:(?:next|this)\s+)?(?:mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?|for\s+(?:(?:the\s+)?(?:trip|weekend|week|tonight|tomorrow|today|next\s+\w+)|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|guests?))))*\s*$/;
   private static readonly CLAUSE_PREDICATE = /\b(?:no|not|never|skip|without|except|already|later|soon|still|instead|needed|sorted|hold|follow|can|could|will|would|should|may|might|must|is|are|was|were|be|been|has|have|had|do|does|did|i|we|you|they|he|she)\b/i;
   private static readonly NON_BOOK_TAIL = /^\s+(?:(?:a|an|the|my|our|your)\s+)?(?:\w+\s+){0,2}(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies))\b/i;
   private static readonly COMMA_PLACE_CONT = /^\s+(?!(?:And|But|Then|Also|Plus|Please|Or|So|Yet|While|Because|Since|Check|Find|Gather|See|Fetch|Compare|Summarize|Summarise|Book|Reserve)\b)[A-Z][a-z]+\b(?:\s+[A-Z][a-z]+\b)?(?=\s*(?:$|[.?!;:,]|\s+(?:for|on|at|in|from|to|with|next|this|tonight|tomorrow|please)\b))/;
   /** Bare anaphoric pronoun object right after a booking verb ("book it", "book it for Friday"), never a determiner + noun ("book that tour", "book one tour"). */
   private static readonly BARE_ANAPHOR_OBJ = /^(?:(?:me|us)\s+)?(?:it|them|that|one)(?:\s*$|\s+(?:for|on|at|in|by|from|to|with|now|today|tonight|tomorrow|please|too|as\s+well|instead|again)\b)/i;
-  /** Full calendar words never treated as places even when capitalized ("in May", "on Friday", "for Easter"), while leaving proper places like "Nice", "Long Beach", "Great Yarmouth", "Sun Valley", "Mid Wales", and "NYC" recognized. */
-  private static readonly CALENDAR_PROPER_WORD = /^(?:January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Easter|Christmas|Thanksgiving)$/;
-  /** Lowercase non-place words excluded when extracting explicit destinations after in/at/to/near (time, rate, duration, and verb words). */
+  /** Calendar/season words never treated as standalone places even when capitalized ("in May", "in Sept", "in Summer", "for Easter"), while multi-word proper places like "Sun Valley", "Spring Hill", and "Fall River" stay recognized when followed by another capitalized word. */
+  private static readonly CALENDAR_PROPER_WORD = /^(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Tues|Wed|Thu|Thurs|Fri|Sat|Sun|Easter|Christmas|Thanksgiving|Spring|Summer|Autumn|Winter|Fall)$/;
+  /** Lowercase non-place words excluded when extracting explicit destinations after in/at/to/near (time, rate, duration, and infinitive verb words). */
   private static readonly NON_PLACE_HEAD = new Set([
     "the", "a", "an", "my", "our", "your", "their", "his", "her", "its", "this", "that", "these", "those",
     "early", "late", "mid", "next", "last", "best", "cheapest", "lowest", "highest", "good", "great", "better", "nice", "short", "long", "about", "around", "roughly", "approx", "exact", "same", "other", "another", "different", "full", "total", "half", "quarter", "advance", "person", "cash", "card", "online", "all", "both", "each", "every", "any", "some", "few", "many", "several", "couple", "more", "most", "less", "least", "only", "just", "first", "second", "third",
     "under", "over", "above", "below", "between", "within", "present", "home", "work",
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "hundred", "thousand",
     "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues", "wed", "thu", "thurs", "fri", "sat", "sun",
     "today", "tonight", "tomorrow", "yesterday", "morning", "afternoon", "evening", "night", "noon", "midnight", "midday", "lunchtime", "dinnertime", "breakfast", "supper", "sunset", "sunrise", "dawn", "dusk", "daytime", "nighttime", "bedtime", "weekend", "weekday", "day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes", "time", "times", "once", "twice", "am", "pm", "easter", "christmas", "thanksgiving", "spring", "summer", "autumn", "fall", "winter",
     "rate", "rates", "price", "prices", "cost", "costs", "budget", "notice", "name", "names", "order", "end", "start", "top", "bottom", "arrival", "departure", "checkin", "checkout",
-    "arrive", "stay", "check", "book", "reserve", "meet", "eat", "visit", "see", "get", "go", "leave", "depart", "return", "fly", "drive", "walk", "find", "make", "take", "pay", "confirm", "cancel", "change", "update", "pick", "drop", "attend", "join", "sleep", "rest", "dine", "lunch", "dinner", "celebrate", "relax", "unwind", "enjoy", "explore", "watch", "catch", "save", "avoid", "help",
+    "arrive", "stay", "check", "book", "reserve", "meet", "eat", "visit", "see", "get", "go", "leave", "depart", "return", "fly", "drive", "walk", "find", "make", "take", "pay", "confirm", "cancel", "change", "update", "pick", "drop", "attend", "join", "sleep", "rest", "dine", "lunch", "dinner", "celebrate", "relax", "unwind", "enjoy", "explore", "watch", "catch", "save", "avoid", "help", "toast", "host", "plan", "spend", "begin", "finish", "cover", "share", "split", "compare", "discuss", "review", "finalize", "finalise", "prepare", "organize", "organise", "schedule", "arrange", "secure", "lock", "hold", "keep", "try", "test", "bring", "send", "call", "ask", "tell", "show", "give", "buy", "rent", "hire", "grab", "have", "be", "do", "use",
   ]);
-  /** Lowercase non-location descriptive modifiers in group labels ("cheap" in "Both cheap hotel bookings") that are never overridden by a destination phrase ("in London"), while capitalized proper modifiers like "Nice" in "Both Nice hotel bookings" still act as places. */
+  /** Unambiguously descriptive non-location modifiers in group labels ("cheap" / "Cheap" in "Both Cheap Hotel Bookings") that are never overridden by a destination phrase ("in London") regardless of Title Case. */
   private static readonly NON_PLACE_MODIFIER = new Set([
-    "cheap", "cheapest", "budget", "luxury", "best", "good", "nice", "quiet", "new", "old", "early", "late", "last", "minute", "next", "upcoming", "pending", "urgent", "quick", "direct", "nonstop", "round", "return", "flexible", "refundable", "shared", "private", "family", "business", "personal", "work", "group", "solo", "team", "staff", "vip", "extra", "additional", "remaining", "other", "backup", "draft", "final", "weekend", "weekday", "today", "tonight", "tomorrow", "morning", "afternoon", "evening", "night", "summer", "winter", "spring", "autumn", "fall", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "adjoining", "connecting", "double", "single", "twin", "king", "queen", "boutique", "standard", "deluxe",
+    "cheap", "cheapest", "budget", "luxury", "best", "good", "quiet", "early", "late", "last", "minute", "next", "upcoming", "pending", "urgent", "quick", "direct", "nonstop", "round", "return", "flexible", "refundable", "shared", "private", "family", "business", "personal", "work", "group", "solo", "team", "staff", "vip", "extra", "additional", "remaining", "other", "backup", "draft", "final", "weekend", "weekday", "today", "tonight", "tomorrow", "morning", "afternoon", "evening", "night", "summer", "winter", "spring", "autumn", "fall", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "adjoining", "connecting", "double", "single", "twin", "king", "queen", "boutique", "standard", "deluxe",
   ]);
+  /** Modifiers that are descriptive only when lowercase ("nice"), while capitalized ("Nice") names a proper place. */
+  private static readonly LOWERCASE_ONLY_NON_PLACE_MODIFIER = new Set(["nice"]);
   private static readonly COORD_ITEM_SPLIT = /,\s*(?=(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[a-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)|\s+and\s+/i;
   /** Bookable sub-unit object patterns (lowercase adjectives only so a new destination like "a Paris room" does not inherit "London"). */
   private static readonly CATEGORY_SUBUNIT: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
@@ -3386,6 +3390,8 @@ export class Call {
     ["table", { occ: /\btables?\b/gi, parent: /\b(?:restaurants?|dinners?|lunch(?:es)?)\b/i }],
     ["ticket", { occ: /\btickets?\b/gi, parent: /\b(?:flights?|trains?|bus(?:es)?|concerts?|shows?)\b/i }],
   ]);
+  /** Subordinators and action verbs between a parent category and a sub-unit that start a separate referent ("restaurant before you search for a table"). */
+  private static readonly INTERVENING_CLAUSE_OR_VERB = /\b(?:before|after|while|until|when|where|once|if|unless|find|check|book|reserve|get|look|search|pick|compare|grab|secure|hold|locate|browse|try|ask|call|email|send)\b/i;
 
   /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel reservations", "both IT tasks", or "both last-minute bookings". Both sides are tokenized identically from original-case text (splitting hyphens, keeping all-caps acronyms like "IT"/"US"/"AM", and filtering lowercase function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
@@ -3411,7 +3417,7 @@ export class Call {
     const headParts = groupTokens(head);
     const modRaw = rawWords.slice(0, -1).join(" ");
     const modifiers = groupTokens(modRaw);
-    // Capitalized proper-noun modifiers in the finished label (e.g. "Nice" in "Both Nice hotel bookings", vs lowercase "cheap" in "Both cheap hotel bookings").
+    // Capitalized proper-noun modifiers in the finished label (e.g. "Nice" in "Both Nice hotel bookings", while unambiguous adjectives like "Cheap" in "Both Cheap Hotel Bookings" stay non-place).
     const properModifiers = new Set((modRaw.match(/\b(?:[A-Z][a-z]{2,}|[A-Z]{2,})\b/g) ?? []).map((w) => w.toLowerCase()));
     // Fail closed if words sat between the determiners and head (e.g. lowercase "it"/"us" or a 1-letter modifier) and none survived filtering.
     if (rawWords.length > 1 && modifiers.length === 0) return false;
@@ -3433,23 +3439,20 @@ export class Call {
     };
     const extractPlaces = (text: string, includeFor = false): string[] => {
       const re = includeFor
-        ? /\b(in|at|to|near|for)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi
-        : /\b(in|at|to|near)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi;
-      const hasUpper = /[A-Z]/.test(text);
+        ? /\b(?:in|at|to|near|for)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi
+        : /\b(?:in|at|to|near)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi;
       const out: string[] = [];
       let pm: RegExpExecArray | null;
       while ((pm = re.exec(text)) != null) {
-        const prep = pm[1].toLowerCase();
-        const raw = pm[2];
+        const raw = pm[1];
         const low = raw.toLowerCase();
         if (raw.length < 2 || /^\d+(?::\d+)?(?:am|pm)?$/i.test(raw)) continue;
         if (/^[A-Z]/.test(raw)) {
-          if (Call.CALENDAR_PROPER_WORD.test(raw)) continue;
+          const afterRaw = text.slice(pm.index + pm[0].length);
+          if (Call.CALENDAR_PROPER_WORD.test(raw) && !/^\s+[A-Z][a-z]+/.test(afterRaw)) continue;
           out.push(low);
           continue;
         }
-        // In mixed-case text, lowercase "to <word>" is an infinitive ("to celebrate", "to arrive"), whereas all-lowercase text ("to paris") still checks NON_PLACE_HEAD.
-        if (prep === "to" && hasUpper) continue;
         if (Call.NON_PLACE_HEAD.has(low)) continue;
         out.push(low);
       }
@@ -3478,13 +3481,17 @@ export class Call {
         const attachMatch = /\b(?:with|for)\s+(?:(?:a|an|the|my|our)\s+)?(?:[a-z]+\s+){0,2}$/i.exec(clausePrefix);
         if (attachMatch == null) return true;
         const headSpan = clausePrefix.slice(0, attachMatch.index);
-        if (!spec.parent.test(headSpan) || /\bcompare\b/i.test(headSpan)) return true;
+        const parentMatch = spec.parent.exec(headSpan);
+        if (parentMatch == null || /\bcompare\b/i.test(headSpan)) return true;
+        const afterParent = headSpan.slice(parentMatch.index + parentMatch[0].length);
+        if (Call.INTERVENING_CLAUSE_OR_VERB.test(afterParent)) return true;
       }
       return !sawAny;
     };
     const taskWords = wordSet(`${task.label} ${task.latest} ${task.request}`);
     const matchesIn = (set: Set<string>, w: string): boolean => stemVariants(w).some((v) => set.has(v));
     const matchesTask = (w: string): boolean => matchesIn(taskWords, w);
+    const reqHasUpper = /[A-Z]/.test(task.request);
     const sliceObjSpan = (tail: string): string => {
       Call.OBJ_BOUNDARY.lastIndex = 0;
       let bm: RegExpExecArray | null;
@@ -3494,7 +3501,8 @@ export class Call {
         if (sep === ",") {
           if (Call.NON_BOOK_TAIL.test(after)) return tail.slice(0, bm.index).trim();
           const nextFrag = after.split(/[.?!;:,]|\s+(?:and|but|while|whereas|because|since|then|also|plus)\b/i)[0] ?? "";
-          if (Call.COORD_BOOK_ITEM.test(nextFrag) && !Call.CLAUSE_PREDICATE.test(nextFrag)) continue;
+          const itemRe = reqHasUpper ? Call.COORD_BOOK_ITEM : Call.COORD_BOOK_ITEM_LOWER;
+          if (itemRe.test(nextFrag) && !Call.CLAUSE_PREDICATE.test(nextFrag)) continue;
           if (Call.COMMA_PLACE_CONT.test(after)) continue;
           return tail.slice(0, bm.index).trim();
         }
@@ -3529,7 +3537,7 @@ export class Call {
       const anyBookingMatches = verbMatches.some(({ before, obj }) => {
         const objWords = wordSet(obj);
         if (modifiers.every((mod) => matchesIn(objWords, mod))) {
-          // If coordinated items ("a hotel in london and a flight to Paris", "a hotel in London, a car in Rome and a flight to Paris") attach a destination to an earlier item rather than a single shared trailing destination ("a hotel, a car and a flight for London"), require one coordinated item to satisfy all modifiers.
+          // If coordinated items ("a hotel in london and a flight to Paris", "a BA flight to paris and a hotel in London", "a hotel in London, a car in Rome and a flight to Paris") attach a destination to an earlier item rather than a single shared trailing destination ("a hotel, a car and a flight for London"), require one coordinated item to satisfy all modifiers.
           const coordParts = obj.split(Call.COORD_ITEM_SPLIT).map((p) => p.trim()).filter(Boolean);
           if (coordParts.length > 1 && coordParts.slice(0, -1).some((p) => extractPlaces(p, true).length > 0)) {
             return coordParts.some((p) => {
@@ -3542,8 +3550,14 @@ export class Call {
         const beforeWords = wordSet(before);
         const priorWords = wordSet(`${task.label} ${before} ${obj}`);
         if (!modifiers.every((mod) => matchesIn(priorWords, mod))) return false;
-        // Any explicit destination on the booking object ("in Paris", "in Nice", "in Long Beach", "in paris", "in NYC") overrides missing place modifiers ("London", "Nice") from an earlier clause, without blocking non-place modifiers ("cheap") or time/price/purpose phrases ("at 7pm", "at lunchtime", "at under 150 pounds", "to celebrate").
-        const missingPlaceMod = modifiers.some((mod) => !matchesIn(objWords, mod) && !modCategories.some((cat) => stemVariants(mod).includes(cat)) && (properModifiers.has(mod) || !Call.NON_PLACE_MODIFIER.has(mod)));
+        // Any explicit destination on the booking object ("in Paris", "in Nice", "in Long Beach", "in paris", "in NYC") overrides missing place modifiers ("London", "Nice") from an earlier clause, without blocking non-place modifiers ("cheap"/"Cheap") or time/price/purpose phrases ("at 7pm", "in Sept", "in Summer", "at lunchtime", "at under 150 pounds", "to celebrate").
+        const missingPlaceMod = modifiers.some(
+          (mod) =>
+            !matchesIn(objWords, mod) &&
+            !modCategories.some((cat) => stemVariants(mod).includes(cat)) &&
+            !Call.NON_PLACE_MODIFIER.has(mod) &&
+            (!Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(mod) || properModifiers.has(mod)),
+        );
         if (missingPlaceMod && extractPlaces(obj).length > 0) return false;
         const priorCategories = Call.BOOK_CATEGORIES.filter((cat) => matchesIn(beforeWords, cat) && hasUnattachedSubunit(before, cat));
         const isBareAnaphor = Call.BARE_ANAPHOR_OBJ.test(obj);
