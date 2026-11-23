@@ -1647,6 +1647,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop mentioning that airlines overbook regularly and cancel the Noma table first",
     "Stop mentioning that hosts often cancel and cancel the Noma table",
     "Stop mentioning that staff waive corkage and cancel the Noma table after fifteen minutes",
+    "Stop mentioning that they send notes and cancel the Noma table every morning",
+    "Stop mentioning that staff rewrite policy and cancel the Noma table",
+    "Stop mentioning that staff update policy and cancel the Noma table",
+    "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Don't worry about the cancelled Noma table kids just cancel them",
@@ -2284,6 +2288,51 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10an.advance(0.1);
   assert.equal(s10an.commands.filter((c) => c.type === "tool.cancel").length, 1, "exact-prefix 'London weather' must still cancel when owned 'London trains' does not cover 'weather'");
 
+  // 8t) Possessive competitor ("London’s weather"), short exact label ("PDF" vs zero-score competitor), Unicode case-folding ("İstanbul’s All the Time song search"), and exact habitual-phrase label ("All the Time") all behave cleanly.
+  const s10ao = chat();
+  s10ao.push({ type: "note", id: "call-1-27", label: "Morning outlook", text: "Checking.", active: true, request: "Check London\u2019s weather for tomorrow" });
+  s10ao.advance(0.1);
+  s10ao.type("Check London weather today");
+  s10ao.calls("ask_hermes", { label: "London weather" });
+  s10ao.advance(0.1);
+  s10ao.type("Never mind the dropped call just end the London weather for tomorrow");
+  s10ao.calls("cancel_task", { task: "London weather" });
+  s10ao.advance(0.1);
+  assert.equal(s10ao.commands.filter((c) => c.type === "tool.cancel").length, 0, "possessive 'London’s weather' in Morning outlook must still block cancelling 'London weather'");
+
+  const s10ap = chat();
+  s10ap.type("Export PDF");
+  s10ap.calls("ask_hermes", { label: "PDF" });
+  s10ap.advance(0.1);
+  s10ap.type("Check Paris weather");
+  s10ap.calls("ask_hermes", { label: "Paris weather" });
+  s10ap.advance(0.1);
+  s10ap.type("Never mind the dropped call just end the PDF for now");
+  s10ap.calls("cancel_task", { task: "PDF" });
+  s10ap.advance(0.1);
+  assert.equal(s10ap.commands.filter((c) => c.type === "tool.cancel").length, 1, "zero-score unrelated task must not veto exact short label 'PDF'");
+
+  const s10aq = chat();
+  s10aq.type("Search for All the Time");
+  s10aq.calls("ask_hermes", { label: "All the Time song search" });
+  s10aq.advance(0.1);
+  s10aq.type("Stop talking and cancel \u0130stanbul\u2019s All the Time song search");
+  s10aq.calls("cancel_task", { task: "All the Time song search" });
+  s10aq.advance(0.1);
+  assert.equal(s10aq.commands.filter((c) => c.type === "tool.cancel").length, 1, "Unicode case-folding before exact label must not break habitual exemption");
+
+  const s10ar = chat();
+  s10ar.type("Book a table at Noma");
+  s10ar.calls("ask_hermes", { label: "Noma table" });
+  s10ar.advance(0.1);
+  s10ar.type("Search for All the Time");
+  s10ar.calls("ask_hermes", { label: "All the Time" });
+  s10ar.advance(0.1);
+  s10ar.type("Stop talking about restaurants that overbook and cancel the Noma table all the time");
+  s10ar.calls("cancel_task", { task: "Noma table" });
+  s10ar.advance(0.1);
+  assert.equal(s10ar.commands.filter((c) => c.type === "tool.cancel").length, 0, "unrelated task named literally 'All the Time' must not disable habitual guard for Noma table");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2315,6 +2364,12 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff rota aloud and cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
+    "Stop reading that sales report so slowly and cancel the weather",
+    "Stop reading that sales report twice and cancel the weather",
+    "Stop reading that sales report word for word and cancel the weather",
+    "Stop reading that hotels list so loudly and cancel the weather",
+    "Stop reading that sports story over and over and cancel the weather",
+    "Stop reading that staff training material aloud and cancel the weather",
     "Stop reading that hotels list every morning and cancel the weather",
     "Stop reading that sports update every day and cancel the weather",
     "Stop mentioning that sales meeting this week and cancel the weather",
