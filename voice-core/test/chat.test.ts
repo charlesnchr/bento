@@ -1602,6 +1602,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't let the Noma table get cancelled",
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
+    "Stop talking about the cancellation fee for the Noma table",
     "It doesn't matter just stop talking about the Noma table",
     "I don't like it when you cancel the Noma table",
     "I don't know if you should cancel the Noma table",
@@ -1724,7 +1725,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10g.push({ type: "note", id: "call-1-7", label: "Noma table", text: "Noma waitlist.", active: false, request: "Book at Noma" });
   s10g.push({ type: "note", id: "call-1-8", label: "Geranium table", text: "Geranium closed.", active: false, request: "Book at Geranium" });
   s10g.advance(0.1);
-  s10g.type("Alchemist Noma table Friday");
+  s10g.type("For the table at Alchemist or Noma on Friday");
   s10g.calls("ask_hermes", { continue_task: "Revision" });
   s10g.advance(0.1);
   assert.equal(s10g.hermes().length, 0, "three-candidate tie must refuse instead of starting a new run");
@@ -1743,10 +1744,66 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   const resp10h: string = s10h.sentTurns().at(-1).parts[0].functionResponse.response.message;
   assert.ok(resp10h.includes('"Restaurant search"') && !resp10h.includes('"Friday diary"'), `expected redirect to Restaurant search, got: ${resp10h}`);
 
+  // 8h) Punctuation-preserving contiguous whole-label matching picks "C build" over "C++ build rollout".
+  const s10i = chat();
+  s10i.push({ type: "note", id: "call-1-11", label: "C build", text: "C build queued.", active: false, request: "Run the C build" });
+  s10i.push({ type: "note", id: "call-1-12", label: "C++ build rollout", text: "C++ rollout paused.", active: false, request: "Run C++ rollout" });
+  s10i.advance(0.1);
+  s10i.type("For the C build please move the rollout to Friday");
+  s10i.calls("ask_hermes", { continue_task: "Revision" });
+  s10i.advance(0.1);
+  assert.equal(s10i.hermes().length, 0, "detached 'C build' must refuse instead of starting a fresh run");
+  const resp10i: string = s10i.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10i.includes('"C build"') && !resp10i.includes('"C++ build rollout"'), `expected redirect to C build, got: ${resp10i}`);
+
+  // 8i) A detached label subsumed inside a longer owned label ("Email" inside "Landlord email"), or a weak detached request word ("table" vs owned "Noma table"), does not hijack the follow-up.
+  const s10j = chat();
+  s10j.push({ type: "note", id: "call-1-13", label: "Email", text: "Drafted.", active: false, request: "Email Sam about the table booking" });
+  s10j.advance(0.1);
+  s10j.type("Draft an email to the landlord");
+  s10j.calls("ask_hermes", { label: "Landlord email" });
+  s10j.advance(0.1);
+  s10j.type("Make the landlord email shorter");
+  s10j.calls("ask_hermes", { continue_task: "Revision" });
+  s10j.advance(0.1);
+  assert.equal(s10j.hermes().length, 2, "detached 'Email' subsumed inside owned 'Landlord email' must not hijack");
+
+  const s10k = chat();
+  s10k.push({ type: "note", id: "call-1-14", label: "Email", text: "Drafted.", active: false, request: "Email Sam about the table booking" });
+  s10k.advance(0.1);
+  s10k.type("Book a table at Noma");
+  s10k.calls("ask_hermes", { label: "Noma table" });
+  s10k.advance(0.1);
+  s10k.type("Move the Noma table to Friday");
+  s10k.calls("ask_hermes", { continue_task: "Revision" });
+  s10k.advance(0.1);
+  assert.equal(s10k.hermes().length, 2, "weak detached request word 'table' must not hijack owned 'Noma table'");
+
+  // 8j) "Stop talking about the Noma table and cancel the weather" protects Noma and cancels Weather.
+  const s10l = chat();
+  s10l.type("Book a table at Noma");
+  s10l.calls("ask_hermes", { label: "Noma table" });
+  s10l.advance(0.1);
+  s10l.type("Check Copenhagen weather");
+  s10l.calls("ask_hermes", { label: "Weather" });
+  s10l.advance(0.1);
+  s10l.type("Stop talking about the Noma table and cancel the weather");
+  s10l.calls("cancel_task", { task: "Noma table" });
+  s10l.advance(0.1);
+  assert.equal(s10l.commands.filter((c) => c.type === "tool.cancel").length, 0, "stop-talking clause must not authorize cancelling Noma");
+  s10l.calls("cancel_task", { task: "Weather" });
+  s10l.advance(0.1);
+  assert.equal(s10l.commands.filter((c) => c.type === "tool.cancel").length, 1, "separate cancel clause must still cancel Weather");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
     "Don't worry about the cancellation fee just cancel the weather",
+    "Never mind the dropped call just cancel the weather",
+    "Don't worry about the ending just cancel the weather",
+    "Don't worry about the stopwatch cancel the weather",
+    "Stop the weather check and stop talking about it",
+    "Stop talking and stop the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",

@@ -1493,24 +1493,30 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val byExtWhole = findExternalWholeLabel(request.task)
+                        val byExtWhole = findWholeLabelExternal(request.task)
                         if (byExtWhole != null) {
                             target = byExtWhole
                         } else {
                             val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
-                            val byExtDetail = if (userWords.isNotEmpty()) findExternal(userWords.joinToString(" "), byRequest = true) else null
-                            if (byExtDetail != null) {
-                                target = byExtDetail
-                            } else {
-                                val byExtPartial = findExternal(request.task, byRequest = false)
-                                if (byExtPartial != null) {
-                                    target = byExtPartial
+                            val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
+                            if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
+                                target = byUser
+                            } else if (byUser == null) {
+                                val byUserLabel = findTarget(request.task, byRequest = false)
+                                if (byUserLabel is Target.External || (byUserLabel is Target.Ambiguous && byUserLabel.external.isNotEmpty())) {
+                                    target = byUserLabel
                                 } else if (byDetail is Target.Owned) {
                                     val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
                                     when {
                                         extConflicts.size == 1 -> target = Target.External(extConflicts.single())
                                         extConflicts.size > 1 -> target = Target.Ambiguous(listOf(byDetail.task), extConflicts)
                                     }
+                                }
+                            } else if (byDetail is Target.Owned) {
+                                val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
+                                when {
+                                    extConflicts.size == 1 -> target = Target.External(extConflicts.single())
+                                    extConflicts.size > 1 -> target = Target.Ambiguous(listOf(byDetail.task), extConflicts)
                                 }
                             }
                         }
@@ -1679,39 +1685,47 @@ class AssistantCall(
         return null
     }
 
-    /** Matches detached tasks whose entire label appears in [ref], preferring the longest label and returning ambiguous on ties. */
-    private fun findExternalWholeLabel(ref: String): Target? {
+    /**
+     * Matches detached tasks whose entire label appears contiguously in [ref] (preserving meaningful symbols
+     * such as `C++`), ignoring detached spans subsumed inside a longer owned label ("Email" inside "Landlord email")
+     * and returning ambiguous when a disjoint owned label also matches or multiple detached labels tie.
+     */
+    private fun findWholeLabelExternal(ref: String): Target? {
         if (externalTasks.isEmpty()) return null
-        fun tokens(s: String) = s.lowercase().replace('’', '\'').split(Regex("[^\\p{L}\\p{N}']+"))
-            .map { it.trim('\'').removeSuffix("'s") }.filter { it.isNotEmpty() }
-        val said = tokens(ref).toSet()
+        fun tokens(s: String) = s.lowercase().replace('’', '\'')
+            .split(Regex("[\\s,;:!?()\\[\\]{}\"“”`]+"))
+            .map { it.trim('.', '\'', '’').removeSuffix("'s") }
+            .filter { it.isNotEmpty() }
+        fun spansOf(haystack: List<String>, needle: List<String>): List<IntRange> {
+            if (needle.isEmpty() || needle.size > haystack.size) return emptyList()
+            val out = ArrayList<IntRange>()
+            for (i in 0..(haystack.size - needle.size)) {
+                if ((needle.indices).all { j -> haystack[i + j] == needle[j] }) out.add(i until (i + needle.size))
+            }
+            return out
+        }
+        val said = tokens(ref)
         if (said.isEmpty()) return null
+        val ownedWhole = tasks.values.mapNotNull { t ->
+            val spans = spansOf(said, tokens(t.label))
+            if (spans.isNotEmpty()) t to spans else null
+        }
+        val ownedSpans = ownedWhole.flatMap { it.second }
         var bestLen = 0
-        val best = ArrayList<String>()
+        val bestExt = ArrayList<String>()
         for ((label, _) in externalTasks.values) {
             val labelTokens = tokens(label)
-            if (labelTokens.isEmpty() || !labelTokens.all { it in said }) continue
-            if (labelTokens.size > bestLen) { bestLen = labelTokens.size; best.clear(); best.add(label) }
-            else if (labelTokens.size == bestLen) best.add(label)
+            val spans = spansOf(said, labelTokens).filter { sp ->
+                ownedSpans.none { osp -> osp.first <= sp.first && sp.last <= osp.last && (osp.last - osp.first) > (sp.last - sp.first) }
+            }
+            if (spans.isEmpty()) continue
+            if (labelTokens.size > bestLen) { bestLen = labelTokens.size; bestExt.clear(); bestExt.add(label) }
+            else if (labelTokens.size == bestLen) bestExt.add(label)
         }
-        return when {
-            best.size == 1 -> Target.External(best.single())
-            best.size > 1 -> Target.Ambiguous(emptyList(), best)
-            else -> null
-        }
-    }
-
-    /** Scores [ref] against detached external tasks alone so an owned task cannot shadow a named detached task. */
-    private fun findExternal(ref: String, byRequest: Boolean): Target? {
-        if (externalTasks.isEmpty()) return null
-        val extPairs = LinkedHashMap<String, Pair<String, String>>()
-        for ((k, ext) in externalTasks) extPairs["ext:$k"] = ext.first to if (byRequest) ext.second else ""
-        val best = TaskNames.matches(ref, extPairs).mapNotNull { extPairs[it]?.first }
-        return when {
-            best.size == 1 -> Target.External(best.single())
-            best.size > 1 -> Target.Ambiguous(emptyList(), best)
-            else -> null
-        }
+        if (bestExt.isEmpty()) return null
+        if (ownedWhole.isNotEmpty()) return Target.Ambiguous(ownedWhole.map { it.first }, bestExt)
+        if (bestExt.size == 1) return Target.External(bestExt.single())
+        return Target.Ambiguous(emptyList(), bestExt)
     }
 
     /**

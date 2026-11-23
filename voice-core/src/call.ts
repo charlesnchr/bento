@@ -97,12 +97,17 @@ function isDontCancel(clause: string): boolean {
     const rest = clause.slice(open.index + open[0].length);
     const m = TO_CANCEL_VERB.exec(rest);
     if (!m) continue;
-    if (!BASE_CANCEL_VERB.test(m[2])) return true;
     const words = (m[1] ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
     const start = words.length > 1 && LEAD_ADV.test(words[0]) ? 1 : 0;
     const verb = words[start] ?? "";
     const tail = words.slice(start + 1).join(" ");
     const full = words.join(" ");
+    if (!BASE_CANCEL_VERB.test(m[2])) {
+      // Allow a direct lead-in idiom ("Never mind the dropped call...", "Don't worry about the ending...") to skip a noun/adjective preceded by an article.
+      const prev = words[words.length - 1] ?? "";
+      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev)) continue;
+      return true;
+    }
     if (open[2] != null) {
       if (NOT_STATE.test(verb) && NOT_STATE_TAIL.test(tail)) continue;
       if (NOT_THAT_ONE.test(full) || NOT_GOING_OTHER.test(full)) continue;
@@ -133,6 +138,8 @@ const REFUSE_NO_CANCEL = /^(?:no|nope|nah)\b/i;
 const CANCEL_ACTION_WORDS = new Set(["cancel", "stop", "abort", "kill", "drop", "end", "halt", "task", "tasks", "one", "ones", "except"]);
 /** Start of a new cancellation command inside a coordinated "and" clause ("Keep Noma and cancel the weather"). */
 const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|abort|kill|drop|end|halt|forget|never\s+mind|don'?t\s+bother)\b/i;
+/** Clause or conjunct asking the assistant to stop speaking about a topic rather than cancelling a task. */
+const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
@@ -2043,19 +2050,19 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Give whole-label detached mentions priority (so an owned label cannot shadow a named detached task), then score partial labels and request details together across detached tasks, falling back to unfiltered partial labels only when both miss.
-        const byExtWhole = this.findExternalWholeLabel(request.task);
+        // Give contiguous punctuation-preserving whole-label detached mentions priority (unless subsumed by a longer owned label), then score combined owned + detached partial labels and details together.
+        const byExtWhole = this.findWholeLabelExternal(request.task);
         if (byExtWhole != null) {
           target = byExtWhole;
         } else {
           const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
-          const byExtDetail = userWords.length > 0 ? this.findExternal(userWords.join(" "), true) : null;
-          if (byExtDetail != null) {
-            target = byExtDetail;
-          } else {
-            const byExtPartial = this.findExternal(request.task, false);
-            if (byExtPartial != null) {
-              target = byExtPartial;
+          const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
+          if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
+            target = byUser;
+          } else if (byUser == null) {
+            const byUserLabel = this.findTarget(request.task, false);
+            if (byUserLabel != null && (byUserLabel.kind === "external" || (byUserLabel.kind === "ambiguous" && byUserLabel.external.length > 0))) {
+              target = byUserLabel;
             } else if (byDetail?.kind === "owned") {
               const seen = new Set<string>();
               const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
@@ -2063,6 +2070,12 @@ export class Call {
               if (extConflicts.length === 1) target = { kind: "external", task: extConflicts[0] };
               else if (extConflicts.length > 1) target = { kind: "ambiguous", owned: [byDetail.task], external: extConflicts };
             }
+          } else if (byDetail?.kind === "owned") {
+            const seen = new Set<string>();
+            const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
+              .filter((e) => !seen.has(e.key) && (seen.add(e.key), true));
+            if (extConflicts.length === 1) target = { kind: "external", task: extConflicts[0] };
+            else if (extConflicts.length > 1) target = { kind: "ambiguous", owned: [byDetail.task], external: extConflicts };
           }
         }
       }
@@ -2292,8 +2305,12 @@ export class Call {
     return null;
   }
 
-  /** Matches detached tasks whose entire label appears in [ref], preferring the longest label and returning ambiguous on ties. */
-  private findExternalWholeLabel(
+  /**
+   * Matches detached tasks whose entire label appears contiguously in [ref] (preserving meaningful symbols
+   * such as `C++`), ignoring detached spans subsumed inside a longer owned label ("Email" inside "Landlord email")
+   * and returning ambiguous when a disjoint owned label also matches or multiple detached labels tie.
+   */
+  private findWholeLabelExternal(
     ref: string,
   ):
     | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
@@ -2301,41 +2318,41 @@ export class Call {
     | null {
     if (this.externalTasks.length === 0) return null;
     const tokens = (s: string) =>
-      s.toLowerCase().replace(/’/g, "'").split(/[^\p{L}\p{N}']+/u)
-        .map((w) => w.replace(/^'+|'+$/g, "").replace(/'s$/, ""))
+      s.toLowerCase().replace(/’/g, "'")
+        .split(/[\s,;:!?()[\]{}"“”`]+/)
+        .map((w) => w.replace(/^[.'’]+|[.'’]+$/g, "").replace(/'s$/, ""))
         .filter((w) => w.length > 0);
-    const said = new Set(tokens(ref));
-    if (said.size === 0) return null;
+    const spansOf = (haystack: string[], needle: string[]): [number, number][] => {
+      if (needle.length === 0 || needle.length > haystack.length) return [];
+      const out: [number, number][] = [];
+      for (let i = 0; i <= haystack.length - needle.length; i++) {
+        let ok = true;
+        for (let j = 0; j < needle.length; j++) if (haystack[i + j] !== needle[j]) { ok = false; break; }
+        if (ok) out.push([i, i + needle.length]);
+      }
+      return out;
+    };
+    const said = tokens(ref);
+    if (said.length === 0) return null;
+    const ownedWhole: { task: Task; spans: [number, number][] }[] = [];
+    for (const t of this.tasks.values()) {
+      const spans = spansOf(said, tokens(t.label));
+      if (spans.length > 0) ownedWhole.push({ task: t, spans });
+    }
+    const ownedSpans = ownedWhole.flatMap((o) => o.spans);
     let bestLen = 0;
-    const best: typeof this.externalTasks = [];
+    const bestExt: typeof this.externalTasks = [];
     for (const ext of this.externalTasks) {
       const labelTokens = tokens(ext.label);
-      if (labelTokens.length === 0 || !labelTokens.every((w) => said.has(w))) continue;
-      if (labelTokens.length > bestLen) { bestLen = labelTokens.length; best.length = 0; best.push(ext); }
-      else if (labelTokens.length === bestLen) best.push(ext);
+      const spans = spansOf(said, labelTokens).filter(([s, e]) => !ownedSpans.some(([os, oe]) => os <= s && e <= oe && (oe - os) > (e - s)));
+      if (spans.length === 0) continue;
+      if (labelTokens.length > bestLen) { bestLen = labelTokens.length; bestExt.length = 0; bestExt.push(ext); }
+      else if (labelTokens.length === bestLen) bestExt.push(ext);
     }
-    if (best.length === 1) return { kind: "external", task: best[0] };
-    if (best.length > 1) return { kind: "ambiguous", owned: [], external: best };
-    return null;
-  }
-
-  /** Scores [ref] against detached external tasks alone so an owned task cannot shadow a named detached task. */
-  private findExternal(
-    ref: string,
-    byRequest: boolean,
-  ):
-    | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
-    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
-    | null {
-    if (this.externalTasks.length === 0) return null;
-    const extPairs = new Map<string, [string, string]>();
-    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, byRequest ? `${ext.request} ${ext.summary}`.trim() : ""]);
-    const best = TaskNames.matches(ref, extPairs)
-      .map((k) => this.externalTasks.find((e) => e.key === k))
-      .filter((e): e is NonNullable<typeof e> => e != null);
-    if (best.length === 1) return { kind: "external", task: best[0] };
-    if (best.length > 1) return { kind: "ambiguous", owned: [], external: best };
-    return null;
+    if (bestExt.length === 0) return null;
+    if (ownedWhole.length > 0) return { kind: "ambiguous", owned: ownedWhole.map((o) => o.task), external: bestExt };
+    if (bestExt.length === 1) return { kind: "external", task: bestExt[0] };
+    return { kind: "ambiguous", owned: [], external: bestExt };
   }
 
   private asking(): Task[] {
@@ -2871,6 +2888,9 @@ export class Call {
             parts: [part],
           };
           spans.push(cur);
+        } else if (STOP_SPEAKING_PART.test(part)) {
+          // Stop-speaking requests ("stop talking about X") neither authorize cancellation nor score X as a cancel target.
+          cur = null;
         } else if (cur == null || (cur.kind === "protect" && CANCEL_VERB_START.test(part))) {
           cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
           spans.push(cur);
@@ -2990,15 +3010,22 @@ export class Call {
       this.cancelRefusedTurn.set(task.id, answeredSeq);
       return false;
     }
+    const activeParts = this.activeCancelParts(said);
+    const activeText = activeParts.join(". ");
     if (!this.textLine) {
       this.cancelDoubt = null;
       if (doubt != null && doubt.tasks.has(task.id) && answeredSeq > doubt.seq) return true;
-      if (asksToCancel(said, this.c.voiceCommands, names, TaskNames.mentions(said, task.label, task.latest + " " + task.request))) return true;
+      if (activeParts.length === 0) {
+        this.cancelDoubt = { tasks: new Set([task.id]), seq: answeredSeq };
+        return false;
+      }
+      const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
+      const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
+      const targetsOnlyOther = mentionsOther && !mentionsThis && !CANCEL_ALL_SCOPE.test(activeText);
+      if (!targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, TaskNames.mentions(activeText, task.label, task.latest + " " + task.request))) return true;
       this.cancelDoubt = { tasks: new Set([task.id]), seq: answeredSeq };
       return false;
     }
-    const activeParts = this.activeCancelParts(said);
-    const activeText = activeParts.join(". ");
     if (doubt != null && doubt.seq === answeredSeq - 1 && doubt.tasks.has(task.id) && AFFIRMATIVE_CANCEL.test(trimmed) && !NEGATIVE_OR_KEEP.test(trimmed)) {
       const identifies = this.identifiesOwnedTask(said, task);
       const singleRunning = [...this.tasks.values()].filter((t) => t.state === RUNNING).length === 1;

@@ -4868,7 +4868,7 @@ class AssistantCallTest {
 
         // Three-candidate tie excludes the weaker detached match ("Geranium table") when two tie higher.
         call.note("Kadeau table", "Kadeau has a waitlist.", inHistory = true, id = "call-1-5", active = false, request = "Book at Kadeau")
-        Live.turn(transport, "Alchemist Kadeau table Friday")
+        Live.turn(transport, "For the table at Alchemist or Kadeau on Friday")
         transport.push(Live.call("c7", args = mapOf("continue_task" to "Revision")))
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 12 }
         assertEquals(1, asked.size, "three-candidate tie must refuse instead of starting a new run")
@@ -4896,6 +4896,26 @@ class AssistantCallTest {
         assertEquals(2, asked.size, "stronger detail match must refuse instead of starting a fresh run")
         val msg10 = transport.responses()[14].message()
         assertTrue("\"Restaurant search\"" in msg10 && "\"Friday diary\"" !in msg10, msg10)
+
+        // Contiguous punctuation-preserving whole-label matching picks "C build" over "C++ build rollout".
+        call.note("C build", "C build queued.", inHistory = true, id = "call-1-8", active = false, request = "Run the C build")
+        call.note("C++ build rollout", "C++ rollout paused.", inHistory = true, id = "call-1-9", active = false, request = "Run C++ rollout")
+        Live.turn(transport, "For the C build please move the rollout to Friday")
+        transport.push(Live.call("c11", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 16 }
+        assertEquals(2, asked.size, "detached 'C build' must refuse instead of starting a fresh run")
+        val msg11 = transport.responses()[15].message()
+        assertTrue("\"C build\"" in msg11 && "\"C++ build rollout\"" !in msg11, msg11)
+
+        // Detached "Email" subsumed inside owned "Landlord email" must not hijack follow-up.
+        Live.turn(transport, "Draft an email to the landlord")
+        transport.push(Live.call("c12", args = mapOf("label" to "Landlord email")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 17 }
+        assertEquals(3, asked.size)
+        Live.turn(transport, "Make the landlord email shorter")
+        transport.push(Live.call("c13", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 18 }
+        assertEquals(4, asked.size, "detached 'Email' subsumed inside owned 'Landlord email' must not hijack")
         call.stop()
     }
 }
