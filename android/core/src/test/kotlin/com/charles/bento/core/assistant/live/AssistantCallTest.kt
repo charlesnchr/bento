@@ -4847,6 +4847,14 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 9 }
         assertEquals(1, asked.size, "user's words naming detached Alchemist must refuse continue_task('Friday seating')")
         assertTrue(transport.responses()[8].message().startsWith("Not executed:"), transport.responses()[8].message())
+
+        // Unfiltered detached label check still catches verb-like labels such as "Email" when continue_task misses.
+        call.note("Email", "Drafted a note to Sam.", inHistory = true, id = "call-1-2", active = false, request = "Write a message to Sam")
+        Live.turn(transport, "For the email, yes, make it shorter")
+        transport.push(Live.call("c5", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 10 }
+        assertEquals(1, asked.size, "user's words naming detached label 'Email' must refuse continue_task('Revision')")
+        assertTrue(transport.responses()[9].message().startsWith("Not executed:"), transport.responses()[9].message())
         call.stop()
     }
 }

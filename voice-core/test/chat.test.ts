@@ -1648,19 +1648,36 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
 
   // 8b) Even with no owned match at all, user's words naming a detached task's request ("For the Alchemist, yes, make it Friday") refuse continue_task("Friday seating").
   const s10b = chat();
-  s10b.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Alchemist has tables Friday or Saturday.", active: false, request: "Book a table at Alchemist" });
+  s10b.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "The Alchemist can seat four.", active: false, request: "Book a table at Alchemist" });
   s10b.advance(0.1);
   s10b.type("For the Alchemist, yes, make it Friday");
   s10b.calls("ask_hermes", { continue_task: "Friday seating" });
   s10b.advance(0.1);
   assert.equal(s10b.hermes().length, 0, "user's words naming detached Alchemist must refuse instead of starting a fresh run");
 
-  // 9) Affirmative cancel lead-ins ("Don't worry/forget/hesitate", "don't need it", "not needed/working") still cancel cleanly.
+  // 8c) Unfiltered detached label check still catches verb-like labels such as "Email" when continue_task misses.
+  const s10c = chat();
+  s10c.push({ type: "note", id: "call-1-2", label: "Email", text: "Drafted a note to Sam.", active: false, request: "Write a message to Sam" });
+  s10c.advance(0.1);
+  s10c.type("For the email, yes, make it shorter");
+  s10c.calls("ask_hermes", { continue_task: "Revision" });
+  s10c.advance(0.1);
+  assert.equal(s10c.hermes().length, 0, "user's words naming detached label 'Email' must refuse continue_task('Revision')");
+
+  // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",
+    "I don't really need it just cancel the weather",
+    "I don't care just stop the weather",
+    "I don't know just cancel the weather",
+    "You don't have to wait just cancel the weather",
+    "I don't want to wait cancel the weather",
+    "I don't have time cancel the weather",
+    "I'm not going to need it cancel the weather",
+    "I don't think so cancel the weather",
     "It's not needed anymore cancel the weather",
     "If it's not working cancel the weather",
   ]) {

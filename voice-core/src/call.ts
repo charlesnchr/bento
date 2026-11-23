@@ -74,13 +74,15 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Matches each negation opener; `isDontCancel` inspects every occurrence independently so "Don't worry don't cancel" catches the second negation while skipping non-prohibiting lead-in idioms ("don't worry/forget/hesitate", "never mind", "don't need it", "not working/needed") and preserving prohibitions ("I don't want it to stop", "Do not let it stop", "I don't think you should cancel"). */
+/** Matches each negation opener; `isDontCancel` inspects every occurrence independently so "Don't worry don't cancel" catches the second negation while skipping non-prohibiting lead-in idioms ("don't worry/care/know", "don't really need it", "don't have to wait", "not going to need it") and preserving prohibitions ("I don't want it to stop", "Do not let it stop", "I don't think you should cancel", "Don't have them cancel"). */
 const NEG_OPENER = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\b/gi;
 const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,4}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
-const NON_PROHIBITING_FIRST = /^(?:mind|wait|worry|forget|hesitate)$/;
+const LEAD_ADV = /^(?:really|even|actually|quite)$/;
+const DIRECT_IDIOM_VERB = /^(?:mind|wait|worry|forget|hesitate|care|know|like)$/;
+const MODAL_LEAD_VERB = /^(?:want|need|think|bother)$/;
+const HAVE_AGENT = /^(?:them|him|her|us|me|anyone|someone|anybody|somebody|people|hermes|the\s+\w+)$/;
 const NOT_STATE_FIRST = /^(?:needed|finished|done|ready|working|responding|loading|happening|moving|sure|that|this)$/;
-const WANT_NEED_FIRST = /^(?:want|need|bother)$/;
-const PROHIBITING_LINK = /\b(?:to|should)\b/;
+const GOVERNS_CANCEL = /(?:^|\s)(?:to|should)(?:\s+(?:accidentally|actually|really|ever|just|simply|still|yet|now|even|immediately|automatically))?$/;
 
 function isDontCancel(clause: string): boolean {
   NEG_OPENER.lastIndex = 0;
@@ -90,11 +92,14 @@ function isDontCancel(clause: string): boolean {
     const m = TO_CANCEL_VERB.exec(rest);
     if (!m) continue;
     const words = (m[1] ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const first = words[0] ?? "";
-    const tail = words.slice(1).join(" ");
-    if (NON_PROHIBITING_FIRST.test(first)) continue;
-    if (WANT_NEED_FIRST.test(first) && !PROHIBITING_LINK.test(tail)) continue;
-    if (open[2] != null && ((NOT_STATE_FIRST.test(first) && !PROHIBITING_LINK.test(tail)) || (words.length > 2 && !PROHIBITING_LINK.test(words.join(" "))))) continue;
+    const start = words.length > 1 && LEAD_ADV.test(words[0]) ? 1 : 0;
+    const verb = words[start] ?? "";
+    const tail = words.slice(start + 1).join(" ");
+    const full = words.join(" ");
+    if (DIRECT_IDIOM_VERB.test(verb)) continue;
+    if (MODAL_LEAD_VERB.test(verb) && !GOVERNS_CANCEL.test(tail)) continue;
+    if (verb === "have" && !GOVERNS_CANCEL.test(tail) && !HAVE_AGENT.test(tail)) continue;
+    if (open[2] != null && ((NOT_STATE_FIRST.test(verb) && !GOVERNS_CANCEL.test(tail)) || (words.length > 2 && !GOVERNS_CANCEL.test(full)))) continue;
     return true;
   }
   return false;
@@ -2022,14 +2027,19 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Check user's words (filtering generic action verbs) against detached labels, requests, and summaries before starting a fresh run.
-        const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
-        const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
-        if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
-          target = byUser;
-        } else if (byDetail?.kind === "owned") {
-          const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)];
-          if (extConflicts.length > 0) target = { kind: "external", task: extConflicts[extConflicts.length - 1] };
+        // Check unfiltered user words against detached labels, then verb-filtered user words against detached requests/summaries, before starting a fresh run.
+        const extByLabel = [...this.externalTasks].reverse().find((e) => TaskNames.mentions(request.task, e.label, ""));
+        if (extByLabel != null) {
+          target = { kind: "external", task: extByLabel };
+        } else {
+          const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+          const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
+          if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
+            target = byUser;
+          } else if (byDetail?.kind === "owned") {
+            const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)];
+            if (extConflicts.length > 0) target = { kind: "external", task: extConflicts[extConflicts.length - 1] };
+          }
         }
       }
     }

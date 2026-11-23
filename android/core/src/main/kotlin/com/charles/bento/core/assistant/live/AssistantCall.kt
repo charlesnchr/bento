@@ -1493,14 +1493,23 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
-                        val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
-                        if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
-                            target = byUser
-                        } else if (byDetail is Target.Owned) {
-                            val extConflicts = externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
-                            val matchedExt = extConflicts.lastOrNull()
-                            if (matchedExt != null) target = Target.External(matchedExt)
+                        val reqWords = TaskNames.distinctive(request.task)
+                        val extByLabel = externalTasks.values.lastOrNull { (label, _) ->
+                            val lw = TaskNames.distinctive(label)
+                            lw.isNotEmpty() && lw.any { it in reqWords }
+                        }
+                        if (extByLabel != null) {
+                            target = Target.External(extByLabel.first)
+                        } else {
+                            val userWords = reqWords.filterNot { it in CONFLICT_VERBS }
+                            val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
+                            if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
+                                target = byUser
+                            } else if (byDetail is Target.Owned) {
+                                val extConflicts = externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
+                                val matchedExt = extConflicts.lastOrNull()
+                                if (matchedExt != null) target = Target.External(matchedExt)
+                            }
                         }
                     }
                 }
