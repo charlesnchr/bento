@@ -3340,25 +3340,28 @@ export class Call {
       /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:(?:go\s+ahead\s+)?(?:and|but)(?:\s+then)?|then)(?:\s+(?:please|just))?|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!clubs?\b|reviews?\b|stores?\b|shops?\b|shel(?:f|ves)\b|summar(?:y|ies)\b|reports?\b|chapters?\b|pages?\b|of\b|prices?\b|funds?\b|accounts?\b|savings?\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:clubs?|reviews?|stores?|shops?|shel(?:f|ves)|summar(?:y|ies)|reports?|chapters?|pages?|of|prices?|funds?|accounts?|savings?|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
   ]);
-  private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b/gi;
+  private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b|\s+&(?=\s)/gi;
   private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/i;
   /** Complete coordinated booking-item grammar after a comma: positive determiner/quantifier + up to 3 descriptive words + bookable noun (or bare bookable noun), followed ONLY by bounded place, venue, or date/duration prepositional phrases (no open lowercase catch-all, rejecting "at capacity", "in progress", "in flux", "hotel to close", "hotel to decide", "on hold", "in London costs more"). */
-  private static readonly COORD_BOOK_ITEM_PREFIX = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[A-Za-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b/i;
-  private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?|[A-Z]{2,})\b/;
+  private static readonly COORD_BOOK_ITEM_PREFIX = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b/iu;
+  private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?![\p{L}\p{N}])/u;
   private static readonly COORD_BOOK_ITEM_TIME_OR_VENUE_PP = /^\s+(?:(?:in|at|near|to|from)\s+the\s+(?:airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront|coast|bay|lake|hill|old\s+town)|on\s+(?:(?:next|this)\s+)?(?:(?:mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?)|for\s+(?:(?:the\s+)?(?:trip|weekend|week|tonight|tomorrow|today|next\s+\w+)|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|guests?)))\b/i;
-  private static readonly COORD_BOOK_ITEM_LOWER_MOD_PP = /^\s+(?:in|near|for|from)\s+([a-z]{3,})\b/;
-  private static readonly COORD_BOOK_ITEM_INDEF_IN_PP = /^\s+in\s+([a-z]{3,})\b/;
+  private static readonly COORD_BOOK_ITEM_LOWER_MOD_PP = /^\s+(?:in|near|for|from)\s+([\p{Ll}]{3,})(?![\p{L}\p{N}])/u;
+  private static readonly COORD_BOOK_ITEM_INDEF_IN_PP = /^\s+in\s+([\p{Ll}]{3,})(?![\p{L}\p{N}])/u;
   private static readonly COORD_INDEF_START = /^\s*(?:a|an|another|one|two|three|four|five|\d+|some)\s+/i;
   private static readonly COMMENTARY_STATE_NOUN = new Set([
-    "progress", "limbo", "doubt", "mind", "hand", "place", "reference", "completion", "capacity", "hold", "wait", "waiting", "risk", "question", "issue", "review", "flux", "jeopardy", "abeyance", "tatters", "suspense", "danger", "trouble", "motion", "transit", "check", "touch", "store", "stock", "view", "sight", "fact", "effect", "general", "particular", "short", "brief", "case", "turn", "future", "detail", "practice", "theory", "need", "use", "play", "line", "order", "sync", "process", "draft", "pending", "focus", "charge", "control", "secret", "private", "public", "person", "tow", "reserve", "foreclosure", "dispute", "litigation", "bankruptcy", "receivership", "default", "arrears", "construction", "renovation", "repair", "maintenance", "ruins", "debt", "disrepair", "decline", "administration", "shambles", "distress", "chaos", "crisis", "decay", "peril", "turmoil", "transition", "redevelopment", "liquidation", "probate", "escrow", "quarantine",
+    "progress", "limbo", "doubt", "mind", "hand", "place", "reference", "completion", "capacity", "hold", "wait", "waiting", "risk", "question", "issue", "review", "flux", "jeopardy", "abeyance", "tatters", "suspense", "danger", "trouble", "motion", "transit", "check", "touch", "store", "stock", "view", "sight", "fact", "effect", "general", "particular", "short", "brief", "case", "turn", "future", "detail", "practice", "theory", "need", "use", "play", "line", "order", "sync", "process", "draft", "pending", "focus", "charge", "control", "secret", "private", "public", "person", "tow", "reserve", "foreclosure", "dispute", "litigation", "bankruptcy", "receivership", "default", "arrears", "construction", "renovation", "repair", "maintenance", "ruins", "debt", "disrepair", "decline", "administration", "shambles", "disarray", "distress", "chaos", "crisis", "decay", "peril", "turmoil", "transition", "redevelopment", "liquidation", "probate", "escrow", "quarantine",
   ]);
   /** Unambiguous region codes safe to pair with calendar words ("Spring, TX", "Spring TX"), excluding 2-letter English words ("OK", "OR", "IN", "ME", "HI", "OH") so "in May, OK" and "in Summer, OK?" stay calendar phrases. */
   private static readonly UNAMBIG_REGION_CODE = /^(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|ID|IL|IA|KS|KY|LA|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|UK|US|EU|AU|NZ|QC|ON|BC|AB|NSW|VIC|QLD)$/;
   private static readonly CLAUSE_PREDICATE = /\b(?:no|not|never|skip|without|except|already|later|soon|still|instead|needed|sorted|hold|follow|can|could|will|would|should|may|might|must|is|are|was|were|be|been|has|have|had|do|does|did|i|we|you|they|he|she)\b/i;
-  /** Fail-closed colon allow-lists: a colon after a comma-coordinated booking item stays attached ONLY when followed by a proper venue name ("the Savoy") or a short booking constraint ("refundable only", "under 200 pounds"). */
-  private static readonly COLON_BOOK_VENUE = /^(?!(?:Check|Find|See|Look|Tell|Show|Ask|List|Compare|Research|Confirm|Verify|Cancel|Skip|Ignore|Avoid|Note|Remember|Call|Email|Send|Figure|Dig|Track|Work)\b)(?:[Tt]he\s+)?[A-Z][A-Za-z'.-]*(?:\s+(?:[A-Z][A-Za-z'.-]*|of|the|at|in|on|by|and|&)){0,5}$/;
+  /** Fail-closed colon allow-lists: a colon after a comma-coordinated booking item stays attached ONLY when followed by a proper venue name ("the Savoy", never an imperative or research-noun phrase like "Summarize the Reviews") or a short booking constraint ("refundable only", "under 200 pounds"). */
+  private static readonly COLON_BOOK_VENUE = /^(?!(?:Check|Find|See|Look|Tell|Show|Ask|List|Compare|Summarize|Summarise|Explain|Research|Confirm|Verify|Cancel|Skip|Ignore|Avoid|Note|Remember|Call|Email|Send|Figure|Dig|Track|Work|Get|Read|Write|Draft|Fetch|Gather|Browse|Search|Locate|Review|Analyze|Analyse|Evaluate|Rank|Rate|Sort|Filter|Audit|Inspect|Investigate|Explore|Plan|Schedule|Book|Reserve|Update|Change|Edit|Fix|Delete|Remove|Print|Export|Share|Forward|Reply|Answer|Discuss|Debate|Decide|Choose|Pick|Select)\b)(?:[Tt]he\s+)?\p{Lu}[\p{L}'.-]*(?:\s+(?:\p{Lu}[\p{L}'.-]*|of|the|at|in|on|by|and|&)){0,5}$/u;
+  private static readonly COLON_RESEARCH_NOUN = /\b(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies)|options?|details?|info|information|history|owner|owners|ownership|background|summary|summaries|report|reports|notes?|list|pros|cons|ratings?|feedback|comments?)\b/i;
   private static readonly COLON_BOOK_CONSTRAINT = /^(?:(?:free|fully|non)?-?(?:refundable|cancellable|cancelable|flexible|non-?smoking|smoking|quiet|central|direct|nonstop|window|aisle|king|queen|double|twin|single|standard|deluxe|balcony|breakfast|wifi|parking|pool|gym|pet-?friendly|wheelchair|accessible|early|late|cheap|budget|luxury|boutique)(?:\s+(?:only|included|preferred|please|room|suite|bed|rate|rates|option|options))?|(?:under|below|max|around|about)\s+[$£€]?\d+(?:\s*(?:pounds?|dollars?|euros?|gbp|usd|eur|per\s+night|a\s+night|\/night))?)$/i;
   private static readonly BOOK_ITEM_HEAD_WORD = /^(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?|concerts?|shows?|spas?|vehicles?|rentals?|nights?|spots?)$/;
+  /** Descriptive non-place pre-nominal adjectives/quantifiers allowed before a bookable head noun ("a 5-star hotel", "a cozy hotel", "a compact car", "a second flight") without counting as a distinct destination. */
+  private static readonly PRENOMINAL_NON_PLACE = /^(?:another|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|star|stars|bedroom|bedrooms|bed|beds|person|people|guest|guests|night|nights|day|days|week|weeks|way|class|tier|level|grade|rated|style|friendly|free|only|non|no|sub|mid|top|high|low|big|small|large|tiny|little|central|downtown|uptown|midtown|airport|station|beach|beachfront|waterfront|riverside|lakeside|harbor|harbour|park|city|town|village|urban|suburban|rural|modern|historic|classic|cozy|cosy|clean|comfy|comfortable|decent|basic|simple|fancy|posh|swanky|affordable|inexpensive|economical|reasonable|pricey|expensive|upscale|premium|executive|corporate|compact|economy|midsize|fullsize|suv|sedan|convertible|electric|hybrid|automatic|manual|overnight|main|local|nearby|close|convenient|great|better|cheaper|nicer|nicest|quieter|quietest|newer|newest|older|oldest|bigger|smaller|larger|closer|nearest|favorite|favourite|preferred|usual|regular|normal|similar|matching|corresponding|separate|spare|alt|alternative|open|available|paid|confirmed|booked|reserved|active)$/;
   private static readonly NON_BOOK_TAIL = /^\s+(?:(?:a|an|the|my|our|your)\s+)?(?:\w+\s+){0,2}(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies))\b/i;
   private static readonly COMMA_PLACE_CONT = /^\s+(?!(?:And|But|Then|Also|Plus|Please|Or|So|Yet|While|Because|Since|Check|Find|Gather|See|Fetch|Compare|Summarize|Summarise|Book|Reserve)\b)(?:[A-Z][a-z]+\b(?:\s+[A-Z][a-z]+\b)?|(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|UK|US|EU|AU|NZ|QC|ON|BC|AB|NSW|VIC|QLD)\b)(?=\s*(?:$|[.?!;:,]|\s+(?:[Aa]nd|for|on|at|in|from|to|with|next|this|tonight|tomorrow|[Pp]lease|[Mm]onday|[Tt]uesday|[Ww]ednesday|[Tt]hursday|[Ff]riday|[Ss]aturday|[Ss]unday)\b))/;
   /** Bare anaphoric pronoun object right after a booking verb ("book it", "book it for Friday"), never a determiner + noun ("book that tour", "book one tour"). */
@@ -3376,19 +3379,17 @@ export class Call {
     "today", "tonight", "tomorrow", "yesterday", "morning", "afternoon", "evening", "night", "noon", "midnight", "midday", "lunchtime", "dinnertime", "breakfast", "lunch", "dinner", "supper", "sunset", "sunrise", "dawn", "dusk", "daytime", "nighttime", "bedtime", "weekend", "weekday", "day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes", "time", "times", "once", "twice", "am", "pm", "easter", "christmas", "thanksgiving", "spring", "summer", "autumn", "fall", "winter",
     "rate", "rates", "price", "prices", "cost", "costs", "budget", "notice", "name", "names", "order", "end", "start", "top", "bottom", "arrival", "departure", "checkin", "checkout",
   ]);
-  /** Lowercase infinitive verbs excluded ONLY after "to" (never after "in"/"at"/"near", so "in split" still extracts Split, and never skipping lowercase destinations followed by dates like "to paris a few days later" or "to rome the fifteenth"). */
+  /** Lowercase infinitive verbs excluded ONLY after "to" (never after "in"/"at"/"near", so "in split" still extracts Split, and never skipping lowercase destinations followed by dates or run-on clauses like "to paris a few days later", "to rome the fifteenth", or "to rome the family is already there"). */
   private static readonly INFINITIVE_VERB = new Set([
-    "arrive", "stay", "check", "book", "reserve", "meet", "eat", "visit", "see", "get", "go", "leave", "depart", "return", "fly", "drive", "walk", "find", "make", "take", "pay", "confirm", "cancel", "change", "update", "pick", "drop", "attend", "join", "sleep", "rest", "dine", "celebrate", "relax", "unwind", "enjoy", "explore", "watch", "catch", "save", "avoid", "help", "toast", "host", "plan", "spend", "begin", "finish", "cover", "share", "split", "compare", "discuss", "review", "finalize", "finalise", "prepare", "organize", "organise", "schedule", "arrange", "secure", "lock", "hold", "keep", "try", "test", "bring", "send", "call", "ask", "tell", "show", "give", "buy", "rent", "hire", "grab", "have", "be", "do", "use", "surprise", "impress", "propose", "beat", "treat", "thank", "welcome", "escape", "mark", "accommodate", "spoil", "honor", "honour", "reward", "congratulate", "house", "entertain", "put", "lodge", "seat", "feed", "pamper", "delight", "serve", "support", "assist", "greet", "reunite", "gather", "pitch", "brief", "debrief", "onboard", "coach", "interview", "recruit", "consult", "advise", "audit", "inspect", "scout", "shoot", "film", "record", "perform", "present", "speak", "lecture", "study", "research", "write", "recover", "recuperate", "recharge", "decompress", "commemorate",
+    "arrive", "stay", "check", "book", "reserve", "meet", "eat", "visit", "see", "get", "go", "leave", "depart", "return", "fly", "drive", "walk", "find", "make", "take", "pay", "confirm", "cancel", "change", "update", "pick", "drop", "attend", "join", "sleep", "rest", "dine", "celebrate", "relax", "unwind", "enjoy", "explore", "watch", "catch", "save", "avoid", "help", "toast", "host", "plan", "spend", "begin", "finish", "cover", "share", "split", "compare", "discuss", "review", "finalize", "finalise", "prepare", "organize", "organise", "schedule", "arrange", "secure", "lock", "hold", "keep", "try", "test", "bring", "send", "call", "ask", "tell", "show", "give", "buy", "rent", "hire", "grab", "have", "be", "do", "use", "surprise", "impress", "propose", "beat", "treat", "thank", "welcome", "escape", "mark", "accommodate", "spoil", "honor", "honour", "reward", "congratulate", "house", "entertain", "put", "lodge", "seat", "feed", "pamper", "delight", "serve", "support", "assist", "greet", "reunite", "gather", "pitch", "brief", "debrief", "onboard", "coach", "interview", "recruit", "consult", "advise", "audit", "inspect", "scout", "shoot", "film", "record", "perform", "present", "speak", "lecture", "study", "research", "write", "recover", "recuperate", "recharge", "decompress", "commemorate", "wow", "dazzle", "thrill", "amaze", "charm", "comfort", "shelter", "billet",
   ]);
-  /** Direct person/group object right after "to <lowercase verb>" ("to house the guests", "to entertain the clients", "to dazzle them"), never matching date/manner phrases ("to paris a few days later", "to rome the fifteenth", "to rome the cheapest way") or prepositional companions ("to paris for my parents"). */
-  private static readonly PURPOSE_PERSON_OBJ = /^\s+(?:(?:the|my|our|your|his|her|their|a|an|some)\s+(?:[a-z]+\s+)?(?:guests?|clients?|customers?|team|staff|family|crew|visitors?|parents?|kids?|children|friends?|colleagues?|partners?|investors?|delegates?|executives?|speakers?|hosts?|boss|board|group|folks)|them|him|her|everyone|everybody)\b/i;
   /** Unambiguously descriptive non-location modifiers in group labels ("cheap"/"Cheap", "new") that are never overridden by a destination phrase ("in London") regardless of Title Case. */
   private static readonly NON_PLACE_MODIFIER = new Set([
     "cheap", "cheapest", "budget", "luxury", "best", "good", "quiet", "new", "old", "early", "late", "last", "minute", "next", "upcoming", "pending", "urgent", "quick", "direct", "nonstop", "round", "return", "flexible", "refundable", "shared", "private", "family", "business", "personal", "work", "group", "solo", "team", "staff", "vip", "extra", "additional", "remaining", "other", "backup", "draft", "final", "weekend", "weekday", "today", "tonight", "tomorrow", "morning", "afternoon", "evening", "night", "summer", "winter", "autumn", "fall", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "adjoining", "connecting", "double", "single", "twin", "king", "queen", "boutique", "standard", "deluxe",
   ]);
   /** Modifiers that are descriptive only when lowercase ("nice", "spring"), while capitalized ("Nice", "Spring") can name a proper place. */
   private static readonly LOWERCASE_ONLY_NON_PLACE_MODIFIER = new Set(["nice", "spring"]);
-  private static readonly COORD_ITEM_SPLIT = /,\s*(?=(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[a-z0-9-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)|\s+and\s+/i;
+  private static readonly COORD_ITEM_SPLIT = /,\s*(?=(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)|\s+and\s+|\s+&\s*|\s*&\s+/iu;
   /** Bookable sub-unit object patterns (lowercase adjectives only so a new destination like "a Paris room" does not inherit "London"). */
   private static readonly CATEGORY_SUBUNIT: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     ["hotel", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:rooms?|stays?|suites?|nights?)\b/],
@@ -3457,8 +3458,8 @@ export class Call {
     };
     const extractPlaces = (text: string, includeFor = false): string[] => {
       const re = includeFor
-        ? /\b(in|at|to|near|for)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi
-        : /\b(in|at|to|near)\s+(?:the\s+)?([A-Za-z0-9:']+)/gi;
+        ? /\b(in|at|to|near|for)\s+(?:the\s+)?([\p{L}\p{N}:']+)/giu
+        : /\b(in|at|to|near)\s+(?:the\s+)?([\p{L}\p{N}:']+)/giu;
       const out: string[] = [];
       let pm: RegExpExecArray | null;
       while ((pm = re.exec(text)) != null) {
@@ -3467,21 +3468,21 @@ export class Call {
         const low = raw.toLowerCase();
         const afterRaw = text.slice(pm.index + pm[0].length);
         if (raw.length < 2 || /^\d+(?::\d+)?(?:am|pm)?$/i.test(raw)) continue;
-        if (/^[A-Z]/.test(raw)) {
+        if (/^\p{Lu}/u.test(raw)) {
           // Keep calendar/season words only when followed by an unambiguous region code ("Spring, TX", "Spring TX") or Title-Cased place continuation ("Sun Valley", "Spring Hill", "Spring, Texas"), never "Summer, ASAP", "Summer Please", or "May, OK".
           if (Call.CALENDAR_PROPER_WORD.test(raw)) {
-            const nextToken = /^(?:\s+|,\s*)([A-Za-z]+)\b/.exec(afterRaw)?.[1] ?? "";
+            const nextToken = /^(?:\s+|,\s*)([\p{L}]+)/u.exec(afterRaw)?.[1] ?? "";
             const isRegionOrPlaceCont =
               Call.UNAMBIG_REGION_CODE.test(nextToken) ||
-              (/^[A-Z][a-z]+$/.test(nextToken) && !/^(?:Please|Thanks|Thank)$/.test(nextToken) && !Call.CALENDAR_PROPER_WORD.test(nextToken));
+              (/^\p{Lu}\p{Ll}+$/u.test(nextToken) && !/^(?:Please|Thanks|Thank)$/.test(nextToken) && !Call.CALENDAR_PROPER_WORD.test(nextToken));
             if (!isRegionOrPlaceCont) continue;
           }
           out.push(low);
           continue;
         }
         if (Call.NON_PLACE_HEAD.has(low)) continue;
-        // Exclude recognised infinitive verbs or person/group purpose clauses only after "to" (never after "in"/"at"/"near" so "in split" extracts Split, and never skipping destinations followed by dates like "to paris a few days later" or "to rome the fifteenth").
-        if (prep === "to" && (Call.INFINITIVE_VERB.has(low) || Call.PURPOSE_PERSON_OBJ.test(afterRaw))) continue;
+        // Exclude recognised infinitive verbs only after "to" (never after "in"/"at"/"near" so "in split" extracts Split, and never skipping lowercase destinations followed by dates or run-on clauses like "to paris a few days later", "to rome the fifteenth", or "to rome the family is already there").
+        if (prep === "to" && Call.INFINITIVE_VERB.has(low)) continue;
         out.push(low);
       }
       return out;
@@ -3516,9 +3517,6 @@ export class Call {
       }
       return !sawAny;
     };
-    const reqHasCapitalizedPlace = Array.from(
-      task.request.matchAll(/\b(?:in|at|to|near|for|from)\s+(?:the\s+)?([A-Z][a-z]+)\b/g),
-    ).some((pm) => !Call.CALENDAR_PROPER_WORD.test(pm[1]));
     const isCoordBookItem = (frag: string): boolean => {
       if (Call.CLAUSE_PREDICATE.test(frag)) return false;
       const headMatch = Call.COORD_BOOK_ITEM_PREFIX.exec(frag);
@@ -3536,8 +3534,8 @@ export class Call {
           rest = rest.slice(modPp[0].length);
           continue;
         }
-        // For indefinite booking items when the request does not already capitalize places ("Book a flight to paris, a hotel in rome", "book a flight to paris, a cheap boutique hotel in london"), accept lowercase "in <place>" outside NON_PLACE_HEAD and COMMENTARY_STATE_NOUN; mixed-case requests with capitalized places ("Book a flight to Paris, a hotel in disrepair") reject uncapitalized state nouns.
-        const indefIn = hasIndef && !reqHasCapitalizedPlace ? Call.COORD_BOOK_ITEM_INDEF_IN_PP.exec(rest) : null;
+        // For indefinite booking items ("Book a flight to Paris, a hotel in rome", "Book a flight to paris, a hotel in rome", "book a flight to paris, a cheap boutique hotel in london"), accept lowercase "in <place>" outside NON_PLACE_HEAD and COMMENTARY_STATE_NOUN.
+        const indefIn = hasIndef ? Call.COORD_BOOK_ITEM_INDEF_IN_PP.exec(rest) : null;
         if (indefIn != null && !Call.NON_PLACE_HEAD.has(indefIn[1]) && !Call.COMMENTARY_STATE_NOUN.has(indefIn[1])) {
           rest = rest.slice(indefIn[0].length);
           continue;
@@ -3559,19 +3557,20 @@ export class Call {
           if (Call.NON_BOOK_TAIL.test(after)) return tail.slice(0, bm.index).trim();
           const fragEnd = /[.?!;:,]|\s+(?:and|but|while|whereas|because|since|then|also|plus)\b/i.exec(after);
           const nextFrag = fragEnd != null ? after.slice(0, fragEnd.index) : after;
-          // A colon blocks by default ("a hotel in disrepair: figure out who owns it") unless what immediately follows is a proper venue name ("the Savoy") or a short booking constraint ("refundable only", "under 200 pounds").
+          // A colon blocks by default ("a hotel in disrepair: figure out who owns it", "a hotel in London: Summarize the Reviews") unless what immediately follows is a proper venue name ("the Savoy") or a short booking constraint ("refundable only", "under 200 pounds").
           let isColonTask = false;
           if (fragEnd?.[0] === ":") {
             const afterColonRaw = after.slice(fragEnd.index + 1);
             const afterColonEnd = /[.?!;:,]|\s+(?:and|but|while|whereas|because|since|then|also|plus)\b/i.exec(afterColonRaw);
             const afterColon = (afterColonEnd != null ? afterColonRaw.slice(0, afterColonEnd.index) : afterColonRaw).trim();
-            isColonTask = !Call.COLON_BOOK_VENUE.test(afterColon) && !Call.COLON_BOOK_CONSTRAINT.test(afterColon);
+            const isVenue = Call.COLON_BOOK_VENUE.test(afterColon) && !Call.COLON_RESEARCH_NOUN.test(afterColon);
+            isColonTask = !isVenue && !Call.COLON_BOOK_CONSTRAINT.test(afterColon);
           }
           if (!isColonTask && isCoordBookItem(nextFrag)) continue;
           if (Call.COMMA_PLACE_CONT.test(after)) continue;
           return tail.slice(0, bm.index).trim();
         }
-        if (/^\s+and$/i.test(sep)) {
+        if (/^\s*(?:and|&)$/i.test(sep)) {
           if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
           return tail.slice(0, bm.index).trim();
         }
@@ -3602,7 +3601,7 @@ export class Call {
       const anyBookingMatches = verbMatches.some(({ before, obj }) => {
         const objWords = wordSet(obj);
         if (modifiers.every((mod) => matchesIn(objWords, mod))) {
-          // If coordinated items ("a hotel in london and a flight to Paris", "a London flight, a hotel in paris", "a London flight and a Paris hotel") attach a destination (prepositional or pre-nominal) to an earlier item alongside a later destination rather than a single shared destination ("a London flight and a hotel", "a hotel, a car and a flight for London"), require one coordinated item to satisfy all modifiers.
+          // If coordinated items ("a hotel in london and a flight to Paris", "a London flight, a hotel in paris", "a London flight and a Paris hotel", "a London flight and a Québec hotel", "a London flight & a paris hotel") attach a destination (prepositional or pre-nominal) to an earlier item alongside a later destination rather than a single shared destination ("a London flight and a hotel", "a London flight and a hotel ASAP", "a hotel, a car and a flight for London"), require one coordinated item to satisfy all modifiers.
           const coordParts = obj.split(Call.COORD_ITEM_SPLIT).map((p) => p.trim()).filter(Boolean);
           const placeMods = modifiers.filter(
             (mod) =>
@@ -3610,17 +3609,19 @@ export class Call {
               !Call.NON_PLACE_MODIFIER.has(mod) &&
               (!Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(mod) || properModifiers.has(mod)),
           );
+          // Inspect only tokens BEFORE the first bookable head noun (ignoring trailing words like "ASAP", "OK", "Thanks") so both capitalized/accented ("Paris", "Québec", "Nice") and lowercase ("paris") pre-nominal destinations are detected while descriptive modifiers ("a cheap hotel", "a nice hotel", "a 5-star hotel") stay placeless.
           const hasPrenominalPlace = (part: string): boolean => {
-            const caps = part.match(/\b(?:[A-Z][a-z]{2,}|[A-Z]{2,})\b/g) ?? [];
-            return caps.some((tok) => {
+            const toks = part.match(/[\p{L}\p{N}]+/gu) ?? [];
+            const headIdx = toks.findIndex((t) => Call.BOOK_ITEM_HEAD_WORD.test(t.toLowerCase()));
+            if (headIdx <= 0) return false;
+            return toks.slice(0, headIdx).some((tok) => {
+              if (tok.length < 2 || /^\d+$/.test(tok)) return false;
               const low = tok.toLowerCase();
-              return (
-                !Call.GROUP_STOP.has(low) &&
-                !Call.NON_PLACE_MODIFIER.has(low) &&
-                !Call.CALENDAR_PROPER_WORD.test(tok) &&
-                !Call.BOOK_ITEM_HEAD_WORD.test(low) &&
-                !/^(?:another|one|two|three|four|five|six|seven|eight|nine|ten)$/.test(low)
-              );
+              const isCap = /^\p{Lu}/u.test(tok);
+              if (Call.GROUP_STOP.has(low) || Call.NON_PLACE_MODIFIER.has(low) || Call.PRENOMINAL_NON_PLACE.test(low)) return false;
+              if (Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(low) && !isCap) return false;
+              if (Call.CALENDAR_PROPER_WORD.test(tok) || (!isCap && Call.NON_PLACE_HEAD.has(low))) return false;
+              return true;
             });
           };
           const laterHasPlace = coordParts.slice(1).some((p) => extractPlaces(p, true).length > 0 || hasPrenominalPlace(p));

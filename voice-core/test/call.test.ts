@@ -1250,6 +1250,16 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both hotel bookings", "book a flight to paris, a hotel in disrepair: figure out who owns it", "paris flight", "Cancel both hotel bookings in progress", 0],
     ["Both London hotel bookings", "Find a London hotel and book it to house the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Find a London hotel and book it to entertain the clients", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the family is already there", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Summarize the Reviews", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Québec hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight, a Québec hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in rome", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a paris hotel", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight & a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a hotel ASAP", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hotel please, Thanks", "London trip", "Cancel both London hotel bookings in progress", 1],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
