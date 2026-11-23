@@ -1325,6 +1325,17 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both Paris hotel bookings", "Book a London flight&some Paris hotels", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
     ["Both Paris flight bookings", "Book a London flight and a Paris hotel", "Euro trip", "Cancel both Paris flight bookings in progress", 0],
     ["Both Paris ferry bookings", "Book a London ferry and a Paris hotel", "Euro trip", "Cancel both Paris ferry bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and some Paris hotels close tomorrow", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel looks fine", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel sold out", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel for May", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel in May", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel on May 3rd", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel without breakfast", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel with no smoking", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel that has a pool", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel I like", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel we can cancel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
