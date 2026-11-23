@@ -1501,6 +1501,15 @@ class AssistantCall(
                     return@launch
                 }
                 val found = (target as? Target.Owned)?.task
+                if (found != null) {
+                    val conflicts = externalConflicts(request.task, found)
+                    if (conflicts.isNotEmpty()) {
+                        val extNames = conflicts.joinToString(", ") { "\"$it\"" }
+                        respond(d.id, "Not executed: the user's message mentions $extNames from an earlier call, so this call cannot continue that session directly. " +
+                            "Tell the user to open that reply in chat and tap Continue it, or ask them to clarify if they meant \"${found.label}\". No action was run.", executed = false)
+                        return@launch
+                    }
+                }
                 // An answer Gemini didn't place ("yes, go ahead") goes to the task whose question the user had heard last
                 // as they started saying it. Not one Gemini labelled as a new task.
                 val answering = if (named == null && label == null && TaskNames.isAnswer(request.task)) answering(d) else emptyList()
@@ -1538,6 +1547,31 @@ class AssistantCall(
         data class Ambiguous(val owned: List<Task>, val external: List<String>) : Target
     }
 
+    /** Detached task labels identified by [text] via a distinctive word absent from [owned]'s label and request. */
+    private fun externalConflicts(text: String, owned: Task): List<String> {
+        if (externalTasks.isEmpty()) return emptyList()
+        val textWords = TaskNames.distinctive(text).filterNot { it in CONFLICT_VERBS }
+        if (textWords.isEmpty()) return emptyList()
+        val ownedWords = TaskNames.distinctive("${owned.label} ${owned.request}")
+        val uniqueToText = textWords.filterNot { it in ownedWords }
+        if (uniqueToText.isEmpty()) return emptyList()
+        return externalTasks.values.filter { (extLabel, extDetail) ->
+            val extLabelWords = TaskNames.distinctive(extLabel)
+            val extDetailWords = TaskNames.distinctive(extDetail)
+            val extAll = extLabelWords + extDetailWords
+            val hasOwnedUnique = textWords.any { it in ownedWords && it !in extAll }
+            uniqueToText.any { w ->
+                if (w in extLabelWords) true
+                else if (w !in extDetailWords) false
+                else if (!hasOwnedUnique) true
+                else {
+                    val cap = w.replaceFirstChar { it.uppercaseChar() }
+                    Regex("(?<![\\p{L}\\p{N}])${Regex.escape(cap)}(?![\\p{L}\\p{N}])").containsMatchIn(extDetail)
+                }
+            }
+        }.map { it.first }
+    }
+
     /**
      * Resolves [ref] across this call's tasks and detached external tasks together so cross-session
      * references and ties return [Target.External] or [Target.Ambiguous] instead of fuzzy-matching owned runs.
@@ -1560,8 +1594,10 @@ class AssistantCall(
         }
         val key = TaskNames.find(ref, combined)
         if (key != null) {
-            return if (key.startsWith("ext:")) Target.External(combined[key]!!.first)
-            else tasks[key]?.let(Target::Owned)
+            if (key.startsWith("ext:")) return Target.External(combined[key]!!.first)
+            val owned = tasks[key] ?: return null
+            val conflicts = externalConflicts(ref, owned)
+            return if (conflicts.isNotEmpty()) Target.Ambiguous(listOf(owned), conflicts) else Target.Owned(owned)
         }
         val refWords = TaskNames.distinctive(ref)
         val matchedOwned = tasks.values.filter { t ->
@@ -1569,10 +1605,11 @@ class AssistantCall(
             refWords.any { it in pool }
         }
         val matchedExt = externalTasks.values.filter { (label, detail) ->
-            val pool = TaskNames.distinctive(if (byRequest) "$label $detail" else label)
+            val pool = TaskNames.distinctive("$label $detail")
             refWords.any { it in pool }
         }.map { it.first }
         if (matchedOwned.size + matchedExt.size > 1) return Target.Ambiguous(matchedOwned, matchedExt)
+        if (matchedOwned.isEmpty() && matchedExt.size == 1) return Target.External(matchedExt.single())
         return null
     }
 
@@ -2046,6 +2083,13 @@ class AssistantCall(
 
     companion object {
         private const val TAG = "AssistantCall"
+        private val CONFLICT_VERBS = setOf(
+            "book", "booking", "reserve", "confirm", "send", "cancel", "proceed", "continue", "ahead",
+            "schedule", "order", "submit", "create", "delete", "update", "start", "stop", "approve",
+            "deploy", "merge", "email", "post", "reply", "publish", "apply", "install", "remove",
+            "change", "save", "close", "open", "push", "call", "text", "message", "move", "copy",
+            "edit", "share", "invite", "accept", "decline", "purchase", "check", "find", "search", "look",
+        )
         const val OUTPUT_MIME = "audio/pcm;rate=24000"
         /** Two seconds of 20 ms microphone frames: a burst that big waits for the call's thread rather than being dropped. */
         const val MIC_FRAMES = 100

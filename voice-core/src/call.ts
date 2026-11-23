@@ -86,7 +86,11 @@ const EXCLUDE_TASK = /^(?:not|except(?:\s+for)?)\b/i;
 const EXPLICIT_EXCLUSION = /^(?:except(?:\s+for)?|not\s+(?:the|that|this|my)\b)\b/i;
 const REFUSE_NO_CANCEL = /^(?:no|nope|nah)\b/i;
 /** Verbs that denote cancellation itself, excluded from clause target matching while preserving task-label nouns/verbs like "email". */
-const CANCEL_ACTION_WORDS = new Set(["cancel", "stop", "abort", "kill", "drop", "end", "halt", "task", "tasks", "one", "ones"]);
+const CANCEL_ACTION_WORDS = new Set(["cancel", "stop", "abort", "kill", "drop", "end", "halt", "task", "tasks", "one", "ones", "except"]);
+/** Start of a new cancellation command inside a coordinated "and" clause ("Keep Noma and cancel the weather"). */
+const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|abort|kill|drop|end|halt|forget|never\s+mind|don'?t\s+bother)\b/i;
+/** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
+const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
 const CANCEL_ALL_SCOPE = /\b(?:(?:cancel|stop|abort|kill|drop|end|clear)\s+(?:\w+\s+){0,2}?(?:all|both|everything)\b|(?:all|both|every)\s+(?:of\s+)?(?:them|the\s+tasks|tasks|runs|searches|bookings|requests|jobs)\b)/i;
 
@@ -2695,63 +2699,75 @@ export class Call {
     return { namedThis: myScore === best, namedOther: otherBest === best };
   }
 
-  private isProtectingClause(clause: string): boolean {
-    return DONT_CANCEL.test(clause) || KEEP_RUNNING.test(clause) || KEEP_TARGET.test(clause) || EXCLUDE_TASK.test(clause);
-  }
-
-  /** Non-protecting clauses of [said] (handling "Cancel X and leave the rest to me" by splitting on "and" when a tail sub-clause is protecting). */
-  private activeCancelClauses(said: string): string[] {
-    const active: string[] = [];
+  /**
+   * Parses [said] into typed active/protect spans while keeping coordinated objects under their
+   * governing verb ("keep Noma and Paris running" stays one protect span; "Keep Noma and cancel
+   * weather" splits into a protect span followed by an active cancel span).
+   */
+  private parseCancelSpans(said: string): {
+    kind: "active" | "protect";
+    explicitDontOrKeep: boolean;
+    explicitExcl: boolean;
+    restOnly: boolean;
+    parts: string[];
+  }[] {
+    const spans: { kind: "active" | "protect"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] }[] = [];
     for (const clause of this.splitClauses(said)) {
-      if (EXCLUDE_TASK.test(clause)) continue;
-      if (DONT_CANCEL.test(clause) || KEEP_RUNNING.test(clause) || KEEP_TARGET.test(clause)) {
-        // Handle "Cancel X and keep Y" (one clause before "and", protecting clause after "and"): keep non-protecting leading sub-clauses.
-        const parts = this.splitAnd(clause);
-        if (parts.length > 1 && !this.isProtectingClause(parts[0])) {
-          for (const p of parts) { if (!this.isProtectingClause(p)) active.push(p); }
+      let cur: { kind: "active" | "protect"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] } | null = null;
+      for (const part of this.splitAnd(clause)) {
+        const explicitDontOrKeep = DONT_CANCEL.test(part) || KEEP_RUNNING.test(part);
+        const targetOnlyProtect = KEEP_TARGET.test(part) || EXCLUDE_TASK.test(part);
+        if (explicitDontOrKeep || targetOnlyProtect) {
+          cur = {
+            kind: "protect",
+            explicitDontOrKeep,
+            explicitExcl: EXPLICIT_EXCLUSION.test(part),
+            restOnly: KEEP_THE_REST.test(part),
+            parts: [part],
+          };
+          spans.push(cur);
+        } else if (cur == null || (cur.kind === "protect" && CANCEL_VERB_START.test(part))) {
+          cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
+          spans.push(cur);
+        } else {
+          cur.parts.push(part);
+          if (KEEP_THE_REST.test(part)) cur.restOnly = true;
         }
-        continue;
       }
-      active.push(clause);
     }
-    return active;
+    return spans;
   }
 
-  /** Text inspected for cross-session external task conflicts: active cancel clauses when present, else full text. */
+  /** Active (non-protecting) cancel parts of [said]. */
+  private activeCancelParts(said: string): string[] {
+    return this.parseCancelSpans(said).filter((s) => s.kind === "active").flatMap((s) => s.parts);
+  }
+
+  /** Text inspected for cross-session external task conflicts: active cancel spans when present, else full text. */
   private cancelScopeText(said: string): string {
-    const active = this.activeCancelClauses(said).join(". ");
+    const active = this.activeCancelParts(said).join(". ");
     return active.length > 0 ? active : said;
   }
 
   private protectsTask(said: string, task: Task): boolean {
-    for (const clause of this.splitClauses(said)) {
-      if (EXCLUDE_TASK.test(clause)) {
-        // Carry exclusion across "except X and Y" / "not X and Y"; fail closed when an explicit exclusion cannot be resolved.
-        const explicit = EXPLICIT_EXCLUSION.test(clause);
-        for (const sub of this.splitAnd(clause)) {
-          const { namedThis, namedOther } = this.clauseResolution(sub, task);
-          if (namedThis) return true;
-          if (explicit && !namedOther) return true;
+    const spans = this.parseCancelSpans(said);
+    const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
+    const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
+    for (const span of spans) {
+      if (span.kind !== "protect") continue;
+      let anyNamedOther = false;
+      for (const sub of span.parts) {
+        const { namedThis, namedOther } = this.clauseResolution(sub, task);
+        if (namedThis) return true;
+        if (namedOther) anyNamedOther = true;
+        else if (span.explicitExcl) {
+          // Only fail closed on an unresolved exclusion when it carries a real descriptor word (e.g. "except the vegan one"), not bare "Not that one".
+          const hasDescriptor = [...TaskNames.distinctive(sub)].some((w) => !CANCEL_ACTION_WORDS.has(w));
+          if (hasDescriptor) return true;
         }
-        continue;
       }
-      const parts = this.splitAnd(clause);
-      const segments = parts.length > 1 && !this.isProtectingClause(parts[0]) ? parts : [clause];
-      for (const seg of segments) {
-        const explicitDontOrKeep = DONT_CANCEL.test(seg) || KEEP_RUNNING.test(seg);
-        const targetOnlyProtect = KEEP_TARGET.test(seg) || EXCLUDE_TASK.test(seg);
-        if (!explicitDontOrKeep && !targetOnlyProtect) continue;
-        const explicitExcl = EXPLICIT_EXCLUSION.test(seg);
-        let anyNamedOther = false;
-        for (const sub of this.splitAnd(seg)) {
-          const { namedThis, namedOther } = this.clauseResolution(sub, task);
-          if (namedThis) return true;
-          if (namedOther) anyNamedOther = true;
-          else if (explicitExcl) return true;
-        }
-        // Only explicit "don't cancel / keep it running / leave it alone" falls back to protecting an unnamed task.
-        if (explicitDontOrKeep && !anyNamedOther) return true;
-      }
+      // Unnamed "don't cancel / keep running" protects this task unless it explicitly says "keep the rest" while an active span names this task.
+      if (span.explicitDontOrKeep && !anyNamedOther && !(span.restOnly && activeNamesThis)) return true;
     }
     return false;
   }
@@ -2799,7 +2815,7 @@ export class Call {
         }
         const identifies = this.identifiesOwnedTask(said, task);
         const affirmative = AFFIRMATIVE_CANCEL.test(trimmed) && !NEGATIVE_OR_KEEP.test(trimmed) && identifies;
-        const activeText = this.activeCancelClauses(said).join(". ");
+        const activeText = this.activeCancelParts(said).join(". ");
         const explicitCancel = activeText.length > 0 && identifies && asksToCancel(activeText, this.c.voiceCommands, names, true);
         if (affirmative || explicitCancel) return true;
         this.cancelRefusedTurn.set(task.id, answeredSeq);
@@ -2821,6 +2837,11 @@ export class Call {
     const [answeredSeq, said] = answered;
     const trimmed = said.trim();
     const names = [...this.c.vocabulary, "Woodhouse"];
+    if (this.protectsTask(said, task)) {
+      if (doubt != null && doubt.seq < answeredSeq) this.cancelDoubt = null;
+      this.cancelRefusedTurn.set(task.id, answeredSeq);
+      return false;
+    }
     if (!this.textLine) {
       this.cancelDoubt = null;
       if (doubt != null && doubt.tasks.has(task.id) && answeredSeq > doubt.seq) return true;
@@ -2828,13 +2849,8 @@ export class Call {
       this.cancelDoubt = { tasks: new Set([task.id]), seq: answeredSeq };
       return false;
     }
-    if (this.protectsTask(said, task)) {
-      if (doubt != null && doubt.seq < answeredSeq) this.cancelDoubt = null;
-      this.cancelRefusedTurn.set(task.id, answeredSeq);
-      return false;
-    }
-    const activeClauses = this.activeCancelClauses(said);
-    const activeText = activeClauses.join(". ");
+    const activeParts = this.activeCancelParts(said);
+    const activeText = activeParts.join(". ");
     if (doubt != null && doubt.seq === answeredSeq - 1 && doubt.tasks.has(task.id) && AFFIRMATIVE_CANCEL.test(trimmed) && !NEGATIVE_OR_KEEP.test(trimmed)) {
       const identifies = this.identifiesOwnedTask(said, task);
       const singleRunning = [...this.tasks.values()].filter((t) => t.state === RUNNING).length === 1;
@@ -2853,8 +2869,7 @@ export class Call {
       this.cancelRefusedTurn.set(task.id, answeredSeq);
       return false;
     }
-    // Score each active cancel clause / conjunct separately so "Cancel the weather and the Noma table booking" names both tasks.
-    const activeParts = activeClauses.flatMap((c) => this.splitAnd(c));
+    // Score each active cancel conjunct separately so "Cancel the weather and the Noma table booking" names both tasks.
     const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
     const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
     const targetsOnlyOther = !mentionsThis && mentionsOther && !CANCEL_ALL_SCOPE.test(activeText);

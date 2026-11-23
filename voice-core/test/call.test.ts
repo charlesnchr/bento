@@ -581,4 +581,23 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   s.toolCall("x3", "cancel_task", { task: "Noma table" });
   s.advance(0.1);
   assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "excluding detached Alchemist must not block cancelling Noma");
+
+  // Voice mode also honors explicit exclusions for owned tasks ("Cancel the weather, not the Alchemist table and not the Noma table booking").
+  const s2 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s2.advance(0.1);
+  s2.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Book a table at Alchemist", inHistory: true, active: true, request: "Book a table at Alchemist" });
+  s2.advance(0.1);
+  s2.turn("Book a table at Noma");
+  s2.toolCall("c1", "ask_hermes", { label: "Noma table booking" });
+  s2.advance(0.3);
+  s2.turn("Check the weather");
+  s2.toolCall("c2", "ask_hermes", { label: "Weather" });
+  s2.advance(0.3);
+  s2.turn("Cancel the weather, not the Alchemist table and not the Noma table booking");
+  s2.toolCall("x4", "cancel_task", { task: "Noma table booking" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, "explicit exclusion must protect Noma in voice mode");
+  s2.toolCall("x5", "cancel_task", { task: "Weather" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "Weather cancels cleanly in voice mode");
 });

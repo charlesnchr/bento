@@ -4780,6 +4780,35 @@ class AssistantCallTest {
             toolScope.cancel()
         }
     }
+
+    @Test fun detachedRequestConflictsRefuseCrossSessionFollowUpAndCancel() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val gate = CompletableDeferred<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c); gate.await() }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        call.note("Dinner booking", "Book a table at Alchemist", inHistory = true, id = "call-1-1", active = true, request = "Book a table at Alchemist")
+        Live.turn(transport, "Book a table at Noma")
+        transport.push(Live.call("c1", args = mapOf("label" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        assertEquals(1, asked.size)
+
+        // continue_task("Alchemist table") must refuse instead of fuzzy-matching owned Noma table.
+        Live.turn(transport, "Make it nine at Alchemist")
+        transport.push(Live.call("c2", args = mapOf("continue_task" to "Alchemist table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        assertEquals(1, asked.size, "follow-up naming detached Alchemist must not route to owned Noma")
+        assertTrue(transport.responses()[1].message().startsWith("Not executed:"), transport.responses()[1].message())
+
+        // cancel_task("Alchemist table") must refuse instead of cancelling owned Noma table.
+        Live.turn(transport, "Cancel the Alchemist table")
+        transport.push(Live.call("x1", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Alchemist table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        assertTrue(transport.responses()[2].message().startsWith("Not executed:"), transport.responses()[2].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must stay running")
+        call.stop()
+    }
 }
 
 /**

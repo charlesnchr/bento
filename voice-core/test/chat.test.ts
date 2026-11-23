@@ -1477,3 +1477,71 @@ test("multi-task cancel ('Cancel the weather and the Noma table booking'), 'exce
   s4.advance(0.1);
   assert.equal(s4.commands.filter((c) => c.type === "tool.cancel").length, 1, "'Cancel the email task' must cancel Email");
 });
+
+test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'keep the rest'", () => {
+  // 1) "Cancel the weather and keep the Noma table booking and Paris flights running" cancels Weather and protects BOTH Noma and Paris.
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table booking" });
+  s.advance(0.1);
+  s.type("Check Copenhagen weather");
+  s.calls("ask_hermes", { label: "Weather" });
+  s.advance(0.1);
+  s.type("Find flights to Paris");
+  s.calls("ask_hermes", { label: "Paris flights" });
+  s.advance(0.1);
+  s.type("Cancel the weather and keep the Noma table booking and Paris flights running");
+  s.calls("cancel_task", { task: "Noma table booking" });
+  s.advance(0.1);
+  s.calls("cancel_task", { task: "Paris flights" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "both coordinated kept tasks Noma and Paris must stay running");
+  s.calls("cancel_task", { task: "Weather" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "Weather must cancel");
+
+  // 2) "Keep X and cancel Y" cancels Y and protects X across all four phrasings.
+  for (const phrase of [
+    "Keep Noma running and cancel the weather",
+    "Don't cancel Noma and cancel the weather",
+    "Keep the Noma table and cancel the weather",
+    "Leave Noma alone and cancel the weather",
+  ]) {
+    const s2 = chat();
+    s2.type("Book a table at Noma");
+    s2.calls("ask_hermes", { label: "Noma table" });
+    s2.advance(0.1);
+    s2.type("Check Copenhagen weather");
+    s2.calls("ask_hermes", { label: "Weather" });
+    s2.advance(0.1);
+    s2.type(phrase);
+    s2.calls("cancel_task", { task: "Noma table" });
+    s2.advance(0.1);
+    assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, `must protect Noma on: ${phrase}`);
+    s2.calls("cancel_task", { task: "Weather" });
+    s2.advance(0.1);
+    assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, `must cancel Weather on: ${phrase}`);
+  }
+
+  // 3) Bare "Not that one, cancel the weather", "Not that, cancel the weather", and "Cancel the weather and keep the rest" cancel Weather.
+  for (const phrase of [
+    "Not that one, cancel the weather",
+    "Not that, cancel the weather",
+    "Cancel the weather and keep the rest",
+  ]) {
+    const s3 = chat();
+    s3.type("Book a table at Noma");
+    s3.calls("ask_hermes", { label: "Noma table" });
+    s3.advance(0.1);
+    s3.type("Check Copenhagen weather");
+    s3.calls("ask_hermes", { label: "Weather" });
+    s3.advance(0.1);
+    s3.type(phrase);
+    s3.calls("cancel_task", { task: "Noma table" });
+    s3.advance(0.1);
+    assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 0, `must not cancel Noma on: ${phrase}`);
+    s3.calls("cancel_task", { task: "Weather" });
+    s3.advance(0.1);
+    assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 1, `must cancel Weather on: ${phrase}`);
+  }
+});
