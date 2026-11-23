@@ -947,16 +947,20 @@ function numberSetting(id: string, fallback: number, min = 0, max = 3600): numbe
 function developerOverrides() {
   try {
     const given = JSON.parse($<HTMLTextAreaElement>("config").value);
-    if (!given || typeof given !== "object") return { hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
+    if (!given || typeof given !== "object") {
+      return { nonWebPlatform: null as string | null, hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
+    }
+    const nonWebPlatform = typeof given.platform === "string" && given.platform !== "web" ? given.platform : null;
     const mic = given.mic && typeof given.mic === "object" ? given.mic : null;
     return {
+      nonWebPlatform,
       hasAttention: given.attention !== undefined,
       hasHangUp: given.hangUpAfter !== undefined,
       hasStandby: given.standbyAfter !== undefined,
       hasMicWhileSpeaking: mic != null && mic.whileSpeaking !== undefined,
     };
   } catch {
-    return { hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
+    return { nonWebPlatform: null as string | null, hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
   }
 }
 
@@ -975,27 +979,30 @@ function readConfig(): Record<string, unknown> {
   if (config.supervise === undefined && config.platform === "web") config.supervise = true;
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
-  // Apply each Settings signaling field independently unless explicitly set in Developer JSON / preset.
-  const signaling = $<HTMLSelectElement>("signaling").value;
-  if (given.attention === undefined && (signaling === "window" || signaling === "echo")) {
-    config.attention = {
-      mode: "window",
-      afterWake: numberSetting("attn-after-wake", 8, 1, 60),
-      window: numberSetting("attn-window", 5, 0, 60),
-      afterQuestion: numberSetting("attn-after-question", 10, 0, 60),
-      afterHandOff: 3,
-      afterAnnouncement: 0,
-    };
-  }
-  if (given.hangUpAfter === undefined) {
-    config.hangUpAfter = numberSetting("hangup-after", signaling === "echo" ? 15 : 300, 0, 3600);
-  }
-  if (signaling === "echo" && given.standbyAfter === undefined) {
-    config.standbyAfter = 8;
-  }
-  const givenMic = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
-  if ((!givenMic || givenMic.whileSpeaking === undefined) && (checked("wake-barge") || signaling === "echo")) {
-    config.mic = { gainDb: 0, ...(givenMic ?? {}), whileSpeaking: "wake" };
+  // Apply each Settings signaling field independently for web configs unless set in Developer JSON / preset.
+  const nonWeb = typeof given.platform === "string" && given.platform !== "web";
+  if (!nonWeb) {
+    const signaling = $<HTMLSelectElement>("signaling").value;
+    if (given.attention === undefined && (signaling === "window" || signaling === "echo")) {
+      config.attention = {
+        mode: "window",
+        afterWake: numberSetting("attn-after-wake", 8, 1, 60),
+        window: numberSetting("attn-window", 5, 0, 60),
+        afterQuestion: numberSetting("attn-after-question", 10, 0, 60),
+        afterHandOff: 3,
+        afterAnnouncement: 0,
+      };
+    }
+    if (given.hangUpAfter === undefined) {
+      config.hangUpAfter = numberSetting("hangup-after", signaling === "echo" ? 15 : 300, 0, 3600);
+    }
+    if (signaling === "echo" && given.standbyAfter === undefined) {
+      config.standbyAfter = 8;
+    }
+    const givenMic = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
+    if ((!givenMic || givenMic.whileSpeaking === undefined) && (checked("wake-barge") || signaling === "echo")) {
+      config.mic = { gainDb: 0, ...(givenMic ?? {}), whileSpeaking: "wake" };
+    }
   }
   return config;
 }
@@ -1293,14 +1300,15 @@ function syncSignalingUi() {
   const ov = developerOverrides();
   const signalingEl = $<HTMLSelectElement>("signaling");
   const signaling = signalingEl.value;
-  signalingEl.disabled = ov.hasAttention;
-  const windowControls = !ov.hasAttention && (signaling === "window" || signaling === "echo");
+  const nonWeb = ov.nonWebPlatform != null;
+  signalingEl.disabled = nonWeb || ov.hasAttention;
+  const windowControls = !nonWeb && !ov.hasAttention && (signaling === "window" || signaling === "echo");
   for (const id of ["attn-after-wake", "attn-window", "attn-after-question"]) {
     $<HTMLInputElement>(id).disabled = !windowControls;
   }
-  $<HTMLInputElement>("hangup-after").disabled = ov.hasHangUp;
+  $<HTMLInputElement>("hangup-after").disabled = nonWeb || ov.hasHangUp;
   const barge = $<HTMLInputElement>("wake-barge");
-  if (ov.hasMicWhileSpeaking) {
+  if (nonWeb || ov.hasMicWhileSpeaking) {
     barge.disabled = true;
   } else if (signaling === "echo") {
     barge.checked = true;
@@ -1314,11 +1322,13 @@ function syncSignalingUi() {
   if (ov.hasHangUp) overridden.push("hangUpAfter");
   if (ov.hasMicWhileSpeaking) overridden.push("mic.whileSpeaking");
   const hasModels = (server?.wakeModels?.length ?? 0) > 0;
-  $("signaling-help").textContent = overridden.length > 0
-    ? `Developer config sets ${overridden.join(", ")}.`
-    : !hasModels && signaling !== "open"
-      ? "No wake models on server: use the Wake button when dormant."
-      : "Applied on the next call unless overridden in Developer JSON.";
+  $("signaling-help").textContent = nonWeb
+    ? `Developer preset (${ov.nonWebPlatform}) controls signaling.`
+    : overridden.length > 0
+      ? `Developer config sets ${overridden.join(", ")}.`
+      : !hasModels && signaling !== "open"
+        ? "No wake models on server: use the Wake button when dormant."
+        : "Applied on the next call unless overridden in Developer JSON.";
 }
 
 const wakeClient = new WakeClient({
@@ -1367,6 +1377,10 @@ async function armWake(on: boolean, persist = true) {
         if (gen !== armGen) return;
         wakeArmed = false;
         wakeLoading = false;
+        if (!callId) {
+          audio.stopMic();
+          releaseWakeLock();
+        }
         if (persist) localStorage.setItem("voice.wake-enabled", "0");
         toast(`Microphone: ${(err as Error).message}`);
         log("error", `wake microphone: ${(err as Error).message}`, "err");
@@ -1411,7 +1425,19 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
+    const wasLiveBargeIn = coreStatus !== "dormant" && coreStatus !== "standby";
     push({ type: "wake" });
+    // On in-call barge-in (whileSpeaking "wake"), the core replaced recent frames with silence:
+    // replay the speech spoken right after the wake word so the opening syllables aren't clipped.
+    // (When waking from dormant or standby, the core already buffered and replays wakePreRoll itself.)
+    if (wasLiveBargeIn && callId !== 0 && hit.trailing.length > 0) {
+      for (const chunk of hit.trailing) {
+        if (!callId) break;
+        if (chunk.byteLength === 0) continue;
+        counts.mic++;
+        push({ type: "mic", pcm: bytesToBase64(chunk) });
+      }
+    }
     return;
   }
   wakeStarting = true;
@@ -1535,6 +1561,8 @@ function settingsFromStorage() {
     }
   };
   document.addEventListener("pointerdown", resumeIfSuspended, { passive: true });
+  document.addEventListener("pointerup", resumeIfSuspended, { passive: true });
+  document.addEventListener("click", resumeIfSuspended, { passive: true });
   document.addEventListener("keydown", resumeIfSuspended, { passive: true });
   syncSignalingUi();
 }

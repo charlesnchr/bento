@@ -134,6 +134,7 @@ export class CallAudio {
   private onMicFrame: ((samples: Int16Array, level: number) => void) | null = null;
   /** Incremented on every startMic/stopMic so superseded or cancelled getUserMedia calls never leak tracks. */
   private micGen = 0;
+  private opening: Promise<void> | null = null;
   private stateListener: (() => void) | null = null;
   /** Seconds of speech queued, as the worklet last said. */
   queued = 0;
@@ -158,16 +159,33 @@ export class CallAudio {
   }
 
   async open(): Promise<void> {
+    if (this.opening) {
+      await this.opening;
+      if (this.context?.state === "suspended") await this.context.resume().catch(() => {});
+      return;
+    }
     if (this.context) { if (this.context.state === "suspended") await this.context.resume().catch(() => {}); return; }
-    const ctx = new AudioContext({ latencyHint: "interactive" });
-    ctx.onstatechange = () => this.stateListener?.();
-    this.context = ctx;
-    const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
-    await ctx.audioWorklet.addModule(url);
-    this.playback = new AudioWorkletNode(ctx, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
-    this.playback.port.onmessage = (e) => { this.queued = e.data.queued; };
-    this.playback.connect(ctx.destination);
-    this.stateListener?.();
+    const init = (async () => {
+      const ctx = new AudioContext({ latencyHint: "interactive" });
+      ctx.onstatechange = () => this.stateListener?.();
+      try {
+        const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
+        await ctx.audioWorklet.addModule(url);
+        const playback = new AudioWorkletNode(ctx, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
+        playback.port.onmessage = (e) => { this.queued = e.data.queued; };
+        playback.connect(ctx.destination);
+        this.context = ctx;
+        this.playback = playback;
+        this.stateListener?.();
+      } catch (err) {
+        try { await ctx.close?.(); } catch {}
+        throw err;
+      } finally {
+        this.opening = null;
+      }
+    })();
+    this.opening = init;
+    await init;
   }
 
   /** Seconds from a sample leaving the worklet to the speaker, as the browser reckons it. */
@@ -207,19 +225,30 @@ export class CallAudio {
       stream.getTracks().forEach((t) => t.stop());
       return;
     }
+    let source: MediaStreamAudioSourceNode | null = null;
+    let capture: AudioWorkletNode | null = null;
+    try {
+      source = context.createMediaStreamSource(stream);
+      capture = new AudioWorkletNode(context, "capture", { numberOfOutputs: 0 });
+      capture.port.onmessage = (e) => {
+        const frame = new Int16Array(e.data as ArrayBuffer);
+        let sum = 0;
+        for (const s of frame) sum += s * s;
+        this.level = Math.sqrt(sum / frame.length) / 32768;
+        this.onMicFrame?.(frame, this.level);
+      };
+      source.connect(capture);
+    } catch (err) {
+      source?.disconnect();
+      capture?.port.close();
+      stream.getTracks().forEach((t) => t.stop());
+      throw err;
+    }
     this.stream = stream;
     this.micOpts = { ...options };
     this.onMicFrame = onFrame;
-    this.source = context.createMediaStreamSource(stream);
-    this.capture = new AudioWorkletNode(context, "capture", { numberOfOutputs: 0 });
-    this.capture.port.onmessage = (e) => {
-      const frame = new Int16Array(e.data as ArrayBuffer);
-      let sum = 0;
-      for (const s of frame) sum += s * s;
-      this.level = Math.sqrt(sum / frame.length) / 32768;
-      this.onMicFrame?.(frame, this.level);
-    };
-    this.source.connect(this.capture);
+    this.source = source;
+    this.capture = capture;
   }
 
   stopMic(): void {

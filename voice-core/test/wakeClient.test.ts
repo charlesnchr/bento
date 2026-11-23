@@ -177,3 +177,77 @@ test("CallAudio stops tracks if stopMic or an overlapping startMic supersedes a 
     URL.createObjectURL = prevCreateObjectURL;
   }
 });
+
+test("CallAudio shares open() initialization and stops tracks if capture setup throws", async () => {
+  const g = globalThis as Record<string, any>;
+  const prevAudioContext = g.AudioContext;
+  const prevWorkletNode = g.AudioWorkletNode;
+  const prevNavigator = g.navigator;
+  const prevCreateObjectURL = URL.createObjectURL;
+
+  let resolveModule!: () => void;
+  let addModuleCalls = 0;
+  let throwCapture = false;
+  const makeTrack = () => ({ readyState: "live", stopped: false, stop() { this.stopped = true; this.readyState = "ended"; } });
+
+  g.AudioContext = class {
+    state = "running";
+    baseLatency = 0;
+    destination = {};
+    onstatechange: (() => void) | null = null;
+    audioWorklet = {
+      addModule: () => {
+        addModuleCalls++;
+        return new Promise<void>((r) => { resolveModule = r; });
+      },
+    };
+    resume = async () => { this.state = "running"; };
+    close = async () => {};
+    createMediaStreamSource = () => ({ connect() {}, disconnect() {} });
+  };
+  g.AudioWorkletNode = class {
+    port = { onmessage: null as any, postMessage() {}, close() {} };
+    constructor(_ctx: unknown, name: string) {
+      if (name === "capture" && throwCapture) throw new Error("capture worklet failed");
+    }
+    connect() {}
+  };
+  URL.createObjectURL = () => "blob:mock";
+  const tracks: ReturnType<typeof makeTrack>[] = [];
+  Object.defineProperty(g, "navigator", {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => {
+          const t = makeTrack();
+          tracks.push(t);
+          return { getTracks: () => [t] };
+        },
+      },
+    },
+  });
+
+  try {
+    const audio = new CallAudio();
+    const opts = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+
+    // Two overlapping open()/startMic() calls share a single AudioWorklet registration.
+    const o1 = audio.open();
+    const o2 = audio.open();
+    resolveModule();
+    await Promise.all([o1, o2]);
+    assert.equal(addModuleCalls, 1, "concurrent open() must share one AudioWorklet initialization");
+
+    // If AudioWorkletNode('capture') throws after getUserMedia, the acquired track is stopped.
+    throwCapture = true;
+    await assert.rejects(() => audio.startMic(() => {}, opts), /capture worklet failed/);
+    assert.equal(tracks.length, 1);
+    assert.equal(tracks[0].stopped, true, "track must be stopped when capture setup fails");
+    assert.equal(audio.micActive, false);
+  } finally {
+    g.AudioContext = prevAudioContext;
+    g.AudioWorkletNode = prevWorkletNode;
+    Object.defineProperty(g, "navigator", { configurable: true, value: prevNavigator });
+    URL.createObjectURL = prevCreateObjectURL;
+  }
+});
