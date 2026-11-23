@@ -9,7 +9,7 @@ import { WakeDetector } from "./wakeDetector.ts";
 type InMessage =
   | { type: "load"; gen: number; url: string; modelId: string; threshold: number; wasmPaths?: string }
   | { type: "config"; threshold: number }
-  | { type: "feed"; gen: number; seq: number; pcm: ArrayBuffer }
+  | { type: "feed"; gen: number; seq: number; ack?: boolean; pcm: ArrayBuffer }
   | { type: "reset"; gen: number }
   | { type: "dispose"; gen: number };
 
@@ -99,6 +99,7 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
     case "feed": {
       const gen = msg.gen;
       const seq = msg.seq;
+      const wantAck = msg.ack === true;
       if (gen !== activeGen) return;
       enqueue(async () => {
         if (!detector || gen !== activeGen) return;
@@ -129,6 +130,7 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
             lastGateOpen = detector.gateOpen;
             return;
           }
+          if (wantAck) post({ type: "ack", gen, seq });
           const now = performance.now();
           if (detector.gateOpen !== lastGateOpen || (detector.gateOpen && now - lastTelemetryAt >= 200)) {
             lastTelemetryAt = now;

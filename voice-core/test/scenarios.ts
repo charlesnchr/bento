@@ -160,7 +160,7 @@ export const scenarios: Record<string, () => Sim> = {
     return s;
   },
 
-  /** Hand-offs named in words while other work is in flight (handOff "named"): a first task gets its tone alone, a result
+  /** Hand-offs named in words (handOff "named"): every hand-off gets a short spoken confirmation, a result
    *  waits for the next request's confirmation, a hand-off talked over is named with the next one, and so is a steered follow-up. */
   "named-hand-offs": () => {
     const s = new Sim({ micEvery: 0.1, micBytes: 32, config: {
@@ -172,7 +172,9 @@ export const scenarios: Record<string, () => Sim> = {
     s.turn("Find out what's going on with my Fluide sessions");
     s.toolCall("c1", "ask_hermes", { label: "Fluide sessions" });
     silentTurn();
-    s.advance(0.7);
+    s.advance(0.3);
+    says("Hermes is checking your Fluide sessions.", 1);
+    s.advance(0.4);
     // The result lands while the user asks for the next thing: it waits for that request's confirmation.
     s.activity("ACTIVITY_START");
     s.advance(0.2);
@@ -232,12 +234,16 @@ export const scenarios: Record<string, () => Sim> = {
     s.toolCall("c2", "ask_coding_agent", { project: "Bento", continue_task: "Bento app change" });
     silentTurn();
     s.advance(0.4);
+    says("A coding agent is on the Bento app change.", 0.8);
+    s.advance(0.2);
     s.push({ type: "cancelTask", task: "1" });
     s.advance(0.3);
     s.turn("Update the voice core so every request goes to Hermes");
     s.toolCall("c3", "ask_coding_agent", { label: "voice core update" });
     silentTurn();
     s.advance(0.3);
+    says("A coding agent is starting the voice core update.", 0.8);
+    s.advance(0.2);
     s.push({ type: "tool.error", run: s.hermes()[1].run, message: "T3: the thread never started" });
     s.advance(0.3);
     says("The coding agent couldn't start. Shall I give it to Hermes?", 1);
@@ -246,6 +252,8 @@ export const scenarios: Record<string, () => Sim> = {
     s.toolCall("c4", "ask_hermes", { label: "voice core update", refers_back: true });
     silentTurn();
     s.advance(0.3);
+    says("Hermes has the voice core update.", 0.8);
+    s.advance(0.2);
     s.complete("Done: every request goes to Hermes now. " + "The details follow. ".repeat(40), s.hermes()[2].run);
     s.advance(0.3);
     says("Every request goes to Hermes now. The details are on your screen.", 1);
@@ -253,6 +261,8 @@ export const scenarios: Record<string, () => Sim> = {
     s.turn("And check my email");
     s.toolCall("c5", "ask_hermes", { label: "email" });
     silentTurn();
+    s.advance(0.3);
+    says("Hermes is checking your email.", 0.8);
     s.advance(2.5);
     s.push({ type: "resume" });
     s.advance(0.5);

@@ -116,13 +116,13 @@ const RESULT_BY_BENTO =
   "note of what it said with Hermes's full reply. Never announce or repeat a result Bento has told the user, and don't " +
   "comment on it; answer their questions about it from the full reply.";
 
-/** What the instruction says of a hand-off, and what it says instead when the model names one among others (handOff "named"). */
+/** What the instruction says of a hand-off, and what it says instead when the model names each one (handOff "named"). */
 const HAND_OFF_TONE =
   "Bento answers at once, silently, and plays the user a short tone that says Hermes has it, so don't announce that Hermes is working on it.";
 const HAND_OFF_NAMED =
   "Bento answers at once and plays the user a short tone that says Hermes has it, so don't announce that Hermes is working " +
-  "on it, unless Bento's answer asks you to: while other tasks run a tone doesn't say which request was taken, so Bento then " +
-  "asks you to tell the user in a few words what you started and who has it (\"Hermes is checking your calendar too\").";
+  "on it, unless Bento's answer asks you to: when it does, tell the user in a few words what you started and who has it " +
+  "(\"Hermes is checking your calendar\").";
 
 export function instructionFor(platform: string, api: "gemini" | "vertex" = "gemini", byHost = false, named = false): string {
   let text = INSTRUCTION.replace("in Bento on Android.", `in Bento on ${platform}.`);

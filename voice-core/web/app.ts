@@ -25,7 +25,7 @@ import {
   shouldClearUnreadResults,
   type SideFilter,
 } from "./ui.ts";
-import { WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
+import { ScreenWakeLock, WakeAudioGate, WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
 
 interface Core {
   version: string;
@@ -121,12 +121,14 @@ let fakeTvLevel = 15;
 let coreStatus = "idle";
 let muted = false;
 let holding = false;
-let wakeLock: { release(): Promise<void> } | null = null;
+const screenWakeLock = new ScreenWakeLock();
 /** Wake word loop state: armed between calls, requested by core while dormant/speaking, or mid-handoff. */
 let wakeArmed = false;
 let armGen = 0;
 let coreWantsWake = false;
-let callWhileSpeaking = "send";
+/** Which call (or 0 for idle) owns the wake worker's current listening period. */
+let wakePeriodCallId: number | null = null;
+const wakeGate = new WakeAudioGate();
 let wakeLoading = false;
 let wakeStarting = false;
 let startingCall = false;
@@ -907,17 +909,28 @@ function showStatus(message?: string) {
 
 // The call.
 
-function push(event: Record<string, unknown>): Command[] {
+function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
-  const e: Record<string, unknown> = { ...event, t: now() };
+  // Flush deferred unsuppressed gap frames before any event that can start new playback
+  // (advancing replayFloorSeq without resetting wakeClient, so a valid wake hit still lands).
+  const flushed = wakeGate.beforePush(event, t);
+  if (medium === "voice") {
+    for (const item of flushed) {
+      if (!callId) break;
+      counts.mic++;
+      push({ type: "mic", pcm: item.pcm }, item.t);
+    }
+  }
+  const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
   if (!quiet) log("in", e.type === "ws.message" ? `ws ${e.sid} ← ${brief(String(e.data))}` : JSON.stringify(e).slice(0, 400), "in");
   const commands = JSON.parse(core.push(callId, JSON.stringify(e))) as Command[];
-  run(commands);
+  run(commands, t, typeof event.type === "string" ? event.type : undefined);
   return commands;
 }
 
-function run(commands: Command[]) {
+function run(commands: Command[], eventTime = now(), eventType?: string) {
+  wakeGate.observeCommands(commands, eventTime, eventType);
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
@@ -969,7 +982,10 @@ function run(commands: Command[]) {
         counts.play++;
         break;
       }
-      case "flush": audio.flush(); log("out", "flush", "out"); break;
+      case "flush":
+        audio.flush();
+        log("out", "flush", "out");
+        break;
       case "cue":
         audio.cue(c.pcm);
         log("out", `cue ${c.earcon}`, "out");
@@ -1020,8 +1036,20 @@ function run(commands: Command[]) {
   }
 }
 
+function flushDeferredMic() {
+  const items = wakeGate.flushDeferred();
+  if (!callId || medium !== "voice") return;
+  for (const item of items) {
+    if (!callId) break;
+    counts.mic++;
+    push({ type: "mic", pcm: item.pcm }, item.t);
+  }
+}
+
 function onMic(samples: Int16Array, level: number) {
-  if (shouldFeedWake()) wakeClient.feed(samples);
+  const t = now();
+  const suppressed = callId !== 0 && medium === "voice" && wakeGate.isSuppressed(t);
+  const seq = shouldFeedWake() ? wakeClient.feed(samples, suppressed) : 0;
   if (wakeStarting) {
     const copy = new Uint8Array(samples.byteLength);
     copy.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
@@ -1033,12 +1061,24 @@ function onMic(samples: Int16Array, level: number) {
     return;
   }
   if (!callId || medium !== "voice") return;
-  counts.mic++;
   if (level > 0.03 && !(muted && !holding)) {
-    metrics.lastVoice = now();
+    metrics.lastVoice = t;
     if (audio.queued < 0.05) metrics.replied = false;
   }
-  push({ type: "mic", pcm: bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)) });
+  const pcm = bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+  const toSend = wakeGate.onMicFrame({
+    pcm,
+    t,
+    seq,
+    lastSeq: wakeClient.lastSeq,
+    inFlightSuppressedSeq: wakeClient.inFlightSuppressedSeq,
+    suppressed,
+  });
+  for (const item of toSend) {
+    if (!callId) break;
+    counts.mic++;
+    push({ type: "mic", pcm: item.pcm }, item.t);
+  }
 }
 
 function connect(sid: number, captions: boolean) {
@@ -1302,7 +1342,15 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     startedAt = now();
     muted = given.muted === true;
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
-    callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
+    const limitsCfg = given.limits && typeof given.limits === "object" ? (given.limits as Record<string, unknown>) : null;
+    const announceCfg = given.announce && typeof given.announce === "object" ? (given.announce as Record<string, unknown>) : null;
+    wakeGate.reset(typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send", wakeClient.lastSeq, {
+      deliverMax: typeof limitsCfg?.deliverMax === "number" ? limitsCfg.deliverMax : 30,
+      briefWait: typeof announceCfg?.briefWait === "number" ? announceCfg.briefWait : 3,
+      muted,
+    });
+    wakePeriodCallId = null;
+    wakeClient.reset();
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
     // A chat always carries on from what's on the screen (an earlier call or chat on this page).
     if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
@@ -1368,6 +1416,8 @@ function end() {
   activeSession = 0;
   syncResultFollowUpButtons();
   coreWantsWake = false;
+  wakeGate.reset("send", wakeClient.lastSeq);
+  wakePeriodCallId = wakeArmed ? 0 : null;
   wakeStarting = false;
   openingChunks = [];
   openingBytes = 0;
@@ -1410,6 +1460,10 @@ function end() {
 function setMuted(value: boolean) {
   if (!callId || muted === value) return;
   muted = value;
+  if (muted) {
+    flushDeferredMic();
+    wakeClient.reset();
+  }
   $("mic").classList.toggle("muted", muted);
   push({ type: muted ? "mute" : "unmute" });
   showStatus();
@@ -1484,13 +1538,11 @@ const stopWords = new StopWords();
 // and inside an active call whenever the core asks (`wakeword: on`: dormant or whileSpeaking "wake").
 
 async function acquireWakeLock() {
-  if (wakeLock || document.hidden) return;
-  try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
+  await screenWakeLock.acquire(() => !document.hidden && (callId !== 0 || wakeArmed));
 }
 
 function releaseWakeLock() {
-  void wakeLock?.release().catch(() => {});
-  wakeLock = null;
+  screenWakeLock.release();
 }
 
 function selectedWakeModel(): WakeModelInfo | null {
@@ -1509,6 +1561,17 @@ function shouldFeedWake(): boolean {
   if (wakeStarting || startingCall) return false;
   if (callId === 0) return wakeArmed;
   return medium === "voice" && coreWantsWake && !(muted && !holding);
+}
+
+/**
+ * Whether a wake detection returning asynchronously from the worker still belongs to the active
+ * listening period. Unlike `shouldFeedWake()`, this stays true for an active voice call even if
+ * `coreWantsWake` just flipped off as playback ended while the worker was scoring the last frame.
+ */
+function canAcceptWakeHit(): boolean {
+  if (wakeStarting || startingCall) return false;
+  if (callId === 0) return wakeArmed && wakePeriodCallId === 0;
+  return medium === "voice" && !(muted && !holding) && wakePeriodCallId === callId;
 }
 
 function renderWakeTelemetry() {
@@ -1592,8 +1655,12 @@ const wakeClient = new WakeClient({
     wakeLastTel = tel;
     renderWakeTelemetry();
   },
+  onSuppressedSettled() {
+    flushDeferredMic();
+  },
   onError(message) {
     wakeLoading = false;
+    flushDeferredMic();
     log("error", `wake word: ${message}`, "err");
     toast(`Wake word error: ${message}`);
     if (wakeArmed) void armWake(false);
@@ -1619,6 +1686,7 @@ async function armWake(on: boolean, persist = true) {
       try {
         await audio.ensureMic(onMic, micOptions());
         if (gen !== armGen || !wakeArmed) return;
+        wakePeriodCallId = 0;
         wakeClient.reset();
         await acquireWakeLock();
       } catch (err) {
@@ -1638,6 +1706,7 @@ async function armWake(on: boolean, persist = true) {
     wakeLoading = false;
     wakeLastTel = null;
     if (!callId) {
+      wakePeriodCallId = null;
       audio.stopMic();
       releaseWakeLock();
       wakeClient.reset();
@@ -1654,9 +1723,11 @@ function ensureCoreWake(on: boolean) {
       log("warn", "core asked for wake word, but no models are available", "warn");
     } else {
       wakeLastTel = null;
+      const preserveInFlight = wakePeriodCallId === callId && wakeClient.modelId === model.id && wakeClient.suppressedInFlight;
+      wakePeriodCallId = callId;
       if (!wakeClient.ready || wakeClient.modelId !== model.id) wakeLoading = true;
       wakeClient.load(model.id, wakeThreshold());
-      wakeClient.reset();
+      if (!preserveInFlight) wakeClient.reset();
       log("out", `wake word listening (${model.label})`, "out");
     }
   } else {
@@ -1667,24 +1738,21 @@ function ensureCoreWake(on: boolean) {
 }
 
 function onWakeDetected(hit: WakeDetectionEvent) {
-  if (!shouldFeedWake()) return;
+  if (!canAcceptWakeHit()) return;
   const label = selectedWakeModel()?.label ?? "wake word";
   log("out", `wake detected “${label}” (score ${hit.score.toFixed(2)}, ${hit.inferMs.toFixed(1)} ms)`, "out");
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
-    const commands = push({ type: "wake" });
-    // Whenever the core cut audible playback (flush) under a mic-suppressing policy (whileSpeaking !== "send"),
-    // frames during playback were replaced with silence (both live and in dormant/standby pre-roll):
-    // replay the speech captured right after the wake word so the opening syllables aren't clipped.
-    const cutReply = commands.some((c) => c.type === "flush");
-    if (cutReply && callWhileSpeaking !== "send" && callId !== 0 && hit.trailing.length > 0) {
-      for (const chunk of hit.trailing) {
-        if (!callId) break;
-        if (chunk.byteLength === 0) continue;
-        counts.mic++;
-        push({ type: "mic", pcm: bytesToBase64(chunk) });
-      }
+    const deferred = wakeGate.takeDeferred();
+    push({ type: "wake" });
+    // Replay suppressed chunks and any deferred post-playback chunks in exact chronological order,
+    // skipping anything older than already-forwarded gap audio.
+    for (const item of wakeGate.planWakeReplay(hit, deferred, bytesToBase64)) {
+      if (!callId) break;
+      counts.mic++;
+      if (item.t !== undefined) push({ type: "mic", pcm: item.pcm }, item.t);
+      else push({ type: "mic", pcm: item.pcm });
     }
     return;
   }
@@ -1692,9 +1760,9 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   openingChunks = [];
   openingBytes = 0;
   for (const chunk of hit.trailing) {
-    if (chunk.byteLength === 0) continue;
-    openingChunks.push(chunk);
-    openingBytes += chunk.byteLength;
+    if (chunk.bytes.byteLength === 0) continue;
+    openingChunks.push(chunk.bytes);
+    openingBytes += chunk.bytes.byteLength;
     while (openingBytes > OPENING_MAX_BYTES && openingChunks.length > 1) {
       openingBytes -= openingChunks.shift()!.byteLength;
     }
@@ -1921,7 +1989,13 @@ function keys() {
     else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
   });
   document.addEventListener("keyup", (e) => {
-    if (e.code === "Space" && holding) { holding = false; push({ type: "mute" }); showStatus(); }
+    if (e.code === "Space" && holding) {
+      holding = false;
+      flushDeferredMic();
+      wakeClient.reset();
+      push({ type: "mute" });
+      showStatus();
+    }
   });
 }
 
@@ -2008,7 +2082,13 @@ async function main() {
     if (wakeArmed && audio.audioSuspended) { void audio.resumeAudio().then(() => syncWakeUi()); return; }
     void armWake(!wakeArmed);
   };
-  $("wake-now").onclick = () => { if (callId) push({ type: "resume" }); };
+  $("wake-now").onclick = () => {
+    if (callId) {
+      flushDeferredMic();
+      wakeClient.reset();
+      push({ type: "resume" });
+    }
+  };
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;
   syncWakeUi();

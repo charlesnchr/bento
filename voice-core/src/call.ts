@@ -2650,15 +2650,12 @@ export class Call {
 
   /**
    * handOff "named": what a hand-off's "started" answer adds so the model tells the user of it, or null when
-   * it stays silent. A tone says enough while nothing else is in flight: with another task running or a result
-   * still to be told, the user can't tell which request it was for. The model that spoke after the user's
-   * words has said so already. A hand-off the user is talking over gets only its tone, and the next
-   * confirmation names it too.
+   * it stays silent. Every hand-off gets a short confirmation in words, including a call's sole task, unless
+   * the model already spoke after the user's words. A hand-off the user is talking over gets only its tone,
+   * and the next confirmation names it too.
    */
   private confirmation(task: Task, followUp: boolean): string | null {
     if (this.c.handOff !== "named" || this.textLine || this.modelSpokeAt > this.lastUserSpeech) return null;
-    const others = this.unheard.length > 0 || [...this.tasks.values()].some((t) => t !== task && t.state === RUNNING);
-    if (!others) return null;
     if (this.talking(this.t)) {
       if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
       return null;
@@ -2668,7 +2665,7 @@ export class Call {
     this.unconfirmed = [];
     this.confirming = { tasks: [...earlier, task], at: this.t };
     const names = earlier.map((t) => `"${t.label}"`).join(" and ");
-    return " Other work is in flight, so tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
+    return " Tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
       (earlier.length > 0 ? ` Say too that ${names} ${earlier.length > 1 ? "are" : "is"} under way, unless you have told them: they have heard only a tone for ${earlier.length > 1 ? "those" : "it"}.` : "") +
       " Nothing else.";
   }
@@ -3342,8 +3339,11 @@ export class Call {
   ]);
   private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b|\s+as\s+well\s+as\b|\s+&(?=\s)/gi;
   private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/i;
-  private static readonly AMP_NAME_PREV = /\bat\s+(?:the\s+)?\p{Lu}[\p{Ll}'.-]*(?:\s+\p{Lu}[\p{Ll}'.-]*){0,2}$/u;
-  private static readonly AMP_NAME_CONT = /^\s+(?!(?:Meet|Book|Reserve|Check|Find|See|Visit|Stay|Fly|Drive|Dine|Eat|Call|Email|Send|Compare|Review|Cancel|Stop|Ask|Tell|Show|Pick|Get|Go|Plan|Schedule|Confirm|Verify|Inspect|Photograph|Summarize|Summarise)\b)\p{Lu}\p{Ll}+(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
+  private static readonly AMP_NAME_PREV = /\bat\s+(?:the\s+)?\p{Lu}[\p{Ll}'.-]*(?:\s+\p{Lu}[\p{Ll}'.-]*){0,3}$/u;
+  private static readonly AMP_NAME_CONT = /^\s+(\p{Lu}\p{Ll}+)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
+  private static readonly AMP_NON_VENUE_VERB = new Set([
+    "shop", "stroll", "hike", "swim", "drink", "tour", "photograph", "summarize", "summarise", "stop", "run", "play", "dance", "sing", "cook", "pack", "travel", "ride", "cycle", "bike", "sail", "cruise", "climb", "ski", "surf", "camp", "order", "open", "close", "start", "end", "wait", "talk", "chat", "work", "clean", "move",
+  ]);
   /** Complete coordinated booking-item grammar after a comma: positive determiner/quantifier + up to 3 descriptive words + bookable noun (or bare bookable noun), followed ONLY by bounded place, venue, or date/duration prepositional phrases (no open lowercase catch-all, rejecting "at capacity", "in progress", "in flux", "hotel to close", "hotel to decide", "on hold", "in London costs more"). */
   private static readonly COORD_BOOK_ITEM_PREFIX = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b/iu;
   private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?![\p{L}\p{N}])/u;
@@ -3364,11 +3364,12 @@ export class Call {
   private static readonly BOOK_ITEM_HEAD_WORD = /^(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?|concerts?|shows?|spas?|vehicles?|rentals?|nights?|spots?)$/;
   /** Descriptive non-place pre-nominal adjectives/quantifiers allowed before a bookable head noun ("a 5-star hotel", "a cozy hotel", "a romantic hotel", "a charming hotel", "a compact car", "a second flight") without counting as a distinct destination. */
   private static readonly PRENOMINAL_NON_PLACE = /^(?:another|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|star|stars|bedroom|bedrooms|bed|beds|person|people|guest|guests|night|nights|day|days|week|weeks|way|class|tier|level|grade|rated|style|friendly|free|only|non|no|sub|mid|top|high|low|big|small|large|tiny|little|central|downtown|uptown|midtown|airport|station|beach|beachfront|waterfront|riverside|lakeside|harbor|harbour|park|city|town|village|urban|suburban|rural|modern|historic|classic|cozy|cosy|clean|comfy|comfortable|decent|basic|simple|fancy|posh|swanky|affordable|inexpensive|economical|reasonable|pricey|expensive|upscale|premium|executive|corporate|compact|economy|midsize|fullsize|suv|sedan|convertible|electric|hybrid|automatic|manual|overnight|main|local|nearby|close|convenient|great|better|cheaper|nicer|nicest|quieter|quietest|newer|newest|older|oldest|bigger|smaller|larger|closer|nearest|favorite|favourite|preferred|usual|regular|normal|similar|matching|corresponding|separate|spare|alt|alternative|open|available|paid|confirmed|booked|reserved|active|charming|relaxing|welcoming|stunning|amazing|lovely|quaint|stylish|sleek|plush|lavish|spacious|bright|sunny|airy|peaceful|serene|tranquil|intimate|lively|vibrant|trendy|hip|chic|cool|fun|prime|ideal|perfect|solid|reliable|trusted|popular|famous|courtyard|garden|terrace|penthouse|loft|villa|resort|inn|lodge|hostel|motel|bnb|romantic|scenic|rustic|authentic|exotic|idyllic|iconic|organic|panoramic|eclectic|nordic)$/;
-  /** Unambiguous lowercase English descriptive adjective suffixes (excluding "-ic" so places like "mystic" and "atlantic" still count as places). */
-  private static readonly LOWERCASE_ADJ_SUFFIX = /(?:ful|ous|less|side|top|front|view)$/;
-  /** Lowercase hyphenated compounds are treated as descriptive ("early-morning", "en-suite", "brand-new", "non-smoking", "pet-friendly") UNLESS they match a place-style compound ("stratford-upon-avon", "aix-en-provence", "saint-tropez", "baden-baden", "bel-air", "paris-based"). */
-  private static readonly LOWERCASE_HYPHEN_COMPOUND = /^[a-z0-9]+(?:-[a-z0-9]+)+$/;
-  private static readonly HYPHEN_PLACE_COMPOUND = /^(?:[a-z]+-(?:upon|on|en|sur|sous|le|la|les|de|du|des|in|under|by|super|am|im|an|ob|zur)-[a-z-]+|[a-z]+-(?:based|bound)|(?:st|saint|san|santa|sao|mount|mt|fort|ft|port|cape|lake|bel|monte|villa|boca|palo|el|la|las|los|rio|abu|tel|addis|kuala|buenos)-[a-z-]+|([a-z]{3,})-\1)$/;
+  /** Lowercase English descriptive adjective suffixes (checked after LOWERCASE_IC_PLACE so places like "mystic" and "atlantic" still count as places while "fantastic", "gothic", "artistic", "majestic", "romantic" stay descriptive). */
+  private static readonly LOWERCASE_IC_PLACE = new Set(["mystic", "atlantic", "pacific", "arctic", "antarctic", "baltic", "adriatic", "olympic"]);
+  private static readonly LOWERCASE_ADJ_SUFFIX = /(?:ic|ful|ous|less|side|top|front|view)$/;
+  /** Lowercase hyphenated compounds fail closed as places ("winston-salem", "new-york", "stratford-upon-avon", "bel-air", "paris-based") UNLESS they are not a place-style compound AND match a known descriptive prefix or suffix ("early-morning", "en-suite", "brand-new", "cut-price", "art-deco", "air-conditioned", "old-fashioned", "ground-floor", "pre-paid", "non-smoking", "pet-friendly", "la-carte"). */
+  private static readonly HYPHEN_PLACE_COMPOUND = /^(?:[a-z]+-(?:upon|on|en|sur|sous|le|la|les|de|du|des|in|under|by|super|am|im|an|ob|zur)-[a-z-]+|[a-z]+-(?:based|bound)|(?:st|saint|san|santa|sao|mount|mt|fort|ft|port|cape|lake|bel|monte|villa|boca|palo|el|las|los|rio|abu|tel|addis|kuala|buenos|new)-[a-z-]+|([a-z]{3,})-\1)$/;
+  private static readonly DESCRIPTIVE_HYPHEN_COMPOUND = /^(?:(?:non|no|self|all|full|half|low|high|mid|top|well|best|most|newly|recently|short|long|quick|last|first|second|third|early|late|brand|cut|art|old|ground|pre|post|re|en|wi|sea|ocean|beach|river|lake|city|town|open|dog|pet|kid|child|family|eco|budget|value|ultra|super|semi|mini|micro|multi|dual|twin|double|single|king|queen|red|off|on|in|out|up|down|over|under|free|pay|zero|one|two|three|four|five|six|seven|eight|nine|ten|\d+|de|la)-[a-z0-9-]+|[a-z0-9]+-(?:friendly|run|owned|inclusive|star|stars|night|nights|day|days|week|weeks|bed|beds|bedroom|bedrooms|room|rooms|person|people|guest|guests|way|trip|stay|haul|eye|smoking|refundable|cancellable|cancelable|catering|service|board|range|cost|end|class|tier|rated|renovated|priced|price|style|size|sized|view|facing|accessible|only|free|minute|minutes|hour|hours|grade|level|morning|afternoon|evening|suite|deco|conditioned|fashioned|floor|paid|reviewed|fi|luxe|carte|centre|center|front|side|top|proof|like|built|made|kept|equipped|furnished|serviced|managed|designed|themed|inspired|oriented|focused|listed|certified|approved|verified|guaranteed|included|excluded|preferred|recommended))$/;
   private static readonly QUANTITY_HYPHEN_MOD = /^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)-(?:star|night|day|bed|bedroom|room|person)s?$/i;
   private static readonly NON_BOOK_TAIL = /^\s+(?:(?:a|an|the|my|our|your)\s+)?(?:\w+\s+){0,2}(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies))\b/i;
   private static readonly COMMA_PLACE_CONT = /^\s+(?!(?:And|But|Then|Also|Plus|Please|Or|So|Yet|While|Because|Since|Check|Find|Gather|See|Fetch|Compare|Summarize|Summarise|Book|Reserve)\b)(?:[A-Z][a-z]+\b(?:\s+[A-Z][a-z]+\b)?|(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|UK|US|EU|AU|NZ|QC|ON|BC|AB|NSW|VIC|QLD)\b)(?=\s*(?:$|[.?!;:,]|\s+(?:[Aa]nd|for|on|at|in|from|to|with|next|this|tonight|tomorrow|[Pp]lease|[Mm]onday|[Tt]uesday|[Ww]ednesday|[Tt]hursday|[Ff]riday|[Ss]aturday|[Ss]unday)\b))/;
@@ -3583,7 +3584,13 @@ export class Call {
         }
         if (/^\s*(?:and|as\s+well\s+as|&)$/i.test(sep)) {
           if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
-          if (/^\s*&$/i.test(sep) && Call.AMP_NAME_PREV.test(tail.slice(0, bm.index)) && Call.AMP_NAME_CONT.test(after)) continue;
+          if (/^\s*&$/i.test(sep) && Call.AMP_NAME_PREV.test(tail.slice(0, bm.index))) {
+            const ampCont = Call.AMP_NAME_CONT.exec(after);
+            if (ampCont != null) {
+              const ampWord = ampCont[1].toLowerCase();
+              if (!Call.INFINITIVE_VERB.has(ampWord) && !Call.AMP_NON_VENUE_VERB.has(ampWord)) continue;
+            }
+          }
           return tail.slice(0, bm.index).trim();
         }
         return tail.slice(0, bm.index).trim();
@@ -3638,11 +3645,11 @@ export class Call {
             return toks.slice(0, headIdx).some((tok) => {
               if (tok.length < 2 || /^\d+$/.test(tok)) return false;
               if (Call.QUANTITY_HYPHEN_MOD.test(tok)) return false;
-              if (Call.LOWERCASE_HYPHEN_COMPOUND.test(tok) && !Call.HYPHEN_PLACE_COMPOUND.test(tok)) return false;
+              if (!Call.HYPHEN_PLACE_COMPOUND.test(tok) && Call.DESCRIPTIVE_HYPHEN_COMPOUND.test(tok)) return false;
               const low = tok.toLowerCase();
               const isCap = /^\p{Lu}/u.test(tok);
               if (Call.GROUP_STOP.has(low) || Call.NON_PLACE_MODIFIER.has(low) || Call.PRENOMINAL_NON_PLACE.test(low) || Call.BOOK_ITEM_HEAD_WORD.test(low)) return false;
-              if (!isCap && Call.LOWERCASE_ADJ_SUFFIX.test(low)) return false;
+              if (!isCap && !Call.LOWERCASE_IC_PLACE.has(low) && Call.LOWERCASE_ADJ_SUFFIX.test(low)) return false;
               if (Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(low) && !isCap) return false;
               if (Call.CALENDAR_PROPER_WORD.test(tok) || (!isCap && Call.NON_PLACE_HEAD.has(low))) return false;
               return true;

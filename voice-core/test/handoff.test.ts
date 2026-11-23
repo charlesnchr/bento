@@ -1,8 +1,7 @@
-// handOff "named": with other work in flight the model tells the user of a hand-off in words after
-// its tone, and a result that was ready waits for that. From a call on 22 November 2026 in which
-// three requests in a row got a tone each and an earlier task's result came in place of the third
-// one's confirmation. A call's only task keeps the tone alone: on the bench, words after every
-// hand-off cost more in talking over the user than they gave.
+// handOff "named": the model tells the user of every hand-off in words after its tone (including a
+// call's sole task), and a result that was ready waits for that. From a call on 22 November 2026 in
+// which three requests in a row got a tone each and an earlier task's result came in place of the
+// third one's confirmation.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -10,7 +9,7 @@ import { codingInstruction, instructionFor } from "../src/setup.ts";
 import { Sim, turnText } from "./sim.ts";
 
 const fast = { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 };
-const ASK = " Other work is in flight, so tell the user now in a few words what you started and who has it. Nothing else.";
+const ASK = " Tell the user now in a few words what you started and who has it. Nothing else.";
 
 function sim(config: Record<string, unknown> = {}) {
   const s = new Sim({ config: { limits: fast, api: "vertex", platform: "web", handOff: "named", ...config } as any });
@@ -43,7 +42,7 @@ test("the instruction says a hand-off may be named in words only with handOff na
   const named = instructionFor("web", "vertex", false, true);
   assert.ok(tone.includes("so don't announce that Hermes is working on it. Its result"));
   assert.ok(named.includes("so don't announce that Hermes is working on it, unless Bento's answer asks you to:"));
-  assert.ok(named.includes("asks you to tell the user in a few words what you started and who has it"));
+  assert.ok(named.includes("tell the user in a few words what you started and who has it"));
   const s = sim();
   assert.equal(JSON.parse(s.sent(1)[0]).setup.systemInstruction.parts[0].text, named);
   const quiet = sim({ handOff: "tone" });
@@ -56,18 +55,21 @@ test("a call with a coding agent is told its task tools know only its own tasks"
   assert.ok(text.includes("a request to look at them, list them or check on them is a new request for Hermes"));
 });
 
-test("a call's only task gets its tone and no words", () => {
+test("a call's sole task also asks the model to tell the user", () => {
   const s = sim();
   request(s, "Check my Fluide sessions", "c1");
   const answer = started(s, "c1");
-  assert.equal(answer.scheduling, "SILENT");
-  assert.equal(answer.response.message, "Started \"fluide sessions\". Hermes is working on it; its result follows later as a message from Bento.");
+  assert.equal(answer.scheduling, "WHEN_IDLE");
+  assert.equal(answer.response.status, "started");
+  assert.equal(answer.response.message, "Started \"fluide sessions\". Hermes is working on it; its result follows later as a message from Bento." + ASK);
   assert.deepEqual(s.cues(), ["taskStarted"]);
 });
 
 test("with another task running, the started answer asks the model to tell the user", () => {
   const s = sim();
   request(s, "Check my Fluide sessions", "c1");
+  says(s, "Hermes is checking your Fluide sessions.");
+  s.advance(0.3);
   request(s, "And look at my T3 sessions", "c2", "ask_hermes", { label: "T3 sessions" });
   const answer = started(s, "c2");
   assert.equal(answer.scheduling, "WHEN_IDLE");
@@ -87,20 +89,22 @@ test("with handOff tone the started answer stays silent whatever else runs", () 
   }
 });
 
-test("a task that starts once the others have finished and been told gets the tone alone", () => {
+test("a task that starts once the others have finished and been told is also confirmed in words", () => {
   const s = sim();
   request(s, "Check my Fluide sessions", "c1");
+  says(s, "Hermes is checking your Fluide sessions.");
   s.complete("All three services are up.", s.hermes()[0].run);
   s.advance(2);
   says(s, "All three Fluide services are up.");
   s.advance(1.5);
   request(s, "And look at my T3 sessions", "c2");
-  assert.equal(started(s, "c2").scheduling, "SILENT");
+  const answer = started(s, "c2");
+  assert.equal(answer.scheduling, "WHEN_IDLE");
+  assert.ok(answer.response.message.endsWith(ASK));
 });
 
 test("a coding hand-off names the coding agent", () => {
   const s = sim({ codingAgent: { projects: ["Bento"] } });
-  request(s, "Check my Fluide sessions", "c0");
   request(s, "Make the Mac app use the voice core", "c1", "ask_coding_agent", { project: "Bento", label: "voice core" });
   const answer = started(s, "c1");
   assert.equal(answer.scheduling, "WHEN_IDLE");
@@ -111,6 +115,7 @@ test("a coding hand-off names the coding agent", () => {
 test("a result that was ready waits for the new request's confirmation", () => {
   const s = sim();
   request(s, "Check my Fluide sessions", "c1");
+  says(s, "Hermes is checking your Fluide sessions.");
   s.advance(0.5);
   // The result lands while the user says the next request.
   s.activity("ACTIVITY_START");
@@ -137,6 +142,7 @@ test("a result that was ready waits for the new request's confirmation", () => {
 test("a confirmation the model never gives holds a result only for settleMax, and not the standby", () => {
   const s = sim({ standbyAfter: 4, reconnect: true });
   request(s, "Check my Fluide sessions", "c1");
+  says(s, "Hermes is checking your Fluide sessions.");
   s.activity("ACTIVITY_START");
   s.complete("All three services are up.", s.hermes()[0].run);
   s.heard("And look at my T3 sessions");
@@ -158,7 +164,6 @@ test("a confirmation the model never gives holds a result only for settleMax, an
 
 test("the model that spoke with its call isn't asked to say it again", () => {
   const s = sim();
-  request(s, "Look at my T3 sessions", "c0");
   s.turn("Check my Fluide sessions");
   s.advance(0.4);
   s.said("Sure, Hermes will check.");
@@ -169,12 +174,11 @@ test("the model that spoke with its call isn't asked to say it again", () => {
   s.advance(0.3);
   const answer = started(s, "c1");
   assert.equal(answer.scheduling, "SILENT");
-  assert.ok(!answer.response.message.includes("tell the user"));
+  assert.ok(!answer.response.message.includes("Tell the user"));
 });
 
 test("a hand-off the user talks over is named with the next confirmation", () => {
   const s = sim();
-  request(s, "What's the weather in Copenhagen", "c0");
   s.turn("Check my Fluide sessions");
   s.toolCall("c1", "ask_hermes", { label: "Fluide sessions" });
   s.generated();
@@ -184,7 +188,7 @@ test("a hand-off the user talks over is named with the next confirmation", () =>
   s.advance(0.3);
   const first = started(s, "c1");
   assert.equal(first.scheduling, "SILENT", "nothing is said over the user");
-  assert.deepEqual(s.cues(), ["taskStarted", "taskStarted"]);
+  assert.deepEqual(s.cues(), ["taskStarted"]);
   s.heard("And look at my T3 sessions too");
   s.activity("ACTIVITY_END");
   s.toolCall("c2", "ask_hermes", { label: "T3 sessions" });
@@ -194,12 +198,11 @@ test("a hand-off the user talks over is named with the next confirmation", () =>
   const second = started(s, "c2");
   assert.equal(second.scheduling, "WHEN_IDLE");
   assert.ok(second.response.message.endsWith(
-    " Other work is in flight, so tell the user now in a few words what you started and who has it. Say too that \"Fluide sessions\" is under way, unless you have told them: they have heard only a tone for it. Nothing else."), second.response.message);
+    " Tell the user now in a few words what you started and who has it. Say too that \"Fluide sessions\" is under way, unless you have told them: they have heard only a tone for it. Nothing else."), second.response.message);
 });
 
 test("a confirmation the user speaks before is named with the next one, and one they heard is not", () => {
   const s = sim();
-  request(s, "What's on my calendar", "c0");
   request(s, "Check my Fluide sessions", "c1", "ask_hermes", { label: "Fluide sessions" });
   // Asked to confirm, but the user speaks first.
   s.turn("And look at my T3 sessions too");
@@ -216,14 +219,13 @@ test("a confirmation the user speaks before is named with the next one, and one 
 
 test("a task that finished meanwhile isn't named as under way", () => {
   const s = sim();
-  request(s, "What's on my calendar", "c0");
   s.turn("Check my Fluide sessions");
   s.toolCall("c1", "ask_hermes", { label: "Fluide sessions" });
   s.generated();
   s.turnComplete();
   s.activity("ACTIVITY_START");
   s.advance(0.3);
-  s.complete("All three services are up.", s.hermes()[1].run);
+  s.complete("All three services are up.", s.hermes()[0].run);
   s.heard("And look at my T3 sessions too");
   s.activity("ACTIVITY_END");
   s.toolCall("c2", "ask_hermes", { label: "T3 sessions" });
@@ -233,25 +235,29 @@ test("a task that finished meanwhile isn't named as under way", () => {
   assert.ok(started(s, "c2").response.message.endsWith(ASK));
 });
 
-test("a follow-up steered into one of several running tasks is confirmed in words too", () => {
+test("a follow-up steered into a running task is confirmed in words, alone or with other tasks", () => {
   const s = sim({ steering: ["hermes"] });
   request(s, "Find flights to Rome", "c1", "ask_hermes", { label: "Rome flights" });
+  says(s, "Hermes is finding flights to Rome.");
+  s.advance(0.5);
   request(s, "Only direct ones", "c2", "ask_hermes", { continue_task: "Rome flights" });
-  assert.equal(started(s, "c2").scheduling, "SILENT", "its only task: the tone says which");
-  assert.ok(started(s, "c2").response.message.endsWith("one result covers both. Don't announce it."));
+  const solo = started(s, "c2");
+  assert.equal(solo.scheduling, "WHEN_IDLE");
+  assert.ok(solo.response.message.endsWith("one result covers both. Tell the user now in a few words that Hermes has their follow-up to this. Nothing else."), solo.response.message);
+  says(s, "Hermes has that.");
+  s.advance(0.5);
   request(s, "And book a table at Noma", "c3", "ask_hermes", { label: "Noma table" });
   says(s, "Hermes is booking Noma too.");
   s.advance(0.5);
   request(s, "Under two hundred pounds", "c4", "ask_hermes", { continue_task: "Rome flights" });
   const answer = started(s, "c4");
   assert.equal(answer.scheduling, "WHEN_IDLE");
-  assert.ok(answer.response.message.endsWith("one result covers both. Other work is in flight, so tell the user now in a few words that Hermes has their follow-up to this. Nothing else."), answer.response.message);
+  assert.ok(answer.response.message.endsWith("one result covers both. Tell the user now in a few words that Hermes has their follow-up to this. Nothing else."), answer.response.message);
   assert.equal(s.commands.filter((c) => c.type === "tool.steer").length, 2);
 });
 
 test("after a stop, a hand-off's confirmation isn't asked for again", () => {
   const s = sim();
-  request(s, "What's on my calendar", "c0");
   request(s, "Check my Fluide sessions", "c1", "ask_hermes", { label: "Fluide sessions" });
   s.said("Hermes is");
   s.audio(48_000);
