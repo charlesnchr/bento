@@ -1302,6 +1302,15 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both Paris dinner bookings", "Book a dinner at The Ivy Chelsea Garden & Wander in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
     ["Both Paris dinner bookings", "Book a dinner at Borough Market & Sightsee in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
     ["Both London hotel bookings", "Book a London flight and a pornic hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and an EPIC Hotel room", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Smith & Wollensky in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London dinner bookings", "Book a dinner at Duck & Waffle in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both Paris dinner bookings", "Book a dinner at Borough Market & Fish in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a lake-view hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and an ambleside hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a merseyside hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a poolside hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hilltop hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
