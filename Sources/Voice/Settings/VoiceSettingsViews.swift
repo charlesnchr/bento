@@ -195,7 +195,7 @@ private struct DictationSettingsForm: View {
             Text("Dictation")
         } footer: {
             Footnote((settings.singleTapHandsFreeEnabled
-                ? "Tap once for hands-free; tap again to stop. Hold for push-to-talk. Esc cancels."
+                ? "Tap once for hands-free; tap again to stop. Hold or double-tap and hold for push-to-talk. Esc cancels."
                 : "Hold to talk. Tap Space while holding to go hands-free. Esc cancels.")
                 + " With ⌥F17 as the key, ⌥F18 edits your last dictation when you select it, or for 30 seconds while the caret is still after it; otherwise it talks to the assistant. The composer collects dictations in a floating draft before inserting.")
         }
