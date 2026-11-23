@@ -3337,12 +3337,12 @@ export class Call {
       /(?:(?:^|[.?!,;:&]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:(?:go\s+ahead\s+)?(?:and|but)(?:\s+then)?|then)(?:\s+(?:please|just))?|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!clubs?\b|reviews?\b|stores?\b|shops?\b|shel(?:f|ves)\b|summar(?:y|ies)\b|reports?\b|chapters?\b|pages?\b|of\b|prices?\b|funds?\b|accounts?\b|savings?\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:clubs?|reviews?|stores?|shops?|shel(?:f|ves)|summar(?:y|ies)|reports?|chapters?|pages?|of|prices?|funds?|accounts?|savings?|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
   ]);
-  private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b|\s+as\s+well\s+as\b|\s+&(?=\s)/gi;
+  private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b|\s+as\s+well\s+as\b|\s*&/gi;
   private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/i;
   private static readonly AMP_NAME_PREV = /\bat\s+(?:[Tt]he\s+)?\p{Lu}[\p{Ll}'.-]*(?:\s+\p{Lu}[\p{Ll}'.-]*){0,3}$/u;
-  /** Complete "&" venue-name pairs checked across the ampersand ("Fortnum & Mason", "Smith & Wollensky", "Duck & Waffle", "Poppies Fish & Chips", "Rose & Crown", "Dog & Duck", "Crown & Anchor", "Fox & Hounds", "Bubble & Squeak", "Garden & Bar", "Bar & Grill") plus pure-noun hospitality/company second words ("Co", "Sons", "Bistro", "Pub", "Tavern", "Spa", etc.), failing closed on verbs ("& Wander", "& Walk", "& Sightsee", "& Fish", "& Club", "Garden & Grill"). */
-  private static readonly AMP_VENUE_PAIR = /\b(?:Fortnum\s*&\s*Mason|Smith\s*&\s*Wollensky|Duck\s*&\s*Waffle|Bubble\s*&\s*Squeak|Rose\s*&\s*Crown|Fish\s*&\s*Chips|Dog\s*&\s*Duck|Crown\s*&\s*Anchor|Fox\s*&\s*Hounds|Horse\s*&\s*Hounds|Hare\s*&\s*Hounds|Pig\s*&\s*Whistle|Lamb\s*&\s*Flag|Coach\s*&\s*Horses|George\s*&\s*Dragon|Star\s*&\s*Garter|Bar\s*&\s*Grill|(?:Kitchen|Garden|Terrace)\s*&\s*Bar|Wine\s*&\s*Spirits)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
-  private static readonly AMP_NAME_CONT = /^\s+(?:Bar|Bistro|Cafe|Café|Pub|Tavern|Inn|Arms|Co|Company|Sons|Partners|Bros|Brothers|Bakery|Deli|Brewery|Roastery|Spa|Terrace|Cellar|Pantry|Larder|Hearth)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
+  /** Complete "&" venue-name pairs checked across the ampersand ("Fortnum & Mason", "Smith & Wollensky", "Duck & Waffle", "Poppies Fish & Chips", "Rose & Crown", "Dog & Duck", "Crown & Anchor", "Fox & Hounds", "Bubble & Squeak", "Garden & Bar", "Bar & Grill") plus pure-noun hospitality/company second words ("Bar", "Kitchen", "Co", "Sons", "Bistro", "Pub", "Tavern", "Spa", etc.), failing closed on verbs ("& Wander", "& Walk", "& Sightsee", "& Fish", "& Club", "Garden & Grill", "Garden&Grill"). */
+  private static readonly AMP_VENUE_PAIR = /\b(?:Fortnum\s*&\s*Mason|Smith\s*&\s*Wollensky|Duck\s*&\s*Waffle|Bubble\s*&\s*Squeak|Rose\s*&\s*Crown|Fish\s*&\s*Chips|Dog\s*&\s*Duck|Crown\s*&\s*Anchor|Fox\s*&\s*Hounds|Horse\s*&\s*Hounds|Hare\s*&\s*Hounds|Pig\s*&\s*Whistle|Lamb\s*&\s*Flag|Coach\s*&\s*Horses|George\s*&\s*Dragon|Star\s*&\s*Garter|Bar\s*&\s*Grill|Wine\s*&\s*Spirits)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
+  private static readonly AMP_NAME_CONT = /^\s*(?:Bar|Kitchen|Bistro|Cafe|Café|Pub|Tavern|Inn|Arms|Co|Company|Sons|Partners|Bros|Brothers|Bakery|Deli|Brewery|Roastery|Spa|Terrace|Cellar|Pantry|Larder|Hearth)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
   /** Complete coordinated booking-item grammar after a comma: positive determiner/quantifier + up to 3 descriptive words + bookable noun (or bare bookable noun), followed ONLY by bounded place, venue, or date/duration prepositional phrases (no open lowercase catch-all, rejecting "at capacity", "in progress", "in flux", "hotel to close", "hotel to decide", "on hold", "in London costs more"). */
   private static readonly COORD_BOOK_ITEM_PREFIX = /^\s*(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b/iu;
   private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?![\p{L}\p{N}])/u;
@@ -3584,9 +3584,13 @@ export class Call {
         }
         if (/^\s*(?:and|as\s+well\s+as|&)$/i.test(sep)) {
           if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
-          if (/^\s*&$/i.test(sep) && Call.AMP_NAME_PREV.test(tail.slice(0, bm.index))) {
-            const beforeWord = /\b(\p{Lu}[\p{Ll}'.-]*)$/u.exec(tail.slice(0, bm.index))?.[1] ?? "";
-            if (Call.AMP_NAME_CONT.test(after) || (beforeWord.length > 0 && Call.AMP_VENUE_PAIR.test(`${beforeWord} &${after}`))) continue;
+          if (/^\s*&$/i.test(sep)) {
+            const prev = tail.slice(0, bm.index);
+            if (sep === "&" && /[A-Z]$/.test(prev) && /^[A-Z]\b/.test(after)) continue;
+            if (Call.AMP_NAME_PREV.test(prev)) {
+              const beforeWord = /\b(\p{Lu}[\p{Ll}'.-]*)$/u.exec(prev)?.[1] ?? "";
+              if (Call.AMP_NAME_CONT.test(after) || (beforeWord.length > 0 && Call.AMP_VENUE_PAIR.test(`${beforeWord}&${after}`))) continue;
+            }
           }
           return tail.slice(0, bm.index).trim();
         }
