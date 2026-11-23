@@ -71,6 +71,11 @@ const MAX_TASKS = 32;
 const PROGRESS_LIMIT = 300;
 /** User turns after hearing a task's question within which an answer the model doesn't place still goes to it. */
 const ANSWER_TURNS = 2;
+/** Generic action verbs common in Hermes confirmation questions: excluded when matching a bare answer against an older detached question so "Yes, book it" doesn't misfire on another task's "Shall I book it?". */
+const QUESTION_VERBS = new Set([
+  "book", "booking", "reserve", "confirm", "send", "cancel", "proceed", "continue", "ahead",
+  "schedule", "order", "submit", "create", "delete", "update", "start", "stop", "want", "shall", "should",
+]);
 /** The longest a stop keeps the model quiet, in seconds, if it never answers. */
 const HUSH_MAX = 10;
 /** Seconds after "goodbye" with nothing more said before the call hangs up. */
@@ -1971,10 +1976,12 @@ export class Call {
         for (const w of TaskNames.distinctive(`${t.label} ${t.request} ${t.asked ?? ""}`)) ownedWords.add(w);
       }
       const matchedExt = rawAnswering.allExternal.filter((q) => {
-        const statement = q.summary.split(q.asked).join(" ");
-        const askedWords = TaskNames.distinctive(q.asked);
+        const sentences = q.summary.split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter((s) => s.length > 0);
+        const lastQ = sentences.map((s, i) => (s.endsWith("?") ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+        const statement = lastQ >= 0 ? sentences.filter((_, i) => i !== lastQ).join(" ") : q.summary;
         const extId = new Set<string>(TaskNames.distinctive(q.label));
-        for (const w of TaskNames.distinctive(statement)) if (!askedWords.has(w)) extId.add(w);
+        for (const w of TaskNames.distinctive(statement)) extId.add(w);
+        for (const w of TaskNames.distinctive(q.asked)) if (!QUESTION_VERBS.has(w)) extId.add(w);
         for (const w of ownedWords) extId.delete(w);
         return [...saidWords].some((w) => extId.has(w));
       });
@@ -2049,12 +2056,14 @@ export class Call {
     }
   }
 
+  /** Read-only lookup scoped strictly to tasks owned by this call/chat (for check_task). */
   private find(ref: string, byRequest = true): Task | null {
-    const target = this.findTarget(ref, byRequest);
-    if (target?.kind === "owned") return target.task;
-    // check_task / cancel_task act only on this chat's own tasks; resolve to the owned task if unambiguous among owned tasks.
-    if (target?.kind === "ambiguous" && target.owned.length === 1) return target.owned[0];
-    return null;
+    const trimmed = ref.trim();
+    if (trimmed.length > 0 && /^\d+$/.test(trimmed)) return this.tasks.get(trimmed) ?? null;
+    const pairs = new Map<string, [string, string]>();
+    for (const [key, t] of this.tasks) pairs.set(key, [t.label, byRequest ? t.request : ""]);
+    const key = TaskNames.find(ref, pairs);
+    return key != null ? this.tasks.get(key) ?? null : null;
   }
 
   private findTarget(
@@ -2086,16 +2095,17 @@ export class Call {
     const owned = best.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
     const external = best.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
     if (owned.length === 1 && external.length === 0) {
-      // If a detached task shares this owned task's label and the reference names a word from the detached summary not in the owned task, treat as cross-session ambiguity rather than acting on the owned task.
+      // If the reference names a distinctive word that the owned task lacks but any detached task's label or summary has, treat as cross-session ambiguity rather than acting on the owned task.
       if (byRequest && extPairs.size > 0) {
         const ownedTask = owned[0];
         const ownedWords = TaskNames.distinctive(`${ownedTask.label} ${ownedTask.request}`);
         const refUnique = [...TaskNames.distinctive(ref)].filter((w) => !ownedWords.has(w));
         if (refUnique.length > 0) {
-          const sameLabelExts = TaskNames.looseMatches(ownedTask.label, extPairs)
-            .map((k) => this.externalTasks.find((e) => e.key === k))
-            .filter((e): e is NonNullable<typeof e> => e != null && refUnique.some((w) => TaskNames.distinctive(e.summary).has(w)));
-          if (sameLabelExts.length > 0) return { kind: "ambiguous", owned, external: sameLabelExts };
+          const matchedExts = this.externalTasks.filter((e) => {
+            const extWords = TaskNames.distinctive(`${e.label} ${e.summary}`);
+            return refUnique.some((w) => extWords.has(w));
+          });
+          if (matchedExts.length > 0) return { kind: "ambiguous", owned, external: matchedExts };
         }
       }
       return { kind: "owned", task: owned[0] };

@@ -797,3 +797,54 @@ test("owned-only ambiguous label on a bare answer uses owned-only wording withou
   assert.ok(refusal.startsWith('Not executed: "Dinner" could mean more than one task in this chat'), refusal);
   assert.ok(!refusal.includes("earlier call ()"), refusal);
 });
+
+test("detached question repeating the subject name ('Shall I book Alchemist?') still keeps Alchemist as an identifying word", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Alchemist has a table at nine. Shall I book Alchemist?" });
+  s.advance(0.1);
+  s.type("Get me a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Want me to reserve it?");
+  s.advance(0.1);
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "Alchemist repeated in question must not be discarded from identifying words");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Dinner reservation" asked'), refusal);
+  assert.match(refusal, /Continue it/);
+});
+
+test("cancel_task refuses cross-session reference even when detached task has a different label", () => {
+  for (const detachedLabel of ["Dinner reservation", "Alchemist dinner", "Restaurant search"]) {
+    const s = chat();
+    s.type("Make a dinner booking at Noma");
+    s.calls("ask_hermes", { label: "Dinner booking" });
+    s.advance(0.1);
+    s.push({ type: "note", id: "call-1-1", label: detachedLabel, text: "Alchemist has a table at nine." });
+    s.advance(0.1);
+    s.type("Cancel the Alchemist dinner booking. Keep looking at Noma");
+    s.calls("cancel_task", { task: "Alchemist dinner booking" });
+    s.advance(0.1);
+    assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), `cancel_task must not cancel Noma when detached label is ${detachedLabel}`);
+    const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+    assert.ok(refusal.startsWith("Not executed:"), refusal);
+  }
+});
+
+test("check_task stays scoped to chat-owned tasks even when a detached note mentions matching words", () => {
+  const s = chat();
+  s.type("Check Lisbon flights for Friday");
+  s.calls("ask_hermes", { label: "Flight options" });
+  s.advance(0.1);
+  s.complete("TAP flight at 10:00 from Copenhagen to Lisbon.");
+  s.push({ type: "note", id: "call-1-1", label: "Lisbon airport transfer", text: "Transfers meet all Lisbon flights on arrival." });
+  s.advance(0.1);
+  s.type("What did my Lisbon flights task say?");
+  s.calls("check_task", { task: "Lisbon flights" });
+  s.advance(0.1);
+  const checkMsg = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.match(checkMsg, /Flight options/);
+  assert.match(checkMsg, /TAP flight at 10:00/);
+});
