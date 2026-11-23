@@ -25,7 +25,7 @@ import {
   shouldClearUnreadResults,
   type SideFilter,
 } from "./ui.ts";
-import { ScreenWakeLock, WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
+import { ScreenWakeLock, WakeAudioGate, WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
 
 interface Core {
   version: string;
@@ -128,12 +128,7 @@ let armGen = 0;
 let coreWantsWake = false;
 /** Which call (or 0 for idle) owns the wake worker's current listening period. */
 let wakePeriodCallId: number | null = null;
-let callWhileSpeaking = "send";
-let hasHostBrief = false;
-/** Mirrors the core's `speechUntil` clock so each mic frame records whether `call.ts` suppressed it. */
-let coreSpeechUntil = 0;
-/** Post-playback unsuppressed mic frames held briefly while a suppressed frame is still scoring in the wake worker. */
-let deferredMic: { seq: number; pcm: string; t: number }[] = [];
+const wakeGate = new WakeAudioGate();
 let wakeLoading = false;
 let wakeStarting = false;
 let startingCall = false;
@@ -916,16 +911,12 @@ function showStatus(message?: string) {
 
 function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
-  if (event.type === "brief.ready") hasHostBrief = true;
-  // Flush deferred unsuppressed gap frames before any event that can start new playback,
-  // and invalidate any pending pre-gap wake detection so a late hit cannot replay older audio after them.
-  if (
-    deferredMic.length > 0 &&
-    (event.type === "brief.ready" ||
-      (hasHostBrief && event.type === "tick") ||
-      (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"')))
-  ) {
-    flushDeferredMic(true);
+  // Flush deferred unsuppressed gap frames before any event that can start new playback
+  // (advancing replayFloorSeq without resetting wakeClient, so a valid wake hit still lands).
+  for (const item of wakeGate.beforePush(event)) {
+    if (!callId) break;
+    counts.mic++;
+    push({ type: "mic", pcm: item.pcm }, item.t);
   }
   const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
@@ -975,9 +966,7 @@ function run(commands: Command[], eventTime = now()) {
         break;
       case "play": {
         const t = now();
-        const pad = c.pcm.endsWith("==") ? 2 : c.pcm.endsWith("=") ? 1 : 0;
-        const pcmBytes = Math.max(0, Math.floor((c.pcm.length * 3) / 4) - pad);
-        coreSpeechUntil = Math.max(coreSpeechUntil, eventTime) + pcmBytes / 48_000;
+        wakeGate.onPlay(c.pcm, eventTime, typeof c.source === "string" ? c.source : undefined);
         // A reply starting: from the end of the user's speech to its first sound.
         if (!metrics.replied && audio.queued < 0.05 && t - metrics.lastPlay > 0.6 && metrics.lastVoice > 0 && t - metrics.lastVoice < 10) {
           metrics.reply.push(t - metrics.lastVoice);
@@ -991,7 +980,7 @@ function run(commands: Command[], eventTime = now()) {
         break;
       }
       case "flush":
-        coreSpeechUntil = Math.min(coreSpeechUntil, eventTime);
+        wakeGate.onFlush(eventTime);
         audio.flush();
         log("out", "flush", "out");
         break;
@@ -1045,10 +1034,8 @@ function run(commands: Command[], eventTime = now()) {
   }
 }
 
-function flushDeferredMic(invalidateWake = false) {
-  if (deferredMic.length === 0) return;
-  const items = deferredMic.splice(0);
-  if (invalidateWake) wakeClient.reset();
+function flushDeferredMic() {
+  const items = wakeGate.flushDeferred();
   if (!callId || medium !== "voice") return;
   for (const item of items) {
     if (!callId) break;
@@ -1059,7 +1046,7 @@ function flushDeferredMic(invalidateWake = false) {
 
 function onMic(samples: Int16Array, level: number) {
   const t = now();
-  const suppressed = callId !== 0 && medium === "voice" && callWhileSpeaking !== "send" && t < coreSpeechUntil;
+  const suppressed = callId !== 0 && medium === "voice" && wakeGate.isSuppressed(t);
   const seq = shouldFeedWake() ? wakeClient.feed(samples, suppressed) : 0;
   if (wakeStarting) {
     const copy = new Uint8Array(samples.byteLength);
@@ -1077,16 +1064,19 @@ function onMic(samples: Int16Array, level: number) {
     if (audio.queued < 0.05) metrics.replied = false;
   }
   const pcm = bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
-  // If playback just ended while a suppressed frame is still scoring in the wake worker, hold
-  // unsuppressed frames briefly so they never land ahead of a suppressed wake tail in pre-roll.
-  if (!suppressed && wakeClient.suppressedInFlight && callWhileSpeaking !== "send") {
-    deferredMic.push({ seq, pcm, t });
-    if (deferredMic.length > 60) flushDeferredMic(true);
-    return;
+  const toSend = wakeGate.onMicFrame({
+    pcm,
+    t,
+    seq,
+    lastSeq: wakeClient.lastSeq,
+    inFlightSuppressedSeq: wakeClient.inFlightSuppressedSeq,
+    suppressed,
+  });
+  for (const item of toSend) {
+    if (!callId) break;
+    counts.mic++;
+    push({ type: "mic", pcm: item.pcm }, item.t);
   }
-  if (deferredMic.length > 0) flushDeferredMic();
-  counts.mic++;
-  push({ type: "mic", pcm }, t);
 }
 
 function connect(sid: number, captions: boolean) {
@@ -1350,10 +1340,7 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     startedAt = now();
     muted = given.muted === true;
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
-    callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
-    hasHostBrief = false;
-    coreSpeechUntil = 0;
-    deferredMic = [];
+    wakeGate.reset(typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send", wakeClient.lastSeq);
     wakePeriodCallId = null;
     wakeClient.reset();
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
@@ -1421,9 +1408,7 @@ function end() {
   activeSession = 0;
   syncResultFollowUpButtons();
   coreWantsWake = false;
-  hasHostBrief = false;
-  coreSpeechUntil = 0;
-  deferredMic = [];
+  wakeGate.reset("send", wakeClient.lastSeq);
   wakePeriodCallId = wakeArmed ? 0 : null;
   wakeStarting = false;
   openingChunks = [];
@@ -1750,25 +1735,15 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
-    const deferred = deferredMic.splice(0);
-    const deferredSeqs = new Set(deferred.map((d) => d.seq).filter((s) => s > 0));
+    const deferred = wakeGate.takeDeferred();
     push({ type: "wake" });
     // Replay suppressed chunks and any deferred post-playback chunks in exact chronological order,
-    // so playback ending mid-inference never reverses or loses speech.
-    const replayedSeqs = new Set<number>();
-    for (const chunk of hit.trailing) {
+    // skipping anything older than already-forwarded gap audio.
+    for (const item of wakeGate.planWakeReplay(hit, deferred, bytesToBase64)) {
       if (!callId) break;
-      if (chunk.bytes.byteLength === 0) continue;
-      if (!chunk.suppressed && !deferredSeqs.has(chunk.seq)) continue;
-      if (chunk.seq > 0) replayedSeqs.add(chunk.seq);
       counts.mic++;
-      push({ type: "mic", pcm: bytesToBase64(chunk.bytes) });
-    }
-    for (const item of deferred) {
-      if (!callId) break;
-      if (item.seq > 0 && replayedSeqs.has(item.seq)) continue;
-      counts.mic++;
-      push({ type: "mic", pcm: item.pcm }, item.t);
+      if (item.t !== undefined) push({ type: "mic", pcm: item.pcm }, item.t);
+      else push({ type: "mic", pcm: item.pcm });
     }
     return;
   }

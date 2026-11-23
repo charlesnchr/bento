@@ -71,9 +71,19 @@ export class WakeClient {
     this.createWorker = createWorker;
   }
 
+  /** Latest monotonic sequence number assigned by `feed()`. */
+  get lastSeq(): number {
+    return this.seq;
+  }
+
+  /** Highest sequence number of an in-flight suppressed frame, or 0 if none are scoring. */
+  get inFlightSuppressedSeq(): number {
+    return this.lastSuppressedSeq > this.lastAckedSeq ? this.lastSuppressedSeq : 0;
+  }
+
   /** True while at least one suppressed frame is still queued or scoring in the worker. */
   get suppressedInFlight(): boolean {
-    return this.lastSuppressedSeq > this.lastAckedSeq;
+    return this.inFlightSuppressedSeq > 0;
   }
 
   private clearRecent(): void {
@@ -278,5 +288,152 @@ export class ScreenWakeLock {
     const lock = this.sentinel;
     this.sentinel = null;
     void lock?.release().catch(() => {});
+  }
+}
+
+export interface DeferredMicFrame {
+  seq: number;
+  floorSeq: number;
+  pcm: string;
+  t: number;
+}
+
+/**
+ * Mirrors the voice core's playback suppression clock and coordinates deferred post-playback
+ * microphone frames with asynchronous wake-word tail replay.
+ *
+ * Separating wake acceptance from replay eligibility (`replayFloorSeq`) ensures that forwarding
+ * a gap frame before new playback never silences gap audio, never discards a valid wake hit,
+ * and never replays older suppressed audio after newer audio already sent to the core.
+ */
+export class WakeAudioGate {
+  private whileSpeaking = "send";
+  private speechUntil = 0;
+  private announcerUntil = 0;
+  private pendingHostBriefs = 0;
+  private replayFloorSeq = 0;
+  private deferred: DeferredMicFrame[] = [];
+  private readonly maxDeferred: number;
+
+  constructor(maxDeferred = 60) {
+    this.maxDeferred = maxDeferred;
+  }
+
+  reset(whileSpeaking = "send", floorSeq = 0): void {
+    this.whileSpeaking = whileSpeaking;
+    this.speechUntil = 0;
+    this.announcerUntil = 0;
+    this.pendingHostBriefs = 0;
+    this.replayFloorSeq = floorSeq;
+    this.deferred = [];
+  }
+
+  get hasDeferred(): boolean {
+    return this.deferred.length > 0;
+  }
+
+  isSuppressed(t: number): boolean {
+    return this.whileSpeaking !== "send" && t < this.speechUntil;
+  }
+
+  onPlay(pcmBase64: string, eventTime: number, source?: string): void {
+    const pad = pcmBase64.endsWith("==") ? 2 : pcmBase64.endsWith("=") ? 1 : 0;
+    const pcmBytes = Math.max(0, Math.floor((pcmBase64.length * 3) / 4) - pad);
+    this.speechUntil = Math.max(this.speechUntil, eventTime) + pcmBytes / 48_000;
+    if (source === "announcer") {
+      this.pendingHostBriefs = Math.max(0, this.pendingHostBriefs - 1);
+      this.announcerUntil = this.speechUntil;
+    }
+  }
+
+  onFlush(eventTime: number): void {
+    this.speechUntil = Math.min(this.speechUntil, eventTime);
+    if (eventTime < this.announcerUntil) {
+      // A cut host brief (< 80% played) is re-queued by call.ts for a future tick.
+      this.pendingHostBriefs++;
+      this.announcerUntil = 0;
+    }
+  }
+
+  /**
+   * Called immediately before pushing an event to the core. Returns any deferred unsuppressed
+   * gap frames that must reach the core first so new playback cannot silence them.
+   */
+  beforePush(event: { type?: unknown; data?: unknown }): { pcm: string; t: number }[] {
+    if (event.type === "brief.ready") this.pendingHostBriefs++;
+    if (this.deferred.length === 0) return [];
+    const canStartPlayback =
+      event.type === "brief.ready" ||
+      (this.pendingHostBriefs > 0 && event.type === "tick") ||
+      (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"'));
+    return canStartPlayback ? this.flushDeferred() : [];
+  }
+
+  flushDeferred(): { pcm: string; t: number }[] {
+    if (this.deferred.length === 0) return [];
+    const items = this.deferred.splice(0);
+    for (const item of items) {
+      if (item.floorSeq > this.replayFloorSeq) this.replayFloorSeq = item.floorSeq;
+    }
+    return items.map(({ pcm, t }) => ({ pcm, t }));
+  }
+
+  /** Detaches deferred frames before `push({ type: "wake" })` without bumping `replayFloorSeq` yet. */
+  takeDeferred(): DeferredMicFrame[] {
+    return this.deferred.splice(0);
+  }
+
+  onMicFrame(params: {
+    pcm: string;
+    t: number;
+    seq: number;
+    lastSeq: number;
+    inFlightSuppressedSeq: number;
+    suppressed: boolean;
+  }): { pcm: string; t: number }[] {
+    const floorSeq = params.seq > 0 ? params.seq : params.lastSeq;
+    if (!params.suppressed && this.whileSpeaking !== "send" && params.inFlightSuppressedSeq > this.replayFloorSeq) {
+      this.deferred.push({ seq: params.seq, floorSeq, pcm: params.pcm, t: params.t });
+      if (this.deferred.length > this.maxDeferred) return this.flushDeferred();
+      return [];
+    }
+    const out = this.flushDeferred();
+    if (!params.suppressed && floorSeq > this.replayFloorSeq) {
+      this.replayFloorSeq = floorSeq;
+    }
+    out.push({ pcm: params.pcm, t: params.t });
+    return out;
+  }
+
+  /**
+   * Computes the ordered mic frames to replay after `push({ type: "wake" })`, skipping any chunk
+   * at or below `replayFloorSeq` so already-forwarded gap frames are never followed by older audio.
+   */
+  planWakeReplay(
+    hit: WakeDetectionEvent,
+    deferred: DeferredMicFrame[],
+    bytesToBase64: (bytes: Uint8Array) => string,
+  ): { pcm: string; t?: number }[] {
+    const deferredSeqs = new Set(deferred.map((d) => d.seq).filter((s) => s > 0));
+    const out: { pcm: string; t?: number }[] = [];
+    const replayedSeqs = new Set<number>();
+    let maxFloor = this.replayFloorSeq;
+    for (const chunk of hit.trailing) {
+      if (chunk.bytes.byteLength === 0) continue;
+      if (chunk.seq <= this.replayFloorSeq) continue;
+      if (!chunk.suppressed && !deferredSeqs.has(chunk.seq)) continue;
+      if (chunk.seq > 0) {
+        replayedSeqs.add(chunk.seq);
+        if (chunk.seq > maxFloor) maxFloor = chunk.seq;
+      }
+      out.push({ pcm: bytesToBase64(chunk.bytes) });
+    }
+    for (const item of deferred) {
+      if (item.floorSeq > maxFloor) maxFloor = item.floorSeq;
+      if (item.seq > 0 && replayedSeqs.has(item.seq)) continue;
+      out.push({ pcm: item.pcm, t: item.t });
+    }
+    this.replayFloorSeq = maxFloor;
+    return out;
   }
 }

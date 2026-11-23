@@ -3,8 +3,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CallAudio } from "../web/audio.ts";
-import { ScreenWakeLock, WakeClient, type WakeDetectionEvent, type WakeLockSentinelLike, type WorkerLike } from "../web/wakeClient.ts";
+import { Call } from "../src/call.ts";
+import { configFrom } from "../src/index.ts";
+import type { CallConfig, Command, Event } from "../src/types.ts";
+import { CallAudio, bytesToBase64 } from "../web/audio.ts";
+import { ScreenWakeLock, WakeAudioGate, WakeClient, type WakeDetectionEvent, type WakeLockSentinelLike, type WorkerLike } from "../web/wakeClient.ts";
 
 class MockWorker implements WorkerLike {
   onmessage: ((e: MessageEvent<Record<string, any>>) => void) | null = null;
@@ -361,4 +364,307 @@ test("CallAudio retries open() cleanly after an AudioContext constructor failure
     g.AudioWorkletNode = prevWorkletNode;
     URL.createObjectURL = prevCreateObjectURL;
   }
+});
+
+/** Helper mirroring web/app.ts's Call + WakeClient + WakeAudioGate integration against the real Call core. */
+function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string, unknown> = {}) {
+  const worker = new MockWorker();
+  const gate = new WakeAudioGate();
+  let t = 0;
+  let sid = 0;
+  let coreWantsWake = false;
+  let wakePeriodActive = false;
+  const commands: Command[] = [];
+  const sentAudioTags: number[] = [];
+
+  const config = configFrom({
+    today: "2026-11-08",
+    mic: { whileSpeaking: "wake" },
+    limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05, wakePreRoll: 1.0 },
+    ...configOverrides,
+  } as Partial<CallConfig> & Record<string, unknown>);
+  const call = new Call(config);
+  gate.reset(config.mic.whileSpeaking, 0);
+
+  const client = new WakeClient(
+    {
+      onDetected(hit) {
+        if (!wakePeriodActive) return;
+        const deferred = gate.takeDeferred();
+        push({ type: "wake" });
+        for (const item of gate.planWakeReplay(hit, deferred, bytesToBase64)) {
+          push({ type: "mic", pcm: item.pcm }, item.t ?? t);
+        }
+      },
+      onSuppressedSettled() {
+        for (const item of gate.flushDeferred()) {
+          push({ type: "mic", pcm: item.pcm }, item.t);
+        }
+      },
+    },
+    () => worker,
+  );
+  client.load("pennyworth", 0.7);
+  const gen = () => worker.sent.at(-1)!.gen as number;
+  worker.emit({ type: "ready", gen: gen(), modelId: "pennyworth", warmupMs: 10 });
+
+  function run(out: Command[], eventTime: number) {
+    for (const c of out) {
+      commands.push(c);
+      if (c.type === "ws.connect" && c.purpose !== "captions") {
+        sid = c.sid;
+        push({ type: "ws.open", sid });
+        push({ type: "ws.message", sid, data: JSON.stringify({ setupComplete: {} }) });
+      } else if (c.type === "ws.send" && c.data.startsWith('{"realtimeInput":{"audio"')) {
+        const parsed = JSON.parse(c.data);
+        const raw = Buffer.from(parsed.realtimeInput.audio.data, "base64");
+        const firstSample = raw.length >= 2 ? raw.readInt16LE(0) : 0;
+        sentAudioTags.push(firstSample);
+      } else if (c.type === "play") {
+        gate.onPlay(c.pcm, eventTime, c.source);
+      } else if (c.type === "flush") {
+        gate.onFlush(eventTime);
+      } else if (c.type === "wakeword") {
+        coreWantsWake = c.on;
+        if (c.on) {
+          wakePeriodActive = true;
+          client.reset();
+        }
+      }
+    }
+  }
+
+  function push(event: Record<string, unknown>, at = t): Command[] {
+    for (const item of gate.beforePush(event)) {
+      push({ type: "mic", pcm: item.pcm }, item.t);
+    }
+    const out = call.push({ ...event, t: at } as Event);
+    run(out, at);
+    return out;
+  }
+
+  function start() {
+    run(call.start(0), 0);
+  }
+
+  function advanceTo(nextT: number) {
+    t = nextT;
+    push({ type: "tick" }, t);
+  }
+
+  function micFrame(tag: number, at = t): number {
+    t = at;
+    const samples = new Int16Array(320).fill(tag);
+    const suppressed = gate.isSuppressed(t);
+    const seq = coreWantsWake ? client.feed(samples, suppressed) : 0;
+    const pcm = bytesToBase64(new Uint8Array(samples.buffer));
+    for (const item of gate.onMicFrame({
+      pcm,
+      t,
+      seq,
+      lastSeq: client.lastSeq,
+      inFlightSuppressedSeq: client.inFlightSuppressedSeq,
+      suppressed,
+    })) {
+      push({ type: "mic", pcm: item.pcm }, item.t);
+    }
+    return seq;
+  }
+
+  function modelAudio(seconds: number, at = t) {
+    t = at;
+    const pcm = Buffer.alloc(Math.round(seconds * 24_000) * 2, 1).toString("base64");
+    const data = JSON.stringify({
+      serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: pcm } }] } },
+    });
+    return push({ type: "ws.message", sid, data }, t);
+  }
+
+  function emitDetected(seq: number, restTag?: number) {
+    const rest = restTag != null ? new Int16Array(320).fill(restTag).buffer : new ArrayBuffer(0);
+    worker.emit({ type: "detected", gen: worker.sent.filter((m) => typeof m.gen === "number").at(-1)!.gen, seq, score: 0.95, atFrame: 4, restBytes: rest, inferMs: 2 });
+  }
+
+  function emitAck(seq: number) {
+    worker.emit({ type: "ack", gen: worker.sent.filter((m) => typeof m.gen === "number").at(-1)!.gen, seq });
+  }
+
+  return { worker, gate, client, call, commands, sentAudioTags, start, push, advanceTo, micFrame, modelAudio, emitDetected, emitAck, getSid: () => sid, setT: (v: number) => { t = v; } };
+}
+
+test("WakeAudioGate: resuming playback during a gap keeps wake interruption working without reversing audio", () => {
+  const h = createCoreHarness({
+    attention: { mode: "window", afterWake: 1.0, window: 1.0, afterQuestion: 2.0, afterHandOff: 0, afterAnnouncement: 0 },
+  });
+  h.start();
+  // Let the initial attention window expire so the call goes dormant.
+  for (let step = 0.2; step <= 1.4; step += 0.2) h.advanceTo(step);
+  assert.ok(h.commands.some((c) => c.type === "status" && c.status === "dormant"));
+  h.sentAudioTags.length = 0;
+
+  // Model speaks for 0.2 s (from t = 2.0 to 2.2).
+  h.modelAudio(0.2, 2.0);
+  // Suppressed mic frame 1 arrives during playback (t = 2.1).
+  const seq1 = h.micFrame(1001, 2.1);
+  assert.ok(seq1 > 0);
+  // Playback ends at t = 2.2; 25 ms gap frame 2 arrives at t = 2.225 while frame 1 is still scoring.
+  const seq2 = h.micFrame(2002, 2.225);
+  assert.ok(seq2 > seq1);
+  assert.equal(h.gate.hasDeferred, true);
+
+  // Another audio packet arrives at t = 2.25 before the wake worker answers.
+  // Gap frame 2 is flushed unsuppressed before playback B starts, without resetting the wake worker.
+  const flushesBefore = h.commands.filter((c) => c.type === "flush").length;
+  h.modelAudio(0.4, 2.25);
+  assert.equal(h.gate.hasDeferred, false);
+  // Suppressed frame 3 arrives during playback B at t = 2.30.
+  const seq3 = h.micFrame(3003, 2.30);
+  assert.ok(seq3 > seq2);
+
+  // Late wake hit for frame 1 arrives at t = 2.32: must still interrupt playback B (emit flush),
+  // preserve gap frame 2 unsuppressed, replay newer suppressed frame 3, and NEVER append frame 1 after frame 2.
+  h.setT(2.32);
+  h.emitDetected(seq1, 1001);
+
+  const flushesAfter = h.commands.filter((c) => c.type === "flush").length;
+  assert.ok(flushesAfter > flushesBefore, "wake hit must still interrupt resumed playback with flush");
+  const nonzero = h.sentAudioTags.filter((tag) => tag !== 0);
+  assert.deepEqual(nonzero, [2002, 3003], "gap frame 2 must arrive unsuppressed followed by frame 3, never reversed as [2002, 1001]");
+});
+
+test("WakeAudioGate: queued brief.ready flushes gap audio without allowing a late wake hit to reverse audio", () => {
+  const h = createCoreHarness({
+    attention: { mode: "window", afterWake: 1.0, window: 1.0, afterQuestion: 2.0, afterHandOff: 0, afterAnnouncement: 0 },
+    announce: { by: "host", engaged: 6, lull: 3, attach: 0.4, briefWait: 2, maxWait: 8, maxWords: 28 },
+  });
+  h.start();
+  for (let step = 0.2; step <= 1.4; step += 0.2) h.advanceTo(step);
+  h.sentAudioTags.length = 0;
+
+  h.modelAudio(0.2, 2.0);
+  const seq1 = h.micFrame(1001, 2.1);
+  const seq2 = h.micFrame(2002, 2.22);
+  assert.equal(h.gate.hasDeferred, true);
+
+  // A brief.ready arrives at t = 2.24 (unknown/queued brief does not start playback immediately).
+  const briefPcm = Buffer.alloc(48_000, 1).toString("base64");
+  h.push({ type: "brief.ready", id: "unknown-or-queued", text: "Done.", pcm: briefPcm }, 2.24);
+  assert.equal(h.gate.hasDeferred, false);
+
+  // Late wake hit arrives at t = 2.26: wakes the dormant call, drains unsuppressed frame 2 from pre-roll,
+  // and skips older suppressed frame 1 instead of appending it after frame 2.
+  h.setT(2.26);
+  h.emitDetected(seq1, 1001);
+
+  const nonzero = h.sentAudioTags.filter((tag) => tag !== 0);
+  assert.deepEqual(nonzero, [2002], "frame 2 must not be followed by older frame 1");
+});
+
+test("WakeAudioGate: queued host brief flushes before tick, and after it plays a tick does not drop normal playback-end wake", () => {
+  const h = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  h.start();
+  h.advanceTo(0.2);
+
+  // Start a Hermes task and complete it while model playback is active so its host brief waits for a tick.
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 0.22);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "Check the build" } } }) }, 0.24);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 0.26);
+  h.push({
+    type: "ws.message",
+    sid: h.getSid(),
+    data: JSON.stringify({
+      toolCall: { functionCalls: [{ id: "tc1", name: "ask_hermes", args: {} }] },
+    }),
+  }, 0.3);
+  h.advanceTo(0.45);
+  h.advanceTo(0.65);
+  const tc = h.commands.find((c): c is Extract<Command, { type: "tool.call" }> => c.type === "tool.call");
+  assert.ok(tc, "tool.call should be emitted for ask_hermes");
+  h.modelAudio(0.5, 0.7); // plays until t = 1.2
+  h.push({ type: "tool.result", run: tc.run, text: "Build passed." }, 0.8);
+  const briefReq = h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief");
+  assert.ok(briefReq, "host brief should be requested for completed task");
+  // Deliver brief.ready while model audio is still playing (until 1.2), so the brief is queued.
+  const briefPcm = Buffer.alloc(Math.round(0.4 * 24_000) * 2, 1).toString("base64");
+  h.push({ type: "brief.ready", id: briefReq.id, text: "Build passed.", pcm: briefPcm }, 0.9);
+  // End model turn so attach window opens after speechUntil (1.2).
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 1.0);
+
+  // Suppressed frame during model audio, then quiet nonzero gap frame after playback ends (t = 1.55)
+  // so it does not trigger the loud-mic brief holdback while still distinguishing nonzero PCM from silence.
+  const seq1 = h.micFrame(1001, 1.1);
+  h.sentAudioTags.length = 0;
+  h.micFrame(200, 1.55);
+  assert.equal(h.gate.hasDeferred, true);
+
+  // Tick at t = 1.60 starts the queued announcer brief: gap frame 200 must flush BEFORE tick,
+  // reaching the model as nonzero audio (not silenced by the announcer brief's speechUntil).
+  h.advanceTo(1.60);
+  assert.ok(h.commands.some((c) => c.type === "play" && c.source === "announcer"), "tick should start queued announcer brief");
+  assert.ok(h.sentAudioTags.includes(200), "gap frame 200 must reach the model unsuppressed before tick announcement");
+  h.emitAck(seq1);
+
+  // Let the 0.4 s announcer brief finish naturally (1.60 + 0.40 = 2.00 -> done by 2.3).
+  h.advanceTo(2.3);
+
+  // Now model plays another reply (2.4 -> 2.6) with NO host brief pending.
+  h.sentAudioTags.length = 0;
+  h.modelAudio(0.2, 2.4);
+  const seq4 = h.micFrame(4004, 2.5);
+  const seq5 = h.micFrame(5005, 2.62);
+  assert.equal(h.gate.hasDeferred, true);
+
+  // A 100 ms tick arrives while seq4 is still scoring and no host brief is pending:
+  // must NOT flush deferred audio or drop the wake detection.
+  h.advanceTo(2.65);
+  assert.equal(h.gate.hasDeferred, true, "tick with no pending host brief must leave deferred audio intact");
+  h.emitDetected(seq4, 4004);
+
+  const nonzeroAfter = h.sentAudioTags.filter((tag) => tag !== 0);
+  assert.deepEqual(nonzeroAfter, [4004, 5005], "both suppressed frame 4 and gap frame 5 must arrive in exact order");
+});
+
+test("WakeAudioGate: playback-end wake replays [1, 2] in order, and seq=0 gap flush still blocks [2, 1] reversal", () => {
+  // Part 1: normal playback-end gap in dormant call replays [1001, 2002] chronologically.
+  const dormantHarness = createCoreHarness({
+    attention: { mode: "window", afterWake: 1.0, window: 1.0, afterQuestion: 2.0, afterHandOff: 0, afterAnnouncement: 0 },
+  });
+  dormantHarness.start();
+  for (let step = 0.2; step <= 1.4; step += 0.2) dormantHarness.advanceTo(step);
+  dormantHarness.sentAudioTags.length = 0;
+
+  dormantHarness.modelAudio(0.2, 2.0);
+  const seq1 = dormantHarness.micFrame(1001, 2.1);
+  dormantHarness.micFrame(2002, 2.22);
+  dormantHarness.setT(2.24);
+  dormantHarness.emitDetected(seq1, 1001);
+  assert.deepEqual(dormantHarness.sentAudioTags.filter((tag) => tag !== 0), [1001, 2002]);
+
+  // Part 2: open call where core turns wakeword off right as playback ends, so gap frame 2 gets seq=0.
+  const openHarness = createCoreHarness();
+  openHarness.start();
+  openHarness.advanceTo(0.2);
+  openHarness.modelAudio(0.2, 1.0); // speechUntil = 1.2, wakeword: true
+  const openSeq1 = openHarness.micFrame(1001, 1.1);
+  assert.ok(openSeq1 > 0);
+  openHarness.sentAudioTags.length = 0;
+
+  // Tick at 1.25 turns wakeword off in the open call before gap frame 2 arrives.
+  openHarness.advanceTo(1.25);
+  const openSeq2 = openHarness.micFrame(2002, 1.26);
+  assert.equal(openSeq2, 0, "gap frame after wakeword:false has seq=0");
+  assert.equal(openHarness.gate.hasDeferred, true);
+
+  // Playback resumes at 1.28, flushing seq=0 gap frame 2 unsuppressed.
+  const flushesBefore = openHarness.commands.filter((c) => c.type === "flush").length;
+  openHarness.modelAudio(0.3, 1.28);
+  assert.equal(openHarness.gate.hasDeferred, false);
+
+  // Late wake hit for openSeq1 still interrupts resumed playback without appending 1001 after 2002.
+  openHarness.setT(1.30);
+  openHarness.emitDetected(openSeq1, 1001);
+  assert.ok(openHarness.commands.filter((c) => c.type === "flush").length > flushesBefore);
+  assert.deepEqual(openHarness.sentAudioTags.filter((tag) => tag !== 0), [2002]);
 });
