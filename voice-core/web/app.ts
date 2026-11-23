@@ -129,6 +129,7 @@ let coreWantsWake = false;
 /** Which call (or 0 for idle) owns the wake worker's current listening period. */
 let wakePeriodCallId: number | null = null;
 let callWhileSpeaking = "send";
+let hasHostBrief = false;
 /** Mirrors the core's `speechUntil` clock so each mic frame records whether `call.ts` suppressed it. */
 let coreSpeechUntil = 0;
 /** Post-playback unsuppressed mic frames held briefly while a suppressed frame is still scoring in the wake worker. */
@@ -915,13 +916,16 @@ function showStatus(message?: string) {
 
 function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
+  if (event.type === "brief.ready") hasHostBrief = true;
   // Flush deferred unsuppressed gap frames before any event that can start new playback,
-  // so the new playback's speechUntil never silences audio captured during the quiet gap.
+  // and invalidate any pending pre-gap wake detection so a late hit cannot replay older audio after them.
   if (
     deferredMic.length > 0 &&
-    (event.type === "brief.ready" || (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"')))
+    (event.type === "brief.ready" ||
+      (hasHostBrief && event.type === "tick") ||
+      (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"')))
   ) {
-    flushDeferredMic();
+    flushDeferredMic(true);
   }
   const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
@@ -1041,9 +1045,10 @@ function run(commands: Command[], eventTime = now()) {
   }
 }
 
-function flushDeferredMic() {
+function flushDeferredMic(invalidateWake = false) {
   if (deferredMic.length === 0) return;
   const items = deferredMic.splice(0);
+  if (invalidateWake) wakeClient.reset();
   if (!callId || medium !== "voice") return;
   for (const item of items) {
     if (!callId) break;
@@ -1076,7 +1081,7 @@ function onMic(samples: Int16Array, level: number) {
   // unsuppressed frames briefly so they never land ahead of a suppressed wake tail in pre-roll.
   if (!suppressed && wakeClient.suppressedInFlight && callWhileSpeaking !== "send") {
     deferredMic.push({ seq, pcm, t });
-    if (deferredMic.length > 60) flushDeferredMic();
+    if (deferredMic.length > 60) flushDeferredMic(true);
     return;
   }
   if (deferredMic.length > 0) flushDeferredMic();
@@ -1346,6 +1351,7 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     muted = given.muted === true;
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
     callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
+    hasHostBrief = false;
     coreSpeechUntil = 0;
     deferredMic = [];
     wakePeriodCallId = null;
@@ -1415,6 +1421,7 @@ function end() {
   activeSession = 0;
   syncResultFollowUpButtons();
   coreWantsWake = false;
+  hasHostBrief = false;
   coreSpeechUntil = 0;
   deferredMic = [];
   wakePeriodCallId = wakeArmed ? 0 : null;
