@@ -1347,6 +1347,7 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     wakeGate.reset(typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send", wakeClient.lastSeq, {
       deliverMax: typeof limitsCfg?.deliverMax === "number" ? limitsCfg.deliverMax : 30,
       briefWait: typeof announceCfg?.briefWait === "number" ? announceCfg.briefWait : 3,
+      muted,
     });
     wakePeriodCallId = null;
     wakeClient.reset();
@@ -1988,7 +1989,13 @@ function keys() {
     else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }
   });
   document.addEventListener("keyup", (e) => {
-    if (e.code === "Space" && holding) { holding = false; push({ type: "mute" }); showStatus(); }
+    if (e.code === "Space" && holding) {
+      holding = false;
+      flushDeferredMic();
+      wakeClient.reset();
+      push({ type: "mute" });
+      showStatus();
+    }
   });
 }
 

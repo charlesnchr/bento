@@ -317,16 +317,19 @@ function validBriefPcmBytes(pcm: unknown): number {
 export interface WakeAudioGateLimits {
   deliverMax?: number;
   briefWait?: number;
+  muted?: boolean;
 }
 
 export class WakeAudioGate {
   private whileSpeaking = "send";
+  private muted = false;
   private speechUntil = 0;
   private deliverMax = 30;
   private briefWait = 3;
   private activeBrief: { from: number; until: number; briefAt: number } | null = null;
   private readyBriefs: number[] = [];
   private requestedBriefs = new Map<string, number>();
+  private lastEventRanAnnounce = false;
   private lastCut: { at: number; briefAt: number } | null = null;
   private lastStoppedBriefAt: number | null = null;
   private replayFloorSeq = 0;
@@ -339,12 +342,14 @@ export class WakeAudioGate {
 
   reset(whileSpeaking = "send", floorSeq = 0, limits: WakeAudioGateLimits = {}): void {
     this.whileSpeaking = whileSpeaking;
+    this.muted = limits.muted === true;
     this.speechUntil = 0;
     this.deliverMax = typeof limits.deliverMax === "number" ? limits.deliverMax : 30;
     this.briefWait = typeof limits.briefWait === "number" ? limits.briefWait : 3;
     this.activeBrief = null;
     this.readyBriefs = [];
     this.requestedBriefs.clear();
+    this.lastEventRanAnnounce = false;
     this.lastCut = null;
     this.lastStoppedBriefAt = null;
     this.replayFloorSeq = floorSeq;
@@ -434,8 +439,9 @@ export class WakeAudioGate {
         this.lastStoppedBriefAt = null;
       }
     }
-    // call.ts only expires pending brief requests inside announce() on tick or brief.ready.
-    if (eventType === "tick" || eventType === "brief.ready") {
+    // call.ts only expires pending brief requests inside announce() on tick or an accepted brief.ready.
+    if (eventType !== "mic" && this.lastEventRanAnnounce) {
+      this.lastEventRanAnnounce = false;
       for (const [id, askedAt] of this.requestedBriefs) {
         if (eventTime - askedAt >= this.briefWait) this.requestedBriefs.delete(id);
       }
@@ -450,6 +456,18 @@ export class WakeAudioGate {
     event: { type?: unknown; id?: unknown; pcm?: unknown; text?: unknown; data?: unknown },
     eventTime = 0,
   ): { pcm: string; t: number }[] {
+    if (event.type === "mic") return [];
+    if (event.type === "mute") {
+      this.lastEventRanAnnounce = false;
+      this.muted = true;
+      return this.flushDeferred();
+    }
+    if (event.type === "unmute") {
+      this.lastEventRanAnnounce = false;
+      this.muted = false;
+      this.deferred = [];
+      return [];
+    }
     let acceptedBrief = false;
     if (event.type === "brief.failed" && typeof event.id === "string") {
       this.requestedBriefs.delete(event.id);
@@ -465,6 +483,7 @@ export class WakeAudioGate {
         }
       }
     }
+    this.lastEventRanAnnounce = event.type === "tick" || acceptedBrief;
     if (this.deferred.length === 0) return [];
     const canStartPlayback =
       acceptedBrief ||
@@ -495,6 +514,11 @@ export class WakeAudioGate {
     inFlightSuppressedSeq: number;
     suppressed: boolean;
   }): { pcm: string; t: number }[] {
+    // Never defer audio captured while muted: pass straight through so the muted core drops it
+    // and it can never leak after a later unmute (e.g. push-to-talk release/re-press).
+    if (this.muted) {
+      return [{ pcm: params.pcm, t: params.t }];
+    }
     const floorSeq = params.seq > 0 ? params.seq : params.lastSeq;
     if (!params.suppressed && this.whileSpeaking !== "send" && params.inFlightSuppressedSeq > this.replayFloorSeq) {
       this.deferred.push({ seq: params.seq, floorSeq, pcm: params.pcm, t: params.t });

@@ -387,6 +387,7 @@ function createCoreHarness(configOverrides: Record<string, unknown> = {}) {
   gate.reset(config.mic.whileSpeaking, 0, {
     deliverMax: config.limits.deliverMax,
     briefWait: config.announce.briefWait,
+    muted: config.muted,
   });
 
   const client = new WakeClient(
@@ -828,15 +829,18 @@ test("WakeAudioGate: late brief before tick expiry and 'not a stop after all' bo
     return h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief")!;
   };
 
-  // Case 1: brief.ready arrives past briefWait without an intervening tick; call.ts accepts and queues it.
+  // Case 1: brief.ready arrives past briefWait without an intervening tick; an ignored unknown-ID
+  // brief.ready ahead of it must NOT expire the real request, so call.ts accepts and queues it.
   const late = createCoreHarness({
     announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 0.5, maxWait: 8, maxWords: 28 },
   });
   late.start();
   late.advanceTo(0.2);
   const lateReq = triggerBrief(late, "tc_late"); // briefAsked = 0.7, briefWait = 0.5 -> deadline 1.2
-  // Model playback runs 1.0 -> 2.0 with NO tick in between; brief.ready arrives at 1.4 (> 1.2) and is accepted + queued.
+  // Model playback runs 1.0 -> 2.0 with NO tick in between.
+  // An ignored unknown-ID brief.ready at 1.35 does not run announce() in call.ts and must not expire lateReq.
   late.modelAudio(1.0, 1.0);
+  late.push({ type: "brief.ready", id: "unknown-id", text: "Ignored.", pcm: briefPcm }, 1.35);
   late.push({ type: "brief.ready", id: lateReq.id, text: "All green.", pcm: briefPcm }, 1.4);
   late.push({ type: "ws.message", sid: late.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 1.5);
   const lateSeq1 = late.micFrame(1001, 1.8);
@@ -876,4 +880,32 @@ test("WakeAudioGate: late brief before tick expiry and 'not a stop after all' bo
   assert.equal(notStop.commands.filter((c) => c.type === "play" && c.source === "announcer").length, 2, "restored brief should replay on tick");
   assert.ok(notStop.sentAudioTags.includes(200), "gap frame 200 must reach model unsuppressed before restored brief plays");
   notStop.emitAck(nsSeq1);
+});
+
+test("WakeAudioGate: push-to-talk release/re-press never leaks audio captured while muted", () => {
+  // Part 1: Space release mirrors app.ts (flush + reset + mute), plus mute guard in WakeAudioGate.
+  const ptt = createCoreHarness({ muted: true });
+  ptt.start();
+  ptt.advanceTo(0.2);
+  // Press Space (unmute), model plays 1.0 -> 1.2, suppressed frame 1001 is still in flight in the worker.
+  ptt.push({ type: "unmute" }, 0.9);
+  ptt.modelAudio(0.2, 1.0);
+  const seq1 = ptt.micFrame(1001, 1.1);
+  assert.ok(seq1 > 0);
+  ptt.sentAudioTags.length = 0;
+
+  // Release Space right as playback ends: mute (even WITHOUT resetting wakeClient, to test gate's own mute guard!).
+  ptt.push({ type: "mute" }, 1.21);
+  // Frame 2345 captured while muted must NEVER be deferred and must be dropped by the muted core.
+  ptt.micFrame(2345, 1.23);
+  assert.equal(ptt.gate.hasDeferred, false, "muted PCM must never enter deferred queue");
+
+  // Re-press Space (unmute) and receive the worker's ack for seq1: frame 2345 must NOT leak to the model.
+  ptt.push({ type: "unmute" }, 1.25);
+  ptt.emitAck(seq1);
+  assert.equal(ptt.sentAudioTags.includes(2345), false, "audio captured while muted must never reach the model after re-press");
+
+  // Unmuted audio after re-press still flows normally.
+  ptt.micFrame(6006, 1.27);
+  assert.ok(ptt.sentAudioTags.includes(6006));
 });
