@@ -1667,6 +1667,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that men shout out loud then cancel the Noma table",
     "Stop reading that staff vote aloud and cancel the Noma table",
     "Stop reading that hotels cancel aloud and cancel the Noma table",
+    "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2462,6 +2463,37 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ba.advance(0.1);
   assert.equal(s10ba.commands.filter((c) => c.type === "tool.cancel").length, 0, "owned Payroll requesting 'PDF with HR' must block cancelling QA 'PDF export'");
 
+  // 8x) A finished task named "Both bookings" must not block cancelling later active tasks on "Cancel both bookings that are still running", and a leading "Not that one, cancel All the Time" still cancels "All the Time".
+  const s10bb = chat();
+  s10bb.type("Check both bookings");
+  s10bb.calls("ask_hermes", { label: "Both bookings" });
+  s10bb.advance(0.1);
+  s10bb.complete("Done.", s10bb.hermes()[0].run);
+  s10bb.advance(0.1);
+  s10bb.type("Book a hotel");
+  s10bb.calls("ask_hermes", { label: "Hotel booking" });
+  s10bb.advance(0.1);
+  s10bb.type("Book a flight");
+  s10bb.calls("ask_hermes", { label: "Flight booking" });
+  s10bb.advance(0.1);
+  s10bb.type("Cancel both bookings that are still running");
+  s10bb.calls("cancel_task", { task: "Hotel booking" });
+  s10bb.calls("cancel_task", { task: "Flight booking" });
+  s10bb.advance(0.1);
+  assert.equal(s10bb.commands.filter((c) => c.type === "tool.cancel").length, 2, "finished 'Both bookings' must not block cancelling active Hotel and Flight bookings");
+
+  const s10bc = chat();
+  s10bc.type("Search All the Time");
+  s10bc.calls("ask_hermes", { label: "All the Time" });
+  s10bc.advance(0.1);
+  s10bc.type("Check Paris weather");
+  s10bc.calls("ask_hermes", { label: "Weather" });
+  s10bc.advance(0.1);
+  s10bc.type("Not that one, cancel All the Time");
+  s10bc.calls("cancel_task", { task: "All the Time" });
+  s10bc.advance(0.1);
+  assert.equal(s10bc.commands.filter((c) => c.type === "tool.cancel").length, 1, "leading 'Not that one, cancel All the Time' must cancel 'All the Time'");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2493,6 +2525,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff rota aloud and cancel the weather",
     "Stop reading that staff report aloud then cancel the weather",
     "Stop reading that sales order confirmation aloud then cancel the weather",
+    "Stop reading that benefits brochure aloud then cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
     "Stop reading that sales report summary and cancel the weather",

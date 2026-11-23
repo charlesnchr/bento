@@ -15,6 +15,8 @@
   try {
     const t = localStorage.getItem("voice.theme");
     if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+    const d = localStorage.getItem("voice.density");
+    if (d === "comfortable") document.documentElement.dataset.density = "comfortable";
     const dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.getElementById("theme-color")?.setAttribute("content", dark ? "#0e0f0f" : "#f6f5f0");
   } catch {}
@@ -46,7 +48,7 @@
 
   <div class="header-right">
     <span id="metrics"></span>
-    <button id="tasks-toggle" class="icon-btn" title="Tasks" aria-label="Tasks">
+    <button id="tasks-toggle" class="icon-btn" title="Agents and results" aria-label="Agents and results">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="4" width="18" height="16" rx="3"/>
         <path d="M9 9h6M9 13h6M9 17h3"/>
@@ -76,6 +78,7 @@
       </div>
       <div class="callbar-right">
         <span id="micwarn" hidden>Mic hears nothing</span>
+        <button id="wake-now" type="button" hidden title="Wake and open the attention window">Wake</button>
         <span id="calltimer" hidden>00:00</span>
       </div>
     </div>
@@ -93,17 +96,18 @@
             </svg>
           </div>
           <h2>Ready when you are</h2>
-          <p class="hero-sub">Start a voice call or type below. Background work goes to Hermes and code changes to T3 while the conversation continues.</p>
+          <p class="hero-sub">Start a voice call or type below. Live voice turns stay here while Hermes and T3 handoffs stream on the right.</p>
           <div class="hero-actions">
             <button id="hero-call" class="hero-cta" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
               Start voice call
             </button>
+            <button id="hero-wake" class="hero-secondary" type="button" hidden>Listen for wake word</button>
             <button id="hero-resume" class="hero-secondary" type="button" hidden>Continue last call</button>
           </div>
           <div class="hero-tips">
             <div class="tip"><strong>Voice commands</strong>Say “stop” to interrupt, “stop everything” to cancel tasks, or “goodbye” to hang up.</div>
-            <div class="tip"><strong>Direct dispatch</strong>Type <code>/h</code> for a Hermes task or <code>/t3</code> for a coding agent, or follow up from any task card.</div>
+            <div class="tip"><strong>Direct dispatch</strong>Type <code>/h</code> for a Hermes task or <code>/t3</code> for a coding agent, or follow up from any card.</div>
           </div>
         </div>
       </div>
@@ -127,9 +131,15 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
           </button>
         </form>
+        <div class="composer-sep" aria-hidden="true"></div>
         <div id="bar">
           <span id="status" class="idle" aria-live="polite"><span class="dot"></span><span id="statustext">Idle</span></span>
           <div class="controls">
+            <button id="wakebtn" class="round" type="button" title="Toggle wake word loop (W)" aria-label="Toggle wake word loop" aria-pressed="false" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 6v12M8 9v6M16 9v6M4 11v2M20 11v2"/>
+              </svg>
+            </button>
             <button id="mic" class="round" type="button" title="Mute (M)" aria-label="Mute microphone" disabled>
               <svg class="ic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
               <svg class="ic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9v2a3 3 0 0 0 5.12 2.12M15 9.34V6a3 3 0 0 0-5.94-.6M17 16.95A7 7 0 0 1 5 11M19 11a7 7 0 0 1-.11 1.23M12 18v3M3 3l18 18"/></svg>
@@ -152,6 +162,7 @@
         <span class="keys">
           <span><kbd>Esc</kbd> stop</span>
           <span><kbd>M</kbd> mute</span>
+          <span><kbd>W</kbd> wake</span>
           <span><kbd>Space</kbd> push to talk</span>
           <span><kbd>/</kbd> type</span>
         </span>
@@ -160,26 +171,47 @@
   </div>
 
   <div id="side-backdrop"></div>
-  <aside id="side" aria-label="Tasks">
+  <aside id="side" aria-label="Agent tasks and results">
     <div class="side-head">
-      <div class="side-title"><span>Tasks</span><span id="taskcount"></span></div>
+      <div class="side-title">
+        <span>Agents</span>
+        <span id="taskcount"></span>
+      </div>
+      <div class="side-tabs" id="side-tabs" role="group" aria-label="Agent view">
+        <button type="button" data-filter="all" aria-pressed="true" class="on">All</button>
+        <button type="button" data-filter="active" aria-pressed="false">Active <span class="tab-n" id="side-active-n"></span></button>
+        <button type="button" data-filter="results" aria-pressed="false">Results <span class="tab-n" id="side-results-n"></span></button>
+      </div>
       <div class="side-head-acts">
         <button id="cancelall" type="button" hidden title="Cancel every running task">Cancel all</button>
-        <button id="tasks-close" class="icon-btn" type="button" title="Close tasks" aria-label="Close tasks">
+        <button id="tasks-close" class="icon-btn" type="button" title="Close panel" aria-label="Close panel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
     </div>
-    <div class="side-scroll">
-      <div id="tasks">
-        <div id="notasks"><strong>No active tasks</strong>Ask for work during a call or chat and progress cards appear here.</div>
+    <div class="side-scroll" id="side-scroll">
+      <div id="tasks-section">
+        <div id="tasks">
+          <div id="notasks"><strong>No active tasks</strong>Ask for work during a call or chat; Hermes and T3 progress and handoff responses appear here.</div>
+        </div>
       </div>
+
+      <div id="results-section" hidden>
+        <div class="side-section-bar">
+          <h2 class="side-section-label">Handoffs &amp; results <span id="resultscount"></span></h2>
+          <button id="toggle-all-results" type="button" class="mini-link" hidden>Expand all</button>
+        </div>
+        <div id="results"></div>
+        <div id="noresults" hidden><strong>No agent results yet</strong>Finished Hermes and T3 responses appear here so they do not crowd out the voice transcript.</div>
+      </div>
+
       <div id="earlierbox" hidden>
         <h2 class="side-section-label">Coding agents from earlier calls</h2>
         <div id="earlier"></div>
       </div>
+
       <details id="donebox" hidden>
-        <summary><span>Finished <span id="donecount"></span></span></summary>
+        <summary><span>Finished tasks <span id="donecount"></span></span></summary>
         <div id="done"><div id="donenow"></div><div id="doneearlier"></div></div>
       </details>
     </div>
@@ -247,6 +279,52 @@
         </label>
       </div>
 
+      <div class="setting-group" id="wake-settings">
+        <div class="setting-group-title">Wake word and signaling</div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word loop</strong><small id="wake-help">Listen locally in the browser between calls and while dormant.</small></span>
+          <input class="switch" type="checkbox" id="wake-enabled">
+        </label>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word model</strong><small>Local LiveKit WakeWord ONNX model.</small></span>
+          <select id="wake-model"></select>
+        </label>
+        <div class="setting-row">
+          <span class="setting-text"><strong>Detection threshold</strong><small>Higher reduces false wakes; lower triggers more easily. Applies immediately.</small></span>
+          <div class="setting-range">
+            <input type="range" id="wake-threshold" min="0.30" max="0.95" step="0.05" value="0.70" aria-label="Wake word detection threshold">
+            <span id="wake-threshold-val" class="setting-val">0.70</span>
+          </div>
+        </div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake and sleep chimes</strong><small>Play a rising chime on wake and a soft falling tone when going dormant.</small></span>
+          <input class="switch" type="checkbox" id="wake-cue" checked>
+        </label>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Attention and end signaling</strong><small id="signaling-help">Applied on the next call unless overridden in Developer JSON.</small></span>
+          <select id="signaling">
+            <option value="open">Open mic (wake starts call)</option>
+            <option value="window">Attention window (dormant until wake)</option>
+            <option value="echo">Turn window + hang up (Echo-style)</option>
+          </select>
+        </label>
+        <div class="setting-row" id="signaling-timers">
+          <div class="setting-text">
+            <strong>Window and hang-up timers</strong>
+            <div class="setting-inline">
+              <label><small>After wake</small> <input type="number" id="attn-after-wake" value="8" min="1" max="60"> <small>s</small></label>
+              <label><small>After reply</small> <input type="number" id="attn-window" value="5" min="0" max="60"> <small>s</small></label>
+              <label><small>After question</small> <input type="number" id="attn-after-question" value="10" min="0" max="60"> <small>s</small></label>
+              <label><small>Hang up</small> <input type="number" id="hangup-after" value="300" min="0" max="3600"> <small>s</small></label>
+            </div>
+          </div>
+        </div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word interrupts replies</strong><small>Mute the mic while the model speaks and cut in only on the wake word.</small></span>
+          <input class="switch" type="checkbox" id="wake-barge">
+        </label>
+      </div>
+
       <div class="setting-group">
         <div class="setting-group-title">Agents and appearance</div>
         <label class="setting-row">
@@ -259,6 +337,13 @@
             <button type="button" data-theme="system" class="on">System</button>
             <button type="button" data-theme="dark">Dark</button>
             <button type="button" data-theme="light">Light</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-text"><strong>Density</strong><small>Compact fits more messages and responses on laptop screens.</small></span>
+          <div class="segmented" id="density-picker" role="group" aria-label="Density">
+            <button type="button" data-density="compact" class="on">Compact</button>
+            <button type="button" data-density="comfortable">Comfortable</button>
           </div>
         </div>
       </div>

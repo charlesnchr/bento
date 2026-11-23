@@ -41,7 +41,7 @@ import { Captions } from "./captions.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
 import { asksToCancel, commandIn } from "./commands.ts";
 import {
-  CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, LIST_TASKS, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
+  CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, DEFAULT_CONTEXT, FOLLOW_UP_CONTEXT, LIST_TASKS, REFERRED_CONTEXT, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
   type Delegation, type HermesCall, type ResponseOptions,
 } from "./protocol.ts";
 import {
@@ -274,13 +274,15 @@ const THAT_COMPLEMENT = /^\s+that\s+\S/i;
 const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
 /** Strictly singular document-compound heads that cannot act as a finite transitive verb or an uncountable bare object ("that sales report summary", "that staff meeting agenda"). */
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
-const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms)$/i;
+const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|leaflet|handout|booklet|catalogue|catalog|directory|handbook|playbook|checklist|datasheet|dossier|manifest|prospectus|syllabus|charter|disclaimer|disclosure|addendum|appendix|glossary|statement|warranty|certificate|excerpt|passage|caption|footnote|blurb|editorial|essay|poem|speech)$/i;
+const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event)$/i;
+const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
 const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
 const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
-/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff report aloud", "that staff training material aloud", "that sales report every morning / so slowly"). */
+/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff report aloud", "that benefits brochure aloud", "that sales order confirmation aloud"). */
 const SUBJECT_PRONOUN = /^(?:i|we|you|they|he|she|it)$/i;
 const COLLECTIVE_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women)$/i;
 function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
@@ -293,10 +295,10 @@ function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // Actual reading requests ending in "aloud"/"out loud" ("Stop reading that staff report aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and the modifier isn't a bare human group ("people order aloud", "children sing aloud").
+    // Actual reading requests ending in "aloud"/"out loud" ("Stop reading that staff report aloud", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun (and for 3-word compounds, singular head after a document modifier and non-agentive first word so "auditors review terms aloud" stays refused).
     const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && /\s+(?:aloud|out\s+loud)\s*$/i.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
     if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1]))) return false;
-    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1])) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
+    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
@@ -638,6 +640,8 @@ export class Call {
   private readonly cancelRefusedTurn = new Map<string, number>();
   /** Per-task cross-session cancel refusals (taskId -> answered-turn sequence): only an affirmative reply identifying the task on the immediate next turn confirms it. */
   private readonly cancelExternalDoubt = new Map<string, number>();
+  /** Running/external task labels pinned for the current answered turn so cancelling one task doesn't drop its label mid-turn while finished tasks from earlier turns don't mask future broad cancels. */
+  private cancelTurnLabels: { seq: number; labels: Set<string> } | null = null;
   /** Delegating calls still settling, oldest first: with `join` set they are handed over in the order they came. */
   private readonly pending: Delegation[] = [];
   /** The tool each delegating call was made with, by call: its responses carry that name. */
@@ -1411,6 +1415,7 @@ export class Call {
     this.generated = false;
     this.geminiSaid = "";
     this.boundary = true;
+    this.protocol.turnBreak();
   }
 
   private silentAbout(): void {
@@ -1753,6 +1758,7 @@ export class Call {
       this.replyDue = null;
       this.generated = false;
       this.dropTurn = false;
+      this.protocol.turnBreak();
     }
     for (const id of arr(obj(event.toolCallCancellation)?.ids).slice(0, 32)) {
       if (typeof id === "string") this.cancelledCalls.add(id);
@@ -1822,6 +1828,7 @@ export class Call {
     this.replyDue = null;
     this.generated = false;
     this.dropTurn = false;
+    this.protocol.turnBreak();
     this.updateWakeword();
   }
 
@@ -2043,7 +2050,7 @@ export class Call {
     this.hush = null;
     this.boundary = true;
     if (this.textLine) this.protocol.pinnedTurn = this.textLine.answeredTurn?.turnId ?? null;
-    const turnId = this.protocol.activityStarted(t);
+    const turnId = this.protocol.activityStarted(t, true);
     this.protocol.transcript("user", text, t);
     this.protocol.activityEnded(t);
     this.heardWords("user", text);
@@ -2073,7 +2080,8 @@ export class Call {
 
   /** A request that came from the screen, not a function call: nothing answers a call, and its result goes in as a turn. */
   private screenRun(text: string, followUp: boolean): Run {
-    const run = new Run(`screen-${this.nextScreen++}`, { id: "", task: text, context: this.protocol.context(), taskId: "", followUp, label: "" }, this.session, null, followUp);
+    const context = this.protocol.context(followUp ? FOLLOW_UP_CONTEXT : DEFAULT_CONTEXT);
+    const run = new Run(`screen-${this.nextScreen++}`, { id: "", task: text, context, taskId: "", followUp, label: "" }, this.session, null, followUp);
     run.acknowledged = true;
     run.answered = true;
     return run;
@@ -2103,7 +2111,7 @@ export class Call {
     if (!this.active || !task || text.length === 0 || text.length > 4000) return;
     this.chat.push({ role: "user", text: `(to "${task.label}") ${text}` });
     this.boundary = true;
-    if (this.steerable(task)) { task.runs++; this.steerInto(task, text); return; }
+    if (this.steerable(task)) { task.runs++; this.steerInto(task, text, true); return; }
     this.queueFromScreen(task, text);
   }
 
@@ -2112,11 +2120,11 @@ export class Call {
     return task.state === RUNNING && task.job != null && task.queued.length === 0 && this.c.steering.includes(task.agent);
   }
 
-  private steerInto(task: Task, text: string): void {
+  private steerInto(task: Task, text: string, typed = false): void {
     const job = task.job!;
     this.steered.set(job, task.id);
     this.log("info", `steering "${task.label}" while it works`);
-    this.emit({ type: "tool.steer", run: job, agent: task.agent, text, message: steerMessage(text) });
+    this.emit({ type: "tool.steer", run: job, agent: task.agent, text, message: steerMessage(text, typed) });
     this.cue("taskStarted");
     this.showTask(task);
     this.settled();
@@ -2214,7 +2222,7 @@ export class Call {
       else this.respond(d.id, `Not executed: Hermes is already working on this request in "${same.label}". Wait for its result. No automatic retry.`, false, { task: same.label });
       return;
     }
-    const request = this.protocol.request(d);
+    const request = this.protocol.request(d, refersBack ? REFERRED_CONTEXT : DEFAULT_CONTEXT);
     if (request != null && refersBack) request.refersBack = true;
     if (this.cancelledCalls.has(d.id)) return;
     if (request == null) {
@@ -2393,6 +2401,7 @@ export class Call {
     }
     const answered = answering.length === 1 ? answering[0] : null;
     const task = found ?? answered;
+    if (task != null && !refersBack) request.context = this.protocol.context(FOLLOW_UP_CONTEXT, d);
     const run = new Run(d.id, request, this.session, d.turn, task != null);
     if (task != null) this.followUp(task, run, found == null);
     else {
@@ -2589,7 +2598,7 @@ export class Call {
       this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
         "it works and takes it into account, and one result covers both." + (say ?? " Don't announce it."), true, { task: task.label, scheduling: say != null ? "WHEN_IDLE" : "SILENT" });
       run.closed = true;
-      this.steerInto(task, run.request.task);
+      this.steerInto(task, run.request.task, this.textLine != null || run.request.typed === true);
       return;
     }
     if (task.state === RUNNING) {
@@ -3287,14 +3296,26 @@ export class Call {
     return active.length > 0 ? active : said;
   }
 
-  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact known task label such as "All the Time" (including tasks already cancelled earlier in the same turn). */
+  /** Snapshots running + external task labels for [seq] so same-turn cancel_task calls see consistent labels even after the first task stops running, without leaking finished tasks from earlier turns. */
+  private snapshotCancelTurnLabels(seq: number): string[] {
+    const running = [
+      ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label.trim().toLowerCase()),
+      ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
+    ].filter((l) => l.length > 0);
+    if (this.cancelTurnLabels == null || this.cancelTurnLabels.seq !== seq) {
+      this.cancelTurnLabels = { seq, labels: new Set(running) };
+    } else {
+      for (const l of running) this.cancelTurnLabels.labels.add(l);
+    }
+    return [...this.cancelTurnLabels.labels];
+  }
+
+  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label active during the current answered turn. */
   private isBroadCancel(text: string): boolean {
     const lower = text.toLowerCase();
     const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
-    const labels = [
-      ...[...this.tasks.values()].map((t) => t.label.trim().toLowerCase()),
-      ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
-    ].filter((l) => l.length > 0);
+    const seq = this.turnAnswered?.[0] ?? this.userTurns;
+    const labels = this.snapshotCancelTurnLabels(seq);
     CANCEL_ALL_SCOPE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CANCEL_ALL_SCOPE.exec(lower)) != null) {
@@ -3325,10 +3346,16 @@ export class Call {
     const spans = this.parseCancelSpans(said);
     const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
     const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
-    // For unresolved exclusions ("Cancel both bookings, not that one"), fail closed whenever the active span reads as an all-tasks phrase even if a task also shares that label.
+    const activeJoined = activeParts.join(". ");
+    const broadCancel = this.isBroadCancel(activeJoined);
     CANCEL_ALL_SCOPE.lastIndex = 0;
-    const broadCancel = CANCEL_ALL_SCOPE.test(activeParts.join(". "));
+    const rawBroadCancel = CANCEL_ALL_SCOPE.test(activeJoined);
+    let sawActive = false;
     for (const span of spans) {
+      if (span.kind === "active") {
+        sawActive = true;
+        continue;
+      }
       if (span.kind !== "protect") continue;
       const isExcept = /^except\b/i.test(span.parts[0] ?? "");
       let anyNamedOther = false;
@@ -3337,10 +3364,9 @@ export class Call {
         if (namedThis) return true;
         if (namedOther) anyNamedOther = true;
         else if (span.explicitExcl) {
-          // Fail closed on an unresolved exclusion when it uses "except ...", accompanies a broad cancel ("Cancel everything except that one"),
-          // or carries a real descriptor word ("not the vegan one"); allow bare "Not that one, cancel the weather".
+          // Fail closed on an unresolved exclusion when it uses "except ...", accompanies a broad cancel ("Cancel everything except that one"), follows a broad-looking active span ("Cancel both bookings, not that one"), or carries a real descriptor word ("not the vegan one"); allow leading bare corrections ("Not that one, cancel the weather", "Not that one, cancel All the Time").
           const hasDescriptor = [...TaskNames.distinctive(sub)].some((w) => !CANCEL_ACTION_WORDS.has(w));
-          if (isExcept || broadCancel || hasDescriptor) return true;
+          if (isExcept || broadCancel || (sawActive && rawBroadCancel) || hasDescriptor) return true;
         }
       }
       // Unnamed "don't cancel / keep running" protects this task unless it explicitly says "keep the rest" while an active span names this task.
@@ -3386,6 +3412,7 @@ export class Call {
     const answered = this.turnAnswered;
     if (answered == null) return false;
     const [answeredSeq, said] = answered;
+    this.snapshotCancelTurnLabels(answeredSeq);
     if (this.textLine && this.cancelRefusedTurn.get(task.id) === answeredSeq) return false;
     const trimmed = said.trim();
     const names = [...this.c.vocabulary, "Woodhouse"];
@@ -3654,8 +3681,10 @@ function taskRef(call: Json): string | null {
 }
 
 /** What a running agent gets when the user adds to its task. */
-function steerMessage(text: string): string {
-  return "The user added this while you work on the task (transcribed from their voice call, may be imperfect). Take it " +
+function steerMessage(text: string, typed = false): string {
+  return (typed
+    ? "The user added this while you work on the task. Take it "
+    : "The user added this while you work on the task (transcribed from their voice call, may be imperfect). Take it ") +
     "into account in what you're doing now, without starting over unless it asks you to:\n" + text;
 }
 

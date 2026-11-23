@@ -30,7 +30,7 @@ import { createServer } from "node:http";
 import https from "node:https";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import os from "node:os";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { SocksProxyAgent } from "socks-proxy-agent";
@@ -39,6 +39,7 @@ import { build, OUT } from "../scripts/build.mjs";
 import { envFile, serviceAccount } from "./google.mjs";
 import { chatRequestBody, DEFAULT_REASONING_EFFORT } from "./hermes.mjs";
 import * as T3 from "./t3.mjs";
+import { discoverWakeModels } from "./wakeModels.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const arg = (name, fallback) => {
@@ -57,6 +58,12 @@ const CAPTIONS_LOCATION = "global"; // us-central1 doesn't serve it (2026-11-22)
 /** The text model a typed chat runs on (the core's `medium: "text"`), at the global endpoint. */
 const TEXT_MODEL = process.env.VOICE_CORE_TEXT_MODEL ?? "gemini-3.8-flash";
 const TRACES = join(root, "traces");
+const ORT_DIR = join(root, "node_modules/onnxruntime-web/dist");
+const wakeModels = discoverWakeModels({
+  extraDir: process.env.VOICE_CORE_WAKE_DIR || null,
+  repoDir: join(root, "../android/app/src/main/assets/wakeword"),
+  lkwwDir: join(os.homedir(), "workspace/home-assistant/wakeword/models/lkww"),
+});
 
 // The model route.
 
@@ -284,7 +291,34 @@ const web = await esbuild.context({
   sourcemap: "inline",
   logLevel: "warning",
 });
+let wakeWorker = null;
+let wakeWorkerReady = false;
+async function buildWakeWorker() {
+  if (!existsSync(ORT_DIR)) {
+    wakeWorkerReady = false;
+    return;
+  }
+  try {
+    if (!wakeWorker) {
+      wakeWorker = await esbuild.context({
+        entryPoints: [join(root, "web/wake.worker.ts")],
+        bundle: true,
+        format: "esm",
+        target: "es2022",
+        outfile: join(root, "web/dist/wake.worker.js"),
+        sourcemap: "inline",
+        logLevel: "warning",
+      });
+    }
+    await wakeWorker.rebuild();
+    wakeWorkerReady = true;
+  } catch (err) {
+    wakeWorkerReady = false;
+    console.warn(`wake worker disabled (${err.message}); run npm ci in voice-core to enable`);
+  }
+}
 await web.rebuild();
+await buildWakeWorker();
 
 let pending = null;
 function rebuildSoon(what) {
@@ -297,6 +331,7 @@ function rebuildSoon(what) {
         if (changed) { console.log(`core rebuilt: ${version}`); announce("core", { version }); }
       } else {
         await web.rebuild();
+        await buildWakeWorker();
         announce("app", {});
       }
     } catch (err) {
@@ -310,7 +345,7 @@ watch(join(root, "web"), { recursive: true }, (_, file) => { if (file && !String
 
 // HTTP.
 
-const TYPES = { ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jsonl": "application/json", ".wav": "audio/wav" };
+const TYPES = { ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".onnx": "application/octet-stream", ".css": "text/css", ".json": "application/json", ".jsonl": "application/json", ".wav": "audio/wav" };
 
 function read(req) {
   return new Promise((resolve, reject) => {
@@ -321,9 +356,9 @@ function read(req) {
   });
 }
 
-function file(res, path) {
+function file(res, path, cacheControl = "no-store") {
   if (!existsSync(path) || !statSync(path).isFile()) { res.writeHead(404); res.end(); return; }
-  res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream", "cache-control": "no-store" });
+  res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream", "cache-control": cacheControl });
   res.end(readFileSync(path));
 }
 
@@ -342,11 +377,30 @@ const server = createServer(async (req, res) => {
   try {
     if (path === "/") return file(res, join(root, "web/index.html"));
     if (path === "/app.js") return file(res, join(root, "web/dist/app.js"));
+    if (path === "/wake.worker.js") {
+      if (!wakeWorkerReady) { res.writeHead(404); return res.end(); }
+      return file(res, join(root, "web/dist/wake.worker.js"));
+    }
     if (path === "/voice-core.js") return file(res, OUT);
     if (path === "/config") {
       res.writeHead(200, { "content-type": "application/json" });
       const projects = T3.available() ? (await T3.projects().catch(() => [])).map((p) => p.title) : null;
-      return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, textModel: TEXT_MODEL, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects }));
+      const models = wakeWorkerReady ? [...wakeModels.values()].map(({ id, label }) => ({ id, label })) : [];
+      return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, textModel: TEXT_MODEL, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects, wakeModels: models }));
+    }
+    if (path.startsWith("/wake/models/") && path.endsWith(".onnx")) {
+      const id = decodeURIComponent(path.slice("/wake/models/".length, -".onnx".length));
+      const entry = wakeModels.get(id);
+      if (!entry) { res.writeHead(404); return res.end(); }
+      return file(res, entry.path, "public, max-age=86400");
+    }
+    if (path.startsWith("/ort/")) {
+      const rel = decodeURIComponent(path.slice("/ort/".length));
+      const ext = extname(rel);
+      if (ext !== ".wasm" && ext !== ".mjs") { res.writeHead(404); return res.end(); }
+      const target = normalize(join(ORT_DIR, rel));
+      if (!target.startsWith(ORT_DIR + sep)) { res.writeHead(403); return res.end(); }
+      return file(res, target, "public, max-age=86400");
     }
     if (path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -455,5 +509,6 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`voice core dev server on http://${HOST}:${PORT} (core ${coreVersion}, model route ${ROUTE}${ROUTE === "vertex" ? " via " + SOCKS : ""}, Hermes ${HERMES_URL ? "on" : "off"})`);
+  const models = wakeWorkerReady ? ([...wakeModels.keys()].join(", ") || "none") : "disabled (onnxruntime-web missing)";
+  console.log(`voice core dev server on http://${HOST}:${PORT} (core ${coreVersion}, model route ${ROUTE}${ROUTE === "vertex" ? " via " + SOCKS : ""}, Hermes ${HERMES_URL ? "on" : "off"}, wake models: ${models})`);
 });

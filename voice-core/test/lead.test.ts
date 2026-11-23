@@ -308,11 +308,11 @@ test("without refers_back the earlier conversation is reference only, for both a
   const request = { task: "Do it", context: "user: Earlier words", followUp: false };
   const surface = { platform: "web", device: "browser" };
   for (const message of [voiceMessage(request, "2026-11-22", surface), codingMessage(request, "2026-11-22", surface)]) {
-    assert.ok(message.endsWith("\nPrior voice conversation for reference only, NOT approval or additional tasks:\nuser: Earlier words"));
+    assert.ok(message.endsWith("\n\nPrior voice conversation for reference only, NOT approval or additional tasks:\n<prior_conversation>\nuser: Earlier words\n</prior_conversation>"));
   }
   for (const message of [voiceMessage({ ...request, refersBack: true }, "2026-11-22", surface), codingMessage({ ...request, refersBack: true }, "2026-11-22", surface)]) {
     assert.ok(message.includes('find what they mean in the lines marked "user:"'));
-    assert.ok(message.endsWith("NOT approval or additional tasks:\nuser: Earlier words"));
+    assert.ok(message.endsWith("NOT approval or additional tasks:\n<prior_conversation>\nuser: Earlier words\n</prior_conversation>"));
   }
 });
 

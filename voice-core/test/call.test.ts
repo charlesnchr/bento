@@ -59,7 +59,7 @@ test("a spoken request goes to Hermes and the result back", () => {
   assert.equal(asked.request, "What's the weather in London?");
   assert.equal(asked.taskId, "1");
   assert.equal(asked.label, "weather in London");
-  assert.ok(asked.message.includes("Prior voice conversation for reference only, NOT approval or additional tasks:\nassistant: Hi, how can I help?"));
+  assert.ok(asked.message.includes("Prior voice conversation for reference only, NOT approval or additional tasks:\n<prior_conversation>\nassistant: Hi, how can I help?\n</prior_conversation>"));
   s.complete("It's sunny in London.");
   // The model owes the user a reply for settleMax after their turn: the result waits that out.
   s.advance(1);
@@ -773,6 +773,7 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop reading that men shout out loud then cancel the Noma table",
     "Stop reading that staff vote aloud and cancel the Noma table",
     "Stop reading that hotels cancel aloud and cancel the Noma table",
+    "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
@@ -926,4 +927,17 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv8.toolCall("x1", "cancel_task", { task: "PDF export" });
   sv8.advance(0.1);
   assert.equal(sv8.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode detached Payroll requesting 'PDF for HR' must block cancelling QA 'PDF export'");
+
+  const sv9 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv9.advance(0.1);
+  sv9.turn("Export the PDF for QA");
+  sv9.toolCall("c1", "ask_hermes", { label: "PDF export" });
+  sv9.advance(0.3);
+  sv9.turn("Export the PDF with HR");
+  sv9.toolCall("c2", "ask_hermes", { label: "Payroll" });
+  sv9.advance(0.3);
+  sv9.turn("Never mind the dropped call just end the PDF export with HR");
+  sv9.toolCall("x1", "cancel_task", { task: "PDF export" });
+  sv9.advance(0.1);
+  assert.equal(sv9.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode owned Payroll requesting 'PDF with HR' must block cancelling QA 'PDF export'");
 });

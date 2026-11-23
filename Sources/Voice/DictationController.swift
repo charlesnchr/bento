@@ -298,7 +298,8 @@ final class DictationController {
         let prefix = vertexState.config?.isDirect == true ? "Vertex"
             : vertexState.isRequested ? "Vertex verbatim"
             : engine.isLocal ? "\(engine.displayName) on this Mac" : "Ready"
-        return "\(prefix) — hold \(settings.hotkeyKey.displayName) to dictate"
+        let verb = settings.singleTapHandsFreeEnabled ? "tap" : "hold"
+        return "\(prefix) — \(verb) \(settings.hotkeyKey.displayName) to dictate"
     }
 
     /// What stops a dictation before the key is even pressed, for the menu's
@@ -877,7 +878,9 @@ final class DictationController {
             watchedDownloads.insert(engine)
         case .ready:
             guard watchedDownloads.remove(engine) != nil, engine == SettingsStore().transcriptionEngine else { return }
-            pill.showBackgroundNotice("\(engine.displayName) is ready — hold \(SettingsStore().hotkeyKey.displayName) to dictate",
+            let settings = SettingsStore()
+            let verb = settings.singleTapHandsFreeEnabled ? "tap" : "hold"
+            pill.showBackgroundNotice("\(engine.displayName) is ready — \(verb) \(settings.hotkeyKey.displayName) to dictate",
                                       for: 3.0, sound: nil)
         case .failed:
             guard watchedDownloads.remove(engine) != nil else { return }
