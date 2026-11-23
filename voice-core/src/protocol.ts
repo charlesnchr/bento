@@ -27,6 +27,8 @@ export interface HermesCall {
   turns?: number[];
   /** The model said the words point back at something said earlier ("do that with Hermes instead"): the agent finds it in [context]. */
   refersBack?: boolean;
+  /** True when the request came from typed text ("Say it" or typed chat) rather than voice transcription. */
+  typed?: boolean;
 }
 
 export interface ContextOptions {
@@ -34,19 +36,23 @@ export interface ContextOptions {
   maxTurns?: number;
   /** Maximum total characters of formatted context (oldest whole turns dropped first). */
   maxChars?: number;
-  /** Maximum characters per turn before truncating with "…". */
+  /** Maximum characters per assistant turn (and default for user turns when [userMaxLine] is unset). */
   maxLine?: number;
+  /** Maximum characters per user turn; lets refers_back keep full user requests while trimming verbose assistant replies. */
+  userMaxLine?: number;
 }
 
 /** Recent context for a normal new request: enough for immediate references without dumping the whole call. */
-export const DEFAULT_CONTEXT: Required<ContextOptions> = { maxTurns: 6, maxChars: 1500, maxLine: 400 };
+export const DEFAULT_CONTEXT: Required<ContextOptions> = { maxTurns: 6, maxChars: 1500, maxLine: 400, userMaxLine: 400 };
 /** Narrower context for a follow-up: the target Hermes session or T3 thread already holds its own history. */
-export const FOLLOW_UP_CONTEXT: Required<ContextOptions> = { maxTurns: 4, maxChars: 1000, maxLine: 400 };
-/** Wider context when the user points back at an earlier turn ("do that with Hermes instead"). */
-export const REFERRED_CONTEXT: Required<ContextOptions> = { maxTurns: 24, maxChars: 6000, maxLine: 1200 };
+export const FOLLOW_UP_CONTEXT: Required<ContextOptions> = { maxTurns: 4, maxChars: 1000, maxLine: 400, userMaxLine: 400 };
+/** Wider context when the user points back at an earlier turn: keeps full user turns up to maxChars while trimming long assistant replies. */
+export const REFERRED_CONTEXT: Required<ContextOptions> = { maxTurns: 24, maxChars: 6000, maxLine: 800, userMaxLine: 6000 };
 
 const HISTORY_TURNS = 64;
 const HISTORY_BYTES = 24_000;
+const MAX_ASSISTANT_TIMESTAMPS = 1024;
+const TRUNCATED_SUFFIX = "… [truncated]";
 
 export interface Delegation { id: string; at: number; turn: number | null }
 interface TurnState { complete: boolean; changed: number | null }
@@ -60,14 +66,16 @@ class Turn {
   ambiguous = false;
   /** History sequence boundary when this turn began, and the context cutoff recorded when consumed. */
   readonly historySeq: number;
+  readonly typed: boolean;
   requestBeforeSeq: number | null = null;
   requestTurns: Set<number> | null = null;
   readonly id: number;
   readonly started: number;
-  constructor(id: number, started: number, historySeq: number) {
+  constructor(id: number, started: number, historySeq: number, typed = false) {
     this.id = id;
     this.started = started;
     this.historySeq = historySeq;
+    this.typed = typed;
   }
 }
 
@@ -75,11 +83,10 @@ interface Entry {
   role: "user" | "assistant";
   at: number;
   lastAt: number;
-  /** Fragment timestamps kept so spokeBetween and answered preserve exact timing. */
-  times: number[];
   /** User turn ID when role is "user", so consecutive user turns stay distinct. */
   turn: number | null;
   seq: number;
+  bytes: number;
   text: string;
 }
 
@@ -108,23 +115,41 @@ function formatHistory(entries: readonly Entry[], options: ContextOptions = {}):
   const maxTurns = options.maxTurns ?? DEFAULT_CONTEXT.maxTurns;
   const maxChars = options.maxChars ?? DEFAULT_CONTEXT.maxChars;
   const maxLine = options.maxLine ?? DEFAULT_CONTEXT.maxLine;
+  const userMaxLine = options.userMaxLine ?? maxLine;
+  const markTruncated = userMaxLine > maxLine;
   const picked: string[] = [];
   let used = 0;
+  let hasUser = false;
   for (let i = entries.length - 1; i >= 0 && picked.length < maxTurns; i--) {
     const e = entries[i];
     const clean = normalizeTurn(e.text);
     if (clean.length === 0) continue;
-    const body = clean.length > maxLine ? safeTake(clean, maxLine).trimEnd() + "…" : clean;
+    const lineLimit = e.role === "user" ? userMaxLine : maxLine;
+    const suffix = markTruncated && e.role === "user" ? TRUNCATED_SUFFIX : "…";
+    const body = clean.length > lineLimit
+      ? safeTake(clean, Math.max(1, lineLimit - suffix.length)).trimEnd() + suffix
+      : clean;
     const line = `${e.role}: ${body}`;
     const add = picked.length > 0 ? line.length + 1 : line.length;
     if (used + add > maxChars) {
-      if (picked.length === 0 && maxChars > e.role.length + 3) {
-        picked.push(`${e.role}: ${safeTake(body, maxChars - e.role.length - 3).trimEnd()}…`);
+      if (markTruncated && e.role === "user" && !hasUser) {
+        // For refers_back, never let verbose assistant replies crowd out the latest user turn.
+        picked.length = 0;
+        if (line.length <= maxChars) {
+          picked.push(line);
+        } else {
+          const room = maxChars - e.role.length - 2 - suffix.length;
+          if (room > 0) picked.push(`${e.role}: ${safeTake(clean, room).trimEnd()}${suffix}`);
+        }
+      } else if (picked.length === 0) {
+        const room = maxChars - e.role.length - 2 - suffix.length;
+        if (room > 0) picked.push(`${e.role}: ${safeTake(clean, room).trimEnd()}${suffix}`);
       }
       break;
     }
     picked.push(line);
     used += add;
+    if (e.role === "user") hasUser = true;
   }
   return picked.reverse().join("\n");
 }
@@ -146,7 +171,10 @@ export class CallProtocol {
   private seen = new Set<string>();
   private turns: Turn[] = [];
   private history: Entry[] = [];
+  /** Timestamps of assistant transcript fragments, kept independent of prompt history eviction for spokeBetween/answered. */
+  private assistantSpokeAt: number[] = [];
   private historyBytes = 0;
+  private lastTranscriptAt = 0;
   private nextTurn = 0;
   private nextSeq = 0;
   private breakNext = true;
@@ -157,11 +185,11 @@ export class CallProtocol {
   }
 
   /** A new user turn begins (ACTIVITY_START). */
-  activityStarted(at: number): void {
+  activityStarted(at: number, typed = false): void {
     const last = lastOrNull(this.turns);
     if (!Number.isFinite(at) || at < (last?.started ?? 0)) return;
     this.breakNext = true;
-    const turn = new Turn(this.nextTurn, at, this.nextSeq);
+    const turn = new Turn(this.nextTurn, at, this.nextSeq, typed);
     if (last != null && last.text.length === 0 && (last.ended == null || at - last.ended < 3)) turn.ambiguous = true;
     this.turns.push(turn);
     this.nextTurn++;
@@ -181,22 +209,29 @@ export class CallProtocol {
     const maxEntry = Math.max(12_000, this.maxTurn * 4);
     const size = utf8Length(text);
     const prev = lastOrNull(this.history);
-    if (text.length === 0 || size > maxEntry || !Number.isFinite(at) || at < (prev?.lastAt ?? 0)) return;
+    if (text.length === 0 || size > maxEntry || !Number.isFinite(at) || at < Math.max(this.lastTranscriptAt, prev?.lastAt ?? 0)) return;
+    this.lastTranscriptAt = at;
+    if (role === "assistant") {
+      this.assistantSpokeAt.push(at);
+      if (this.assistantSpokeAt.length > MAX_ASSISTANT_TIMESTAMPS) this.assistantSpokeAt.shift();
+    }
     const currentTurn = role === "user" ? (lastOrNull(this.turns)?.id ?? null) : null;
-    if (prev != null && !this.breakNext && prev.role === role && prev.turn === currentTurn && utf8Length(prev.text) + size <= maxEntry) {
-      const beforeBytes = utf8Length(prev.text);
+    if (prev != null && !this.breakNext && prev.role === role && prev.turn === currentTurn && prev.bytes + size <= maxEntry) {
+      const lastCode = prev.text.charCodeAt(prev.text.length - 1);
+      const splitSurrogate = lastCode >= 0xd800 && lastCode <= 0xdbff;
       prev.text += text;
       prev.lastAt = at;
-      prev.times.push(at);
-      this.historyBytes += utf8Length(prev.text) - beforeBytes;
+      const nextBytes = splitSurrogate ? utf8Length(prev.text) : prev.bytes + size;
+      this.historyBytes += nextBytes - prev.bytes;
+      prev.bytes = nextBytes;
     } else {
-      this.history.push({ role, at, lastAt: at, times: [at], turn: currentTurn, seq: this.nextSeq++, text });
+      this.history.push({ role, at, lastAt: at, turn: currentTurn, seq: this.nextSeq++, bytes: size, text });
       this.historyBytes += size;
     }
     this.breakNext = false;
     const maxHistoryBytes = Math.max(HISTORY_BYTES, this.maxTurn);
     while (this.history.length > HISTORY_TURNS || this.historyBytes > maxHistoryBytes) {
-      this.historyBytes -= utf8Length(this.history.shift()!.text);
+      this.historyBytes -= this.history.shift()!.bytes;
     }
     // User words join the latest turn even after its end; a consumed turn keeps its late words, so they can never run.
     if (role !== "user") return;
@@ -262,7 +297,7 @@ export class CallProtocol {
 
   /** Whether the model said anything from [from] up to [to]. */
   private spokeBetween(from: number, to: number): boolean {
-    return this.history.some((e) => e.role === "assistant" && e.times.some((t) => t >= from && t < to));
+    return this.assistantSpokeAt.some((t) => t >= from && t < to);
   }
 
   /** Consumes a declined call's turn so a later call cannot replay it. */
@@ -293,16 +328,14 @@ export class CallProtocol {
     // had just come in first, and calls for the request after it.
     let answered = ended;
     if (this.join > 0) {
-      for (const e of this.history) {
-        if (e.role !== "assistant") continue;
-        for (const t of e.times) if (t > answered && t <= d.at && t - answered <= 8) answered = t;
-      }
+      for (const t of this.assistantSpokeAt) if (t > answered && t <= d.at && t - answered <= 8) answered = t;
     }
     if (answered < d.at - this.patience || turn.ambiguous || turn.text.length > this.maxTurn) return null;
     let task = turn.text.trim();
     if (task.length === 0) return null;
     // Earlier breaths of the same request: turns just before it that the model let pass without a word or a call.
     let first = turn;
+    let allTyped = turn.typed;
     const excluded = new Set<number>([turn.id]);
     if (this.join > 0) {
       for (let i = this.turns.indexOf(turn) - 1; i >= 0; i--) {
@@ -314,6 +347,7 @@ export class CallProtocol {
         if (earlier.text.length + task.length > this.maxTurn) break;
         earlier.consumed = true;
         excluded.add(earlier.id);
+        allTyped = allTyped && earlier.typed;
         task = earlier.text.trim() + " " + task;
         first = earlier;
       }
@@ -329,6 +363,7 @@ export class CallProtocol {
         if (later.started - end > this.join || this.spokeBetween(end, later.started) || later.text.length + task.length > this.maxTurn) break;
         later.consumed = true;
         excluded.add(later.id);
+        allTyped = allTyped && later.typed;
         task = task + " " + later.text.trim();
         joined.push(later.id);
         last = later;
@@ -339,6 +374,7 @@ export class CallProtocol {
     const context = this.context(contextOptions, d);
     const request: HermesCall = { id: d.id, task, context, taskId: "", followUp: false, label: "" };
     if (joined.length > 1) request.turns = joined;
+    if (allTyped) request.typed = true;
     return request;
   }
 }

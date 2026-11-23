@@ -1745,7 +1745,7 @@ export class Call {
     const t = this.t;
     this.hush = null;
     this.boundary = true;
-    this.protocol.activityStarted(t);
+    this.protocol.activityStarted(t, true);
     this.protocol.transcript("user", text, t);
     this.protocol.activityEnded(t);
     this.heardWords("user", text);
@@ -1995,7 +1995,7 @@ export class Call {
       this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
         "it works and takes it into account, and one result covers both." + (say ?? " Don't announce it."), true, { task: task.label, scheduling: say != null ? "WHEN_IDLE" : "SILENT" });
       run.closed = true;
-      this.steerInto(task, run.request.task, this.textLine != null);
+      this.steerInto(task, run.request.task, this.textLine != null || run.request.typed === true);
       return;
     }
     if (task.state === RUNNING) {
