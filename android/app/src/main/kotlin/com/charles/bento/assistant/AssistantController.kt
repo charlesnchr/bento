@@ -192,7 +192,7 @@ class AssistantController(
     /** The chat's main thread, once a message has been typed to it ([say]); null again when a call or another conversation takes over. */
     private var chat: CoreChat? = null
     private var chatJob: Job? = null
-    private data class DetachedNote(val id: String, val label: String, val text: String, val failed: Boolean)
+    private data class DetachedNote(val id: String, val label: String, val text: String, val failed: Boolean, val userTurnsAt: Int)
 
     /** Messages typed while the chat's core was loading. */
     private val typedEarly = ArrayList<String>()
@@ -504,6 +504,7 @@ class AssistantController(
      */
     private fun say(message: String) {
         val history = callHistory(_state.value.messages)
+        val turnsBefore = _state.value.messages.count { it.role == "user" }
         val preChatNotes = conversationDetached.toList()
         set { it.copy(error = null) }
         messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
@@ -527,7 +528,10 @@ class AssistantController(
             c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
             chat = c
             c.start()
-            for (n in preChatNotes) c.note(n.label, n.text, n.failed, inHistory = true, id = n.id)
+            for (n in preChatNotes) {
+                val age = (turnsBefore - n.userTurnsAt).coerceAtLeast(0)
+                c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age)
+            }
             for (n in notedEarly) c.note(n.label, n.text, n.failed, id = n.id)
             notedEarly.clear()
             for (typed in typedEarly) c.say(typed)
@@ -1088,7 +1092,8 @@ class AssistantController(
                 val noteText = if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
                 if (noteText.isNotBlank()) {
                     val failed = status == "failed" && turn.answer.isBlank()
-                    val note = DetachedNote(uiId, label, noteText, failed)
+                    val userTurnsAt = _state.value.messages.count { it.role == "user" }
+                    val note = DetachedNote(uiId, label, noteText, failed, userTurnsAt)
                     conversationDetached.removeAll { it.id == uiId }
                     conversationDetached.add(note)
                     if (conversationDetached.size > 20) conversationDetached.removeAt(0)

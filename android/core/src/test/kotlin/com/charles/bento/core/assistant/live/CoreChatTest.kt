@@ -332,5 +332,23 @@ class CoreChatTest {
         until("label-supplied bare answer reply") { heard3.said().size == 2 }
         assertEquals(1, asked3.size, "model-supplied label must not bypass bare-answer guard")
         c3.stop()
+
+        // 4. Expired replayed detached question (turnsAgo = 3) does not block a new request, while explicit continue_task still refuses.
+        val model4 = Scripted(
+            calls("ask_hermes", """{"label":"Calendar check"}"""),
+            calls("ask_hermes", """{"continue_task":"Alchemist table"}"""),
+            words("Tap Continue it on Alchemist's reply."),
+        )
+        val heard4 = Heard()
+        val asked4 = CopyOnWriteArrayList<HermesCall>()
+        val c4 = chat(model4, heard4) { call -> asked4.add(call); ToolReply("Calendar is clear.") }
+        c4.start()
+        c4.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true, id = "call-1-1", turnsAgo = 3)
+        c4.say("Yes, check my calendar")
+        until("new request runs") { asked4.size == 1 }
+        c4.say("Follow up on Alchemist")
+        until("explicit detached continue_task refused") { heard4.said().size == 1 }
+        assertEquals(1, asked4.size)
+        c4.stop()
     }
 }

@@ -6,7 +6,7 @@
 //
 // Port of Android's TaskNames.kt and TaskLabel.kt; test/taskNames.test.ts holds the cases.
 
-import { lastOrNull, maxOrNull, single, sortByDescending, take, trimChars } from "./kt.ts";
+import { lastOrNull, maxOrNull, sortByDescending, take, trimChars } from "./kt.ts";
 
 export const MAX_NAME = 40;
 
@@ -155,36 +155,23 @@ function forms(whole: string): string[] {
   return out.length > 0 ? out : [whole];
 }
 
-/** Keys whose task name matches [ref] exactly (or word-for-word after trimming "the"/"task"/"one"). */
-export function exactMatches(ref: string, tasks: Map<string, [string, string]>): string[] {
+/**
+ * All keys tied for the best match to [ref] among (name, request) pairs by key: exact/loose
+ * (ignoring possessives and "the"/"task"/"one") first, then whole-name containment, then
+ * distinctive-word overlap. Empty when nothing matches.
+ */
+export function matches(ref: string, tasks: Map<string, [string, string]>): string[] {
   const whole = norm(ref);
   if (whole.length === 0) return [];
   const entries = [...tasks.entries()];
   for (const r of forms(whole)) {
-    const exact = entries.filter(([, v]) => norm(v[0]) === r).map(([k]) => k);
-    if (exact.length > 0) return exact;
     const b = bare(r);
-    const loose = entries.filter(([, v]) => sameWords(bare(v[0]), b)).map(([k]) => k);
-    if (loose.length > 0) return loose;
+    const exact = entries.filter(([, v]) => norm(v[0]) === r || sameWords(bare(v[0]), b)).map(([k]) => k);
+    if (exact.length > 0) return exact;
   }
-  return [];
-}
-
-/**
- * The task the model means by [ref] among (name, request) pairs by key: its name, more or less
- * as given, or the one whose name and request share the most distinctive words with it.
- * Null when none fits or two fit equally.
- */
-export function find(ref: string, tasks: Map<string, [string, string]>): string | null {
-  const whole = norm(ref);
-  if (whole.length === 0) return null;
-  const exact = exactMatches(ref, tasks);
-  if (exact.length === 1) return exact[0];
-  if (exact.length > 1) return null;
-  const entries = [...tasks.entries()];
   const all = forms(whole);
   const r = all[all.length - 1];
-  if (r.length === 0) return null;
+  if (r.length === 0) return [];
   const said = bare(r);
   const within: [string, number][] = [];
   for (const [key, v] of entries) {
@@ -195,10 +182,9 @@ export function find(ref: string, tasks: Map<string, [string, string]>): string 
     within.push([key, name.filter((w) => said.includes(w)).length]);
   }
   const most = maxOrNull(within.map((w) => w[1]));
-  const best = single(within.filter((w) => w[1] === most));
-  if (best) return best[0];
+  if (most != null) return within.filter((w) => w[1] === most).map((w) => w[0]);
   const wanted = distinctive(r);
-  if (wanted.size === 0) return null;
+  if (wanted.size === 0) return [];
   const scored = sortByDescending(
     entries.map(([key, v]): [string, number] => [
       key,
@@ -206,8 +192,19 @@ export function find(ref: string, tasks: Map<string, [string, string]>): string 
     ]).filter((s) => s[1] > 0),
     (s) => s[1],
   );
-  if (scored.length === 0 || (scored.length > 1 && scored[0][1] === scored[1][1])) return null;
-  return scored[0][0];
+  if (scored.length === 0) return [];
+  const top = scored[0][1];
+  return scored.filter((s) => s[1] === top).map((s) => s[0]);
+}
+
+/**
+ * The task the model means by [ref] among (name, request) pairs by key: its name, more or less
+ * as given, or the one whose name and request share the most distinctive words with it.
+ * Null when none fits or two fit equally.
+ */
+export function find(ref: string, tasks: Map<string, [string, string]>): string | null {
+  const best = matches(ref, tasks);
+  return best.length === 1 ? best[0] : null;
 }
 
 /** The reply's spoken summary: what comes before its first blank line. */

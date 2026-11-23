@@ -554,7 +554,14 @@ export class Call {
       case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
-      case "note": return this.note(e.label, e.text, e.failed === true, e.inHistory === true, typeof e.id === "string" && e.id.trim().length > 0 ? e.id.trim() : null);
+      case "note": return this.note(
+        e.label,
+        e.text,
+        e.failed === true,
+        e.inHistory === true,
+        typeof e.id === "string" && e.id.trim().length > 0 ? e.id.trim() : null,
+        typeof e.turnsAgo === "number" && Number.isFinite(e.turnsAgo) ? Math.max(0, Math.floor(e.turnsAgo)) : 0,
+      );
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
@@ -1977,6 +1984,13 @@ export class Call {
           `Tell the user to open "${ext.label}"'s reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.`, false);
         return;
       }
+      if (labelTarget?.kind === "ambiguous") {
+        const ownedNames = labelTarget.owned.map((t) => `"${t.label}"`).join(", ");
+        const extNames = labelTarget.external.map((e) => `"${e.label}"`).join(", ");
+        this.respond(d.id, `Not executed: "${label}" is ambiguous because both this chat (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
+          "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply and tap Continue it. No action was run.", false);
+        return;
+      }
     }
     const answered = answering.length === 1 ? answering[0] : null;
     const task = found ?? answered;
@@ -1994,7 +2008,10 @@ export class Call {
 
   private find(ref: string, byRequest = true): Task | null {
     const target = this.findTarget(ref, byRequest);
-    return target?.kind === "owned" ? target.task : null;
+    if (target?.kind === "owned") return target.task;
+    // check_task / cancel_task act only on this chat's own tasks; resolve to the owned task if unambiguous among owned tasks.
+    if (target?.kind === "ambiguous" && target.owned.length === 1) return target.owned[0];
+    return null;
   }
 
   private findTarget(
@@ -2010,49 +2027,16 @@ export class Call {
       const task = this.tasks.get(trimmed);
       return task ? { kind: "owned", task } : null;
     }
-    const ownedPairs = new Map<string, [string, string]>();
-    for (const [key, t] of this.tasks) ownedPairs.set(key, [t.label, byRequest ? t.request : ""]);
-    const extPairs = new Map<string, [string, string]>();
-    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, ""]);
-    const combined = new Map<string, [string, string]>([...ownedPairs, ...extPairs]);
-
-    const exact = TaskNames.exactMatches(ref, combined);
-    if (exact.length === 1) {
-      const k = exact[0];
-      if (k.startsWith("ext:")) {
-        const ext = this.externalTasks.find((e) => e.key === k);
-        return ext ? { kind: "external", task: ext } : null;
-      }
-      const task = this.tasks.get(k);
-      return task ? { kind: "owned", task } : null;
-    }
-    if (exact.length > 1) {
-      const owned = exact.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
-      const external = exact.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
-      if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
-      if (owned.length > 0 && external.length > 0) return { kind: "ambiguous", owned, external };
-      return null;
-    }
-
-    const key = TaskNames.find(ref, combined);
-    if (key != null) {
-      if (key.startsWith("ext:")) {
-        const ext = this.externalTasks.find((e) => e.key === key);
-        return ext ? { kind: "external", task: ext } : null;
-      }
-      const task = this.tasks.get(key);
-      return task ? { kind: "owned", task } : null;
-    }
-
-    // Combined fuzzy lookup returned null: check whether owned and external tasks tied (or multiple externals tied).
-    const ownedKey = TaskNames.find(ref, ownedPairs);
-    const extKey = TaskNames.find(ref, extPairs);
-    const extHits = extKey != null
-      ? this.externalTasks.filter((e) => e.key === extKey)
-      : this.externalTasks.filter((e) => TaskNames.find(ref, new Map([[e.key, [e.label, ""]]])) != null);
-    const ownedHit = ownedKey != null ? this.tasks.get(ownedKey) ?? null : null;
-    if (ownedHit != null && extHits.length > 0) return { kind: "ambiguous", owned: [ownedHit], external: extHits };
-    if (ownedHit == null && extHits.length > 0) return { kind: "external", task: extHits[extHits.length - 1] };
+    const combined = new Map<string, [string, string]>();
+    for (const [key, t] of this.tasks) combined.set(key, [t.label, byRequest ? t.request : ""]);
+    for (const ext of this.externalTasks) combined.set(ext.key, [ext.label, ""]);
+    const best = TaskNames.matches(ref, combined);
+    if (best.length === 0) return null;
+    const owned = best.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
+    const external = best.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
+    if (owned.length === 1 && external.length === 0) return { kind: "owned", task: owned[0] };
+    if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
+    if (owned.length > 0 && external.length > 0) return { kind: "ambiguous", owned, external };
     return null;
   }
 
@@ -2280,13 +2264,14 @@ export class Call {
   }
 
   /** A result that arrived outside this call/chat (e.g. a detached voice task): kept in history and fenced into text chat context. */
-  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null): void {
+  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null, turnsAgo = 0): void {
     if (!this.active) return;
     if (!inHistory && !failed && text.trim().length > 0) {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
       this.boundary = true;
     }
-    const asked = !failed ? TaskNames.question(text) : null;
+    const rawAsked = !failed ? TaskNames.question(text) : null;
+    const asked = rawAsked != null && turnsAgo <= ANSWER_TURNS ? rawAsked : null;
     if (this.textLine) {
       const cleanLabel = label.trim();
       if (cleanLabel.length > 0) {
@@ -2301,7 +2286,7 @@ export class Call {
           label: cleanLabel,
           asked,
           askedAt: asked != null ? ++this.asks : 0,
-          askedTurn: this.userTurns,
+          askedTurn: this.userTurns - turnsAgo,
         });
         if (this.externalTasks.length > MAX_TASKS) this.externalTasks.shift();
       }
