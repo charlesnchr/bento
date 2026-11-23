@@ -2041,15 +2041,12 @@ export class Call {
 
   /**
    * handOff "named": what a hand-off's "started" answer adds so the model tells the user of it, or null when
-   * it stays silent. A tone says enough while nothing else is in flight: with another task running or a result
-   * still to be told, the user can't tell which request it was for. The model that spoke after the user's
-   * words has said so already. A hand-off the user is talking over gets only its tone, and the next
-   * confirmation names it too.
+   * it stays silent. Every hand-off gets a short confirmation in words, including a call's sole task, unless
+   * the model already spoke after the user's words. A hand-off the user is talking over gets only its tone,
+   * and the next confirmation names it too.
    */
   private confirmation(task: Task, followUp: boolean): string | null {
     if (this.c.handOff !== "named" || this.textLine || this.modelSpokeAt > this.lastUserSpeech) return null;
-    const others = this.unheard.length > 0 || [...this.tasks.values()].some((t) => t !== task && t.state === RUNNING);
-    if (!others) return null;
     if (this.talking(this.t)) {
       if (!this.unconfirmed.includes(task)) this.unconfirmed.push(task);
       return null;
@@ -2059,7 +2056,7 @@ export class Call {
     this.unconfirmed = [];
     this.confirming = { tasks: [...earlier, task], at: this.t };
     const names = earlier.map((t) => `"${t.label}"`).join(" and ");
-    return " Other work is in flight, so tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
+    return " Tell the user now in a few words " + (followUp ? `that ${who} has their follow-up to this.` : "what you started and who has it.") +
       (earlier.length > 0 ? ` Say too that ${names} ${earlier.length > 1 ? "are" : "is"} under way, unless you have told them: they have heard only a tone for ${earlier.length > 1 ? "those" : "it"}.` : "") +
       " Nothing else.";
   }
