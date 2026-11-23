@@ -12,6 +12,7 @@
 import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
 import { Replay } from "./replay.ts";
+import { AutoScroller } from "./scroll.ts";
 
 interface Core {
   version: string;
@@ -201,12 +202,6 @@ function syncComposer() {
   $("mode-wrap").dataset.mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
 }
 
-function updateJumpButton() {
-  const pane = $("transcript");
-  const away = pane.scrollHeight - pane.scrollTop - pane.clientHeight > 120;
-  $("jumpbottom").hidden = !away || !$("empty").hidden;
-}
-
 function formatClock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   const h = Math.floor(total / 3600);
@@ -304,10 +299,13 @@ function markdown(text: string): string {
   }).join("");
 }
 
+const transcriptScroll = new AutoScroller($("transcript"), {
+  onJumpChange: (show) => { $("jumpbottom").hidden = !show; },
+  isEmpty: () => !$("empty").hidden,
+});
+
 function scrollDown(force = false) {
-  const pane = $("transcript");
-  if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
-  updateJumpButton();
+  transcriptScroll.onContent(force);
 }
 
 /** The core's number for the line the last row shows, until another row follows it. */
@@ -328,7 +326,7 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
     pane.append(row);
     openLine = line;
   }
-  scrollDown(role === "user");
+  scrollDown();
 }
 
 /**
@@ -338,7 +336,7 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
 function caption(text: string | null) {
   const pane = $("transcript");
   let row = document.getElementById("caption");
-  if (text == null) { row?.remove(); return; }
+  if (text == null) { row?.remove(); scrollDown(); return; }
   $("empty").hidden = true;
   if (!row) {
     row = document.createElement("div");
@@ -348,7 +346,7 @@ function caption(text: string | null) {
     pane.prepend(row);
   }
   row.querySelector(".text")!.textContent = text;
-  scrollDown(true);
+  scrollDown();
 }
 
 function note(text: string) {
@@ -377,11 +375,16 @@ function result(agent: string, label: string, text: string, failed = false): HTM
       more.className = "more";
       more.type = "button";
       more.textContent = "Show full result";
-      more.onclick = () => { row.classList.toggle("open"); more.textContent = row.classList.contains("open") ? "Show less" : "Show full result"; };
+      more.onclick = () => {
+        row.classList.toggle("open");
+        more.textContent = row.classList.contains("open") ? "Show less" : "Show full result";
+        transcriptScroll.syncFromPosition();
+      };
       row.append(more);
+      scrollDown();
     }
   });
-  scrollDown(true);
+  scrollDown();
   return row;
 }
 
@@ -512,7 +515,13 @@ function showTasks(force = false) {
       button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
       if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
-    if (view.result) button("Result", () => { setTasksOpen(false); view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
+    if (view.result) button("Result", () => {
+      setTasksOpen(false);
+      view.result!.classList.add("open");
+      if (view.result !== $("transcript").lastElementChild) transcriptScroll.unpin();
+      else transcriptScroll.syncFromPosition();
+      view.result!.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
     (live(t.state) ? pane : done).append(card);
@@ -530,7 +539,7 @@ function followUpForm(card: HTMLElement, t: Command) {
   form.onsubmit = (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (text) { push({ type: "steer", task: t.id, text }); note(`You → ${t.label}: ${text}`); }
+    if (text) { push({ type: "steer", task: t.id, text }); note(`You → ${t.label}: ${text}`); scrollDown(true); }
     input.blur();
     form.remove();
     showTasks();
@@ -908,6 +917,7 @@ async function start(carryOn = false, typed = false) {
   $("version").textContent = core.version;
   $("log").innerHTML = "";
   if (!typed && (tasks.size > 0 || $("transcript").childElementCount > 1)) note(`New call · ${new Date().toLocaleTimeString()}`);
+  scrollDown(true);
   tasks.clear();
   showTasks();
   counts = { mic: 0, play: 0, sent: 0 };
@@ -1189,10 +1199,13 @@ async function submitText(e: Event) {
   const mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
   text = parsed.rest;
   if (!text) return;
-  if (mode === "say") push({ type: "say", text });
-  else {
+  if (mode === "say") {
+    push({ type: "say", text });
+    scrollDown(true);
+  } else {
     push({ type: "ask", text, agent: mode });
     note(`You → new ${mode === "t3" ? "coding" : "Hermes"} task: ${text}`);
+    scrollDown(true);
   }
   input.value = "";
   syncComposer();
@@ -1242,8 +1255,13 @@ async function main() {
   $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = (e) => void submitText(e);
   $("text").addEventListener("input", syncComposer);
-  $("transcript").addEventListener("scroll", updateJumpButton, { passive: true });
-  $("jumpbottom").onclick = () => $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
+  const transcriptPane = $("transcript");
+  transcriptPane.addEventListener("scroll", () => transcriptScroll.onScroll(), { passive: true });
+  transcriptPane.addEventListener("scrollend", () => transcriptScroll.onScrollEnd(), { passive: true });
+  transcriptPane.addEventListener("wheel", (e) => { if (e.deltaY < 0) transcriptScroll.cancelJump(); }, { passive: true });
+  transcriptPane.addEventListener("touchstart", () => transcriptScroll.cancelJump(), { passive: true });
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => transcriptScroll.onResize()).observe(transcriptPane);
+  $("jumpbottom").onclick = () => transcriptScroll.jumpToBottom();
   syncComposer();
   tabs();
   keys();
