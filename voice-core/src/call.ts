@@ -3400,7 +3400,7 @@ export class Call {
   ]);
   /** Modifiers that are descriptive only when lowercase ("nice", "spring"), while capitalized ("Nice", "Spring") can name a proper place. */
   private static readonly LOWERCASE_ONLY_NON_PLACE_MODIFIER = new Set(["nice", "spring"]);
-  private static readonly COORD_ITEM_SPLIT = /,\s*(?=(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)|\s+and\s+|\s+as\s+well\s+as\s+|\s+&\s+(?=(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/iu;
+  private static readonly COORD_ITEM_SPLIT = /,\s*(?=(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+(?:[\p{L}\p{N}-]+\s+){0,3})?(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)|\s+and\s+|\s+as\s+well\s+as\s+|\s*&\s*(?=(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|restaurants?|tours?|appointments?|sessions?)\b)/iu;
   /** Bookable sub-unit object patterns (lowercase adjectives only so a new destination like "a Paris room" does not inherit "London"). */
   private static readonly CATEGORY_SUBUNIT: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     ["hotel", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:rooms?|stays?|suites?|nights?)\b/],
@@ -3583,10 +3583,12 @@ export class Call {
           return tail.slice(0, bm.index).trim();
         }
         if (/^\s*(?:and|as\s+well\s+as|&)$/i.test(sep)) {
-          if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
-          if (/^\s*&$/i.test(sep)) {
+          const isAmp = /^\s*&$/i.test(sep);
+          const coordAfter = isAmp ? ` ${after.trimStart()}` : after;
+          if (Call.COORD_DET_OR_NOUN.test(coordAfter) && !Call.NON_BOOK_TAIL.test(coordAfter)) continue;
+          if (isAmp) {
             const prev = tail.slice(0, bm.index);
-            if (sep === "&" && /[A-Z]$/.test(prev) && /^[A-Z]\b/.test(after)) continue;
+            if (sep === "&" && ((/[A-Z]$/.test(prev) && /^(?!I\b)[A-Z]\b/.test(after)) || (/\bb$/i.test(prev) && /^b\b/i.test(after)))) continue;
             if (Call.AMP_NAME_PREV.test(prev)) {
               const beforeWord = /\b(\p{Lu}[\p{Ll}'.-]*)$/u.exec(prev)?.[1] ?? "";
               if (Call.AMP_NAME_CONT.test(after) || (beforeWord.length > 0 && Call.AMP_VENUE_PAIR.test(`${beforeWord}&${after}`))) continue;
