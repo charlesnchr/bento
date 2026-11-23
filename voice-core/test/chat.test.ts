@@ -1639,6 +1639,17 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop asking please cancel the Noma table",
     "Stop reading that hosts waive the fee and cancel the Noma table",
     "Stop reading that staff waive the fee and cancel the Noma table",
+    "Stop reading that staff waive fees and cancel the Noma table",
+    "Stop talking about restaurants that overbook and cancel the Noma table all the time",
+    "Stop talking about airlines that overbook and cancel the Noma table all the time",
+    "Stop mentioning restaurants and cancel the Noma table all the time",
+    "Stop talking about Noma and cancel the Noma table when needed",
+    "Never mind the cancelled flight airlines just cancel the Noma table",
+    "Don't worry about the cancelled hotel restaurants just cancel the Noma table",
+    "Don't worry about the cancelled booking diners just cancel the Noma table",
+    "Don't worry about the cancelled dinner hosts just cancel the Noma table",
+    "Don't worry about the cancelled reservation guests just cancel the Noma table",
+    "Don't worry about the cancelled hotel chains just cancel the Noma table",
     "Don't worry about the cancelled Noma table why would you cancel the Noma table",
     "Never mind the dropped call why would you cancel the Noma table",
     "Never mind the dropped call just drop me a note about the Noma table",
@@ -2116,6 +2127,65 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ab.advance(0.1);
   assert.equal(s10ab.commands.filter((c) => c.type === "tool.cancel").length, 1, "song title containing 'All the Time' must still cancel Song search");
 
+  // 8q) Curly apostrophe ("Sarah’s booking") matches straight-apostrophe label, full labels containing "Because"/"Leaving" match before clause trimming, and distinguishing words in discarded prepositional tails ("for tomorrow") block cancelling the wrong run.
+  const s10ac = chat();
+  s10ac.type("Book a table for Sarah");
+  s10ac.calls("ask_hermes", { label: "Sarah booking" });
+  s10ac.advance(0.1);
+  s10ac.type("Check Sarah's existing booking");
+  s10ac.calls("ask_hermes", { label: "Sarah's booking" });
+  s10ac.advance(0.1);
+  s10ac.type("Cancel Sarah\u2019s booking");
+  s10ac.calls("cancel_task", { task: "Sarah booking" });
+  s10ac.advance(0.1);
+  assert.equal(s10ac.commands.filter((c) => c.type === "tool.cancel").length, 0, "curly apostrophe 'Sarah’s booking' must not cancel 'Sarah booking'");
+  s10ac.calls("cancel_task", { task: "Sarah's booking" });
+  s10ac.advance(0.1);
+  assert.equal(s10ac.commands.filter((c) => c.type === "tool.cancel").length, 1, "curly apostrophe 'Sarah’s booking' must cancel 'Sarah's booking'");
+
+  const s10ad = chat();
+  s10ad.push({ type: "note", id: "call-1-23", label: "Song search for Because the Night", text: "Searching.", active: true, request: "Search for Because the Night" });
+  s10ad.advance(0.1);
+  s10ad.type("Search for Beatles songs");
+  s10ad.calls("ask_hermes", { label: "Song search" });
+  s10ad.advance(0.1);
+  s10ad.type("Never mind the dropped call just end the song search for Because the Night");
+  s10ad.calls("cancel_task", { task: "Song search" });
+  s10ad.advance(0.1);
+  assert.equal(s10ad.commands.filter((c) => c.type === "tool.cancel").length, 0, "detached label containing 'Because' must not be truncated before label matching");
+
+  const s10ae = chat();
+  s10ae.type("Plan leaving drinks");
+  s10ae.calls("ask_hermes", { label: "Leaving drinks" });
+  s10ae.advance(0.1);
+  s10ae.type("Never mind the dropped call just end the leaving drinks");
+  s10ae.calls("cancel_task", { task: "Leaving drinks" });
+  s10ae.advance(0.1);
+  assert.equal(s10ae.commands.filter((c) => c.type === "tool.cancel").length, 1, "owned label starting with 'Leaving' must match before clause trimming");
+
+  const s10af = chat();
+  s10af.push({ type: "note", id: "call-1-24", label: "Morning outlook", text: "Checking.", active: true, request: "Check London weather for tomorrow" });
+  s10af.advance(0.1);
+  s10af.type("Check London weather today");
+  s10af.calls("ask_hermes", { label: "Weather in London" });
+  s10af.advance(0.1);
+  s10af.type("Never mind the dropped call just end the London weather check for tomorrow");
+  s10af.calls("cancel_task", { task: "Weather in London" });
+  s10af.advance(0.1);
+  assert.equal(s10af.commands.filter((c) => c.type === "tool.cancel").length, 0, "distinguishing 'for tomorrow' in detached Morning outlook must block cancelling Weather in London");
+
+  const s10ag = chat();
+  s10ag.type("Check London weather today");
+  s10ag.calls("ask_hermes", { label: "Weather in London" });
+  s10ag.advance(0.1);
+  s10ag.type("Check London weather for tomorrow");
+  s10ag.calls("ask_hermes", { label: "Morning outlook" });
+  s10ag.advance(0.1);
+  s10ag.type("Never mind the dropped call just end the London weather check for tomorrow");
+  s10ag.calls("cancel_task", { task: "Weather in London" });
+  s10ag.advance(0.1);
+  assert.equal(s10ag.commands.filter((c) => c.type === "tool.cancel").length, 0, "distinguishing 'for tomorrow' in owned Morning outlook must block cancelling Weather in London");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2123,6 +2193,9 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't worry about the cancelled Copenhagen dinner reservation just cancel the weather",
     "Never mind the cancelled trip from Paris just cancel the weather",
     "Never mind the cancelled Lisbon flights just cancel the weather",
+    "Never mind the cancelled Lisbon return flights just cancel the weather",
+    "Never mind the cancelled flights just cancel it",
+    "Never mind the cancelled weather alerts just cancel the weather",
     "Never mind the cancelled hotels just cancel the weather",
     "Don't worry about the cancelled Noma bookings just cancel the weather",
     "Don't worry about the cancelled Noma bus just cancel the weather",
@@ -2139,6 +2212,9 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop talking about flights to Paris and cancel the weather",
     "Stop mentioning Noma and cancel the weather",
     "Stop mentioning that staff meeting and cancel the weather",
+    "Stop mentioning that staff meeting this week and cancel the weather",
+    "Stop reading that weather report every morning and cancel the weather",
+    "Stop reading that weather report all the time and cancel the weather",
     "Stop explaining the Noma policy and cancel the weather",
     "Stop explaining just cancel the weather",
     "Stop repeating yourself just cancel the weather",

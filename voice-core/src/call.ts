@@ -91,10 +91,13 @@ const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
 const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(cancel|abort|kill|halt|drop|end|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
+const REQUEST_LEAD = /^(?:can|could|would|will)\s+you\b/i;
 const BAD_IDIOM_NP_WORD = /\b(?:don'?t|do|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it|it'll|it'd|that'll|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|staff|crew|management|police|children|men|women|folks|guys|others|said|told|asked|know|think|want|need|mean|really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always)\b/i;
 const HABITUAL_STATEMENT = /\b(?:all\s+the\s+time|every\s+time|when\s+needed|at\s+their\s+discretion|on\s+their\s+own|by\s+default)\b/gi;
 const TITLE_BEFORE_HABITUAL = /\b(?:for|titled|called|named)\s+$/i;
 const IS_PLURAL_WORD = /^[a-z]{3,}(?:[^aious]s|ies|oes|ees|eys|ays|oys)$/i;
+/** Inanimate items that can be cancelled/dropped/stopped; any other plural before bare "just/please/now cancel" fails closed as a potential fused actor subject ("flight airlines", "booking diners", "order suppliers"). */
+const CANCELLABLE_PLURAL = /^(?:flights|bookings|reservations|tickets|orders|trips|plans|meetings|calls|alerts|events|appointments|deliveries|shipments|payments|charges|fees|bills|invoices|tasks|runs|jobs|checks|searches|sessions|items|trains|buses|rides|ferries|rooms|tables|seats|slots|shows|classes|tours|stays|visits|dates|transfers|reminders|updates|emails|messages|notes|lists|reports|drafts|files|builds|tests|deploys|requests|subscriptions|passes|vouchers|lines|links|connections|packets|frames|signals)$/i;
 const PRONOUN_CANCEL_OBJ = /^\s+(?:it|them|these|those|that|this)\b/i;
 const RESTARTED_NP = /\s+(?:the|a|an|my|our|their|those|these|some|his|her|its|every|each|all|both|many|most|several|other)\b/i;
 const DIRECT_TASK_OBJECT_START = /^\s+(?:the|this|that|my|our|it|them|all|both|every)\b/i;
@@ -129,11 +132,13 @@ function findLaterCancelCmd(text: string, resolveDirectObjectEnd?: (afterVerb: s
     const afterVerbStart = m.index + m[0].length;
     const afterVerb = text.slice(afterVerbStart);
     if (hasHabitualStatement(afterVerb)) continue;
-    if (prefixWords.length > 0 && IS_PLURAL_WORD.test(prefixWords[prefixWords.length - 1])) {
-      if (PRONOUN_CANCEL_OBJ.test(afterVerb)) continue;
-      if (prefixWords.length >= 3 && !/\b(?:of|for|in|at|on|to|from|with|by)\b/i.test(prefix)) continue;
-      if (prefixWords.length >= 2 && IS_PLURAL_WORD.test(prefixWords[prefixWords.length - 2])) continue;
-      if (prefixWords.length >= 2 && prefixWords.slice(0, -1).some((w) => w.length >= 4 && new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(afterVerb))) continue;
+    if (prefixWords.length > 0 && !REQUEST_LEAD.test(m[0])) {
+      const lastWord = prefixWords[prefixWords.length - 1];
+      if (IS_PLURAL_WORD.test(lastWord)) {
+        if (prefixWords.length >= 2 && IS_PLURAL_WORD.test(prefixWords[prefixWords.length - 2])) continue;
+        const singleHotelObj = prefixWords.length === 1 && /^hotels$/i.test(lastWord) && !PRONOUN_CANCEL_OBJ.test(afterVerb);
+        if (!CANCELLABLE_PLURAL.test(lastWord) && !singleHotelObj) continue;
+      }
     }
     const verb = m[1].toLowerCase();
     if (verb === "drop" || verb === "end") {
@@ -231,8 +236,21 @@ const PERSON_REPORTING_VERB = /^(?:telling|asking)$/i;
 const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|told|asked)\b/i;
 /** Reported-speech `that <clause>` complementizer immediately after a reporting verb ("Stop repeating that some restaurants..."), allowing bare object "Stop repeating that and/then cancel" and non-reporting "Stop reading that report and cancel". */
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
+/** Trailing time adverbials stripped before testing whether a `that ...` phrase is a reported predicate clause ("that weather report every morning", "that staff meeting this week"). */
+const TRAILING_TIME_ADV = /\s+(?:(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
 const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
+/** Bare-object reported-speech `that <plural/collective subject> <verb> <object>` immediately after a speaking verb ("Stop reading that staff waive fees and cancel...", "Stop reading that hosts waive fees and cancel..."), without blocking 2-word demonstrative noun phrases like "that staff meeting". */
+const COLLECTIVE_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women)$/i;
+function isThatPredicateClause(prefix: string): boolean {
+  const trimmed = prefix.replace(TRAILING_TIME_ADV, "");
+  if (THAT_PREDICATE_CLAUSE.test(trimmed)) return true;
+  const m = /^\s+that\s+([a-z']+)(?:\s+([a-z']+))(?:\s+([a-z']+))/i.exec(trimmed);
+  if (!m) return false;
+  const prep = /^(?:of|for|in|at|on|to|from|with|by|about)$/i;
+  if (prep.test(m[2]) || prep.test(m[3])) return false;
+  return COLLECTIVE_SUBJECT.test(m[1]) || IS_PLURAL_WORD.test(m[1]);
+}
 /** Trailing adverbs stripped before testing whether a proposed split point sits inside an infinitive or modal ("to maybe", "will probably"). */
 const TRAILING_ADVS = /(?:\s+(?:really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always|never|still|also|only|ever|basically|literally|honestly|apparently|supposedly|obviously|clearly|surely|totally|completely|quickly|easily|immediately|directly|automatically|accidentally|prematurely))+$/i;
 /** Embedded-clause markers (indirect wh-questions, reported `that <subject> <aux>` clauses, modals/reported verbs, pronoun clauses, infinitive cancel complements) kept inside stop-speaking spans without blocking nouns like "that report" or "that Noma table". */
@@ -2930,17 +2948,18 @@ export class Call {
   }
 
   private clauseScore(clause: string, label: string, extra: string): number {
-    const stripPossessive = (s: string): string => s.replace(/['\u2019]s\b/gi, "");
-    const rawWords = [...TaskNames.distinctive(clause)].filter((w) => !CANCEL_ACTION_WORDS.has(w));
+    const normApos = (s: string): string => s.replace(/\u2019/g, "'");
+    const stripPossessive = (s: string): string => normApos(s).replace(/'s\b/gi, "");
+    const rawWords = [...TaskNames.distinctive(normApos(clause))].filter((w) => !CANCEL_ACTION_WORDS.has(w));
     if (rawWords.length === 0) return 0;
-    const rawLabel = TaskNames.distinctive(label);
-    const rawExtra = TaskNames.distinctive(extra);
+    const rawLabel = TaskNames.distinctive(normApos(label));
+    const rawExtra = TaskNames.distinctive(normApos(extra));
     const normLabel = TaskNames.distinctive(stripPossessive(label));
     const normExtra = TaskNames.distinctive(stripPossessive(extra));
     let score = 0;
     for (const w of rawWords) {
       const base = stripPossessive(w);
-      // Rank exact wording ahead of possessive-insensitive matches ("Sarah's booking" beats "Sarah booking"), while still letting "Dinner at Noma's booking" match "Dinner at Noma".
+      // Rank exact wording (with straight/curly apostrophes normalized) ahead of possessive-stripped matches ("Sarah's booking" beats "Sarah booking"), while still letting "Dinner at Noma's booking" match "Dinner at Noma".
       if (rawLabel.has(w)) score += 4;
       else if (base !== w && normLabel.has(base) || (base === w && normLabel.has(w))) score += 3;
       else if (!QUESTION_VERBS.has(w) && rawExtra.has(w)) score += 2;
@@ -2978,15 +2997,15 @@ export class Call {
     parts: string[];
   }[] {
     const resolveDirectObjectEnd = (afterVerb: string): number => {
-      // Stop before trailing clause conjunctions ("since the Geranium table is booked") and base prepositions ("the summary with the Noma table"), while letting a full known task label (owned or detached, including prepositions like "Dinner at Noma" or possessives/hyphens like "Dinner at Noma's booking") extend across a preposition without shortening below baseEnd.
+      // Match complete known labels (owned or detached, including words like "Because" or "Leaving") BEFORE clause/preposition trimming so a detached label like "Song search for Because the Night" or an owned label like "Leaving drinks" is never truncated.
       const clauseEnd = DIRECT_OBJECT_CLAUSE_END.exec(afterVerb);
       const objText = clauseEnd != null ? afterVerb.slice(0, clauseEnd.index).trimEnd() : afterVerb;
       const boundary = DIRECT_OBJECT_BOUNDARY.exec(objText);
       const baseRaw = boundary != null ? objText.slice(0, boundary.index) : objText;
       const baseEnd = baseRaw.trimEnd().length;
-      const det = /^\s+(?:(?:the|this|that|my|our)\s+)?/i.exec(objText);
+      const det = /^\s+(?:(?:the|this|that|my|our)\s+)?/i.exec(afterVerb);
       const detEnd = det != null ? det[0].length : 0;
-      const lowerAfter = objText.slice(detEnd).toLowerCase();
+      const lowerAfter = afterVerb.slice(detEnd).toLowerCase();
       let bestLabelEnd = -1;
       const allLabels = [
         ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label),
@@ -3001,9 +3020,11 @@ export class Call {
         }
       }
       if (bestLabelEnd > 0) {
-        const tailAfterLabel = objText.slice(bestLabelEnd);
-        const nextBoundary = DIRECT_OBJECT_BOUNDARY.exec(tailAfterLabel);
-        const extRaw = nextBoundary != null ? tailAfterLabel.slice(0, nextBoundary.index) : tailAfterLabel;
+        const tailAfterLabel = afterVerb.slice(bestLabelEnd);
+        const tailClause = DIRECT_OBJECT_CLAUSE_END.exec(tailAfterLabel);
+        const tailClipped = tailClause != null ? tailAfterLabel.slice(0, tailClause.index) : tailAfterLabel;
+        const nextBoundary = DIRECT_OBJECT_BOUNDARY.exec(tailClipped);
+        const extRaw = nextBoundary != null ? tailClipped.slice(0, nextBoundary.index) : tailClipped;
         const extendedEnd = bestLabelEnd + extRaw.trimEnd().length;
         return Math.max(extendedEnd, baseEnd);
       }
@@ -3025,19 +3046,28 @@ export class Call {
         bestExternalScore = Math.max(bestExternalScore, this.clauseScore(directObj, ext.label, `${ext.request} ${ext.summary}`.trim()));
       }
       if (bestRunningCount !== 1 || bestExternalScore >= bestRunningScore || bestRunningTask == null) return -1;
-      // Also check the untrimmed object wording before the preposition so a detached task named after the preposition ("the dinner at Noma") cannot be stripped away.
+      // Protect distinguishing words in the discarded prepositional tail: refuse if the untrimmed object raises another owned or detached task's score without raising bestRunningTask's score (allowing unrelated "with ..." tails like "end the summary with the Noma table"), or if a detached task ties/beats bestRunningTask on objText.
       const fullRunningScore = this.clauseScore(objText, bestRunningTask.label, bestRunningTask.latest + " " + bestRunningTask.request);
-      let fullExternalScore = 0;
-      for (const ext of this.externalTasks) {
-        fullExternalScore = Math.max(fullExternalScore, this.clauseScore(objText, ext.label, `${ext.request} ${ext.summary}`.trim()));
+      const isWithPrep = /^with$/i.test(boundary[0]);
+      for (const other of this.tasks.values()) {
+        if (other.state !== RUNNING || other.id === bestRunningTask.id) continue;
+        const otherDirect = this.clauseScore(directObj, other.label, other.latest + " " + other.request);
+        const otherFull = this.clauseScore(objText, other.label, other.latest + " " + other.request);
+        if (otherFull > otherDirect && fullRunningScore === bestRunningScore && (!isWithPrep || otherDirect > 0)) return -1;
       }
-      if (fullExternalScore >= fullRunningScore) return -1;
+      for (const ext of this.externalTasks) {
+        const extExtra = `${ext.request} ${ext.summary}`.trim();
+        const extDirect = this.clauseScore(directObj, ext.label, extExtra);
+        const extFull = this.clauseScore(objText, ext.label, extExtra);
+        if (extFull >= fullRunningScore) return -1;
+        if (extFull > extDirect && fullRunningScore === bestRunningScore && (!isWithPrep || extDirect > 0)) return -1;
+      }
       return baseEnd;
     };
     const isSafeSplitPrefix = (prefix: string, isSplit: boolean, speakVerb?: string): boolean => {
       const isReporting = speakVerb != null && REPORTING_SPEAK_VERB.test(speakVerb);
       if (isReporting && THAT_COMPLEMENT.test(prefix)) return false;
-      if (speakVerb != null && THAT_PREDICATE_CLAUSE.test(prefix)) return false;
+      if (speakVerb != null && isThatPredicateClause(prefix)) return false;
       if (speakVerb != null && PERSON_REPORTING_VERB.test(speakVerb) && prefix.trim().length > 0 && !/\babout\b/i.test(prefix)) return false;
       if (speakVerb == null && REPORTING_IN_CONTINUATION.test(prefix)) return false;
       if (EMBEDDED_CLAUSE.test(prefix)) return false;
@@ -3077,14 +3107,19 @@ export class Call {
           if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
-            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
-            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
-            spans.push(cur);
+            if (hasHabitualStatement(after)) {
+              cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: false, parts: [part] };
+              spans.push(cur);
+            } else {
+              if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
+              cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+              spans.push(cur);
+            }
           } else {
             cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: safeTopic, parts: [part] };
             spans.push(cur);
           }
-        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit)) && CANCEL_VERB_START.test(part))) {
+        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit && !hasHabitualStatement(part))) && CANCEL_VERB_START.test(part))) {
           // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), keep only the standalone cancel command (and for drop/end, its resolved direct object) in the active span.
           const idiomSpan = idiomCancelSplitSpan(part, resolveDirectObjectEnd);
           if (idiomSpan != null) {
@@ -3105,9 +3140,14 @@ export class Call {
           if (split != null && isSafeSplitPrefix(prefix, true)) {
             const before = prefix.trim();
             const after = part.slice(split.index + split[0].length).trim();
-            if (before.length > 0) cur.parts.push(before);
-            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
-            spans.push(cur);
+            if (hasHabitualStatement(after)) {
+              cur.canSplit = false;
+              cur.parts.push(part);
+            } else {
+              if (before.length > 0) cur.parts.push(before);
+              cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+              spans.push(cur);
+            }
           } else {
             if (!isSafeSplitPrefix(prefix, split != null)) cur.canSplit = false;
             cur.parts.push(part);
@@ -3160,23 +3200,24 @@ export class Call {
 
   /** Whether [said] contains a distinctive non-verb word unique to [task] (not shared with any other owned or detached task). */
   private identifiesOwnedTask(said: string, task: Task): boolean {
-    const stripPossessive = (s: string): string => s.replace(/['\u2019]s\b/gi, "");
+    const normApos = (s: string): string => s.replace(/\u2019/g, "'");
+    const stripPossessive = (s: string): string => normApos(s).replace(/'s\b/gi, "");
     const otherRaw = new Set<string>();
     const otherNorm = new Set<string>();
     for (const other of this.tasks.values()) {
       if (other.id === task.id) continue;
-      for (const w of TaskNames.distinctive(`${other.label} ${other.request}`)) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
+      for (const w of TaskNames.distinctive(normApos(`${other.label} ${other.request}`))) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
     }
     for (const ext of this.externalTasks) {
-      for (const w of TaskNames.distinctive(`${ext.label} ${ext.request} ${ext.summary}`)) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
+      for (const w of TaskNames.distinctive(normApos(`${ext.label} ${ext.request} ${ext.summary}`))) { otherRaw.add(w); otherNorm.add(stripPossessive(w)); }
     }
     const ownedRaw = new Set<string>(
-      [...TaskNames.distinctive(`${task.label} ${task.latest} ${task.request}`)].filter((w) => !QUESTION_VERBS.has(w) && !otherRaw.has(w)),
+      [...TaskNames.distinctive(normApos(`${task.label} ${task.latest} ${task.request}`))].filter((w) => !QUESTION_VERBS.has(w) && !otherRaw.has(w)),
     );
     const ownedNorm = new Set<string>(
       [...TaskNames.distinctive(stripPossessive(`${task.label} ${task.latest} ${task.request}`))].filter((w) => !QUESTION_VERBS.has(w) && !otherNorm.has(w)),
     );
-    for (const w of TaskNames.distinctive(said)) {
+    for (const w of TaskNames.distinctive(normApos(said))) {
       if (QUESTION_VERBS.has(w) || otherRaw.has(w)) continue;
       if (ownedRaw.has(w)) return true;
       const base = stripPossessive(w);
