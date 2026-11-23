@@ -2967,6 +2967,20 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both London hotel bookings", "Book a flight to Paris, a hotel in London: the Savoy", "Euro trip", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Book a London flight and a hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Find a London hotel and book a room in May, OK", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight, a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Rome hotel room", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Nice hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London car bookings", "Book a London hotel and a Paris car", "Euro trip", "Cancel both London car bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in disrepair: figure out who owns it", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in decline: dig into why", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in administration: track down the owner", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in shambles: work out who runs it", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in disrepair", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to paris, a hotel in disrepair: figure out who owns it", "paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book it to house the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to entertain the clients", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to house the team", "London stay", "Cancel both London hotel bookings in progress", 1],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
