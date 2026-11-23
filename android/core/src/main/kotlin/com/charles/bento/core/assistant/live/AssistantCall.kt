@@ -1493,19 +1493,24 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val byExtLabel = findExternal(request.task, byRequest = false)
-                        if (byExtLabel != null) {
-                            target = byExtLabel
+                        val byExtWhole = findExternalWholeLabel(request.task)
+                        if (byExtWhole != null) {
+                            target = byExtWhole
                         } else {
                             val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
                             val byExtDetail = if (userWords.isNotEmpty()) findExternal(userWords.joinToString(" "), byRequest = true) else null
                             if (byExtDetail != null) {
                                 target = byExtDetail
-                            } else if (byDetail is Target.Owned) {
-                                val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
-                                when {
-                                    extConflicts.size == 1 -> target = Target.External(extConflicts.single())
-                                    extConflicts.size > 1 -> target = Target.Ambiguous(listOf(byDetail.task), extConflicts)
+                            } else {
+                                val byExtPartial = findExternal(request.task, byRequest = false)
+                                if (byExtPartial != null) {
+                                    target = byExtPartial
+                                } else if (byDetail is Target.Owned) {
+                                    val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
+                                    when {
+                                        extConflicts.size == 1 -> target = Target.External(extConflicts.single())
+                                        extConflicts.size > 1 -> target = Target.Ambiguous(listOf(byDetail.task), extConflicts)
+                                    }
                                 }
                             }
                         }
@@ -1672,6 +1677,28 @@ class AssistantCall(
         if (matchedOwned.isEmpty() && matchedExt.size == 1) return Target.External(matchedExt.single())
         if (matchedOwned.size + matchedExt.size > 1) return Target.Ambiguous(matchedOwned, matchedExt)
         return null
+    }
+
+    /** Matches detached tasks whose entire label appears in [ref], preferring the longest label and returning ambiguous on ties. */
+    private fun findExternalWholeLabel(ref: String): Target? {
+        if (externalTasks.isEmpty()) return null
+        fun tokens(s: String) = s.lowercase().replace('’', '\'').split(Regex("[^\\p{L}\\p{N}']+"))
+            .map { it.trim('\'').removeSuffix("'s") }.filter { it.isNotEmpty() }
+        val said = tokens(ref).toSet()
+        if (said.isEmpty()) return null
+        var bestLen = 0
+        val best = ArrayList<String>()
+        for ((label, _) in externalTasks.values) {
+            val labelTokens = tokens(label)
+            if (labelTokens.isEmpty() || !labelTokens.all { it in said }) continue
+            if (labelTokens.size > bestLen) { bestLen = labelTokens.size; best.clear(); best.add(label) }
+            else if (labelTokens.size == bestLen) best.add(label)
+        }
+        return when {
+            best.size == 1 -> Target.External(best.single())
+            best.size > 1 -> Target.Ambiguous(emptyList(), best)
+            else -> null
+        }
     }
 
     /** Scores [ref] against detached external tasks alone so an owned task cannot shadow a named detached task. */

@@ -1601,6 +1601,8 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Please don't go cancelling the Noma table",
     "Don't let the Noma table get cancelled",
     "I don't care if they cancel the Noma table",
+    "Stop talking about the Noma table",
+    "It doesn't matter just stop talking about the Noma table",
     "I don't like it when you cancel the Noma table",
     "I don't know if you should cancel the Noma table",
     "Don't bother to cancel the Noma table",
@@ -1729,9 +1731,22 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   const resp10g: string = s10g.sentTurns().at(-1).parts[0].functionResponse.response.message;
   assert.ok(resp10g.includes('"Alchemist table"') && resp10g.includes('"Noma table"') && !resp10g.includes('"Geranium table"'), `expected top-2 tie without Geranium, got: ${resp10g}`);
 
+  // 8g) Partial label overlap ("Friday diary") does not override stronger detail evidence for another detached task ("Restaurant search").
+  const s10h = chat();
+  s10h.push({ type: "note", id: "call-1-9", label: "Restaurant search", text: "Alchemist in Copenhagen has vegetarian seating.", active: false, request: "Find vegetarian seating at Alchemist in Copenhagen" });
+  s10h.push({ type: "note", id: "call-1-10", label: "Friday diary", text: "No entries.", active: false, request: "Check Friday diary" });
+  s10h.advance(0.1);
+  s10h.type("For the vegetarian seating at Alchemist in Copenhagen, make it Friday");
+  s10h.calls("ask_hermes", { continue_task: "Revision" });
+  s10h.advance(0.1);
+  assert.equal(s10h.hermes().length, 0, "stronger detail match must refuse instead of starting a fresh run");
+  const resp10h: string = s10h.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10h.includes('"Restaurant search"') && !resp10h.includes('"Friday diary"'), `expected redirect to Restaurant search, got: ${resp10h}`);
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
+    "Don't worry about the cancellation fee just cancel the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",

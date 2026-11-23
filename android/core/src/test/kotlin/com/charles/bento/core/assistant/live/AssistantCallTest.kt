@@ -4886,6 +4886,16 @@ class AssistantCallTest {
         assertEquals(2, asked.size, "owned 'Friday morning' must not hide detached 'Email' and start a new run")
         val msg9 = transport.responses()[13].message()
         assertTrue("\"Email\"" in msg9, msg9)
+
+        // Partial label overlap ("Friday diary") must not override stronger detail evidence for another detached task ("Restaurant search").
+        call.note("Restaurant search", "Alchemist in Copenhagen has vegetarian seating.", inHistory = true, id = "call-1-6", active = false, request = "Find vegetarian seating at Alchemist in Copenhagen")
+        call.note("Friday diary", "No entries.", inHistory = true, id = "call-1-7", active = false, request = "Check Friday diary")
+        Live.turn(transport, "For the vegetarian seating at Alchemist in Copenhagen, make it Friday")
+        transport.push(Live.call("c10", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 15 }
+        assertEquals(2, asked.size, "stronger detail match must refuse instead of starting a fresh run")
+        val msg10 = transport.responses()[14].message()
+        assertTrue("\"Restaurant search\"" in msg10 && "\"Friday diary\"" !in msg10, msg10)
         call.stop()
     }
 }

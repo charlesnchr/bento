@@ -76,7 +76,7 @@ const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|co
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
 /** Matches each negation opener; `isDontCancel` inspects every occurrence independently and fails closed, skipping only explicit affirmative lead-ins before a base-form cancel imperative. */
 const NEG_OPENER = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\b/gi;
-const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,6}?)(cancel\w*|stop\w*|abort\w*|kill\w*|drop\w*|end(?:s|ed|ing)?|halt\w*)\b/i;
+const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,6}?)(cancel(?:s|l?ed|l?ing)?|stop(?:s|ped|ping)?|abort(?:s|ed|ing)?|kill(?:s|ed|ing)?|drop(?:s|ped|ping)?|end(?:s|ed|ing)?|halt(?:s|ed|ing)?)\b/i;
 const BASE_CANCEL_VERB = /^(?:cancel|stop|abort|kill|drop|end|halt)$/i;
 const LEAD_ADV = /^(?:really|even|actually|quite)$/;
 const DIRECT_IDIOM_VERB = /^(?:mind|wait|worry|forget|hesitate)$/;
@@ -2043,21 +2043,26 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Score detached labels separately (so an owned label cannot hide a named detached task), then verb-filtered user words across detached requests/summaries, asking for clarification on ties.
-        const byExtLabel = this.findExternal(request.task, false);
-        if (byExtLabel != null) {
-          target = byExtLabel;
+        // Give whole-label detached mentions priority (so an owned label cannot shadow a named detached task), then score partial labels and request details together across detached tasks, falling back to unfiltered partial labels only when both miss.
+        const byExtWhole = this.findExternalWholeLabel(request.task);
+        if (byExtWhole != null) {
+          target = byExtWhole;
         } else {
           const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
           const byExtDetail = userWords.length > 0 ? this.findExternal(userWords.join(" "), true) : null;
           if (byExtDetail != null) {
             target = byExtDetail;
-          } else if (byDetail?.kind === "owned") {
-            const seen = new Set<string>();
-            const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
-              .filter((e) => !seen.has(e.key) && (seen.add(e.key), true));
-            if (extConflicts.length === 1) target = { kind: "external", task: extConflicts[0] };
-            else if (extConflicts.length > 1) target = { kind: "ambiguous", owned: [byDetail.task], external: extConflicts };
+          } else {
+            const byExtPartial = this.findExternal(request.task, false);
+            if (byExtPartial != null) {
+              target = byExtPartial;
+            } else if (byDetail?.kind === "owned") {
+              const seen = new Set<string>();
+              const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
+                .filter((e) => !seen.has(e.key) && (seen.add(e.key), true));
+              if (extConflicts.length === 1) target = { kind: "external", task: extConflicts[0] };
+              else if (extConflicts.length > 1) target = { kind: "ambiguous", owned: [byDetail.task], external: extConflicts };
+            }
           }
         }
       }
@@ -2284,6 +2289,33 @@ export class Call {
     }
     if (owned.length === 0 && external.length === 1) return { kind: "external", task: external[0] };
     if (owned.length + external.length > 1) return { kind: "ambiguous", owned, external };
+    return null;
+  }
+
+  /** Matches detached tasks whose entire label appears in [ref], preferring the longest label and returning ambiguous on ties. */
+  private findExternalWholeLabel(
+    ref: string,
+  ):
+    | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
+    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
+    | null {
+    if (this.externalTasks.length === 0) return null;
+    const tokens = (s: string) =>
+      s.toLowerCase().replace(/’/g, "'").split(/[^\p{L}\p{N}']+/u)
+        .map((w) => w.replace(/^'+|'+$/g, "").replace(/'s$/, ""))
+        .filter((w) => w.length > 0);
+    const said = new Set(tokens(ref));
+    if (said.size === 0) return null;
+    let bestLen = 0;
+    const best: typeof this.externalTasks = [];
+    for (const ext of this.externalTasks) {
+      const labelTokens = tokens(ext.label);
+      if (labelTokens.length === 0 || !labelTokens.every((w) => said.has(w))) continue;
+      if (labelTokens.length > bestLen) { bestLen = labelTokens.length; best.length = 0; best.push(ext); }
+      else if (labelTokens.length === bestLen) best.push(ext);
+    }
+    if (best.length === 1) return { kind: "external", task: best[0] };
+    if (best.length > 1) return { kind: "ambiguous", owned: [], external: best };
     return null;
   }
 
