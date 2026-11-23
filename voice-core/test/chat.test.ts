@@ -1643,6 +1643,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that they waive fees and cancel the Noma table",
     "Stop reading that the hosts waive fees and cancel the Noma table",
     "Stop mentioning that airlines overbook every morning and cancel the Noma table first",
+    "Stop mentioning that airlines overbook constantly and cancel the Noma table",
+    "Stop mentioning that airlines overbook regularly and cancel the Noma table first",
+    "Stop mentioning that hosts often cancel and cancel the Noma table",
+    "Stop mentioning that staff waive corkage and cancel the Noma table after fifteen minutes",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Don't worry about the cancelled Noma table kids just cancel them",
@@ -2236,6 +2240,50 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ak.advance(0.1);
   assert.equal(s10ak.commands.filter((c) => c.type === "tool.cancel").length, 1, "exact task label containing 'All the Time' must still cancel");
 
+  // 8s) Habitual exemption is strictly positional to an exact task label (unrelated "All the Time song search" or "Stretch reminder" never disables the guard for "Noma table"), and full-object winner changes ("summary for the quarterly figures") veto trimming while non-overlapping exact labels ("London weather" vs "London trains") still cancel.
+  const s10al = chat();
+  s10al.type("Book a table at Noma");
+  s10al.calls("ask_hermes", { label: "Noma table" });
+  s10al.advance(0.1);
+  s10al.type("Search for All the Time");
+  s10al.calls("ask_hermes", { label: "All the Time song search" });
+  s10al.advance(0.1);
+  s10al.type("Remind me to stretch every time I sit down");
+  s10al.calls("ask_hermes", { label: "Stretch reminder" });
+  s10al.advance(0.1);
+  s10al.type("Stop talking about restaurants that overbook and cancel the Noma table all the time");
+  s10al.calls("cancel_task", { task: "Noma table" });
+  s10al.advance(0.1);
+  assert.equal(s10al.commands.filter((c) => c.type === "tool.cancel").length, 0, "unrelated 'All the Time song search' must not disable habitual guard for Noma table");
+  s10al.type("Stop talking about restaurants that overbook and cancel the Noma table every time");
+  s10al.calls("cancel_task", { task: "Noma table" });
+  s10al.advance(0.1);
+  assert.equal(s10al.commands.filter((c) => c.type === "tool.cancel").length, 0, "unrelated task request containing 'every time' must not disable habitual guard for Noma table");
+
+  const s10am = chat();
+  s10am.type("Write a sales summary");
+  s10am.calls("ask_hermes", { label: "Sales summary" });
+  s10am.advance(0.1);
+  s10am.type("Report on the quarterly figures");
+  s10am.calls("ask_hermes", { label: "Quarterly figures" });
+  s10am.advance(0.1);
+  s10am.type("Never mind the dropped call just end the summary for the quarterly figures");
+  s10am.calls("cancel_task", { task: "Sales summary" });
+  s10am.advance(0.1);
+  assert.equal(s10am.commands.filter((c) => c.type === "tool.cancel").length, 0, "owned 'Quarterly figures' winning on full object must block cancelling 'Sales summary'");
+
+  const s10an = chat();
+  s10an.type("Check London weather today");
+  s10an.calls("ask_hermes", { label: "London weather" });
+  s10an.advance(0.1);
+  s10an.type("Check London trains for tomorrow");
+  s10an.calls("ask_hermes", { label: "London trains" });
+  s10an.advance(0.1);
+  s10an.type("Never mind the dropped call just end the London weather for tomorrow");
+  s10an.calls("cancel_task", { task: "London weather" });
+  s10an.advance(0.1);
+  assert.equal(s10an.commands.filter((c) => c.type === "tool.cancel").length, 1, "exact-prefix 'London weather' must still cancel when owned 'London trains' does not cover 'weather'");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2266,6 +2314,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff meeting agenda and cancel the weather",
     "Stop reading that staff rota aloud and cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
+    "Stop reading that sales report every morning and cancel the weather",
+    "Stop reading that hotels list every morning and cancel the weather",
+    "Stop reading that sports update every day and cancel the weather",
+    "Stop mentioning that sales meeting this week and cancel the weather",
     "Stop reading that hotels list out loud and cancel the weather",
     "Stop reading that weather report every morning and cancel the weather",
     "Stop reading that weather report all the time and cancel the weather",

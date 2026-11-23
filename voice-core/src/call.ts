@@ -109,13 +109,34 @@ const DIRECT_OBJECT_PRONOUN = /^(?:it|them|that|this|all|both|everything)(?:\s+(
 const DIRECT_OBJECT_BOUNDARY = /\b(?:with|about|for|at|in|on|by|to|from|of)\b/i;
 const DIRECT_OBJECT_CLAUSE_END = /\b(?:since|because|so|then|leaving|while|though|although)\b/i;
 
-function hasHabitualStatement(text: string, knownTexts?: string[]): boolean {
+function hasHabitualStatement(text: string, knownLabels?: string[]): boolean {
   HABITUAL_STATEMENT.lastIndex = 0;
+  const lower = text.toLowerCase();
+  const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
   let m: RegExpExecArray | null;
   while ((m = HABITUAL_STATEMENT.exec(text)) != null) {
     if (TITLE_BEFORE_HABITUAL.test(text.slice(0, m.index))) continue;
-    const phrase = m[0].toLowerCase();
-    if (knownTexts != null && knownTexts.some((t) => t.includes(phrase))) continue;
+    const mStart = m.index;
+    const mEnd = m.index + m[0].length;
+    let insideExactLabel = false;
+    if (knownLabels != null) {
+      for (const lbl of knownLabels) {
+        if (lbl.length < m[0].length) continue;
+        let from = 0;
+        while (from <= lower.length - lbl.length) {
+          const idx = lower.indexOf(lbl, from);
+          if (idx < 0) break;
+          const end = idx + lbl.length;
+          if (idx <= mStart && mEnd <= end && !isWordChar(lower[idx - 1]) && !isWordChar(lower[end])) {
+            insideExactLabel = true;
+            break;
+          }
+          from = idx + 1;
+        }
+        if (insideExactLabel) break;
+      }
+    }
+    if (insideExactLabel) continue;
     return true;
   }
   return false;
@@ -243,24 +264,38 @@ const PERSON_REPORTING_VERB = /^(?:telling|asking)$/i;
 const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|told|asked)\b/i;
 /** Reported-speech `that <clause>` complementizer immediately after a reporting verb ("Stop repeating that some restaurants..."), allowing bare object "Stop repeating that and/then cancel" and non-reporting "Stop reading that report and cancel". */
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
-/** Trailing time adverbials stripped only for singular demonstrative noun phrases ("that weather report every morning", "that staff meeting this week") before testing reported predicate clauses. */
-const TRAILING_TIME_ADV = /\s+(?:(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
+/** Trailing reading/time adverbials stripped when checking whether a `that ...` phrase is a demonstrative noun phrase ("that sales report every morning", "that staff rota aloud", "that staff meeting this week"). */
+const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
+const TRAILING_READING_ADV = /\s+(?:aloud|out\s+loud)\s*$/i;
+const TOPIC_HEAD_NOUN = /^(?:report|meeting|agenda|rota|list|update|summary|note|notes|email|message|article|document|doc|file|page|post|thread|memo|letter|draft|policy|guide|manual|schedule|plan|table|booking|reservation|flight|trip|order|ticket|bill|invoice|receipt|alert|reminder|brief|briefing|log|logs|review|spec|proposal|budget|forecast|chart|deck|slide|slides|sheet|spreadsheet|script|headline|story|chapter|section|paragraph|line|quote|transcript|menu|itinerary|confirmation|notice|announcement|bulletin|newsletter|feed|digest|item|entry|record|form|contract|agreement|clause|rule|rules|terms|issue|comment|reply)$/i;
+const CLAUSE_VERB_OR_FREQ = /^(?:waive|waives|cancel|cancels|drop|drops|end|ends|stop|stops|abort|aborts|charge|charges|overbook|overbooks|require|requires|need|needs|want|wants|keep|keeps|leave|leaves|skip|skips|miss|misses|fail|fails|block|blocks|refuse|refuses|reject|rejects|delete|deletes|remove|removes|close|closes|cut|cuts|halt|halts|kill|kills|lose|loses|delay|delays|postpone|postpones|move|moves|change|changes|shift|shifts|hold|holds|refund|refunds|void|voids|revoke|revokes|ban|bans|flag|flags|deny|denies|limit|limits|cap|caps|often|always|never|usually|rarely|sometimes|regularly|constantly|frequently|routinely|normally|typically|generally|automatically)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
 const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
-/** Bare-object reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <plural object>` immediately after a speaking verb ("Stop reading that staff/they/the hosts waive fees and cancel..."), without blocking singular noun phrases like "that staff meeting agenda" or adverbial tails like "that sales report aloud". */
+/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that staff waive corkage/fees", "that airlines overbook constantly", "that hosts often cancel"), after ruling out demonstrative topic noun phrases ("that staff meeting agenda", "that sales report every morning", "that staff rota aloud"). */
 const COLLECTIVE_OR_PRONOUN_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women|i|we|you|they|he|she|it)$/i;
 function isThatPredicateClause(prefix: string): boolean {
-  const firstMatch = /^\s+that\s+([a-z']+)/i.exec(prefix);
-  if (!firstMatch) return false;
-  const firstWord = firstMatch[1];
-  const keepTimeAdv = isPluralWord(firstWord) || /^(?:i|we|you|they|he|she|it)$/i.test(firstWord);
-  const candidate = keepTimeAdv ? prefix : prefix.replace(TRAILING_TIME_ADV, "");
-  if (THAT_PREDICATE_CLAUSE.test(candidate)) return true;
-  const m = /^\s+that\s+(?:(?:the|some|all|most|many|our|their|my)\s+)?([a-z']+)\s+([a-z']+)\s+([a-z']+)/i.exec(candidate);
+  const afterThat = /^\s+that\s+(.+)$/i.exec(prefix);
+  if (!afterThat) return false;
+  const rawBody = afterThat[1].trim();
+  const strippedReading = TRAILING_READING_ADV.test(rawBody);
+  const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
+  const coreWords = core.length > 0 ? core.split(/\s+/) : [];
+  if (coreWords.length <= 1) return false;
+  const subjectLikeFirst = isPluralWord(coreWords[0]) || COLLECTIVE_OR_PRONOUN_SUBJECT.test(coreWords[0]);
+  if (coreWords.length === 2) {
+    if (TOPIC_HEAD_NOUN.test(coreWords[1])) return false;
+    if (strippedReading) return false;
+    if (!subjectLikeFirst) return false;
+  }
+  if (coreWords.length === 3 && TOPIC_HEAD_NOUN.test(coreWords[2]) && !CLAUSE_VERB_OR_FREQ.test(coreWords[1]) && !/^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all)$/i.test(coreWords[1])) {
+    return false;
+  }
+  if (THAT_PREDICATE_CLAUSE.test(prefix)) return true;
+  const m = /^\s+that\s+(?:(?:the|some|all|most|many|our|their|my)\s+)?([a-z']+)\s+([a-z']+)\s+([a-z']+)/i.exec(prefix);
   if (!m) return false;
   const prep = /^(?:of|for|in|at|on|to|from|with|by|about)$/i;
   if (prep.test(m[2]) || prep.test(m[3])) return false;
-  return (COLLECTIVE_OR_PRONOUN_SUBJECT.test(m[1]) || isPluralWord(m[1])) && isPluralWord(m[3]);
+  return COLLECTIVE_OR_PRONOUN_SUBJECT.test(m[1]) || isPluralWord(m[1]);
 }
 /** Trailing adverbs stripped before testing whether a proposed split point sits inside an infinitive or modal ("to maybe", "will probably"). */
 const TRAILING_ADVS = /(?:\s+(?:really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always|never|still|also|only|ever|basically|literally|honestly|apparently|supposedly|obviously|clearly|surely|totally|completely|quickly|easily|immediately|directly|automatically|accidentally|prematurely))+$/i;
@@ -3007,25 +3042,37 @@ export class Call {
     restOnly: boolean;
     parts: string[];
   }[] {
-    const knownTaskTexts = [
-      ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => `${t.label} ${t.request}`.toLowerCase()),
-      ...this.externalTasks.map((e) => `${e.label} ${e.request}`.toLowerCase()),
-    ];
-    const tailConflictsWithOther = (keptText: string, fullText: string, bestTask: Task): boolean => {
+    const knownTaskLabels = [
+      ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label.trim().toLowerCase()),
+      ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
+    ].filter((l) => l.length > 0);
+    const coversAllLabelWords = (label: string, otherText: string): boolean => {
+      const labelWords = [...TaskNames.distinctive(label.replace(/\u2019/g, "'"))].filter((w) => !CANCEL_ACTION_WORDS.has(w));
+      if (labelWords.length === 0) return false;
+      const otherWords = TaskNames.distinctive(otherText.replace(/\u2019/g, "'"));
+      return labelWords.every((w) => otherWords.has(w));
+    };
+    const tailConflictsWithOther = (keptText: string, fullText: string, bestTask: Task, isWithPrep: boolean, isExactLabel: boolean): boolean => {
       const bestDirect = this.clauseScore(keptText, bestTask.label, bestTask.latest + " " + bestTask.request);
       const bestFull = this.clauseScore(fullText, bestTask.label, bestTask.latest + " " + bestTask.request);
       for (const other of this.tasks.values()) {
         if (other.state !== RUNNING || other.id === bestTask.id) continue;
-        const otherDirect = this.clauseScore(keptText, other.label, other.latest + " " + other.request);
-        const otherFull = this.clauseScore(fullText, other.label, other.latest + " " + other.request);
-        if (otherDirect > 0 && otherFull > otherDirect && bestFull === bestDirect) return true;
+        const otherExtra = other.latest + " " + other.request;
+        const otherDirect = this.clauseScore(keptText, other.label, otherExtra);
+        const otherFull = this.clauseScore(fullText, other.label, otherExtra);
+        if (!isWithPrep && otherFull >= bestFull) return true;
+        if (otherDirect > 0 && otherFull > otherDirect && bestFull === bestDirect) {
+          if (!isExactLabel || coversAllLabelWords(bestTask.label, `${other.label} ${otherExtra}`)) return true;
+        }
       }
       for (const ext of this.externalTasks) {
         const extExtra = `${ext.request} ${ext.summary}`.trim();
         const extDirect = this.clauseScore(keptText, ext.label, extExtra);
         const extFull = this.clauseScore(fullText, ext.label, extExtra);
         if (extFull >= bestFull) return true;
-        if (extDirect > 0 && extFull > extDirect && bestFull === bestDirect) return true;
+        if (extDirect > 0 && extFull > extDirect && bestFull === bestDirect) {
+          if (!isExactLabel || coversAllLabelWords(bestTask.label, `${ext.label} ${extExtra}`)) return true;
+        }
       }
       return false;
     };
@@ -3069,7 +3116,7 @@ export class Call {
         if (nextBoundary != null && bestLabelTask != null) {
           const keptText = afterVerb.slice(0, resultEnd);
           const fullText = afterVerb.slice(0, bestLabelEnd + tailClipped.trimEnd().length);
-          if (tailConflictsWithOther(keptText, fullText, bestLabelTask)) return -1;
+          if (tailConflictsWithOther(keptText, fullText, bestLabelTask, /^with$/i.test(nextBoundary[0]), true)) return -1;
         }
         return resultEnd;
       }
@@ -3091,7 +3138,7 @@ export class Call {
         bestExternalScore = Math.max(bestExternalScore, this.clauseScore(directObj, ext.label, `${ext.request} ${ext.summary}`.trim()));
       }
       if (bestRunningCount !== 1 || bestExternalScore >= bestRunningScore || bestRunningTask == null) return -1;
-      if (tailConflictsWithOther(directObj, objText, bestRunningTask)) return -1;
+      if (tailConflictsWithOther(directObj, objText, bestRunningTask, /^with$/i.test(boundary[0]), false)) return -1;
       return baseEnd;
     };
     const isSafeSplitPrefix = (prefix: string, isSplit: boolean, speakVerb?: string): boolean => {
@@ -3111,7 +3158,7 @@ export class Call {
     for (const clause of this.splitClauses(said)) {
       let cur: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; canSplit: boolean; parts: string[] } | null = null;
       for (const part of this.splitAnd(clause)) {
-        const explicitDontOrKeep = isDontCancel(part, resolveDirectObjectEnd, knownTaskTexts) || KEEP_RUNNING.test(part);
+        const explicitDontOrKeep = isDontCancel(part, resolveDirectObjectEnd, knownTaskLabels) || KEEP_RUNNING.test(part);
         const targetOnlyProtect = KEEP_TARGET.test(part) || EXCLUDE_TASK.test(part);
         const speakMatch = !explicitDontOrKeep && !targetOnlyProtect ? STOP_SPEAKING_PART.exec(part) : null;
         if (explicitDontOrKeep || targetOnlyProtect) {
@@ -3137,7 +3184,7 @@ export class Call {
           if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
-            if (hasHabitualStatement(after, knownTaskTexts)) {
+            if (hasHabitualStatement(after, knownTaskLabels)) {
               cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: false, parts: [part] };
               spans.push(cur);
             } else {
@@ -3149,9 +3196,9 @@ export class Call {
             cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: safeTopic, parts: [part] };
             spans.push(cur);
           }
-        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit && !hasHabitualStatement(part, knownTaskTexts))) && CANCEL_VERB_START.test(part))) {
+        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit && !hasHabitualStatement(part, knownTaskLabels))) && CANCEL_VERB_START.test(part))) {
           // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), keep only the standalone cancel command (and for drop/end, its resolved direct object) in the active span.
-          const idiomSpan = idiomCancelSplitSpan(part, resolveDirectObjectEnd, knownTaskTexts);
+          const idiomSpan = idiomCancelSplitSpan(part, resolveDirectObjectEnd, knownTaskLabels);
           if (idiomSpan != null) {
             const before = part.slice(0, idiomSpan.start).trim();
             const activeCmd = part.slice(idiomSpan.start, idiomSpan.end).trim();
@@ -3170,7 +3217,7 @@ export class Call {
           if (split != null && isSafeSplitPrefix(prefix, true)) {
             const before = prefix.trim();
             const after = part.slice(split.index + split[0].length).trim();
-            if (hasHabitualStatement(after, knownTaskTexts)) {
+            if (hasHabitualStatement(after, knownTaskLabels)) {
               cur.canSplit = false;
               cur.parts.push(part);
             } else {
