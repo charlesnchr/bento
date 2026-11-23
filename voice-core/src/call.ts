@@ -41,7 +41,7 @@ import { Captions } from "./captions.ts";
 import { collapse, lastOrNull, take } from "./kt.ts";
 import { asksToCancel, commandIn } from "./commands.ts";
 import {
-  CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, LIST_TASKS, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
+  CANCEL_TASK, CHECK_TASK, CODE_TOOL, CallProtocol, DEFAULT_CONTEXT, FOLLOW_UP_CONTEXT, LIST_TASKS, REFERRED_CONTEXT, RESULT_LIMIT, TOOL, fullResult, response, taskResult,
   type Delegation, type HermesCall, type ResponseOptions,
 } from "./protocol.ts";
 import {
@@ -1110,6 +1110,7 @@ export class Call {
     this.generated = false;
     this.geminiSaid = "";
     this.boundary = true;
+    this.protocol.turnBreak();
   }
 
   private silentAbout(): void {
@@ -1452,6 +1453,7 @@ export class Call {
       this.replyDue = null;
       this.generated = false;
       this.dropTurn = false;
+      this.protocol.turnBreak();
     }
     for (const id of arr(obj(event.toolCallCancellation)?.ids).slice(0, 32)) {
       if (typeof id === "string") this.cancelledCalls.add(id);
@@ -1522,6 +1524,7 @@ export class Call {
     this.replyDue = null;
     this.generated = false;
     this.dropTurn = false;
+    this.protocol.turnBreak();
     this.updateWakeword();
   }
 
@@ -1775,7 +1778,8 @@ export class Call {
 
   /** A request that came from the screen, not a function call: nothing answers a call, and its result goes in as a turn. */
   private screenRun(text: string, followUp: boolean): Run {
-    const run = new Run(`screen-${this.nextScreen++}`, { id: "", task: text, context: this.protocol.context(), taskId: "", followUp, label: "" }, this.session, null, followUp);
+    const context = this.protocol.context(followUp ? FOLLOW_UP_CONTEXT : DEFAULT_CONTEXT);
+    const run = new Run(`screen-${this.nextScreen++}`, { id: "", task: text, context, taskId: "", followUp, label: "" }, this.session, null, followUp);
     run.acknowledged = true;
     run.answered = true;
     return run;
@@ -1805,7 +1809,7 @@ export class Call {
     if (!this.active || !task || text.length === 0 || text.length > 4000) return;
     this.chat.push({ role: "user", text: `(to "${task.label}") ${text}` });
     this.boundary = true;
-    if (this.steerable(task)) { task.runs++; this.steerInto(task, text); return; }
+    if (this.steerable(task)) { task.runs++; this.steerInto(task, text, true); return; }
     this.queueFromScreen(task, text);
   }
 
@@ -1814,11 +1818,11 @@ export class Call {
     return task.state === RUNNING && task.job != null && task.queued.length === 0 && this.c.steering.includes(task.agent);
   }
 
-  private steerInto(task: Task, text: string): void {
+  private steerInto(task: Task, text: string, typed = false): void {
     const job = task.job!;
     this.steered.set(job, task.id);
     this.log("info", `steering "${task.label}" while it works`);
-    this.emit({ type: "tool.steer", run: job, agent: task.agent, text, message: steerMessage(text) });
+    this.emit({ type: "tool.steer", run: job, agent: task.agent, text, message: steerMessage(text, typed) });
     this.cue("taskStarted");
     this.showTask(task);
     this.settled();
@@ -1915,7 +1919,7 @@ export class Call {
       else this.respond(d.id, `Not executed: Hermes is already working on this request in "${same.label}". Wait for its result. No automatic retry.`, false, { task: same.label });
       return;
     }
-    const request = this.protocol.request(d);
+    const request = this.protocol.request(d, refersBack ? REFERRED_CONTEXT : DEFAULT_CONTEXT);
     if (request != null && refersBack) request.refersBack = true;
     if (this.cancelledCalls.has(d.id)) return;
     if (request == null) {
@@ -1932,6 +1936,7 @@ export class Call {
     }
     const answered = answering.length === 1 ? answering[0] : null;
     const task = found ?? answered;
+    if (task != null && !refersBack) request.context = this.protocol.context(FOLLOW_UP_CONTEXT, d);
     const run = new Run(d.id, request, this.session, d.turn, task != null);
     if (task != null) this.followUp(task, run, found == null);
     else {
@@ -1990,7 +1995,7 @@ export class Call {
       this.respond(run.callId, asAnswer + `"${task.label}" is still working: ${task.agent === "t3" ? "the coding agent" : "Hermes"} got this follow-up while ` +
         "it works and takes it into account, and one result covers both." + (say ?? " Don't announce it."), true, { task: task.label, scheduling: say != null ? "WHEN_IDLE" : "SILENT" });
       run.closed = true;
-      this.steerInto(task, run.request.task);
+      this.steerInto(task, run.request.task, this.textLine != null);
       return;
     }
     if (task.state === RUNNING) {
@@ -2488,8 +2493,10 @@ function taskRef(call: Json): string | null {
 }
 
 /** What a running agent gets when the user adds to its task. */
-function steerMessage(text: string): string {
-  return "The user added this while you work on the task (transcribed from their voice call, may be imperfect). Take it " +
+function steerMessage(text: string, typed = false): string {
+  return (typed
+    ? "The user added this while you work on the task. Take it "
+    : "The user added this while you work on the task (transcribed from their voice call, may be imperfect). Take it ") +
     "into account in what you're doing now, without starting over unless it asks you to:\n" + text;
 }
 
