@@ -13,6 +13,7 @@ import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
 import { Replay } from "./replay.ts";
 import { AutoScroller } from "./scroll.ts";
+import { ResultStore, resultSnippet, type ResultEntry } from "./results.ts";
 
 interface Core {
   version: string;
@@ -70,8 +71,11 @@ const sockets = new Map<number, WebSocket>();
 /** The sockets to the transcription model: their audio is the model's again, so it isn't counted or logged twice. */
 const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
-interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
+interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; resultId?: number; resultText?: string; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
+const resultStore = new ResultStore();
+const resultRows = new Map<number, HTMLElement>();
+let doneToggledByUser = false;
 let earlierActiveCount = 0;
 let earlierWaitingCount = 0;
 let counts = { mic: 0, play: 0, sent: 0 };
@@ -172,6 +176,17 @@ function applyTheme(choice: string) {
   for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#theme-picker button"))) {
     btn.classList.toggle("on", btn.dataset.theme === (choice || "system"));
   }
+}
+
+function applyDensity(choice: string) {
+  const normalized = choice === "comfortable" ? "comfortable" : "compact";
+  const root = document.documentElement;
+  if (normalized === "comfortable") root.dataset.density = "comfortable";
+  else delete root.dataset.density;
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#density-picker button"))) {
+    btn.classList.toggle("on", btn.dataset.density === normalized);
+  }
+  requestAnimationFrame(syncAllResultClamps);
 }
 
 // The screen.
@@ -359,33 +374,150 @@ function note(text: string) {
   scrollDown();
 }
 
-function result(agent: string, label: string, text: string, failed = false): HTMLElement {
+function syncResultClamp(row: HTMLElement) {
+  if (row.classList.contains("collapsed")) return;
+  const body = row.querySelector<HTMLElement>(".body");
+  const foot = row.querySelector<HTMLElement>(".res-foot");
+  const more = row.querySelector<HTMLButtonElement>(".more");
+  if (!body || !foot || !more) return;
+  if (row.classList.contains("open")) {
+    row.classList.add("clamped");
+    foot.hidden = false;
+    more.textContent = "Show less";
+    return;
+  }
+  const overflows = body.scrollHeight > body.clientHeight + 4;
+  row.classList.toggle("clamped", overflows);
+  foot.hidden = !overflows;
+  more.textContent = "Show full";
+}
+
+function syncAllResultClamps() {
+  for (const row of resultRows.values()) {
+    if (row.isConnected) syncResultClamp(row);
+  }
+  transcriptScroll.onResize();
+}
+
+function setResultCollapsed(row: HTMLElement, collapsed: boolean) {
+  row.classList.toggle("collapsed", collapsed);
+  if (collapsed) row.classList.remove("open");
+  const fold = row.querySelector<HTMLButtonElement>(".res-fold");
+  if (fold) {
+    fold.textContent = collapsed ? "▸" : "▾";
+    fold.setAttribute("aria-expanded", String(!collapsed));
+    fold.title = collapsed ? "Show preview" : "Collapse result";
+    fold.setAttribute("aria-label", collapsed ? "Show preview" : "Collapse result");
+  }
+  if (!collapsed) requestAnimationFrame(() => { syncResultClamp(row); transcriptScroll.syncFromPosition(); });
+  else transcriptScroll.syncFromPosition();
+}
+
+function syncResultsChrome() {
+  const count = resultStore.count;
+  const btn = $("results-btn");
+  btn.hidden = count === 0;
+  $("results-count").textContent = count > 0 ? String(count) : "";
+  btn.classList.toggle("on", resultStore.current != null);
+  if (resultStore.current) {
+    const idx = resultStore.currentIndex;
+    $("inspector-pos").textContent = `${idx + 1} / ${count}`;
+    $<HTMLButtonElement>("inspector-prev").disabled = idx <= 0;
+    $<HTMLButtonElement>("inspector-next").disabled = idx >= count - 1;
+  }
+}
+
+function renderInspector() {
+  const entry = resultStore.current;
+  for (const [id, row] of resultRows) {
+    row.classList.toggle("inspected", entry != null && entry.id === id);
+  }
+  $("inspector").hidden = !entry;
+  $("side-scroll").hidden = Boolean(entry);
+  syncResultsChrome();
+  if (!entry) return;
+  const badge = $("inspector-badge");
+  badge.className = `badge ${entry.agent === "t3" ? "t3" : ""}`.trim();
+  badge.textContent = entry.agent === "t3" ? "T3" : "Hermes";
+  $("inspector-title").textContent = entry.label;
+  const pill = $("inspector-pill");
+  pill.hidden = !entry.failed;
+  pill.textContent = entry.failed ? "Failed" : "";
+  const idx = resultStore.currentIndex;
+  const total = resultStore.count;
+  $("inspector-pos").textContent = `${idx + 1} / ${total}`;
+  $<HTMLButtonElement>("inspector-prev").disabled = idx <= 0;
+  $<HTMLButtonElement>("inspector-next").disabled = idx >= total - 1;
+  $<HTMLButtonElement>("inspector-locate").disabled = !resultRows.get(entry.id)?.isConnected;
+  const body = $("inspector-body");
+  body.innerHTML = markdown(entry.text);
+  body.scrollTop = 0;
+}
+
+function openInspector(id?: number, opener?: HTMLElement | null) {
+  const entry = resultStore.open(id);
+  if (!entry) return;
+  renderInspector();
+  if (mobileLayout.matches) setTasksOpen(true, opener);
+}
+
+function closeInspector() {
+  resultStore.close();
+  renderInspector();
+}
+
+function result(agent: string, label: string, text: string, failed = false, taskId?: string): { row: HTMLElement; entry: ResultEntry } {
   $("empty").hidden = true;
+  const normalizedAgent = agent === "t3" ? "t3" : "hermes";
+  const entry = resultStore.add({ agent: normalizedAgent, label, text, failed, taskId, at: Date.now() });
   const row = document.createElement("div");
-  row.className = `line result ${agent === "t3" ? "t3" : ""} ${failed ? "failed" : ""}`.trim();
-  const who = agent === "t3" ? "T3" : "Hermes";
-  row.innerHTML = `<div class="who"><span class="res-title"><span class="badge ${agent === "t3" ? "t3" : ""}">${who}</span><span class="res-label">${escapeHtml(label)}</span></span><span class="res-pill">${failed ? "Failed" : "Result"}</span></div><div class="body">${markdown(text)}</div>`;
+  row.className = `line result ${normalizedAgent === "t3" ? "t3" : ""} ${failed ? "failed" : ""}`.trim();
+  row.dataset.resultId = String(entry.id);
+  const who = normalizedAgent === "t3" ? "T3" : "Hermes";
+  const snippet = resultSnippet(text, 120);
+  row.innerHTML =
+    `<div class="who">` +
+      `<span class="res-title">` +
+        `<span class="badge ${normalizedAgent === "t3" ? "t3" : ""}">${who}</span>` +
+        `<span class="res-label">${escapeHtml(label)}</span>` +
+        `<span class="res-snippet">${escapeHtml(snippet)}</span>` +
+      `</span>` +
+      `<span class="res-actions">` +
+        `${failed ? '<span class="res-pill">Failed</span>' : ""}` +
+        `<button type="button" class="res-btn res-inspect" title="Read full result in side panel">Inspect</button>` +
+        `<button type="button" class="res-btn res-fold" aria-expanded="true" title="Collapse result (Shift-click to toggle all)" aria-label="Collapse result">▾</button>` +
+      `</span>` +
+    `</div>` +
+    `<div class="body">${markdown(text)}</div>` +
+    `<div class="res-foot" hidden><button type="button" class="more">Show full</button></div>`;
+  const toggleCollapse = (all: boolean) => {
+    const next = !row.classList.contains("collapsed");
+    if (all) {
+      for (const r of resultRows.values()) if (r.isConnected) setResultCollapsed(r, next);
+    } else {
+      setResultCollapsed(row, next);
+    }
+  };
+  row.querySelector<HTMLElement>(".who")!.onclick = (e) => {
+    if ((e.target as HTMLElement).closest(".res-actions")) return;
+    toggleCollapse(e.shiftKey);
+  };
+  row.querySelector<HTMLButtonElement>(".res-fold")!.onclick = (e) => toggleCollapse(e.shiftKey);
+  const inspectBtn = row.querySelector<HTMLButtonElement>(".res-inspect")!;
+  inspectBtn.onclick = () => openInspector(entry.id, inspectBtn);
+  const more = row.querySelector<HTMLButtonElement>(".more")!;
+  more.onclick = () => {
+    row.classList.toggle("open");
+    syncResultClamp(row);
+    transcriptScroll.syncFromPosition();
+  };
+  resultRows.set(entry.id, row);
   $("transcript").append(row);
   openLine = null;
-  const body = row.querySelector(".body") as HTMLElement;
-  requestAnimationFrame(() => {
-    if (body.scrollHeight > body.clientHeight + 4) {
-      row.classList.add("clamped");
-      const more = document.createElement("button");
-      more.className = "more";
-      more.type = "button";
-      more.textContent = "Show full result";
-      more.onclick = () => {
-        row.classList.toggle("open");
-        more.textContent = row.classList.contains("open") ? "Show less" : "Show full result";
-        transcriptScroll.syncFromPosition();
-      };
-      row.append(more);
-      scrollDown();
-    }
-  });
+  syncResultsChrome();
+  requestAnimationFrame(() => { syncResultClamp(row); scrollDown(); });
   scrollDown();
-  return row;
+  return { row, entry };
 }
 
 function elapsed(seconds: number): string {
@@ -411,6 +543,7 @@ function updateTaskChrome() {
   badge.hidden = activeTotal === 0;
   badge.textContent = String(activeTotal);
   badge.classList.toggle("warn", attentionTotal > 0);
+  $("inspector-back").classList.toggle("warn", attentionTotal > 0);
 
   const bar = $("mobile-tasks-bar");
   const showBar = activeTotal > 0;
@@ -431,8 +564,11 @@ function updateTaskChrome() {
 /** The Finished fold's count, and the fold itself only when something is in it. */
 function showDone() {
   const n = $("donenow").childElementCount + $("doneearlier").childElementCount;
-  $("donebox").hidden = n === 0;
+  const box = $<HTMLDetailsElement>("donebox");
+  box.hidden = n === 0;
   $("donecount").textContent = n > 0 ? `· ${n}` : "";
+  if (n > 0 && !doneToggledByUser) box.open = true;
+  noTasks.classList.toggle("compact", n > 0 || earlierActiveCount > 0);
 }
 
 function showTasks(force = false) {
@@ -470,7 +606,9 @@ function showTasks(force = false) {
       `<div class="label"></div>` +
       `<div class="p"></div>`;
     card.querySelector(".label")!.textContent = t.label;
-    card.querySelector(".p")!.textContent = t.progress ?? t.request;
+    card.querySelector(".p")!.textContent = !live(t.state) && view.resultText
+      ? resultSnippet(view.resultText, 120)
+      : (t.progress ?? t.request);
     if (t.question) {
       const q = document.createElement("div");
       q.className = "q";
@@ -515,13 +653,10 @@ function showTasks(force = false) {
       button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
       if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
-    if (view.result) button("Result", () => {
-      setTasksOpen(false);
-      view.result!.classList.add("open");
-      if (view.result !== $("transcript").lastElementChild) transcriptScroll.unpin();
-      else transcriptScroll.syncFromPosition();
-      view.result!.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
+    if (view.resultId != null) {
+      const id = view.resultId;
+      const b = button("Inspect", () => openInspector(id, b), "inspect-btn");
+    }
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
     (live(t.state) ? pane : done).append(card);
@@ -612,7 +747,10 @@ function showStatus(message?: string) {
   if (callId && !typed && muted && !holding && !speaking) text += " · muted";
   if (holding) text = "Talking (hold)";
   if (message) text = `${text}: ${message}`;
-  if (coreStatus !== "ended" || message) $("statustext").textContent = text;
+  if (coreStatus !== "ended" || message) {
+    $("statustext").textContent = text;
+    $("status").title = text;
+  }
   $<HTMLButtonElement>("hush").classList.toggle("live", speaking || (typed && thinking));
 
   const bar = $("callbar");
@@ -813,10 +951,10 @@ async function tool(c: Command) {
     if (!runs.has(c.run)) return;
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
-    const row = result(agent, c.label, text, failed);
+    const { row, entry } = result(agent, c.label, text, failed, c.taskId);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
     if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
-    if (view) { view.result = row; showTasks(); }
+    if (view) { view.result = row; view.resultId = entry.id; view.resultText = text; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
   };
   if (checked("fakehermes")) {
@@ -1109,6 +1247,15 @@ function settingsFromStorage() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if ((localStorage.getItem("voice.theme") ?? "system") === "system") applyTheme("system");
   });
+  const density = localStorage.getItem("voice.density") ?? "compact";
+  applyDensity(density);
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#density-picker button"))) {
+    btn.onclick = () => {
+      const choice = btn.dataset.density === "comfortable" ? "comfortable" : "compact";
+      localStorage.setItem("voice.density", choice);
+      applyDensity(choice);
+    };
+  }
 }
 
 const mobileLayout = matchMedia("(max-width: 920px)");
@@ -1151,8 +1298,12 @@ function tabs() {
   $("closesettings").onclick = () => { $("settings").hidden = true; };
   $("closesettings-x").onclick = () => { $("settings").hidden = true; };
   $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
-  $("tasks-toggle").onclick = () => setTasksOpen(!document.body.classList.contains("tasks-open"), $("tasks-toggle"));
-  $("mobile-tasks-bar").onclick = () => setTasksOpen(true, $("mobile-tasks-bar"));
+  $("tasks-toggle").onclick = () => {
+    const opening = !document.body.classList.contains("tasks-open");
+    if (opening) closeInspector();
+    setTasksOpen(opening, $("tasks-toggle"));
+  };
+  $("mobile-tasks-bar").onclick = () => { closeInspector(); setTasksOpen(true, $("mobile-tasks-bar")); };
   $("tasks-close").onclick = () => setTasksOpen(false);
   $("side-backdrop").onclick = () => setTasksOpen(false);
   mobileLayout.addEventListener("change", () => setTasksOpen(false));
@@ -1252,7 +1403,36 @@ async function main() {
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
-  $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
+  $("results-btn").onclick = () => { if (resultStore.current) closeInspector(); else openInspector(undefined, $("results-btn")); };
+  $("inspector-back").onclick = () => closeInspector();
+  $("inspector-prev").onclick = () => { resultStore.step(-1); renderInspector(); };
+  $("inspector-next").onclick = () => { resultStore.step(1); renderInspector(); };
+  $("inspector-copy").onclick = () => {
+    const cur = resultStore.current;
+    if (!cur) return;
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(cur.text).then(() => toast("Result copied"), () => toast("Could not copy"));
+    } else {
+      toast("Clipboard unavailable");
+    }
+  };
+  $("inspector-locate").onclick = () => {
+    const cur = resultStore.current;
+    if (!cur) return;
+    const row = resultRows.get(cur.id);
+    if (!row || !row.isConnected) return;
+    if (mobileLayout.matches) setTasksOpen(false);
+    if (row.classList.contains("collapsed")) setResultCollapsed(row, false);
+    if (row !== $("transcript").lastElementChild) transcriptScroll.unpin();
+    else transcriptScroll.syncFromPosition();
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.remove("located");
+    void row.offsetWidth;
+    row.classList.add("located");
+  };
+  $("donebox").querySelector("summary")!.addEventListener("click", () => { doneToggledByUser = true; });
+  $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open && doneToggledByUser) $("donebox").scrollIntoView({ block: "nearest" }); });
+  window.addEventListener("resize", () => requestAnimationFrame(syncAllResultClamps), { passive: true });
   $("say").onsubmit = (e) => void submitText(e);
   $("text").addEventListener("input", syncComposer);
   const transcriptPane = $("transcript");

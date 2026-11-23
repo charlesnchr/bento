@@ -15,6 +15,8 @@
   try {
     const t = localStorage.getItem("voice.theme");
     if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+    const d = localStorage.getItem("voice.density");
+    if (d === "comfortable") document.documentElement.dataset.density = d;
     const dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.getElementById("theme-color")?.setAttribute("content", dark ? "#0e0f0f" : "#f6f5f0");
   } catch {}
@@ -118,8 +120,8 @@
           <div class="mode-wrap" id="mode-wrap" data-mode="say">
             <select id="mode" title="Where a typed message goes" aria-label="Message target">
               <option value="say">Say it</option>
-              <option value="hermes">Hermes task</option>
-              <option value="t3">Coding task</option>
+              <option value="hermes">Hermes</option>
+              <option value="t3">Coding</option>
             </select>
           </div>
           <input type="text" id="text" placeholder="Message, or /h for Hermes, /t3 for code…" autocomplete="off" enterkeyhint="send">
@@ -164,13 +166,14 @@
     <div class="side-head">
       <div class="side-title"><span>Tasks</span><span id="taskcount"></span></div>
       <div class="side-head-acts">
+        <button id="results-btn" type="button" hidden title="Browse agent results">Results <span id="results-count"></span></button>
         <button id="cancelall" type="button" hidden title="Cancel every running task">Cancel all</button>
         <button id="tasks-close" class="icon-btn" type="button" title="Close tasks" aria-label="Close tasks">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
     </div>
-    <div class="side-scroll">
+    <div class="side-scroll" id="side-scroll">
       <div id="tasks">
         <div id="notasks"><strong>No active tasks</strong>Ask for work during a call or chat and progress cards appear here.</div>
       </div>
@@ -182,6 +185,26 @@
         <summary><span>Finished <span id="donecount"></span></span></summary>
         <div id="done"><div id="donenow"></div><div id="doneearlier"></div></div>
       </details>
+    </div>
+    <div id="inspector" hidden>
+      <div class="inspector-nav">
+        <button id="inspector-back" type="button">← Tasks</button>
+        <div class="inspector-pager">
+          <button id="inspector-prev" class="icon-btn" type="button" title="Previous result" aria-label="Previous result">‹</button>
+          <span id="inspector-pos"></span>
+          <button id="inspector-next" class="icon-btn" type="button" title="Next result" aria-label="Next result">›</button>
+        </div>
+        <div class="inspector-acts">
+          <button id="inspector-locate" type="button" title="Jump to result in transcript">Locate</button>
+          <button id="inspector-copy" type="button" title="Copy raw text">Copy</button>
+        </div>
+      </div>
+      <div class="inspector-meta">
+        <span id="inspector-badge" class="badge"></span>
+        <span id="inspector-title"></span>
+        <span id="inspector-pill" class="res-pill" hidden></span>
+      </div>
+      <div id="inspector-body" class="inspector-body"></div>
     </div>
   </aside>
 </main>
@@ -259,6 +282,13 @@
             <button type="button" data-theme="system" class="on">System</button>
             <button type="button" data-theme="dark">Dark</button>
             <button type="button" data-theme="light">Light</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-text"><strong>Density</strong><small>Compact fits more messages and results on laptop screens.</small></span>
+          <div class="segmented" id="density-picker" role="group" aria-label="Density">
+            <button type="button" data-density="compact" class="on">Compact</button>
+            <button type="button" data-density="comfortable">Comfortable</button>
           </div>
         </div>
       </div>
