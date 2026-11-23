@@ -91,6 +91,7 @@ let wakeLock: { release(): Promise<void> } | null = null;
 let wakeArmed = false;
 let armGen = 0;
 let coreWantsWake = false;
+let callWhileSpeaking = "send";
 let wakeLoading = false;
 let wakeStarting = false;
 let startingCall = false;
@@ -667,12 +668,14 @@ function showStatus(message?: string) {
 
 // The call.
 
-function push(event: Record<string, unknown>) {
-  if (!core || !callId) return;
+function push(event: Record<string, unknown>): Command[] {
+  if (!core || !callId) return [];
   const e: Record<string, unknown> = { ...event, t: now() };
   const quiet = e.type === "mic" || e.type === "tick";
   if (!quiet) log("in", e.type === "ws.message" ? `ws ${e.sid} ← ${brief(String(e.data))}` : JSON.stringify(e).slice(0, 400), "in");
-  run(JSON.parse(core.push(callId, JSON.stringify(e))));
+  const commands = JSON.parse(core.push(callId, JSON.stringify(e))) as Command[];
+  run(commands);
+  return commands;
 }
 
 function run(commands: Command[]) {
@@ -1057,6 +1060,8 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     metrics.reply = [];
     startedAt = now();
     muted = given.muted === true;
+    const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
+    callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
     // A chat always carries on from what's on the screen (an earlier call or chat on this page).
     if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
@@ -1425,12 +1430,12 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
-    const wasLiveBargeIn = coreStatus !== "dormant" && coreStatus !== "standby";
-    push({ type: "wake" });
-    // On in-call barge-in (whileSpeaking "wake"), the core replaced recent frames with silence:
-    // replay the speech spoken right after the wake word so the opening syllables aren't clipped.
-    // (When waking from dormant or standby, the core already buffered and replays wakePreRoll itself.)
-    if (wasLiveBargeIn && callId !== 0 && hit.trailing.length > 0) {
+    const commands = push({ type: "wake" });
+    // Whenever the core cut audible playback (flush) under a mic-suppressing policy (whileSpeaking !== "send"),
+    // frames during playback were replaced with silence (both live and in dormant/standby pre-roll):
+    // replay the speech captured right after the wake word so the opening syllables aren't clipped.
+    const cutReply = commands.some((c) => c.type === "flush");
+    if (cutReply && callWhileSpeaking !== "send" && callId !== 0 && hit.trailing.length > 0) {
       for (const chunk of hit.trailing) {
         if (!callId) break;
         if (chunk.byteLength === 0) continue;

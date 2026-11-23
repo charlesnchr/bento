@@ -166,9 +166,10 @@ export class CallAudio {
     }
     if (this.context) { if (this.context.state === "suspended") await this.context.resume().catch(() => {}); return; }
     const init = (async () => {
-      const ctx = new AudioContext({ latencyHint: "interactive" });
-      ctx.onstatechange = () => this.stateListener?.();
+      let ctx: AudioContext | null = null;
       try {
+        ctx = new AudioContext({ latencyHint: "interactive" });
+        ctx.onstatechange = () => this.stateListener?.();
         const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
         await ctx.audioWorklet.addModule(url);
         const playback = new AudioWorkletNode(ctx, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
@@ -178,7 +179,7 @@ export class CallAudio {
         this.playback = playback;
         this.stateListener?.();
       } catch (err) {
-        try { await ctx.close?.(); } catch {}
+        try { await ctx?.close?.(); } catch {}
         throw err;
       } finally {
         this.opening = null;

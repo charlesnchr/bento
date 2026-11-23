@@ -251,3 +251,41 @@ test("CallAudio shares open() initialization and stops tracks if capture setup t
     URL.createObjectURL = prevCreateObjectURL;
   }
 });
+
+test("CallAudio retries open() cleanly after an AudioContext constructor failure", async () => {
+  const g = globalThis as Record<string, any>;
+  const prevAudioContext = g.AudioContext;
+  const prevWorkletNode = g.AudioWorkletNode;
+  const prevCreateObjectURL = URL.createObjectURL;
+
+  let attempts = 0;
+  g.AudioContext = class {
+    state = "running";
+    baseLatency = 0;
+    destination = {};
+    onstatechange: (() => void) | null = null;
+    audioWorklet = { addModule: async () => {} };
+    resume = async () => { this.state = "running"; };
+    close = async () => {};
+    constructor() {
+      attempts++;
+      if (attempts === 1) throw new Error("AudioContext blocked");
+    }
+  };
+  g.AudioWorkletNode = class {
+    port = { onmessage: null as any, postMessage() {}, close() {} };
+    connect() {}
+  };
+  URL.createObjectURL = () => "blob:mock";
+
+  try {
+    const audio = new CallAudio();
+    await assert.rejects(() => audio.open(), /AudioContext blocked/);
+    await audio.open();
+    assert.equal(attempts, 2, "second open() must construct a fresh AudioContext");
+  } finally {
+    g.AudioContext = prevAudioContext;
+    g.AudioWorkletNode = prevWorkletNode;
+    URL.createObjectURL = prevCreateObjectURL;
+  }
+});
