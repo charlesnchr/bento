@@ -1578,8 +1578,19 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Please don't accidentally cancel the Noma booking",
     "Do not under any circumstances cancel the Noma booking",
     "I don't want you to cancel the Noma table",
+    "I don't want it to stop",
+    "I don't want that to stop",
+    "Do not let it stop",
+    "Never let it stop",
+    "Don't make it stop",
     "Don't you dare cancel the Noma table",
     "Don't you cancel the Noma table",
+    "I don't think you should cancel the Noma table",
+    "I don't need you to cancel the Noma table",
+    "Don't have them cancel the Noma table",
+    "Don't bother to cancel the Noma table",
+    "I'm not ready to cancel the Noma table",
+    "Don't worry don't cancel the Noma table",
   ]) {
     const s6 = chat();
     s6.type("Book a table at Noma");
@@ -1634,6 +1645,15 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10.calls("ask_hermes", { continue_task: "Noma patio hours" });
   s10.advance(0.1);
   assert.equal(s10.hermes().length, 1, "detached Dinner booking referenced in user's words must refuse instead of starting a fresh run");
+
+  // 8b) Even with no owned match at all, user's words naming a detached task's request ("For the Alchemist, yes, make it Friday") refuse continue_task("Friday seating").
+  const s10b = chat();
+  s10b.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Alchemist has tables Friday or Saturday.", active: false, request: "Book a table at Alchemist" });
+  s10b.advance(0.1);
+  s10b.type("For the Alchemist, yes, make it Friday");
+  s10b.calls("ask_hermes", { continue_task: "Friday seating" });
+  s10b.advance(0.1);
+  assert.equal(s10b.hermes().length, 0, "user's words naming detached Alchemist must refuse instead of starting a fresh run");
 
   // 9) Affirmative cancel lead-ins ("Don't worry/forget/hesitate", "don't need it", "not needed/working") still cancel cleanly.
   for (const phrase of [

@@ -1493,15 +1493,15 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val extByUserLabel = externalTasks.values.map { it.first }.filter { label ->
-                            val labelWords = TaskNames.distinctive(label)
-                            labelWords.isNotEmpty() && labelWords.any { it in TaskNames.distinctive(request.task) }
+                        val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
+                        val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
+                        if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
+                            target = byUser
+                        } else if (byDetail is Target.Owned) {
+                            val extConflicts = externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
+                            val matchedExt = extConflicts.lastOrNull()
+                            if (matchedExt != null) target = Target.External(matchedExt)
                         }
-                        val extConflicts = if (byDetail is Target.Owned) {
-                            externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
-                        } else emptyList()
-                        val matchedExt = extByUserLabel.lastOrNull() ?: extConflicts.lastOrNull()
-                        if (matchedExt != null) target = Target.External(matchedExt)
                     }
                 }
                 if (target is Target.External) {

@@ -4840,6 +4840,13 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 8 }
         assertEquals(1, asked.size, "continue_task('Alchemist') must refuse instead of starting a new run")
         assertTrue(transport.responses()[7].message().startsWith("Not executed:"), transport.responses()[7].message())
+
+        // Unmatched continue_task("Friday seating") when user's words name detached Alchemist must also refuse instead of starting a fresh run.
+        Live.turn(transport, "For the Alchemist, yes, make it Friday")
+        transport.push(Live.call("c4", args = mapOf("continue_task" to "Friday seating")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 9 }
+        assertEquals(1, asked.size, "user's words naming detached Alchemist must refuse continue_task('Friday seating')")
+        assertTrue(transport.responses()[8].message().startsWith("Not executed:"), transport.responses()[8].message())
         call.stop()
     }
 }

@@ -74,17 +74,30 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Matches negation before a cancel verb; `isDontCancel` filters out non-prohibiting idioms where the negation modifies another verb ("don't worry/forget/hesitate/need/wait", "never mind", "not working/needed"). */
-const NEG_TO_CANCEL = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\s+((?:[\w']+\s+){0,4}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
-const NON_PROHIBITING_GAP = /\b(?:mind|wait|bother|worry|forget|hesitate|need|needed|finished|done|ready|working|responding|loading|happening|moving|care|think|know|have|like|use|feel|see|hear|sure|that|this|now|anymore|it|them)\b/i;
+/** Matches each negation opener; `isDontCancel` inspects every occurrence independently so "Don't worry don't cancel" catches the second negation while skipping non-prohibiting lead-in idioms ("don't worry/forget/hesitate", "never mind", "don't need it", "not working/needed") and preserving prohibitions ("I don't want it to stop", "Do not let it stop", "I don't think you should cancel"). */
+const NEG_OPENER = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\b/gi;
+const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,4}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+const NON_PROHIBITING_FIRST = /^(?:mind|wait|worry|forget|hesitate)$/;
+const NOT_STATE_FIRST = /^(?:needed|finished|done|ready|working|responding|loading|happening|moving|sure|that|this)$/;
+const WANT_NEED_FIRST = /^(?:want|need|bother)$/;
+const PROHIBITING_LINK = /\b(?:to|should)\b/;
 
 function isDontCancel(clause: string): boolean {
-  const m = NEG_TO_CANCEL.exec(clause);
-  if (!m) return false;
-  const gap = m[3] ?? "";
-  if (NON_PROHIBITING_GAP.test(gap)) return false;
-  if (m[2] != null && gap.trim().split(/\s+/).filter(Boolean).length > 2) return false;
-  return true;
+  NEG_OPENER.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = NEG_OPENER.exec(clause)) != null) {
+    const rest = clause.slice(open.index + open[0].length);
+    const m = TO_CANCEL_VERB.exec(rest);
+    if (!m) continue;
+    const words = (m[1] ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const first = words[0] ?? "";
+    const tail = words.slice(1).join(" ");
+    if (NON_PROHIBITING_FIRST.test(first)) continue;
+    if (WANT_NEED_FIRST.test(first) && !PROHIBITING_LINK.test(tail)) continue;
+    if (open[2] != null && ((NOT_STATE_FIRST.test(first) && !PROHIBITING_LINK.test(tail)) || (words.length > 2 && !PROHIBITING_LINK.test(words.join(" "))))) continue;
+    return true;
+  }
+  return false;
 }
 /** Clause-level phrasing asking to keep or leave a task running (applies even without naming a task, e.g. "Keep it running", "Leave it alone"). */
 const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|(?!me\b|us\b)[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
@@ -2009,14 +2022,15 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Even if `named` didn't resolve to a detached task on its own (or hit an owned request discarded by label-only matching),
-        // check whether the user's words name a detached task or whether `named`/user words conflict with a detached task before starting a fresh run.
-        const extByUserLabel = this.externalTasks.filter((e) => TaskNames.mentions(request.task, e.label, ""));
-        const extConflicts = byDetail?.kind === "owned"
-          ? [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
-          : [];
-        const matchedExt = extByUserLabel[extByUserLabel.length - 1] ?? extConflicts[extConflicts.length - 1] ?? null;
-        if (matchedExt != null) target = { kind: "external", task: matchedExt };
+        // Check user's words (filtering generic action verbs) against detached labels, requests, and summaries before starting a fresh run.
+        const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+        const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
+        if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
+          target = byUser;
+        } else if (byDetail?.kind === "owned") {
+          const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)];
+          if (extConflicts.length > 0) target = { kind: "external", task: extConflicts[extConflicts.length - 1] };
+        }
       }
     }
     const where = this.textLine ? "this chat" : "this call";

@@ -648,8 +648,19 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Please don't accidentally cancel the Noma booking",
     "Do not under any circumstances cancel the Noma booking",
     "I don't want you to cancel the Noma table",
+    "I don't want it to stop",
+    "I don't want that to stop",
+    "Do not let it stop",
+    "Never let it stop",
+    "Don't make it stop",
     "Don't you dare cancel the Noma table",
     "Don't you cancel the Noma table",
+    "I don't think you should cancel the Noma table",
+    "I don't need you to cancel the Noma table",
+    "Don't have them cancel the Noma table",
+    "Don't bother to cancel the Noma table",
+    "I'm not ready to cancel the Noma table",
+    "Don't worry don't cancel the Noma table",
   ]) {
     const sv2 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv2.advance(0.1);
