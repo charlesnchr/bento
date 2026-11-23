@@ -283,7 +283,7 @@ const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|wit
 /** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff report aloud", "that staff training material aloud", "that sales report every morning / so slowly"). */
 const SUBJECT_PRONOUN = /^(?:i|we|you|they|he|she|it)$/i;
 const COLLECTIVE_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women)$/i;
-function isThatPredicateClause(prefix: string): boolean {
+function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
   const afterThat = /^\s+that\s+(.+)$/i.exec(prefix);
   if (!afterThat) return false;
   const rawBody = afterThat[1].trim();
@@ -293,8 +293,10 @@ function isThatPredicateClause(prefix: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // A 2-word topic followed directly by a reading adverb ("that staff report aloud", "that hotels list out loud") is always a demonstrative noun phrase.
-    if (coreWords.length === 2 && /\s+(?:aloud|out\s+loud)\s*$/i.test(rawBody)) return false;
+    // Actual reading requests ending in "aloud"/"out loud" ("Stop reading that staff report aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and the modifier isn't a bare human group ("people order aloud", "children sing aloud").
+    const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && /\s+(?:aloud|out\s+loud)\s*$/i.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
+    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1]))) return false;
+    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1])) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
@@ -3067,16 +3069,16 @@ export class Call {
     };
     const SHORT_STOP = new Set(["the", "and", "for", "with", "from", "into", "about", "now", "yet", "too", "all", "any", "our", "its", "his", "her", "you", "not", "but", "can", "may", "was", "are", "has", "had", "did", "get", "got", "one", "two", "out", "off", "day", "way", "new", "old", "use", "let", "see", "run", "set", "put", "try", "ask", "say", "end", "bit", "lot", "own", "per", "via", "etc", "to", "of", "in", "on", "at", "by", "as", "or", "if", "is", "be", "do", "so", "no", "up", "my", "me", "us", "we", "he", "it"]);
     const shortTokens = (s: string): Set<string> => new Set((s.toLowerCase().match(/[a-z0-9]{2,}/g) ?? []).filter((w) => !SHORT_STOP.has(w)));
-    const tailNamesShortCompetitor = (keptText: string, tailText: string, otherLabel: string, otherExtra: string, bestTask: Task, bestFull: number, otherDirect: number): boolean => {
+    const tailNamesShortCompetitor = (keptText: string, tailText: string, otherLabel: string, otherExtra: string, bestTask: Task, bestFull: number, otherDirect: number, isWithPrep: boolean): boolean => {
       const tailWords = shortTokens(tailText);
       if (tailWords.size === 0) return false;
       const bestWords = shortTokens(`${bestTask.label} ${bestTask.latest} ${bestTask.request}`);
-      const cleanOtherLabel = otherLabel.trim().toLowerCase();
-      if (cleanOtherLabel.length >= 2 && cleanOtherLabel.length <= 3 && !SHORT_STOP.has(cleanOtherLabel) && tailWords.has(cleanOtherLabel) && !bestWords.has(cleanOtherLabel)) {
-        return true;
-      }
       const otherWords = shortTokens(`${otherLabel} ${otherExtra}`);
       const sharesKeptTopic = bestFull === 0 || otherDirect > 0 || [...shortTokens(keptText)].some((w) => otherWords.has(w));
+      const cleanOtherLabel = otherLabel.trim().toLowerCase();
+      if ((!isWithPrep || sharesKeptTopic) && cleanOtherLabel.length >= 2 && cleanOtherLabel.length <= 3 && !SHORT_STOP.has(cleanOtherLabel) && tailWords.has(cleanOtherLabel) && !bestWords.has(cleanOtherLabel)) {
+        return true;
+      }
       if (sharesKeptTopic) {
         for (const w of tailWords) {
           if (w.length <= 3 && otherWords.has(w) && !bestWords.has(w)) return true;
@@ -3095,7 +3097,7 @@ export class Call {
         const otherDirect = this.clauseScore(keptText, other.label, otherExtra);
         const otherFull = this.clauseScore(fullText, other.label, otherExtra);
         if (!isWithPrep && otherFull > 0 && otherFull >= bestFull) return true;
-        if (!isWithPrep && tailNamesShortCompetitor(keptText, tailText, other.label, otherExtra, bestTask, bestFull, otherDirect)) return true;
+        if (tailNamesShortCompetitor(keptText, tailText, other.label, otherExtra, bestTask, bestFull, otherDirect, isWithPrep)) return true;
         if (otherDirect > 0 && otherFull > otherDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${other.label} ${otherExtra}`)) return true;
         }
@@ -3105,7 +3107,7 @@ export class Call {
         const extDirect = this.clauseScore(keptText, ext.label, extExtra);
         const extFull = this.clauseScore(fullText, ext.label, extExtra);
         if (extFull > 0 && extFull >= bestFull) return true;
-        if (tailNamesShortCompetitor(keptText, tailText, ext.label, extExtra, bestTask, bestFull, extDirect)) return true;
+        if (tailNamesShortCompetitor(keptText, tailText, ext.label, extExtra, bestTask, bestFull, extDirect, false)) return true;
         if (extDirect > 0 && extFull > extDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${ext.label} ${extExtra}`)) return true;
         }
@@ -3180,7 +3182,7 @@ export class Call {
     const isSafeSplitPrefix = (prefix: string, isSplit: boolean, speakVerb?: string): boolean => {
       const isReporting = speakVerb != null && REPORTING_SPEAK_VERB.test(speakVerb);
       if (isReporting && THAT_COMPLEMENT.test(prefix)) return false;
-      if (speakVerb != null && isThatPredicateClause(prefix)) return false;
+      if (speakVerb != null && isThatPredicateClause(prefix, speakVerb)) return false;
       if (speakVerb != null && PERSON_REPORTING_VERB.test(speakVerb) && prefix.trim().length > 0 && !/\babout\b/i.test(prefix)) return false;
       if (speakVerb == null && REPORTING_IN_CONTINUATION.test(prefix)) return false;
       if (EMBEDDED_CLAUSE.test(prefix)) return false;
@@ -3285,12 +3287,12 @@ export class Call {
     return active.length > 0 ? active : said;
   }
 
-  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact known task label such as "All the Time". */
+  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact known task label such as "All the Time" (including tasks already cancelled earlier in the same turn). */
   private isBroadCancel(text: string): boolean {
     const lower = text.toLowerCase();
     const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
     const labels = [
-      ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label.trim().toLowerCase()),
+      ...[...this.tasks.values()].map((t) => t.label.trim().toLowerCase()),
       ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
     ].filter((l) => l.length > 0);
     CANCEL_ALL_SCOPE.lastIndex = 0;
@@ -3323,7 +3325,9 @@ export class Call {
     const spans = this.parseCancelSpans(said);
     const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
     const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
-    const broadCancel = this.isBroadCancel(activeParts.join(". "));
+    // For unresolved exclusions ("Cancel both bookings, not that one"), fail closed whenever the active span reads as an all-tasks phrase even if a task also shares that label.
+    CANCEL_ALL_SCOPE.lastIndex = 0;
+    const broadCancel = CANCEL_ALL_SCOPE.test(activeParts.join(". "));
     for (const span of spans) {
       if (span.kind !== "protect") continue;
       const isExcept = /^except\b/i.test(span.parts[0] ?? "");

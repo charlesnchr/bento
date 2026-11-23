@@ -765,6 +765,14 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop mentioning that staff update so slowly and cancel the Noma table",
     "Stop mentioning that airlines issue confirmation and cancel the Noma table",
     "Stop mentioning that hotels email confirmation and cancel the Noma table",
+    "Stop mentioning that guests complain out loud and cancel the Noma table",
+    "Stop reading that people order aloud and cancel the Noma table",
+    "Stop reading that people cheer out loud and cancel the Noma table",
+    "Stop reading that children sing aloud and cancel the Noma table",
+    "Stop reading that women laugh aloud and cancel the Noma table",
+    "Stop reading that men shout out loud then cancel the Noma table",
+    "Stop reading that staff vote aloud and cancel the Noma table",
+    "Stop reading that hotels cancel aloud and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
@@ -889,4 +897,33 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv6.toolCall("x2", "cancel_task", { task: "Weather" });
   sv6.advance(0.1);
   assert.equal(sv6.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'just cancel the weather' after lead-in must cancel Weather");
+
+  // Voice mode: exact label "All the Time" stays out of cancel-all scope even after being cancelled first in the same turn, and short request-only recipients ("for HR" / "with HR") block cancelling QA "PDF export".
+  const sv7 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv7.advance(0.1);
+  sv7.turn("Search All the Time");
+  sv7.toolCall("c1", "ask_hermes", { label: "All the Time" });
+  sv7.advance(0.3);
+  sv7.turn("Check Paris weather");
+  sv7.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv7.advance(0.3);
+  sv7.turn("Cancel All the Time");
+  sv7.toolCall("x1", "cancel_task", { task: "All the Time" });
+  sv7.advance(0.1);
+  assert.equal(sv7.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode must cancel All the Time");
+  sv7.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv7.advance(0.1);
+  assert.equal(sv7.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode must not cancel unrelated Weather after All the Time stops running");
+
+  const sv8 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv8.advance(0.1);
+  sv8.push({ type: "note", id: "call-1-30", label: "Payroll", text: "Exporting.", active: true, request: "Export the PDF for HR" });
+  sv8.advance(0.1);
+  sv8.turn("Export the PDF for QA");
+  sv8.toolCall("c1", "ask_hermes", { label: "PDF export" });
+  sv8.advance(0.3);
+  sv8.turn("Never mind the dropped call just end the PDF export for HR");
+  sv8.toolCall("x1", "cancel_task", { task: "PDF export" });
+  sv8.advance(0.1);
+  assert.equal(sv8.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode detached Payroll requesting 'PDF for HR' must block cancelling QA 'PDF export'");
 });

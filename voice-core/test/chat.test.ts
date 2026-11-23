@@ -1659,6 +1659,14 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop mentioning that hotels email confirmation and cancel the Noma table",
     "Stop mentioning that agents email confirmation and cancel the Noma table",
     "Stop mentioning that hosts post confirmation and cancel the Noma table",
+    "Stop mentioning that guests complain out loud and cancel the Noma table",
+    "Stop reading that people order aloud and cancel the Noma table",
+    "Stop reading that people cheer out loud and cancel the Noma table",
+    "Stop reading that children sing aloud and cancel the Noma table",
+    "Stop reading that women laugh aloud and cancel the Noma table",
+    "Stop reading that men shout out loud then cancel the Noma table",
+    "Stop reading that staff vote aloud and cancel the Noma table",
+    "Stop reading that hotels cancel aloud and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2414,6 +2422,46 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ax.advance(0.1);
   assert.equal(s10ax.commands.filter((c) => c.type === "tool.cancel").length, 0, "owned HR summary requesting 'sales report for HR' must block cancelling 'Sales report'");
 
+  // 8w) Cancelling "All the Time" first in a turn must not unlock cancelling unrelated "Weather" in the same turn; unresolved exclusion on "Both bookings" still protects it; owned "with HR" competitor blocks cancelling QA "PDF export".
+  const s10ay = chat();
+  s10ay.type("Search All the Time");
+  s10ay.calls("ask_hermes", { label: "All the Time" });
+  s10ay.advance(0.1);
+  s10ay.type("Check Paris weather");
+  s10ay.calls("ask_hermes", { label: "Weather" });
+  s10ay.advance(0.1);
+  s10ay.type("Cancel All the Time");
+  s10ay.calls("cancel_task", { task: "All the Time" });
+  s10ay.advance(0.1);
+  assert.equal(s10ay.commands.filter((c) => c.type === "tool.cancel").length, 1, "first call must cancel All the Time");
+  s10ay.calls("cancel_task", { task: "Weather" });
+  s10ay.advance(0.1);
+  assert.equal(s10ay.commands.filter((c) => c.type === "tool.cancel").length, 1, "same-turn second call must not cancel unrelated Weather after All the Time stops running");
+
+  const s10az = chat();
+  s10az.type("Check both bookings");
+  s10az.calls("ask_hermes", { label: "Both bookings" });
+  s10az.advance(0.1);
+  s10az.type("Book a hotel");
+  s10az.calls("ask_hermes", { label: "Hotel booking" });
+  s10az.advance(0.1);
+  s10az.type("Cancel both bookings, not that one");
+  s10az.calls("cancel_task", { task: "Both bookings" });
+  s10az.advance(0.1);
+  assert.equal(s10az.commands.filter((c) => c.type === "tool.cancel").length, 0, "unresolved 'not that one' must still protect 'Both bookings'");
+
+  const s10ba = chat();
+  s10ba.type("Export the PDF for QA");
+  s10ba.calls("ask_hermes", { label: "PDF export" });
+  s10ba.advance(0.1);
+  s10ba.type("Export the PDF with HR");
+  s10ba.calls("ask_hermes", { label: "Payroll" });
+  s10ba.advance(0.1);
+  s10ba.type("Never mind the dropped call just end the PDF export with HR");
+  s10ba.calls("cancel_task", { task: "PDF export" });
+  s10ba.advance(0.1);
+  assert.equal(s10ba.commands.filter((c) => c.type === "tool.cancel").length, 0, "owned Payroll requesting 'PDF with HR' must block cancelling QA 'PDF export'");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2444,6 +2492,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff meeting agenda and cancel the weather",
     "Stop reading that staff rota aloud and cancel the weather",
     "Stop reading that staff report aloud then cancel the weather",
+    "Stop reading that sales order confirmation aloud then cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
     "Stop reading that sales report summary and cancel the weather",
