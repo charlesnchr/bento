@@ -1668,6 +1668,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that staff vote aloud and cancel the Noma table",
     "Stop reading that hotels cancel aloud and cancel the Noma table",
     "Stop reading that auditors review terms aloud and cancel the Noma table",
+    "Stop reading that airlines catalog complaints and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2493,6 +2494,21 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10bc.calls("cancel_task", { task: "All the Time" });
   s10bc.advance(0.1);
   assert.equal(s10bc.commands.filter((c) => c.type === "tool.cancel").length, 1, "leading 'Not that one, cancel All the Time' must cancel 'All the Time'");
+
+  // 8y) A finished task named "All the Time" still masks "All" on bare "Cancel All the Time" (so unrelated "Weather" is refused), whether it finished before the user spoke or before the model called cancel_task.
+  const s10bd = chat();
+  s10bd.type("Search All the Time");
+  s10bd.calls("ask_hermes", { label: "All the Time" });
+  s10bd.advance(0.1);
+  s10bd.complete("Found it.", s10bd.hermes()[0].run);
+  s10bd.advance(0.1);
+  s10bd.type("Check Paris weather");
+  s10bd.calls("ask_hermes", { label: "Weather" });
+  s10bd.advance(0.1);
+  s10bd.type("Cancel All the Time");
+  s10bd.calls("cancel_task", { task: "Weather" });
+  s10bd.advance(0.1);
+  assert.equal(s10bd.commands.filter((c) => c.type === "tool.cancel").length, 0, "finished 'All the Time' must still prevent bare 'Cancel All the Time' from cancelling unrelated Weather");
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
