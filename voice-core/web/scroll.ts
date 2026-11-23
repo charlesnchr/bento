@@ -124,7 +124,13 @@ export class AutoScroller {
   cancelJump(): void {
     if (!this.jumping) return;
     this.jumping = false;
-    if (this.distance() > this.pinThreshold) this.pinned = false;
+    if (this.isVisible()) {
+      const top = this.pane.scrollTop;
+      if (this.pane.scrollTo) this.pane.scrollTo({ top, behavior: "instant" });
+      else this.pane.scrollTop = top;
+      this.lastScrollTop = this.pane.scrollTop;
+      if (this.distance() > this.pinThreshold) this.pinned = false;
+    }
     this.updateJump();
   }
 

@@ -520,7 +520,7 @@ function showTasks(force = false) {
       view.result!.classList.add("open");
       if (view.result !== $("transcript").lastElementChild) transcriptScroll.unpin();
       else transcriptScroll.syncFromPosition();
-      view.result!.scrollIntoView({ behavior: "smooth", block: "center" });
+      view.result!.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);

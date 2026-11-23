@@ -7,6 +7,8 @@ class FakePane implements ScrollPane {
   scrollHeight: number;
   clientHeight: number;
   smoothTargets: number[] = [];
+  scrollCalls: { top: number; behavior?: ScrollBehavior }[] = [];
+  animTarget: number | null = null;
 
   constructor(clientHeight = 500, scrollHeight = 500) {
     this.clientHeight = clientHeight;
@@ -20,10 +22,32 @@ class FakePane implements ScrollPane {
   set scrollTop(value: number) {
     const max = Math.max(0, this.scrollHeight - this.clientHeight);
     this._scrollTop = Math.max(0, Math.min(value, max));
+    this.animTarget = null;
   }
 
   scrollTo(options: { top: number; behavior?: ScrollBehavior }): void {
-    this.smoothTargets.push(options.top);
+    this.scrollCalls.push(options);
+    if (options.behavior === "smooth") {
+      this.smoothTargets.push(options.top);
+      this.animTarget = Math.max(0, Math.min(options.top, Math.max(0, this.scrollHeight - this.clientHeight)));
+    } else {
+      this.scrollTop = options.top;
+    }
+  }
+
+  /** Advance an active smooth-scroll animation by up to `delta` px. */
+  stepAnimation(delta: number, scroller: AutoScroller): void {
+    if (this.animTarget == null) return;
+    const diff = this.animTarget - this._scrollTop;
+    if (Math.abs(diff) <= delta) {
+      this._scrollTop = this.animTarget;
+      this.animTarget = null;
+      scroller.onScroll();
+      scroller.onScrollEnd();
+    } else {
+      this._scrollTop += Math.sign(diff) * delta;
+      scroller.onScroll();
+    }
   }
 
   /** Simulate a browser clamping scrollTop when scrollHeight shrinks or clientHeight grows. */
@@ -174,8 +198,8 @@ describe("AutoScroller", () => {
     assert.equal(jumpShown, false);
 
     // Mid-animation progress does not unpin.
-    pane.scrollTop = 500;
-    scroller.onScroll();
+    pane.stepAnimation(300, scroller);
+    assert.equal(pane.scrollTop, 500);
     assert.equal(scroller.isPinned, true);
 
     // New message arriving mid-animation retargets to the updated bottom.
@@ -183,16 +207,22 @@ describe("AutoScroller", () => {
     scroller.onContent();
     assert.deepEqual(pane.smoothTargets, [1500, 1700]);
 
-    // User cancels mid-flight (e.g. touchstart / wheel up) far from bottom.
+    // User cancels mid-flight (e.g. touchstart / wheel up) far from bottom: native animation must stop.
     scroller.cancelJump();
+    assert.deepEqual(pane.scrollCalls.at(-1), { top: 500, behavior: "instant" });
+    assert.equal(pane.animTarget, null);
     assert.equal(scroller.isPinned, false);
     assert.equal(jumpShown, true);
 
+    // Stepping the animation after cancel moves nothing.
+    pane.stepAnimation(500, scroller);
+    assert.equal(pane.scrollTop, 500);
+    assert.equal(scroller.isPinned, false);
+
     // Another jump completes smoothly to bottom.
     scroller.jumpToBottom();
-    pane.scrollTop = 1200;
-    scroller.onScroll();
-    scroller.onScrollEnd();
+    pane.stepAnimation(1000, scroller);
+    assert.equal(pane.scrollTop, 1200);
     assert.equal(scroller.isPinned, true);
     assert.equal(jumpShown, false);
   });
