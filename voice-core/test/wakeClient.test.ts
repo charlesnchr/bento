@@ -408,7 +408,7 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
   const gen = () => worker.sent.at(-1)!.gen as number;
   worker.emit({ type: "ready", gen: gen(), modelId: "pennyworth", warmupMs: 10 });
 
-  function run(out: Command[], eventTime: number) {
+  function run(out: Command[], eventTime: number, eventType?: string) {
     for (const c of out) {
       commands.push(c);
       if (c.type === "ws.connect" && c.purpose !== "captions") {
@@ -423,12 +423,15 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
       } else if (c.type === "play") {
         gate.onPlay(c.pcm, eventTime, c.source);
       } else if (c.type === "flush") {
-        gate.onFlush(eventTime);
+        gate.onFlush(eventTime, eventType);
+      } else if (c.type === "brief") {
+        gate.onBriefRequest(c.id);
       } else if (c.type === "wakeword") {
         coreWantsWake = c.on;
         if (c.on) {
+          const preserveInFlight = wakePeriodActive && client.suppressedInFlight;
           wakePeriodActive = true;
-          client.reset();
+          if (!preserveInFlight) client.reset();
         }
       }
     }
@@ -439,7 +442,7 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
       push({ type: "mic", pcm: item.pcm }, item.t);
     }
     const out = call.push({ ...event, t: at } as Event);
-    run(out, at);
+    run(out, at, typeof event.type === "string" ? event.type : undefined);
     return out;
   }
 
@@ -481,12 +484,16 @@ function createCoreHarness(configOverrides: Partial<CallConfig> & Record<string,
   }
 
   function emitDetected(seq: number, restTag?: number) {
+    const feedMsg = worker.sent.find((m) => m.type === "feed" && m.seq === seq);
+    assert.ok(feedMsg, `expected feed message for seq ${seq}`);
     const rest = restTag != null ? new Int16Array(320).fill(restTag).buffer : new ArrayBuffer(0);
-    worker.emit({ type: "detected", gen: worker.sent.filter((m) => typeof m.gen === "number").at(-1)!.gen, seq, score: 0.95, atFrame: 4, restBytes: rest, inferMs: 2 });
+    worker.emit({ type: "detected", gen: feedMsg.gen, seq, score: 0.95, atFrame: 4, restBytes: rest, inferMs: 2 });
   }
 
   function emitAck(seq: number) {
-    worker.emit({ type: "ack", gen: worker.sent.filter((m) => typeof m.gen === "number").at(-1)!.gen, seq });
+    const feedMsg = worker.sent.find((m) => m.type === "feed" && m.seq === seq);
+    assert.ok(feedMsg, `expected feed message for seq ${seq}`);
+    worker.emit({ type: "ack", gen: feedMsg.gen, seq });
   }
 
   return { worker, gate, client, call, commands, sentAudioTags, start, push, advanceTo, micFrame, modelAudio, emitDetected, emitAck, getSid: () => sid, setT: (v: number) => { t = v; } };
@@ -662,9 +669,51 @@ test("WakeAudioGate: playback-end wake replays [1, 2] in order, and seq=0 gap fl
   openHarness.modelAudio(0.3, 1.28);
   assert.equal(openHarness.gate.hasDeferred, false);
 
-  // Late wake hit for openSeq1 still interrupts resumed playback without appending 1001 after 2002.
+  // Late wake hit for openSeq1 (echoing openSeq1's original feed generation!) still interrupts
+  // resumed playback without appending 1001 after 2002.
   openHarness.setT(1.30);
   openHarness.emitDetected(openSeq1, 1001);
   assert.ok(openHarness.commands.filter((c) => c.type === "flush").length > flushesBefore);
   assert.deepEqual(openHarness.sentAudioTags.filter((tag) => tag !== 0), [2002]);
+});
+
+test("WakeAudioGate: cutting a host brief at >= 80% played does not leave pendingHostBriefs stuck", () => {
+  const h = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  h.start();
+  h.advanceTo(0.2);
+
+  // Trigger a host brief (0.4 s) and cut it via wake at 87.5% played (0.35 s into 0.40 s).
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 0.22);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "Check tests" } } }) }, 0.24);
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 0.26);
+  h.push({
+    type: "ws.message",
+    sid: h.getSid(),
+    data: JSON.stringify({ toolCall: { functionCalls: [{ id: "tc2", name: "ask_hermes", args: {} }] } }),
+  }, 0.3);
+  h.advanceTo(0.45);
+  h.advanceTo(0.65);
+  const tc = h.commands.find((c): c is Extract<Command, { type: "tool.call" }> => c.type === "tool.call")!;
+  h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 0.68);
+  h.push({ type: "tool.result", run: tc.run, text: "Tests passed." }, 0.7);
+  const briefReq = h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief")!;
+  const briefPcm = Buffer.alloc(Math.round(0.4 * 24_000) * 2, 1).toString("base64");
+  h.push({ type: "brief.ready", id: briefReq.id, text: "Tests passed.", pcm: briefPcm }, 1.5);
+  assert.ok(h.commands.some((c) => c.type === "play" && c.source === "announcer"), "brief should play at 1.5");
+
+  // Cut at 1.85 (0.35 / 0.40 = 87.5% >= 80%): core marks brief heard and does NOT re-queue it.
+  h.push({ type: "wake" }, 1.85);
+
+  // Subsequent model reply (2.1 -> 2.3): tick during playback-end gap must NOT flush deferred audio early.
+  h.sentAudioTags.length = 0;
+  h.modelAudio(0.2, 2.1);
+  const seq1 = h.micFrame(4004, 2.2);
+  h.micFrame(5005, 2.32);
+  assert.equal(h.gate.hasDeferred, true);
+  h.advanceTo(2.35);
+  assert.equal(h.gate.hasDeferred, true, "87.5% cut brief must not leave tick flushing deferred audio");
+  h.emitDetected(seq1, 4004);
+  assert.deepEqual(h.sentAudioTags.filter((tag) => tag !== 0), [4004, 5005]);
 });

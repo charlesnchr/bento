@@ -309,8 +309,10 @@ export interface DeferredMicFrame {
 export class WakeAudioGate {
   private whileSpeaking = "send";
   private speechUntil = 0;
+  private announcerFrom = 0;
   private announcerUntil = 0;
   private pendingHostBriefs = 0;
+  private requestedBriefIds = new Set<string>();
   private replayFloorSeq = 0;
   private deferred: DeferredMicFrame[] = [];
   private readonly maxDeferred: number;
@@ -322,8 +324,10 @@ export class WakeAudioGate {
   reset(whileSpeaking = "send", floorSeq = 0): void {
     this.whileSpeaking = whileSpeaking;
     this.speechUntil = 0;
+    this.announcerFrom = 0;
     this.announcerUntil = 0;
     this.pendingHostBriefs = 0;
+    this.requestedBriefIds.clear();
     this.replayFloorSeq = floorSeq;
     this.deferred = [];
   }
@@ -336,21 +340,30 @@ export class WakeAudioGate {
     return this.whileSpeaking !== "send" && t < this.speechUntil;
   }
 
+  onBriefRequest(id: string): void {
+    if (id) this.requestedBriefIds.add(id);
+  }
+
   onPlay(pcmBase64: string, eventTime: number, source?: string): void {
     const pad = pcmBase64.endsWith("==") ? 2 : pcmBase64.endsWith("=") ? 1 : 0;
     const pcmBytes = Math.max(0, Math.floor((pcmBase64.length * 3) / 4) - pad);
     this.speechUntil = Math.max(this.speechUntil, eventTime) + pcmBytes / 48_000;
     if (source === "announcer") {
       this.pendingHostBriefs = Math.max(0, this.pendingHostBriefs - 1);
+      this.announcerFrom = eventTime;
       this.announcerUntil = this.speechUntil;
     }
   }
 
-  onFlush(eventTime: number): void {
+  onFlush(eventTime: number, cause?: string): void {
     this.speechUntil = Math.min(this.speechUntil, eventTime);
     if (eventTime < this.announcerUntil) {
-      // A cut host brief (< 80% played) is re-queued by call.ts for a future tick.
-      this.pendingHostBriefs++;
+      // Match call.ts cutAnnouncement(): a brief cut at >= 80% (or explicitly stopped/hushed) is not re-queued.
+      const played = (eventTime - this.announcerFrom) / Math.max(0.1, this.announcerUntil - this.announcerFrom);
+      if (played < 0.8 && cause !== "interrupt" && cause !== "stop") {
+        this.pendingHostBriefs++;
+      }
+      this.announcerFrom = 0;
       this.announcerUntil = 0;
     }
   }
@@ -359,8 +372,18 @@ export class WakeAudioGate {
    * Called immediately before pushing an event to the core. Returns any deferred unsuppressed
    * gap frames that must reach the core first so new playback cannot silence them.
    */
-  beforePush(event: { type?: unknown; data?: unknown }): { pcm: string; t: number }[] {
-    if (event.type === "brief.ready") this.pendingHostBriefs++;
+  beforePush(event: { type?: unknown; id?: unknown; pcm?: unknown; text?: unknown; data?: unknown }): { pcm: string; t: number }[] {
+    if (
+      event.type === "brief.ready" &&
+      typeof event.id === "string" &&
+      this.requestedBriefIds.delete(event.id) &&
+      typeof event.pcm === "string" &&
+      event.pcm.length > 0 &&
+      typeof event.text === "string" &&
+      event.text.trim().length > 0
+    ) {
+      this.pendingHostBriefs++;
+    }
     if (this.deferred.length === 0) return [];
     const canStartPlayback =
       event.type === "brief.ready" ||

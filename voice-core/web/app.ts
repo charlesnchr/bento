@@ -913,20 +913,23 @@ function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
   // Flush deferred unsuppressed gap frames before any event that can start new playback
   // (advancing replayFloorSeq without resetting wakeClient, so a valid wake hit still lands).
-  for (const item of wakeGate.beforePush(event)) {
-    if (!callId) break;
-    counts.mic++;
-    push({ type: "mic", pcm: item.pcm }, item.t);
+  const flushed = wakeGate.beforePush(event);
+  if (medium === "voice") {
+    for (const item of flushed) {
+      if (!callId) break;
+      counts.mic++;
+      push({ type: "mic", pcm: item.pcm }, item.t);
+    }
   }
   const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
   if (!quiet) log("in", e.type === "ws.message" ? `ws ${e.sid} ← ${brief(String(e.data))}` : JSON.stringify(e).slice(0, 400), "in");
   const commands = JSON.parse(core.push(callId, JSON.stringify(e))) as Command[];
-  run(commands, t);
+  run(commands, t, typeof event.type === "string" ? event.type : undefined);
   return commands;
 }
 
-function run(commands: Command[], eventTime = now()) {
+function run(commands: Command[], eventTime = now(), eventType?: string) {
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
@@ -980,9 +983,12 @@ function run(commands: Command[], eventTime = now()) {
         break;
       }
       case "flush":
-        wakeGate.onFlush(eventTime);
+        wakeGate.onFlush(eventTime, eventType);
         audio.flush();
         log("out", "flush", "out");
+        break;
+      case "brief":
+        if (typeof c.id === "string") wakeGate.onBriefRequest(c.id);
         break;
       case "cue":
         audio.cue(c.pcm);
@@ -1715,10 +1721,11 @@ function ensureCoreWake(on: boolean) {
       log("warn", "core asked for wake word, but no models are available", "warn");
     } else {
       wakeLastTel = null;
+      const preserveInFlight = wakePeriodCallId === callId && wakeClient.modelId === model.id && wakeClient.suppressedInFlight;
       wakePeriodCallId = callId;
       if (!wakeClient.ready || wakeClient.modelId !== model.id) wakeLoading = true;
       wakeClient.load(model.id, wakeThreshold());
-      wakeClient.reset();
+      if (!preserveInFlight) wakeClient.reset();
       log("out", `wake word listening (${model.label})`, "out");
     }
   } else {
