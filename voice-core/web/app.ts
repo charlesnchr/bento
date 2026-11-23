@@ -71,6 +71,8 @@ const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
 interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
+let earlierActiveCount = 0;
+let earlierWaitingCount = 0;
 let counts = { mic: 0, play: 0, sent: 0 };
 let fakeTvLevel = 15;
 let coreStatus = "idle";
@@ -136,14 +138,14 @@ function median(xs: number[]): number | null {
 function showMetrics() {
   const parts: string[] = [];
   const rtt = median(metrics.rtt);
-  if (rtt != null) parts.push(`network ${Math.round(rtt * 1000)} ms`);
+  if (rtt != null) parts.push(`${Math.round(rtt * 1000)} ms`);
   const reply = median(metrics.reply);
-  if (reply != null) parts.push(`reply ${metrics.reply.at(-1)!.toFixed(1)} s (median ${reply.toFixed(1)})`);
+  if (reply != null) parts.push(`reply ${metrics.reply.at(-1)!.toFixed(1)}s (${reply.toFixed(1)}s med)`);
   const out = audio.outputLatency;
   if (out != null) parts.push(`audio ${Math.round(out * 1000)} ms`);
   let buffered = 0;
   for (const ws of sockets.values()) buffered += ws.bufferedAmount;
-  if (buffered > 32_000) parts.push(`upload behind ${(buffered / 32_000).toFixed(1)} s`);
+  if (buffered > 32_000) parts.push(`upload +${(buffered / 32_000).toFixed(1)}s`);
   $("metrics").textContent = parts.join(" · ");
 }
 
@@ -157,7 +159,74 @@ async function ping() {
   showMetrics();
 }
 
+// Theme.
+
+function applyTheme(choice: string) {
+  const root = document.documentElement;
+  if (choice === "dark" || choice === "light") root.dataset.theme = choice;
+  else delete root.dataset.theme;
+  const dark = choice === "dark" || (choice !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const meta = document.getElementById("theme-color");
+  if (meta) meta.setAttribute("content", dark ? "#0e0f0f" : "#f6f5f0");
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#theme-picker button"))) {
+    btn.classList.toggle("on", btn.dataset.theme === (choice || "system"));
+  }
+}
+
 // The screen.
+
+function setCallButton(live: boolean) {
+  const btn = $<HTMLButtonElement>("call");
+  btn.classList.toggle("live", live);
+  const label = btn.querySelector(".call-label");
+  if (label) label.textContent = live ? "Hang up" : "Call";
+}
+
+function syncResumeButtons(show: boolean) {
+  $("resume").hidden = !show;
+  $("hero-resume").hidden = !show;
+}
+
+function syncComposer() {
+  const input = $<HTMLInputElement>("text");
+  const raw = input.value;
+  const trimmed = raw.trim();
+  $("sendbtn").classList.toggle("ready", trimmed.length > 0);
+  const prefix = trimmed.match(/^\/(t3|code|h|hermes)\b/i);
+  const effective = prefix ? (/^(t3|code)$/i.test(prefix[1]) ? "t3" : "hermes") : $<HTMLSelectElement>("mode").value;
+  $("mode-wrap").dataset.mode = effective;
+}
+
+function updateJumpButton() {
+  const pane = $("transcript");
+  const away = pane.scrollHeight - pane.scrollTop - pane.clientHeight > 120;
+  $("jumpbottom").hidden = !away || !$("empty").hidden;
+}
+
+function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+const VIZ_WEIGHTS = [0.48, 0.86, 1.0, 0.78, 0.44];
+function updateVisualizer(mode: string, level: number) {
+  const viz = $("viz");
+  viz.dataset.mode = mode;
+  const bars = viz.children;
+  if (mode === "listening" || mode === "working") {
+    const energy = Math.min(1, level * 14);
+    for (let i = 0; i < bars.length; i++) {
+      const h = 0.24 + energy * VIZ_WEIGHTS[i] * 0.76;
+      (bars[i] as HTMLElement).style.transform = `scaleY(${h.toFixed(2)})`;
+    }
+  } else {
+    for (let i = 0; i < bars.length; i++) (bars[i] as HTMLElement).style.transform = "";
+  }
+}
 
 /** A system notification while the page is hidden: a task finished, or one needs the user. */
 function notify(title: string, body: string) {
@@ -206,7 +275,7 @@ function escapeHtml(text: string): string {
 function markdown(text: string): string {
   const blocks = escapeHtml(text.trim()).split(/```(?:\w+)?\n?/);
   return blocks.map((block, i) => {
-    if (i % 2 === 1) return `<pre>${block}</pre>`;
+    if (i % 2 === 1) return `<pre><code>${block.replace(/\n$/, "")}</code></pre>`;
     const inline = (s: string) => s
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
@@ -224,16 +293,17 @@ function markdown(text: string): string {
       }
       if (list) { html += `</${list}>`; list = null; }
       const heading = raw.match(/^#{1,6}\s+(.*)$/);
-      html += heading ? `<b>${inline(heading[1])}</b><br>` : raw.trim() === "" ? "<br>" : `${inline(raw)}<br>`;
+      html += heading ? `<div class="md-h">${inline(heading[1])}</div>` : raw.trim() === "" ? "<br>" : `${inline(raw)}<br>`;
     }
     if (list) html += `</${list}>`;
-    return html;
+    return html.replace(/(<br>)+$/, "");
   }).join("");
 }
 
 function scrollDown(force = false) {
   const pane = $("transcript");
   if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
+  updateJumpButton();
 }
 
 /** The core's number for the line the last row shows, until another row follows it. */
@@ -290,17 +360,20 @@ function note(text: string) {
 function result(agent: string, label: string, text: string, failed = false): HTMLElement {
   $("empty").hidden = true;
   const row = document.createElement("div");
-  row.className = `line result ${agent === "t3" ? "t3" : ""}`;
-  row.innerHTML = `<span class="who">${agent === "t3" ? "T3" : "Hermes"} · ${escapeHtml(label)}${failed ? " · failed" : ""}</span><div class="body">${markdown(text)}</div>`;
+  row.className = `line result ${agent === "t3" ? "t3" : ""} ${failed ? "failed" : ""}`.trim();
+  const who = agent === "t3" ? "T3" : "Hermes";
+  row.innerHTML = `<div class="who"><span class="res-title"><span class="badge ${agent === "t3" ? "t3" : ""}">${who}</span><span class="res-label">${escapeHtml(label)}</span></span><span class="res-pill">${failed ? "Failed" : "Result"}</span></div><div class="body">${markdown(text)}</div>`;
   $("transcript").append(row);
   openLine = null;
   const body = row.querySelector(".body") as HTMLElement;
   requestAnimationFrame(() => {
     if (body.scrollHeight > body.clientHeight + 4) {
+      row.classList.add("clamped");
       const more = document.createElement("button");
       more.className = "more";
-      more.textContent = "Show all";
-      more.onclick = () => { row.classList.toggle("open"); more.textContent = row.classList.contains("open") ? "Show less" : "Show all"; };
+      more.type = "button";
+      more.textContent = "Show full result";
+      more.onclick = () => { row.classList.toggle("open"); more.textContent = row.classList.contains("open") ? "Show less" : "Show full result"; };
       row.append(more);
     }
   });
@@ -309,9 +382,9 @@ function result(agent: string, label: string, text: string, failed = false): HTM
 }
 
 function elapsed(seconds: number): string {
-  if (seconds < 60) return `${Math.floor(seconds)} s`;
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
   const m = Math.floor(seconds / 60);
-  return m < 60 ? `${m} min ${Math.floor(seconds % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+  return m < 60 ? `${m}m ${Math.floor(seconds % 60)}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 /** The empty task list's words, kept to put back. */
@@ -319,6 +392,34 @@ const noTasks = document.getElementById("notasks")!;
 
 /** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
 const live = (state: string) => state === "running" || state.startsWith("waiting");
+
+function updateTaskChrome() {
+  const all = [...tasks.values()];
+  const running = all.filter((t) => t.c.state === "running").length;
+  const waiting = all.filter((t) => t.c.state.startsWith("waiting") || Boolean(t.approval)).length;
+  const activeTotal = running + waiting + earlierActiveCount;
+  const attentionTotal = waiting + earlierWaitingCount;
+
+  const badge = $("tasks-badge");
+  badge.hidden = activeTotal === 0;
+  badge.textContent = String(activeTotal);
+  badge.classList.toggle("warn", attentionTotal > 0);
+
+  const bar = $("mobile-tasks-bar");
+  const showBar = activeTotal > 0;
+  bar.hidden = !showBar;
+  bar.classList.toggle("visible", showBar);
+  bar.classList.toggle("warn", attentionTotal > 0);
+  if (showBar) {
+    const approval = all.find((t) => t.approval);
+    const label = approval
+      ? `Approval needed: ${approval.c.label}`
+      : attentionTotal > 0
+        ? `${attentionTotal} task${attentionTotal > 1 ? "s" : ""} waiting for you`
+        : `${activeTotal} active task${activeTotal > 1 ? "s" : ""}`;
+    $("mtb-text").textContent = label;
+  }
+}
 
 /** The Finished fold's count, and the fold itself only when something is in it. */
 function showDone() {
@@ -335,9 +436,17 @@ function showTasks(force = false) {
   pane.innerHTML = "";
   done.innerHTML = "";
   const all = [...tasks.values()].reverse();
-  if (all.length === 0) { pane.append(noTasks); $("taskcount").textContent = ""; showDone(); return; }
+  if (all.length === 0) {
+    pane.append(noTasks);
+    $("taskcount").textContent = "";
+    $("cancelall").hidden = true;
+    showDone();
+    updateTaskChrome();
+    return;
+  }
   const running = all.filter((t) => t.c.state === "running").length;
-  $("taskcount").textContent = running > 0 ? `${running} running` : "";
+  const activeCount = all.filter((t) => live(t.c.state)).length;
+  $("taskcount").textContent = running > 0 ? `${running} running` : activeCount > 0 ? `${activeCount} waiting` : "";
   $("cancelall").hidden = !callId || running < 2;
   for (const view of all) {
     const t = view.c;
@@ -345,8 +454,13 @@ function showTasks(force = false) {
     const card = document.createElement("div");
     card.className = `task ${waiting ? "waiting" : t.state}`;
     const age = (view.ended ?? now()) - view.since;
-    card.innerHTML = `<div class="top"><span class="badge ${t.agent === "t3" ? "t3" : ""}">${t.agent === "t3" ? "T3" : "Hermes"}</span>` +
-      `<span class="label"></span><span class="state">${t.state === "running" ? '<span class="spin"></span> ' : ""}${escapeHtml(t.state)} · ${elapsed(age)}</span></div>` +
+    card.innerHTML =
+      `<div class="meta-row">` +
+        `<span class="badge ${t.agent === "t3" ? "t3" : ""}">${t.agent === "t3" ? "T3" : "Hermes"}</span>` +
+        `<span class="state">${t.state === "running" ? '<span class="spin"></span>' : ""}${escapeHtml(t.state)}</span>` +
+        `<span class="age">${elapsed(age)}</span>` +
+      `</div>` +
+      `<div class="label"></div>` +
       `<div class="p"></div>`;
     card.querySelector(".label")!.textContent = t.label;
     card.querySelector(".p")!.textContent = t.progress ?? t.request;
@@ -359,7 +473,7 @@ function showTasks(force = false) {
     if (view.approval && t.state === "running") {
       const box = document.createElement("div");
       box.className = "approval";
-      box.innerHTML = `<div>Hermes asks to run:</div><code></code><div class="acts"></div>`;
+      box.innerHTML = `<div class="approval-head">Hermes asks to run</div><code></code><div class="acts"></div>`;
       box.querySelector("code")!.textContent = view.approval.command;
       const answer = (choice: "once" | "deny") => {
         view.approval = undefined;
@@ -369,8 +483,10 @@ function showTasks(force = false) {
       };
       for (const [label, choice] of [["Approve once", "once"], ["Deny", "deny"]] as const) {
         const b = document.createElement("button");
+        b.type = "button";
         b.textContent = label;
         if (choice === "once") b.className = "go";
+        else b.className = "danger";
         b.onclick = () => answer(choice);
         box.querySelector(".acts")!.append(b);
       }
@@ -379,23 +495,33 @@ function showTasks(force = false) {
     if (t.state !== "running") view.approval = undefined;
     const acts = document.createElement("div");
     acts.className = "acts";
-    const button = (text: string, fn: () => void) => { const b = document.createElement("button"); b.textContent = text; b.onclick = fn; acts.append(b); return b; };
+    const button = (text: string, fn: () => void, cls = "") => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      if (cls) b.className = cls;
+      b.onclick = fn;
+      acts.append(b);
+      return b;
+    };
     if (callId) {
       button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
-      if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }));
+      if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
-    if (view.result) button("Result", () => { view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
+    if (view.result) button("Result", () => { document.body.classList.remove("tasks-open"); view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
     (live(t.state) ? pane : done).append(card);
   }
+  if (pane.childElementCount === 0) pane.append(noTasks);
   showDone();
+  updateTaskChrome();
 }
 
 function followUpForm(card: HTMLElement, t: Command) {
   if (card.querySelector("form")) return;
   const form = document.createElement("form");
-  form.innerHTML = `<input type="text" placeholder="Tell “${escapeHtml(t.label)}”…" enterkeyhint="send"><button>Send</button>`;
+  form.innerHTML = `<input type="text" placeholder="Tell “${escapeHtml(t.label)}”…" enterkeyhint="send"><button type="submit">Send</button>`;
   const input = form.querySelector("input")!;
   form.onsubmit = (e) => {
     e.preventDefault();
@@ -420,27 +546,40 @@ async function showEarlier() {
   const done = $("doneearlier");
   pane.innerHTML = "";
   done.innerHTML = "";
+  earlierActiveCount = 0;
+  earlierWaitingCount = 0;
   for (const t of list) {
     const card = document.createElement("div");
     const state = t.waiting ? "waiting for approval in T3" : t.status;
     card.className = `task ${t.status === "running" ? "running" : t.waiting ? "waiting" : "finished"}`;
     const ago = Math.max(0, (Date.now() - Date.parse(t.updated)) / 1000);
-    card.innerHTML = `<div class="top"><span class="badge t3">T3</span><span class="label"></span>` +
-      `<span class="state">${t.status === "running" ? '<span class="spin"></span> ' : ""}${escapeHtml(state)} · ${elapsed(ago)} ago</span></div><div class="p"></div>`;
+    card.innerHTML =
+      `<div class="meta-row">` +
+        `<span class="badge t3">T3</span>` +
+        `<span class="state">${t.status === "running" ? '<span class="spin"></span>' : ""}${escapeHtml(state)}</span>` +
+        `<span class="age">${elapsed(ago)} ago</span>` +
+      `</div>` +
+      `<div class="label"></div>` +
+      `<div class="p"></div>`;
     card.querySelector(".label")!.textContent = t.title;
     card.querySelector(".p")!.textContent = t.last || (t.branch ? `On ${t.branch}` : "");
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (t.pr) { const a = document.createElement("a"); a.href = t.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Pull request"; acts.append(a); }
+    if (t.pr) { const a = document.createElement("a"); a.href = t.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Pull request ↗"; acts.append(a); }
     const copy = document.createElement("button");
+    copy.type = "button";
     copy.textContent = "Copy thread id";
     copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
     acts.append(copy);
     card.append(acts);
-    (t.status === "running" || t.waiting ? pane : done).append(card);
+    const active = t.status === "running" || t.waiting;
+    if (active) earlierActiveCount++;
+    if (t.waiting) earlierWaitingCount++;
+    (active ? pane : done).append(card);
   }
   $("earlierbox").hidden = pane.childElementCount === 0;
   showDone();
+  updateTaskChrome();
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -450,16 +589,30 @@ const STATUS_TEXT: Record<string, string> = {
 
 function showStatus(message?: string) {
   const typed = Boolean(callId) && medium === "text";
-  const speaking = callId && !typed && coreStatus !== "standby" && audio.queued > 0.05;
+  const speaking = Boolean(callId) && !typed && coreStatus !== "standby" && audio.queued > 0.05;
   const shown = speaking || (typed && thinking) ? "speaking" : coreStatus;
   $("status").className = shown;
+  document.body.dataset.state = callId ? shown : "idle";
   let text = speaking ? "Speaking" : STATUS_TEXT[coreStatus] ?? coreStatus;
   if (typed && coreStatus !== "ended") text = thinking ? "Writing…" : coreStatus === "working" ? "Chat · tasks running" : "Chat";
   if (callId && !typed && muted && !holding && !speaking) text += " · muted";
   if (holding) text = "Talking (hold)";
   if (message) text = `${text}: ${message}`;
   if (coreStatus !== "ended" || message) $("statustext").textContent = text;
-  $<HTMLButtonElement>("hush").classList.toggle("live", Boolean(speaking) || (typed && thinking));
+  $<HTMLButtonElement>("hush").classList.toggle("live", speaking || (typed && thinking));
+
+  const bar = $("callbar");
+  bar.hidden = !callId;
+  if (callId) {
+    $("callbar-state").textContent = text;
+    $("calltimer").hidden = typed;
+    if (!typed) $("calltimer").textContent = formatClock(now() - startedAt);
+    const vizMode = typed ? (thinking ? "thinking" : "idle")
+      : speaking ? "speaking"
+      : muted && !holding ? "muted"
+      : shown;
+    updateVisualizer(vizMode, muted && !holding ? 0 : audio.level);
+  }
 }
 
 // The call.
@@ -735,12 +888,14 @@ async function start(carryOn = false, typed = false) {
     delete given.captions;
   }
   $<HTMLButtonElement>("call").disabled = true;
+  $<HTMLButtonElement>("hero-call").disabled = true;
   if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission().catch(() => {});
   try {
     if (!typed) await audio.open();
     core = await loadCore();
   } finally {
     $<HTMLButtonElement>("call").disabled = false;
+    $<HTMLButtonElement>("hero-call").disabled = false;
   }
   if (callId) return; // another start got there first
   medium = typed ? "text" : "voice";
@@ -762,22 +917,24 @@ async function start(carryOn = false, typed = false) {
   if (carryOn && !typed) chat = savedHistory();
   lastLine = null;
   openLine = null;
-  $("resume").hidden = true;
+  syncResumeButtons(false);
   callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${typed ? "chat" : "web"}-${core.version}`;
   const created = JSON.parse(core.create(JSON.stringify(given), now()));
   callId = created.id;
   if (!typed) {
-    $<HTMLButtonElement>("call").textContent = "Hang up";
-    $("call").classList.add("live");
+    setCallButton(true);
     $<HTMLButtonElement>("mic").disabled = false;
   }
   $<HTMLButtonElement>("hush").disabled = false;
   $("mic").classList.toggle("muted", muted);
   run(created.commands);
+  showStatus();
   ticker = window.setInterval(() => {
     push({ type: "tick" });
     const level = muted && !holding ? 0 : audio.level;
-    $("ring").style.opacity = String(Math.min(1, level * 12));
+    const strength = Math.min(1, level * 12);
+    $("ring").style.opacity = String(strength);
+    $("ring").style.transform = `scale(${(1 + strength * 0.12).toFixed(3)})`;
     $("counts").textContent = `mic ${counts.mic} · sent ${counts.sent} · played ${counts.play} · queued ${audio.queued.toFixed(1)} s`;
     showStatus();
   }, 100);
@@ -809,7 +966,7 @@ function end() {
   window.clearInterval(ticker);
   window.clearInterval(traceTimer);
   stopWords.stop();
-  ending = saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); });
+  ending = saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); showStatus(); });
   audio.stop();
   for (const ws of sockets.values()) ws.close();
   sockets.clear();
@@ -818,11 +975,14 @@ function end() {
   for (const r of requests.values()) r.abort();
   requests.clear();
   thinking = false;
-  $<HTMLButtonElement>("call").textContent = "Call";
-  $("call").classList.remove("live");
+  setCallButton(false);
   for (const id of ["mic", "hush"]) $<HTMLButtonElement>(id).disabled = true;
   $("ring").style.opacity = "0";
-  $("resume").hidden = chat.length === 0;
+  $("ring").style.transform = "";
+  $("callbar").hidden = true;
+  $("micwarn").hidden = true;
+  document.body.dataset.state = "idle";
+  syncResumeButtons(chat.length > 0);
   void showEarlier();
   void wakeLock?.release().catch(() => {});
   wakeLock = null;
@@ -917,7 +1077,22 @@ function settingsFromStorage() {
   $("voice").addEventListener("change", () => localStorage.setItem("voice.voice", $<HTMLSelectElement>("voice").value));
   const mode = localStorage.getItem("voice.mode");
   if (mode) $<HTMLSelectElement>("mode").value = mode;
-  $("mode").addEventListener("change", () => localStorage.setItem("voice.mode", $<HTMLSelectElement>("mode").value));
+  $("mode").addEventListener("change", () => {
+    localStorage.setItem("voice.mode", $<HTMLSelectElement>("mode").value);
+    syncComposer();
+  });
+  const theme = localStorage.getItem("voice.theme") ?? "system";
+  applyTheme(theme);
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#theme-picker button"))) {
+    btn.onclick = () => {
+      const choice = btn.dataset.theme ?? "system";
+      localStorage.setItem("voice.theme", choice);
+      applyTheme(choice);
+    };
+  }
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if ((localStorage.getItem("voice.theme") ?? "system") === "system") applyTheme("system");
+  });
 }
 
 function tabs() {
@@ -928,11 +1103,17 @@ function tabs() {
         el.hidden = other !== name;
         $(`tab-${other}`).classList.toggle("on", other === name);
       }
+      document.body.classList.remove("tasks-open");
     };
   }
   $("gear").onclick = () => { $("settings").hidden = false; };
   $("closesettings").onclick = () => { $("settings").hidden = true; };
+  $("closesettings-x").onclick = () => { $("settings").hidden = true; };
   $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
+  $("tasks-toggle").onclick = () => document.body.classList.toggle("tasks-open");
+  $("mobile-tasks-bar").onclick = () => document.body.classList.add("tasks-open");
+  $("tasks-close").onclick = () => document.body.classList.remove("tasks-open");
+  $("side-backdrop").onclick = () => document.body.classList.remove("tasks-open");
 }
 
 function typing(): boolean {
@@ -942,7 +1123,12 @@ function typing(): boolean {
 
 function keys() {
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && callId) { push({ type: "interrupt" }); audio.flush(); return; }
+    if (e.key === "Escape") {
+      if (!$("settings").hidden) { $("settings").hidden = true; return; }
+      if (document.body.classList.contains("tasks-open")) { document.body.classList.remove("tasks-open"); return; }
+      if (callId) { push({ type: "interrupt" }); audio.flush(); return; }
+      return;
+    }
     if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") { setMuted(!muted); e.preventDefault(); }
     else if (e.key === "/") { $("text").focus(); e.preventDefault(); }
@@ -961,8 +1147,9 @@ async function submitText(e: Event) {
   // With no call on, typing starts a chat: the same main thread, in text.
   if (!callId) {
     input.value = "";
+    syncComposer();
     try { await start(false, true); } catch (err) { toast((err as Error).message); log("error", (err as Error).message, "err"); }
-    if (!callId) { input.value = text; return; }
+    if (!callId) { input.value = text; syncComposer(); return; }
   }
   // "/t3 …" and "/h …" pick the agent whatever the selector says.
   let mode = $<HTMLSelectElement>("mode").value;
@@ -975,11 +1162,12 @@ async function submitText(e: Event) {
     note(`You → new ${mode === "t3" ? "coding" : "Hermes"} task: ${text}`);
   }
   input.value = "";
+  syncComposer();
 }
 
 async function main() {
   server = await (await fetch("/config")).json();
-  $("route").textContent = `${server.route === "vertex" ? "GSK Vertex" : "Gemini API"} · ${server.model.split("/").pop()}`;
+  $("route").textContent = `${server.route === "vertex" ? "Vertex" : "Gemini API"} · ${server.model.split("/").pop()}`;
   $("version").textContent = server.version;
   $("build").textContent = `core ${server.version}`;
   settingsFromStorage();
@@ -1003,15 +1191,25 @@ async function main() {
     $("defaultsview").textContent = JSON.stringify(JSON.parse(c.defaults()), null, 2);
     $("defaultsview").hidden = !$("defaultsview").hidden;
   };
-  $("call").onclick = () => void callButton().catch((err) => { toast(err.message); log("error", err.message, "err"); });
-  $("resume").onclick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
-  if (savedHistory().length > 0) { $("resume").hidden = false; $("resume").title = "Call again, carrying on from the last conversation"; }
+  const onCallClick = () => void callButton().catch((err) => { toast(err.message); log("error", err.message, "err"); });
+  const onResumeClick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
+  $("call").onclick = onCallClick;
+  $("hero-call").onclick = onCallClick;
+  $("resume").onclick = onResumeClick;
+  $("hero-resume").onclick = onResumeClick;
+  if (savedHistory().length > 0) {
+    syncResumeButtons(true);
+    $("resume").title = "Call again, carrying on from the last conversation";
+  }
   $("mic").onclick = () => setMuted(!muted);
   $("hush").onclick = () => { push({ type: "interrupt" }); audio.flush(); };
   $("cancelall").onclick = () => push({ type: "cancelAll" });
   $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = (e) => void submitText(e);
-  $("text").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") void submitText(e); });
+  $("text").addEventListener("input", syncComposer);
+  $("transcript").addEventListener("scroll", updateJumpButton, { passive: true });
+  $("jumpbottom").onclick = () => scrollDown(true);
+  syncComposer();
   tabs();
   keys();
   const events = new EventSource("/events");

@@ -40,8 +40,9 @@ export class Replay {
     this.root = root;
     this.load = load;
     root.innerHTML = `
-      <div class="bar"><select class="pick"></select><button class="refresh">↻</button><button class="go">Replay</button>
-      <label><input type="checkbox" class="all"> show audio and ticks</label><span class="summary"></span></div>
+      <h2>Trace replay</h2>
+      <div class="bar"><select class="pick" aria-label="Recording"></select><button type="button" class="refresh" title="Refresh list" aria-label="Refresh list">↻</button><button type="button" class="go">Replay</button>
+      <label class="toggle-all"><input type="checkbox" class="all"> Show audio and ticks</label><span class="summary"></span></div>
       <div class="timeline"></div>`;
     (root.querySelector(".refresh") as HTMLElement).onclick = () => void this.list();
     (root.querySelector(".go") as HTMLElement).onclick = () => void this.replay().catch((err) => this.say(`Replay failed: ${err.message}`));
