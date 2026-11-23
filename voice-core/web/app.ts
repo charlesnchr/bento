@@ -915,6 +915,14 @@ function showStatus(message?: string) {
 
 function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
+  // Flush deferred unsuppressed gap frames before any event that can start new playback,
+  // so the new playback's speechUntil never silences audio captured during the quiet gap.
+  if (
+    deferredMic.length > 0 &&
+    (event.type === "brief.ready" || (event.type === "ws.message" && String(event.data ?? "").includes('"inlineData"')))
+  ) {
+    flushDeferredMic();
+  }
   const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
   if (!quiet) log("in", e.type === "ws.message" ? `ws ${e.sid} ← ${brief(String(e.data))}` : JSON.stringify(e).slice(0, 400), "in");
@@ -1068,7 +1076,7 @@ function onMic(samples: Int16Array, level: number) {
   // unsuppressed frames briefly so they never land ahead of a suppressed wake tail in pre-roll.
   if (!suppressed && wakeClient.suppressedInFlight && callWhileSpeaking !== "send") {
     deferredMic.push({ seq, pcm, t });
-    if (deferredMic.length > 75) flushDeferredMic();
+    if (deferredMic.length > 60) flushDeferredMic();
     return;
   }
   if (deferredMic.length > 0) flushDeferredMic();
@@ -2077,7 +2085,13 @@ async function main() {
     if (wakeArmed && audio.audioSuspended) { void audio.resumeAudio().then(() => syncWakeUi()); return; }
     void armWake(!wakeArmed);
   };
-  $("wake-now").onclick = () => { if (callId) { flushDeferredMic(); push({ type: "resume" }); } };
+  $("wake-now").onclick = () => {
+    if (callId) {
+      flushDeferredMic();
+      wakeClient.reset();
+      push({ type: "resume" });
+    }
+  };
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;
   syncWakeUi();
