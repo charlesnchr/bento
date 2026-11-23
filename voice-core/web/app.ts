@@ -1419,13 +1419,17 @@ function tabs() {
   $("closesettings").onclick = () => { $("settings").hidden = true; };
   $("closesettings-x").onclick = () => { $("settings").hidden = true; };
   $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
-  $("tasks-toggle").onclick = () => setTasksOpen(!document.body.classList.contains("tasks-open"), $("tasks-toggle"));
-  $("mobile-tasks-bar").onclick = () => {
+  const openMobileTasksDrawer = (opener: HTMLElement) => {
     const activeTotal = [...tasks.values()].filter(isActiveTask).length + earlierActiveCount;
     const nextFilter = resolveMobileBannerFilter(sideFilter, activeTotal, unreadMobileResults);
     if (nextFilter !== sideFilter) setSideFilter(nextFilter);
-    setTasksOpen(true, $("mobile-tasks-bar"));
+    setTasksOpen(true, opener);
   };
+  $("tasks-toggle").onclick = () => {
+    if (document.body.classList.contains("tasks-open")) setTasksOpen(false);
+    else openMobileTasksDrawer($("tasks-toggle"));
+  };
+  $("mobile-tasks-bar").onclick = () => openMobileTasksDrawer($("mobile-tasks-bar"));
   $("tasks-close").onclick = () => setTasksOpen(false);
   $("side-backdrop").onclick = () => setTasksOpen(false);
   mobileLayout.addEventListener("change", () => {
