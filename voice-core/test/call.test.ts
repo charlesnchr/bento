@@ -1140,6 +1140,12 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both bookings", "Remind me to go to book club on Friday", "Club reminder", "Cancel both bookings in progress", 0],
     ["Both reservations", "Move 50 pounds to reserve savings", "Savings move", "Cancel both reservations in progress", 0],
     ["Both hotel bookings", "Can you please book a hotel in London", "London hotel", "Cancel both hotel bookings that are still running", 1],
+    ["Both hotel bookings", "Could you please book a flight to London and check hotel prices", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Check hotel prices and book a flight to London", "London trip", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a London hotel and book a room for Friday", "London hotel", "Cancel both hotel bookings that are still running", 1],
+    ["Both hotel reservations", "Find a London hotel and reserve a room for Friday", "London hotel", "Cancel both hotel reservations that are still running", 1],
+    ["Both bookings", "Book 2 summary please", "Book summary", "Cancel both bookings in progress", 0],
+    ["Both reservations", "Help me reserve some savings for the trip", "Savings", "Cancel both reservations in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
@@ -1160,6 +1166,11 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   for (const phrase of [
     "Stop reading that chemists report verbatim and cancel the audit",
     "Stop reading that defendants report aloud and cancel the audit",
+    "Stop reading that nurses report aloud and cancel the audit",
+    "Stop reading that witnesses report verbatim and cancel the audit",
+    "Stop reading that guests report aloud and cancel the audit",
+    "Stop reading that judges report aloud and cancel the audit",
+    "Stop reading that colleagues report aloud and cancel the audit",
   ]) {
     const sv20 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv20.advance(0.1);
