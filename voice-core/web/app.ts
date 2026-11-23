@@ -12,6 +12,15 @@
 import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
 import { Replay } from "./replay.ts";
+import {
+  formatShortTime,
+  normalizeDensity,
+  normalizeSideFilter,
+  parsePrefix,
+  plainPreview,
+  resolveSideSections,
+  type SideFilter,
+} from "./ui.ts";
 
 interface Core {
   version: string;
@@ -69,8 +78,27 @@ const sockets = new Map<number, WebSocket>();
 /** The sockets to the transcription model: their audio is the model's again, so it isn't counted or logged twice. */
 const captionSockets = new Set<number>();
 const runs = new Map<string, { abort: AbortController; agent: string; taskId: string }>();
-interface TaskView { c: Command; since: number; ended: number | null; thread?: string; result?: HTMLElement; approval?: { command: string } }
+interface TaskView { c: Command; since: number; ended: number | null; thread?: string; resultId?: string; approval?: { command: string } }
 const tasks = new Map<string, TaskView>();
+interface ResultEntry {
+  id: string;
+  agent: string;
+  label: string;
+  text: string;
+  failed: boolean;
+  taskId?: string;
+  card: HTMLElement;
+  head: HTMLButtonElement;
+  body: HTMLElement;
+  moreBtn: HTMLButtonElement;
+  followBtn?: HTMLButtonElement;
+  refRow: HTMLButtonElement;
+}
+const results = new Map<string, ResultEntry>();
+let nextResultSeq = 0;
+let sideFilter: SideFilter = "all";
+let unreadMobileResults = 0;
+let flashTimer = 0;
 let earlierActiveCount = 0;
 let earlierWaitingCount = 0;
 let counts = { mic: 0, play: 0, sent: 0 };
@@ -159,7 +187,7 @@ async function ping() {
   showMetrics();
 }
 
-// Theme.
+// Theme & density.
 
 function applyTheme(choice: string) {
   const root = document.documentElement;
@@ -171,6 +199,17 @@ function applyTheme(choice: string) {
   for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#theme-picker button"))) {
     btn.classList.toggle("on", btn.dataset.theme === (choice || "system"));
   }
+}
+
+function applyDensity(choice: string | null) {
+  const density = normalizeDensity(choice);
+  const root = document.documentElement;
+  if (density === "comfortable") root.dataset.density = "comfortable";
+  else delete root.dataset.density;
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#density-picker button"))) {
+    btn.classList.toggle("on", btn.dataset.density === density);
+  }
+  requestAnimationFrame(() => updateAllResultClamping());
 }
 
 // The screen.
@@ -185,12 +224,6 @@ function setCallButton(live: boolean) {
 function syncResumeButtons(show: boolean) {
   $("resume").hidden = !show;
   $("hero-resume").hidden = !show;
-}
-
-function parsePrefix(text: string): { mode: "hermes" | "t3" | null; rest: string } {
-  const m = text.match(/^\/(t3|code|h|hermes)\s+(.*)$/is);
-  if (!m) return { mode: null, rest: text };
-  return { mode: /^(t3|code)$/i.test(m[1]) ? "t3" : "hermes", rest: m[2].trim() };
 }
 
 function syncComposer() {
@@ -338,7 +371,7 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
 function caption(text: string | null) {
   const pane = $("transcript");
   let row = document.getElementById("caption");
-  if (text == null) { row?.remove(); return; }
+  if (text == null) { row?.remove(); updateJumpButton(); return; }
   $("empty").hidden = true;
   if (!row) {
     row = document.createElement("div");
@@ -361,28 +394,171 @@ function note(text: string) {
   scrollDown();
 }
 
-function result(agent: string, label: string, text: string, failed = false): HTMLElement {
-  $("empty").hidden = true;
-  const row = document.createElement("div");
-  row.className = `line result ${agent === "t3" ? "t3" : ""} ${failed ? "failed" : ""}`.trim();
-  const who = agent === "t3" ? "T3" : "Hermes";
-  row.innerHTML = `<div class="who"><span class="res-title"><span class="badge ${agent === "t3" ? "t3" : ""}">${who}</span><span class="res-label">${escapeHtml(label)}</span></span><span class="res-pill">${failed ? "Failed" : "Result"}</span></div><div class="body">${markdown(text)}</div>`;
-  $("transcript").append(row);
-  openLine = null;
-  const body = row.querySelector(".body") as HTMLElement;
+// Agent handoff results: compact 1-line reference in the voice stream + full collapsible card in the right pane.
+
+function resultClampPx(el: HTMLElement): number {
+  const raw = getComputedStyle(el).getPropertyValue("--res-clamp-max").trim();
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : 64;
+}
+
+function syncExpandAllButton() {
+  const clamped = [...results.values()].filter((r) => r.card.classList.contains("clamped"));
+  const btn = $<HTMLButtonElement>("toggle-all-results");
+  btn.hidden = clamped.length === 0;
+  if (clamped.length === 0) return;
+  const anyCollapsed = clamped.some((r) => !r.card.classList.contains("open"));
+  btn.textContent = anyCollapsed ? "Expand all" : "Collapse all";
+}
+
+function setResultOpen(entry: ResultEntry, open: boolean) {
+  const clamped = entry.card.classList.contains("clamped");
+  const next = clamped && open;
+  entry.card.classList.toggle("open", next);
+  entry.head.setAttribute("aria-expanded", String(!clamped || next));
+  entry.moreBtn.textContent = next ? "Show less" : "Show more";
+  syncExpandAllButton();
+}
+
+function updateResultClamping(entry: ResultEntry) {
+  if (entry.body.offsetParent === null) return;
+  const overflows = entry.body.scrollHeight > resultClampPx(entry.card) + 6;
+  entry.card.classList.toggle("clamped", overflows);
+  if (!overflows) entry.card.classList.remove("open");
+  entry.moreBtn.hidden = !overflows;
+  const isOpen = entry.card.classList.contains("open");
+  entry.moreBtn.textContent = isOpen ? "Show less" : "Show more";
+  entry.head.setAttribute("aria-expanded", String(!overflows || isOpen));
+}
+
+function updateAllResultClamping() {
+  for (const entry of results.values()) updateResultClamping(entry);
+  syncExpandAllButton();
+}
+
+function syncResultFollowUpButtons() {
+  for (const entry of results.values()) {
+    if (!entry.followBtn) continue;
+    const canFollow = Boolean(callId && entry.taskId && tasks.has(entry.taskId));
+    entry.followBtn.hidden = !canFollow;
+    if (!canFollow) entry.card.querySelector("form")?.remove();
+  }
+}
+
+function focusResult(id: string) {
+  const entry = results.get(id);
+  if (!entry) return;
+  if (sideFilter === "active") setSideFilter("all");
+  if (mobileLayout.matches) setTasksOpen(true);
   requestAnimationFrame(() => {
-    if (body.scrollHeight > body.clientHeight + 4) {
-      row.classList.add("clamped");
-      const more = document.createElement("button");
-      more.className = "more";
-      more.type = "button";
-      more.textContent = "Show full result";
-      more.onclick = () => { row.classList.toggle("open"); more.textContent = row.classList.contains("open") ? "Show less" : "Show full result"; };
-      row.append(more);
-    }
+    updateResultClamping(entry);
+    if (entry.card.classList.contains("clamped")) setResultOpen(entry, true);
+    for (const r of results.values()) r.card.classList.remove("flash");
+    void entry.card.offsetWidth;
+    entry.card.classList.add("flash");
+    clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => entry.card.classList.remove("flash"), 1400);
+    entry.card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
-  scrollDown(true);
-  return row;
+}
+
+function result(agent: string, label: string, text: string, failed = false, taskId?: string): string {
+  $("empty").hidden = true;
+  const id = `res-${++nextResultSeq}`;
+  const who = agent === "t3" ? "T3" : "Hermes";
+  const agentCls = agent === "t3" ? "t3" : "";
+  const snippet = plainPreview(text, 160) || "(empty response)";
+
+  // 1. Compact inline handoff marker in the voice transcript so chronological context stays intact
+  // without multi-paragraph responses pushing voice turns off screen.
+  const refRow = document.createElement("button");
+  refRow.type = "button";
+  refRow.className = `line handoff ${agentCls} ${failed ? "failed" : ""}`.trim();
+  refRow.dataset.resultId = id;
+  refRow.innerHTML =
+    `<span class="badge ${agentCls}">${who}</span>` +
+    `<span class="handoff-label">${escapeHtml(label)}</span>` +
+    `<span class="handoff-snippet">${escapeHtml(snippet)}</span>` +
+    `<span class="handoff-cue">${failed ? "Failed" : "Open ↗"}</span>`;
+  refRow.onclick = () => focusResult(id);
+  $("transcript").append(refRow);
+  openLine = null;
+  scrollDown();
+
+  // 2. Truncated, expandable result card in the right-hand Agent Workspace (newest first).
+  const card = document.createElement("article");
+  card.className = `res-card ${agentCls} ${failed ? "failed" : ""}`.trim();
+  card.dataset.resultId = id;
+
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "res-head";
+  head.setAttribute("aria-expanded", "true");
+  head.innerHTML =
+    `<span class="badge ${agentCls}">${who}</span>` +
+    `<span class="res-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
+    (failed ? `<span class="res-pill">Failed</span>` : "") +
+    `<span class="res-time">${formatShortTime(new Date())}</span>` +
+    `<span class="res-chev" aria-hidden="true"></span>`;
+
+  const body = document.createElement("div");
+  body.className = "res-body";
+  body.innerHTML = markdown(text);
+
+  const foot = document.createElement("div");
+  foot.className = "res-foot";
+
+  const moreBtn = document.createElement("button");
+  moreBtn.type = "button";
+  moreBtn.className = "res-act primary";
+  moreBtn.textContent = "Show more";
+  moreBtn.hidden = true;
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "res-act";
+  copyBtn.textContent = "Copy";
+  copyBtn.onclick = () => {
+    void navigator.clipboard?.writeText(text);
+    toast("Result copied");
+  };
+
+  foot.append(moreBtn, copyBtn);
+
+  let followBtn: HTMLButtonElement | undefined;
+  if (taskId) {
+    followBtn = document.createElement("button");
+    followBtn.type = "button";
+    followBtn.className = "res-act";
+    followBtn.textContent = "Follow up";
+    followBtn.onclick = () => {
+      const view = tasks.get(taskId);
+      if (view) followUpForm(card, view.c);
+    };
+    foot.append(followBtn);
+  }
+
+  card.append(head, body, foot);
+
+  const entry: ResultEntry = { id, agent, label, text, failed, taskId, card, head, body, moreBtn, followBtn, refRow };
+  const toggle = () => {
+    if (!entry.card.classList.contains("clamped")) return;
+    setResultOpen(entry, !entry.card.classList.contains("open"));
+  };
+  head.onclick = toggle;
+  moreBtn.onclick = toggle;
+
+  results.set(id, entry);
+  $("results").prepend(card);
+  if (mobileLayout.matches && !document.body.classList.contains("tasks-open")) unreadMobileResults++;
+
+  syncSideLayout();
+  updateTaskChrome();
+  requestAnimationFrame(() => {
+    updateResultClamping(entry);
+    syncExpandAllButton();
+  });
+  return id;
 }
 
 function elapsed(seconds: number): string {
@@ -397,20 +573,61 @@ const noTasks = document.getElementById("notasks")!;
 /** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
 const live = (state: string) => state === "running" || state.startsWith("waiting");
 
+function setSideFilter(filter: SideFilter) {
+  sideFilter = normalizeSideFilter(filter);
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#side-tabs button"))) {
+    const on = btn.dataset.filter === sideFilter;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-selected", String(on));
+  }
+  syncSideLayout();
+  requestAnimationFrame(() => updateAllResultClamping());
+}
+
+function syncSideLayout() {
+  const all = [...tasks.values()];
+  const activeCurrent = all.filter((t) => live(t.c.state)).length;
+  const activeTotal = activeCurrent + earlierActiveCount;
+  const resultsTotal = results.size;
+  const earlierShown = $("earlier").childElementCount;
+  const doneTotal = $("donenow").childElementCount + $("doneearlier").childElementCount;
+
+  const vis = resolveSideSections(sideFilter, {
+    active: activeCurrent,
+    results: resultsTotal,
+    earlier: earlierShown,
+    done: doneTotal,
+  });
+
+  $("tasks-section").hidden = !vis.showTasksSection;
+  noTasks.hidden = !vis.showEmptyTasks;
+  $("results-section").hidden = !vis.showResultsSection;
+  $("noresults").hidden = !vis.showEmptyResults;
+  $("earlierbox").hidden = !vis.showEarlierSection;
+  $("donebox").hidden = !vis.showDoneSection;
+
+  $("side-active-n").textContent = activeTotal > 0 ? String(activeTotal) : "";
+  $("side-results-n").textContent = resultsTotal > 0 ? String(resultsTotal) : "";
+  $("resultscount").textContent = resultsTotal > 0 ? `· ${resultsTotal}` : "";
+  $("donecount").textContent = doneTotal > 0 ? `· ${doneTotal}` : "";
+  syncResultFollowUpButtons();
+}
+
 function updateTaskChrome() {
   const all = [...tasks.values()];
   const activeCurrent = all.filter((t) => live(t.c.state) || Boolean(t.approval)).length;
   const waiting = all.filter((t) => t.c.state.startsWith("waiting") || Boolean(t.approval)).length;
   const activeTotal = activeCurrent + earlierActiveCount;
   const attentionTotal = waiting + earlierWaitingCount;
+  const badgeCount = activeTotal > 0 ? activeTotal : unreadMobileResults;
 
   const badge = $("tasks-badge");
-  badge.hidden = activeTotal === 0;
-  badge.textContent = String(activeTotal);
+  badge.hidden = badgeCount === 0;
+  badge.textContent = String(badgeCount);
   badge.classList.toggle("warn", attentionTotal > 0);
 
   const bar = $("mobile-tasks-bar");
-  const showBar = activeTotal > 0;
+  const showBar = activeTotal > 0 || unreadMobileResults > 0;
   bar.hidden = !showBar;
   bar.classList.toggle("visible", showBar);
   bar.classList.toggle("warn", attentionTotal > 0);
@@ -420,16 +637,11 @@ function updateTaskChrome() {
       ? `Approval needed: ${approval.c.label}`
       : attentionTotal > 0
         ? `${attentionTotal} task${attentionTotal > 1 ? "s" : ""} waiting for you`
-        : `${activeTotal} active task${activeTotal > 1 ? "s" : ""}`;
+        : activeTotal > 0
+          ? `${activeTotal} active task${activeTotal > 1 ? "s" : ""}`
+          : `${unreadMobileResults} new agent result${unreadMobileResults > 1 ? "s" : ""}`;
     $("mtb-text").textContent = label;
   }
-}
-
-/** The Finished fold's count, and the fold itself only when something is in it. */
-function showDone() {
-  const n = $("donenow").childElementCount + $("doneearlier").childElementCount;
-  $("donebox").hidden = n === 0;
-  $("donecount").textContent = n > 0 ? `· ${n}` : "";
 }
 
 function showTasks(force = false) {
@@ -444,7 +656,7 @@ function showTasks(force = false) {
     pane.append(noTasks);
     $("taskcount").textContent = "";
     $("cancelall").hidden = true;
-    showDone();
+    syncSideLayout();
     updateTaskChrome();
     return;
   }
@@ -461,12 +673,14 @@ function showTasks(force = false) {
     card.innerHTML =
       `<div class="meta-row">` +
         `<span class="badge ${t.agent === "t3" ? "t3" : ""}">${t.agent === "t3" ? "T3" : "Hermes"}</span>` +
+        `<span class="label"></span>` +
         `<span class="state">${t.state === "running" ? '<span class="spin"></span>' : ""}${escapeHtml(t.state)}</span>` +
         `<span class="age">${elapsed(age)}</span>` +
       `</div>` +
-      `<div class="label"></div>` +
       `<div class="p"></div>`;
-    card.querySelector(".label")!.textContent = t.label;
+    const labelEl = card.querySelector(".label") as HTMLElement;
+    labelEl.textContent = t.label;
+    labelEl.title = t.label;
     card.querySelector(".p")!.textContent = t.progress ?? t.request;
     if (t.question) {
       const q = document.createElement("div");
@@ -512,19 +726,21 @@ function showTasks(force = false) {
       button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
       if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
-    if (view.result) button("Result", () => { setTasksOpen(false); view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
-    if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
+    if (view.resultId) button("Result", () => focusResult(view.resultId!));
+    if (view.thread) button("Copy id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
     (live(t.state) ? pane : done).append(card);
   }
   if (pane.childElementCount === 0) pane.append(noTasks);
-  showDone();
+  syncSideLayout();
   updateTaskChrome();
 }
 
 function followUpForm(card: HTMLElement, t: Command) {
-  if (card.querySelector("form")) return;
+  const existing = card.querySelector("form");
+  if (existing) { existing.querySelector("input")?.focus(); return; }
   const form = document.createElement("form");
+  form.className = "followup-form";
   form.innerHTML = `<input type="text" placeholder="Tell “${escapeHtml(t.label)}”…" enterkeyhint="send"><button type="submit">Send</button>`;
   const input = form.querySelector("input")!;
   form.onsubmit = (e) => {
@@ -535,7 +751,7 @@ function followUpForm(card: HTMLElement, t: Command) {
     form.remove();
     showTasks();
   };
-  input.onkeydown = (e) => { if (e.key === "Escape") { input.blur(); form.remove(); showTasks(); } };
+  input.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); input.blur(); form.remove(); showTasks(); } };
   card.append(form);
   input.focus();
 }
@@ -560,19 +776,21 @@ async function showEarlier() {
     card.innerHTML =
       `<div class="meta-row">` +
         `<span class="badge t3">T3</span>` +
+        `<span class="label"></span>` +
         `<span class="state">${t.status === "running" ? '<span class="spin"></span>' : ""}${escapeHtml(state)}</span>` +
         `<span class="age">${elapsed(ago)} ago</span>` +
       `</div>` +
-      `<div class="label"></div>` +
       `<div class="p"></div>`;
-    card.querySelector(".label")!.textContent = t.title;
+    const labelEl = card.querySelector(".label") as HTMLElement;
+    labelEl.textContent = t.title;
+    labelEl.title = t.title;
     card.querySelector(".p")!.textContent = t.last || (t.branch ? `On ${t.branch}` : "");
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (t.pr) { const a = document.createElement("a"); a.href = t.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Pull request ↗"; acts.append(a); }
+    if (t.pr) { const a = document.createElement("a"); a.href = t.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "PR ↗"; acts.append(a); }
     const copy = document.createElement("button");
     copy.type = "button";
-    copy.textContent = "Copy thread id";
+    copy.textContent = "Copy id";
     copy.onclick = () => { void navigator.clipboard?.writeText(t.thread); toast("Thread id copied"); };
     acts.append(copy);
     card.append(acts);
@@ -581,8 +799,7 @@ async function showEarlier() {
     if (t.waiting) earlierWaitingCount++;
     (active ? pane : done).append(card);
   }
-  $("earlierbox").hidden = pane.childElementCount === 0;
-  showDone();
+  syncSideLayout();
   updateTaskChrome();
 }
 
@@ -804,10 +1021,10 @@ async function tool(c: Command) {
     if (!runs.has(c.run)) return;
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
-    const row = result(agent, c.label, text, failed);
+    const resId = result(agent, c.label, text, failed, c.taskId);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
     if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
-    if (view) { view.result = row; showTasks(); }
+    if (view) { view.resultId = resId; showTasks(); }
     push({ type: "tool.result", run: c.run, text, failed });
   };
   if (checked("fakehermes")) {
@@ -1096,6 +1313,15 @@ function settingsFromStorage() {
       applyTheme(choice);
     };
   }
+  const density = localStorage.getItem("voice.density");
+  applyDensity(density);
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#density-picker button"))) {
+    btn.onclick = () => {
+      const choice = normalizeDensity(btn.dataset.density);
+      localStorage.setItem("voice.density", choice);
+      applyDensity(choice);
+    };
+  }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if ((localStorage.getItem("voice.theme") ?? "system") === "system") applyTheme("system");
   });
@@ -1116,8 +1342,11 @@ function setTasksOpen(open: boolean, opener?: HTMLElement | null) {
   $("tasks-toggle").setAttribute("aria-expanded", String(next));
   $("mobile-tasks-bar").setAttribute("aria-expanded", String(next));
   if (next && !wasOpen) {
+    unreadMobileResults = 0;
+    updateTaskChrome();
     drawerOpener = opener ?? (document.activeElement as HTMLElement | null);
     $("tasks-close").focus();
+    requestAnimationFrame(() => updateAllResultClamping());
   } else if (!next && wasOpen) {
     const target = drawerOpener;
     drawerOpener = null;
@@ -1135,8 +1364,17 @@ function tabs() {
       }
       $("tasks-toggle").hidden = name !== "talk";
       setTasksOpen(false);
+      if (name === "talk") requestAnimationFrame(() => updateAllResultClamping());
     };
   }
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#side-tabs button"))) {
+    btn.onclick = () => setSideFilter(normalizeSideFilter(btn.dataset.filter));
+  }
+  $("toggle-all-results").onclick = () => {
+    const clamped = [...results.values()].filter((r) => r.card.classList.contains("clamped"));
+    const openAll = clamped.some((r) => !r.card.classList.contains("open"));
+    for (const entry of clamped) setResultOpen(entry, openAll);
+  };
   $("gear").onclick = () => { $("settings").hidden = false; };
   $("closesettings").onclick = () => { $("settings").hidden = true; };
   $("closesettings-x").onclick = () => { $("settings").hidden = true; };
@@ -1145,7 +1383,12 @@ function tabs() {
   $("mobile-tasks-bar").onclick = () => setTasksOpen(true, $("mobile-tasks-bar"));
   $("tasks-close").onclick = () => setTasksOpen(false);
   $("side-backdrop").onclick = () => setTasksOpen(false);
-  mobileLayout.addEventListener("change", () => setTasksOpen(false));
+  mobileLayout.addEventListener("change", () => {
+    if (!mobileLayout.matches) unreadMobileResults = 0;
+    setTasksOpen(false);
+    updateTaskChrome();
+    requestAnimationFrame(() => updateAllResultClamping());
+  });
   setTasksOpen(false);
 }
 
@@ -1200,6 +1443,7 @@ async function submitText(e: Event) {
 
 async function main() {
   applyTheme(localStorage.getItem("voice.theme") ?? "system");
+  applyDensity(localStorage.getItem("voice.density"));
   server = await (await fetch("/config")).json();
   $("route").textContent = `${server.route === "vertex" ? "Vertex" : "Gemini API"} · ${server.model.split("/").pop()}`;
   $("version").textContent = server.version;
@@ -1244,7 +1488,11 @@ async function main() {
   $("text").addEventListener("input", syncComposer);
   $("transcript").addEventListener("scroll", updateJumpButton, { passive: true });
   $("jumpbottom").onclick = () => $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => updateAllResultClamping()).observe($("results"));
+  }
   syncComposer();
+  syncSideLayout();
   tabs();
   keys();
   const events = new EventSource("/events");
