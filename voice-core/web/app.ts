@@ -395,9 +395,9 @@ const live = (state: string) => state === "running" || state.startsWith("waiting
 
 function updateTaskChrome() {
   const all = [...tasks.values()];
-  const running = all.filter((t) => t.c.state === "running").length;
+  const activeCurrent = all.filter((t) => live(t.c.state) || Boolean(t.approval)).length;
   const waiting = all.filter((t) => t.c.state.startsWith("waiting") || Boolean(t.approval)).length;
-  const activeTotal = running + waiting + earlierActiveCount;
+  const activeTotal = activeCurrent + earlierActiveCount;
   const attentionTotal = waiting + earlierWaitingCount;
 
   const badge = $("tasks-badge");
@@ -508,7 +508,7 @@ function showTasks(force = false) {
       button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
       if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
-    if (view.result) button("Result", () => { document.body.classList.remove("tasks-open"); view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
+    if (view.result) button("Result", () => { setTasksOpen(false); view.result!.scrollIntoView({ behavior: "smooth", block: "center" }); view.result!.classList.add("open"); });
     if (view.thread) button("Copy thread id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
     (live(t.state) ? pane : done).append(card);
@@ -593,6 +593,7 @@ function showStatus(message?: string) {
   const shown = speaking || (typed && thinking) ? "speaking" : coreStatus;
   $("status").className = shown;
   document.body.dataset.state = callId ? shown : "idle";
+  document.body.classList.toggle("in-session", Boolean(callId));
   let text = speaking ? "Speaking" : STATUS_TEXT[coreStatus] ?? coreStatus;
   if (typed && coreStatus !== "ended") text = thinking ? "Writing…" : coreStatus === "working" ? "Chat · tasks running" : "Chat";
   if (callId && !typed && muted && !holding && !speaking) text += " · muted";
@@ -982,6 +983,7 @@ function end() {
   $("callbar").hidden = true;
   $("micwarn").hidden = true;
   document.body.dataset.state = "idle";
+  document.body.classList.remove("in-session");
   syncResumeButtons(chat.length > 0);
   void showEarlier();
   void wakeLock?.release().catch(() => {});
@@ -1095,6 +1097,27 @@ function settingsFromStorage() {
   });
 }
 
+const mobileLayout = matchMedia("(max-width: 920px)");
+let drawerOpener: HTMLElement | null = null;
+
+function setTasksOpen(open: boolean, opener?: HTMLElement | null) {
+  const canOpen = mobileLayout.matches && !$("talk").hidden;
+  const next = open && canOpen;
+  const wasOpen = document.body.classList.contains("tasks-open");
+  document.body.classList.toggle("tasks-open", next);
+  $("side").inert = mobileLayout.matches && !next;
+  $("tasks-toggle").setAttribute("aria-expanded", String(next));
+  $("mobile-tasks-bar").setAttribute("aria-expanded", String(next));
+  if (next && !wasOpen) {
+    drawerOpener = opener ?? (document.activeElement as HTMLElement | null);
+    $("tasks-close").focus();
+  } else if (!next && wasOpen) {
+    const target = drawerOpener;
+    drawerOpener = null;
+    if (target && target.isConnected && !target.hidden && target.offsetParent !== null) target.focus();
+  }
+}
+
 function tabs() {
   const views: Record<string, HTMLElement> = { talk: $("talk"), dev: $("dev"), replay: $("replaymain") };
   for (const name of Object.keys(views)) {
@@ -1103,17 +1126,20 @@ function tabs() {
         el.hidden = other !== name;
         $(`tab-${other}`).classList.toggle("on", other === name);
       }
-      document.body.classList.remove("tasks-open");
+      $("tasks-toggle").hidden = name !== "talk";
+      setTasksOpen(false);
     };
   }
   $("gear").onclick = () => { $("settings").hidden = false; };
   $("closesettings").onclick = () => { $("settings").hidden = true; };
   $("closesettings-x").onclick = () => { $("settings").hidden = true; };
   $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
-  $("tasks-toggle").onclick = () => document.body.classList.toggle("tasks-open");
-  $("mobile-tasks-bar").onclick = () => document.body.classList.add("tasks-open");
-  $("tasks-close").onclick = () => document.body.classList.remove("tasks-open");
-  $("side-backdrop").onclick = () => document.body.classList.remove("tasks-open");
+  $("tasks-toggle").onclick = () => setTasksOpen(!document.body.classList.contains("tasks-open"), $("tasks-toggle"));
+  $("mobile-tasks-bar").onclick = () => setTasksOpen(true, $("mobile-tasks-bar"));
+  $("tasks-close").onclick = () => setTasksOpen(false);
+  $("side-backdrop").onclick = () => setTasksOpen(false);
+  mobileLayout.addEventListener("change", () => setTasksOpen(false));
+  setTasksOpen(false);
 }
 
 function typing(): boolean {
@@ -1125,7 +1151,7 @@ function keys() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!$("settings").hidden) { $("settings").hidden = true; return; }
-      if (document.body.classList.contains("tasks-open")) { document.body.classList.remove("tasks-open"); return; }
+      if (document.body.classList.contains("tasks-open") && mobileLayout.matches && !$("talk").hidden) { setTasksOpen(false); return; }
       if (callId) { push({ type: "interrupt" }); audio.flush(); return; }
       return;
     }
@@ -1166,6 +1192,7 @@ async function submitText(e: Event) {
 }
 
 async function main() {
+  applyTheme(localStorage.getItem("voice.theme") ?? "system");
   server = await (await fetch("/config")).json();
   $("route").textContent = `${server.route === "vertex" ? "Vertex" : "Gemini API"} · ${server.model.split("/").pop()}`;
   $("version").textContent = server.version;
@@ -1192,9 +1219,10 @@ async function main() {
     $("defaultsview").hidden = !$("defaultsview").hidden;
   };
   const onCallClick = () => void callButton().catch((err) => { toast(err.message); log("error", err.message, "err"); });
+  const onHeroCallClick = () => { if (!callId) void start().catch((err) => { toast(err.message); log("error", err.message, "err"); }); };
   const onResumeClick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
   $("call").onclick = onCallClick;
-  $("hero-call").onclick = onCallClick;
+  $("hero-call").onclick = onHeroCallClick;
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;
   if (savedHistory().length > 0) {
@@ -1208,7 +1236,7 @@ async function main() {
   $("say").onsubmit = (e) => void submitText(e);
   $("text").addEventListener("input", syncComposer);
   $("transcript").addEventListener("scroll", updateJumpButton, { passive: true });
-  $("jumpbottom").onclick = () => scrollDown(true);
+  $("jumpbottom").onclick = () => $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
   syncComposer();
   tabs();
   keys();

@@ -589,8 +589,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  scroll-behavior: smooth;
 }
+#transcript > * { flex-shrink: 0; }
 
 /* Empty hero */
 #empty {
@@ -604,6 +604,7 @@ main {
   align-items: center;
   gap: 16px;
 }
+body.in-session #empty { display: none; }
 
 .hero-mark {
   width: 64px;
@@ -1618,8 +1619,9 @@ main {
   justify-content: space-between;
   gap: 14px;
   font-size: 13.5px;
-  cursor: pointer;
 }
+label.setting-row,
+.setting-row label[for] { cursor: pointer; }
 .setting-text {
   display: flex;
   flex-direction: column;

@@ -10,6 +10,16 @@
 <link rel="apple-touch-icon" href="/web/icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<script>
+(() => {
+  try {
+    const t = localStorage.getItem("voice.theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+    const dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.getElementById("theme-color")?.setAttribute("content", dark ? "#0e0f0f" : "#f6f5f0");
+  } catch {}
+})();
+</script>
 <link rel="stylesheet" href="/web/styles.css">
 </head>
 <body data-state="idle">
@@ -259,13 +269,13 @@
           <span class="setting-text"><strong>Keep a trace for replay</strong><small>Record events so you can compare builds in Replay.</small></span>
           <input class="switch" type="checkbox" id="trace" checked>
         </label>
-        <label class="setting-row">
-          <span class="setting-text">
-            <strong>Fake Hermes and T3</strong>
-            <small class="setting-inline">Answer after <input type="number" id="fakedelay" value="4" min="0" max="120"> s without running anything.</small>
-          </span>
-          <input class="switch" type="checkbox" id="fakehermes">
-        </label>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="fakehermes"><strong>Fake Hermes and T3</strong></label>
+            <label class="setting-inline"><small>Answer after</small> <input type="number" id="fakedelay" value="4" min="0" max="120" aria-label="Fake response delay in seconds"> <small>s without running anything.</small></label>
+          </div>
+          <input class="switch" type="checkbox" id="fakehermes" aria-label="Fake Hermes and T3">
+        </div>
       </div>
     </div>
     <div class="modal-foot">
