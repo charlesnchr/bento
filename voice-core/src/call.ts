@@ -277,7 +277,7 @@ const TRAILING_READING_MODIFIER = /\s+(?:aloud|out\s+loud|word\s+for\s+word|line
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
 const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|foreword|prologue|epilogue|conclusion)$/i;
 const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event|catalog|catalogue|brochure|manual|handbook|guide|newsletter|bulletin|dossier|prospectus|syllabus|booklet|pamphlet)$/i;
-const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
+const HUMAN_PLURAL_SUBJECT = /^(?:auditors|engineers|managers|directors|officers|inspectors|reviewers|advisors|advisers|analysts|consultants|accountants|attorneys|lawyers|doctors|nurses|teachers|professors|students|researchers|scientists|designers|developers|architects|operators|administrators|admins|coordinators|supervisors|executives|founders|owners|partners|members|employees|workers|contractors|vendors|suppliers|sellers|buyers|traders|brokers|bankers|lenders|insurers|carriers|drivers|pilots|captains|agents|representatives|reps|officials|regulators|investigators|examiners|evaluators|assessors|testers|editors|writers|authors|reporters|journalists|speakers|presenters|trainers|coaches|mentors|tutors|guides|hosts|guests|visitors|clients|customers|patients|users|subscribers|readers|viewers|listeners|voters|citizens|residents|tenants|landlords|neighbors|neighbours|parents|adults|kids|folks|others|colleagues|peers|leads|chiefs|heads|bosses|clinicians|physicians|surgeons|pharmacists|therapists|counselors|counsellors|specialists|technicians|mechanics|electricians|plumbers|builders|planners|schedulers|organizers|organisers|recruiters|interviewers|candidates|applicants|interns|trainees|attendees|participants|delegates|witnesses|jurors|judges|mediators|arbitrators|moderators|curators|librarians|archivists|historians|economists|strategists|lobbyists|activists|protesters|volunteers|donors|sponsors|investors|shareholders|stakeholders|creditors|debtors|borrowers|taxpayers|commuters|passengers|travelers|travellers|tourists|shoppers|diners|patrons|consumers|producers|manufacturers|distributors|retailers|wholesalers|importers|exporters|shippers|couriers|dispatchers|clerks|tellers|cashiers|receptionists|assistants|secretaries|paralegals|notaries|translators|interpreters|photographers|videographers|chefs|cooks|bakers)$/i;
 const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|spec|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb|outline|abstract|preface|overview)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
@@ -296,15 +296,15 @@ function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and not an agentive-plural + verb-capable clause ("auditors report verbatim", "auditors review terms aloud").
+    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that routers list out loud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and not a human-role plural + verb-capable clause ("auditors report verbatim", "auditors review terms aloud").
     const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && TRAILING_READING_MODIFIER.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
-    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || (!AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(coreWords[1])))) return false;
-    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
+    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || (!HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(coreWords[1])))) return false;
+    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
-    // Skip the noun/verb-ambiguous head allowance for collective/agentive human subjects ("that people order twice", "that staff report twice", "that staff document safety incidents", "that auditors report verbatim"); inanimate plural modifiers ("sales report summary", "hotels list so loudly") still pass.
-    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
+    // Skip the noun/verb-ambiguous head allowance for collective/human-role subjects ("that people order twice", "that staff report twice", "that staff document safety incidents", "that auditors report verbatim"); inanimate plural modifiers ("sales report summary", "hotels list so loudly", "routers list out loud") still pass.
+    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && !HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
     if (coreWords.length === 2 && !isPluralWord(coreWords[0]) && !COLLECTIVE_SUBJECT.test(coreWords[0])) return false;
   }
   if (THAT_PREDICATE_CLAUSE.test(prefix)) return true;
@@ -3324,37 +3324,44 @@ export class Call {
     "can", "could", "will", "would", "shall", "should", "may", "might", "must",
   ]);
 
-  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel bookings", or "both last-minute bookings". Both sides are tokenized identically on word characters (splitting hyphens and preserving 2-3 letter modifiers like "car"/"spa"/"tax" while filtering function words), and every narrowing modifier plus any non-generic group head must match [task]. */
+  /** Bounded verb-position equivalents for booking/reservation group heads so "Both hotel bookings" / "Both hotel reservations" match "Book/Reserve a London hotel" without blanket -ing stemming ("screenings" -> "screen", "findings" -> "find") or noun collisions ("Book club", "Nature reserve"). */
+  private static readonly GROUP_HEAD_VERB: Readonly<Record<string, RegExp>> = {
+    booking: /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:to|can\s+you|could\s+you|would\s+you|will\s+you|help\s+me(?:\s+to)?|go\s+ahead\s+and|and|i(?:'d|\s+would|\s+want\s+to|\s+need\s+to))\s+)book\b|\bbooked\b/i,
+    reservation: /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:to|can\s+you|could\s+you|would\s+you|will\s+you|help\s+me(?:\s+to)?|go\s+ahead\s+and|and|i(?:'d|\s+would|\s+want\s+to|\s+need\s+to))\s+)reserve\b|\breserved\b|\breserving\b/i,
+  };
+
+  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel reservations", "both IT tasks", or "both last-minute bookings". Both sides are tokenized identically from original-case text (splitting hyphens, keeping all-caps acronyms like "IT"/"US"/"AM", and filtering lowercase function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
-    const m = /^(?:all|both|every)\s+(?:of\s+)?(?:(?:the|our|my|your|their|these|those)\s+)*(.+)$/i.exec(lbl.trim());
+    const m = /^(?:all|both|every)\s+(?:of\s+)?(?:(?:the|our|my|your|their|his|her|its|these|those)\s+)*(.+)$/i.exec(lbl.trim());
     if (!m) return false;
-    const rawWords = m[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const rawWords = m[1].trim().split(/\s+/).filter(Boolean);
     if (rawWords.length === 0) return false;
     const head = rawWords[rawWords.length - 1].replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-    const headLast = head.split(/[^\p{L}\p{N}]+/u).filter(Boolean).pop() ?? "";
+    const headLast = (head.split(/[^\p{L}\p{N}]+/u).filter(Boolean).pop() ?? "").toLowerCase();
     const isGroupPlural = isPluralWord(headLast) || (/^[a-z]{3,}os$/i.test(headLast) && !Call.NON_GROUP_PLURAL_OS.test(headLast));
     if (!isGroupPlural) return false;
-    const groupTokens = (text: string): string[] =>
-      (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 2 && !Call.GROUP_STOP.has(w));
+    const groupTokens = (text: string): string[] => {
+      const raw = text.match(/[\p{L}\p{N}]+/gu) ?? [];
+      const out: string[] = [];
+      for (const tok of raw) {
+        if (tok.length < 2) continue;
+        const low = tok.toLowerCase();
+        if (/^[A-Z0-9]{2,}$/.test(tok) && /[A-Z]/.test(tok)) out.push(low);
+        else if (!Call.GROUP_STOP.has(low)) out.push(low);
+      }
+      return out;
+    };
     const headParts = groupTokens(head);
     const modifiers = groupTokens(rawWords.slice(0, -1).join(" "));
+    // Fail closed if words sat between the determiners and head (e.g. lowercase "it"/"us" or a 1-letter modifier) and none survived filtering.
+    if (rawWords.length > 1 && modifiers.length === 0) return false;
     if (modifiers.length === 0 && headParts.length === 1 && Call.GENERIC_GROUP_HEAD.test(headLast)) return true;
     if (task == null) return false;
     const stemVariants = (w: string): string[] => {
       const out = [w];
-      const addSingular = (s: string): void => {
-        if (!out.includes(s)) out.push(s);
-        if (s.endsWith("ing") && s.length >= 7) {
-          const base = s.slice(0, -3);
-          out.push(base);
-          if (base.length >= 5 && base[base.length - 1] === base[base.length - 2] && !/[lsfz]$/.test(base)) out.push(base.slice(0, -1));
-          else out.push(base + "e");
-        }
-      };
-      if (w.endsWith("ies") && w.length > 4) addSingular(w.slice(0, -3) + "y");
-      else if (w.endsWith("es") && w.length > 4) { addSingular(w.slice(0, -2)); addSingular(w.slice(0, -1)); }
-      else if (w.endsWith("s") && w.length > 3) addSingular(w.slice(0, -1));
-      else addSingular(w);
+      if (w.endsWith("ies") && w.length > 4) out.push(w.slice(0, -3) + "y");
+      else if (w.endsWith("es") && w.length > 4) out.push(w.slice(0, -2), w.slice(0, -1));
+      else if (w.endsWith("s") && w.length > 3) out.push(w.slice(0, -1));
       return out;
     };
     const taskWords = new Set<string>();
@@ -3362,9 +3369,18 @@ export class Call {
       for (const v of stemVariants(w)) taskWords.add(v);
     }
     const matchesTask = (w: string): boolean => stemVariants(w).some((v) => taskWords.has(v));
+    const headMatchesTask = (w: string): boolean => {
+      const variants = stemVariants(w);
+      if (variants.some((v) => taskWords.has(v))) return true;
+      for (const v of variants) {
+        const verbRe = Call.GROUP_HEAD_VERB[v];
+        if (verbRe != null && verbRe.test(task.request)) return true;
+      }
+      return false;
+    };
     if (!modifiers.every(matchesTask)) return false;
     if (headParts.length === 1 && Call.GENERIC_GROUP_HEAD.test(headLast)) return true;
-    return headParts.length > 0 && headParts.every(matchesTask);
+    return headParts.length > 0 && headParts.every(headMatchesTask);
   }
 
   /** Whether [text] requests cancelling all tasks (or a named group containing [task]), ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier and [task] belongs to that group). */
@@ -3373,13 +3389,16 @@ export class Call {
     const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
     const seq = this.turnAnswered?.[0] ?? this.userTurns;
     const activeLabels = new Set(this.snapshotCancelTurnLabels(seq));
-    const labels = [
-      ...new Set([
-        ...activeLabels,
-        ...[...this.tasks.values()].map((t) => t.label.trim().toLowerCase()),
-        ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
-      ]),
-    ].filter((l) => l.length > 0);
+    const rawLabels = new Map<string, string>();
+    for (const t of this.tasks.values()) {
+      const trimmed = t.label.trim();
+      if (trimmed.length > 0) rawLabels.set(trimmed.toLowerCase(), trimmed);
+    }
+    for (const e of this.externalTasks) {
+      const trimmed = e.label.trim();
+      if (trimmed.length > 0 && !rawLabels.has(trimmed.toLowerCase())) rawLabels.set(trimmed.toLowerCase(), trimmed);
+    }
+    const labels = [...new Set([...activeLabels, ...rawLabels.keys()])].filter((l) => l.length > 0);
     CANCEL_ALL_SCOPE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CANCEL_ALL_SCOPE.exec(lower)) != null) {
@@ -3394,7 +3413,7 @@ export class Call {
           if (idx < 0) break;
           const end = idx + lbl.length;
           if (idx <= wordStart && wordEnd <= end && !isWordChar(lower[idx - 1]) && !isWordChar(lower[end])) {
-            if (!activeLabels.has(lbl) && Call.DIRECT_RUNNING_MODIFIER.test(lower.slice(end)) && this.taskMatchesFinishedGroup(lbl, task)) {
+            if (!activeLabels.has(lbl) && Call.DIRECT_RUNNING_MODIFIER.test(lower.slice(end)) && this.taskMatchesFinishedGroup(rawLabels.get(lbl) ?? lbl, task)) {
               from = idx + 1;
               continue;
             }

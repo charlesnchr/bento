@@ -2763,6 +2763,82 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10bp.advance(0.1);
   assert.equal(s10bp.commands.filter((c) => c.type === "tool.cancel").length, 0, "agentive plural 'auditors report verbatim' must stay blocked as reported speech");
 
+  const s10bp2 = chat();
+  s10bp2.type("Run the audit");
+  s10bp2.calls("ask_hermes", { label: "Audit" });
+  s10bp2.advance(0.1);
+  s10bp2.type("Stop reading that routers list out loud and cancel the audit");
+  s10bp2.calls("cancel_task", { task: "Audit" });
+  s10bp2.advance(0.1);
+  assert.equal(s10bp2.commands.filter((c) => c.type === "tool.cancel").length, 1, "inanimate plural 'routers list out loud' must still cancel Audit");
+
+  // 8ac) Bounded booking/reservation head verb matching avoids -ing over-stemming ("screenings" vs "Screen repair"), handles "Both hotel reservations" ("Reserve a London hotel"), and preserves all-caps acronyms ("IT", "US", "AM") as narrowing modifiers.
+  const s10bq = chat();
+  s10bq.type("Run both screenings");
+  s10bq.calls("ask_hermes", { label: "Both screenings" });
+  s10bq.advance(0.1);
+  s10bq.complete("Done.", s10bq.hermes()[0].run);
+  s10bq.advance(0.1);
+  s10bq.type("Repair the laptop screen");
+  s10bq.calls("ask_hermes", { label: "Screen repair" });
+  s10bq.advance(0.1);
+  s10bq.type("Run the application screening");
+  s10bq.calls("ask_hermes", { label: "Application screening" });
+  s10bq.advance(0.1);
+  s10bq.type("Cancel both screenings in progress");
+  s10bq.calls("cancel_task", { task: "Screen repair" });
+  s10bq.advance(0.1);
+  assert.equal(s10bq.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Both screenings' must not stem to 'screen' and cancel Screen repair");
+  s10bq.calls("cancel_task", { task: "Application screening" });
+  s10bq.advance(0.1);
+  assert.equal(s10bq.commands.filter((c) => c.type === "tool.cancel").length, 1, "'Both screenings' must still cancel Application screening");
+
+  const s10br = chat();
+  s10br.type("Check both hotel reservations");
+  s10br.calls("ask_hermes", { label: "Both hotel reservations" });
+  s10br.advance(0.1);
+  s10br.complete("Done.", s10br.hermes()[0].run);
+  s10br.advance(0.1);
+  s10br.type("Reserve a London hotel");
+  s10br.calls("ask_hermes", { label: "London hotel" });
+  s10br.advance(0.1);
+  s10br.type("Reserve a Paris hotel");
+  s10br.calls("ask_hermes", { label: "Paris hotel" });
+  s10br.advance(0.1);
+  s10br.type("Check hotel weather");
+  s10br.calls("ask_hermes", { label: "Hotel weather" });
+  s10br.advance(0.1);
+  s10br.type("Cancel both hotel reservations that are still running");
+  s10br.calls("cancel_task", { task: "Hotel weather" });
+  s10br.advance(0.1);
+  assert.equal(s10br.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Both hotel reservations' must refuse Hotel weather");
+  s10br.calls("cancel_task", { task: "London hotel" });
+  s10br.calls("cancel_task", { task: "Paris hotel" });
+  s10br.advance(0.1);
+  assert.equal(s10br.commands.filter((c) => c.type === "tool.cancel").length, 2, "'Both hotel reservations' must cancel London hotel and Paris hotel requested with 'Reserve'");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase, expected] of [
+    ["Both IT tasks", "Check if it rains in Paris", "Weather", "Cancel both IT tasks in progress", 0],
+    ["Both US tasks", "Check Paris weather", "Weather", "Cancel both US tasks in progress", 0],
+    ["Both AM tasks", "Check Paris weather", "Weather", "Cancel both AM tasks in progress", 0],
+    ["Both US bookings", "Book a hotel", "Hotel booking", "Cancel both US bookings that are still running", 0],
+    ["Both IT tasks", "Reset my IT laptop", "IT laptop reset", "Cancel both IT tasks in progress", 1],
+  ] as const) {
+    const s10bs = chat();
+    s10bs.type(`Check ${finishedLabel}`);
+    s10bs.calls("ask_hermes", { label: finishedLabel });
+    s10bs.advance(0.1);
+    s10bs.complete("Done.", s10bs.hermes()[0].run);
+    s10bs.advance(0.1);
+    s10bs.type(activeReq);
+    s10bs.calls("ask_hermes", { label: activeLabel });
+    s10bs.advance(0.1);
+    s10bs.type(phrase);
+    s10bs.calls("cancel_task", { task: activeLabel });
+    s10bs.advance(0.1);
+    assert.equal(s10bs.commands.filter((c) => c.type === "tool.cancel").length, expected, `acronym modifier '${finishedLabel}' vs '${activeLabel}' on: ${phrase}`);
+  }
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",

@@ -1085,4 +1085,69 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv16.toolCall("x1", "cancel_task", { task: "Audit" });
   sv16.advance(0.1);
   assert.equal(sv16.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode agentive plural 'auditors report verbatim' must stay blocked");
+  sv16.turn("Stop reading that routers list out loud and cancel the audit");
+  sv16.toolCall("x2", "cancel_task", { task: "Audit" });
+  sv16.advance(0.1);
+  assert.equal(sv16.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode inanimate 'routers list out loud' must cancel Audit");
+
+  const sv17 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv17.advance(0.1);
+  sv17.turn("Run both screenings");
+  sv17.toolCall("c1", "ask_hermes", { label: "Both screenings" });
+  sv17.advance(0.3);
+  sv17.complete("Done.", sv17.hermes()[0].run);
+  sv17.advance(0.3);
+  sv17.turn("Repair the laptop screen");
+  sv17.toolCall("c2", "ask_hermes", { label: "Screen repair" });
+  sv17.advance(0.3);
+  sv17.turn("Run the application screening");
+  sv17.toolCall("c3", "ask_hermes", { label: "Application screening" });
+  sv17.advance(0.3);
+  sv17.turn("Cancel both screenings in progress");
+  sv17.toolCall("x1", "cancel_task", { task: "Screen repair" });
+  sv17.advance(0.1);
+  assert.equal(sv17.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Both screenings' must refuse Screen repair");
+  sv17.toolCall("x2", "cancel_task", { task: "Application screening" });
+  sv17.advance(0.1);
+  assert.equal(sv17.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'Both screenings' must cancel Application screening");
+
+  const sv18 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv18.advance(0.1);
+  sv18.turn("Check both hotel reservations");
+  sv18.toolCall("c1", "ask_hermes", { label: "Both hotel reservations" });
+  sv18.advance(0.3);
+  sv18.complete("Done.", sv18.hermes()[0].run);
+  sv18.advance(0.3);
+  sv18.turn("Reserve a London hotel");
+  sv18.toolCall("c2", "ask_hermes", { label: "London hotel" });
+  sv18.advance(0.3);
+  sv18.turn("Reserve a Paris hotel");
+  sv18.toolCall("c3", "ask_hermes", { label: "Paris hotel" });
+  sv18.advance(0.3);
+  sv18.turn("Cancel both hotel reservations that are still running");
+  sv18.toolCall("x1", "cancel_task", { task: "London hotel" });
+  sv18.toolCall("x2", "cancel_task", { task: "Paris hotel" });
+  sv18.advance(0.1);
+  assert.equal(sv18.commands.filter((c) => c.type === "tool.cancel").length, 2, "voice mode 'Both hotel reservations' must cancel both hotels requested with 'Reserve'");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase, expected] of [
+    ["Both IT tasks", "Check if it rains in Paris", "Weather", "Cancel both IT tasks in progress", 0],
+    ["Both US bookings", "Book a hotel", "Hotel booking", "Cancel both US bookings that are still running", 0],
+    ["Both IT tasks", "Reset my IT laptop", "IT laptop reset", "Cancel both IT tasks in progress", 1],
+  ] as const) {
+    const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv19.advance(0.1);
+    sv19.turn(`Check ${finishedLabel}`);
+    sv19.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv19.advance(0.3);
+    sv19.complete("Done.", sv19.hermes()[0].run);
+    sv19.advance(0.3);
+    sv19.turn(activeReq);
+    sv19.toolCall("c2", "ask_hermes", { label: activeLabel });
+    sv19.advance(0.3);
+    sv19.turn(phrase);
+    sv19.toolCall("x1", "cancel_task", { task: activeLabel });
+    sv19.advance(0.1);
+    assert.equal(sv19.commands.filter((c) => c.type === "tool.cancel").length, expected, `voice mode acronym '${finishedLabel}' vs '${activeLabel}'`);
+  }
 });
