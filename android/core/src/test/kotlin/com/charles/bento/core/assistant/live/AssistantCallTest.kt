@@ -4937,6 +4937,13 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 21 }
         val msg16 = transport.responses().first { it.id() == "c16" }.message()
         assertTrue("is ambiguous" in msg16 && "\"Note\"" in msg16 && "\"Landlord note\"" in msg16, msg16)
+
+        // Disjoint owned labels of different lengths ("Note" and "Noma table") stay ambiguous instead of picking the longer label.
+        Live.turn(transport, "Put the Noma table time in the note")
+        transport.push(Live.call("c17", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 22 }
+        val msg17 = transport.responses().first { it.id() == "c17" }.message()
+        assertTrue(msg17.startsWith("Not executed:") && "\"Note\"" in msg17 && "\"Noma table\"" in msg17, msg17)
         call.stop()
     }
 }

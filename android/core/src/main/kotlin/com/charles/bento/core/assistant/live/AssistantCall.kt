@@ -1718,21 +1718,16 @@ class AssistantCall(
             val spans = spansOf(said, lt)
             if (spans.isNotEmpty()) Triple(label, lt.size, spans) else null
         }
-        val ownedSpans = rawOwned.flatMap { it.third }
-        val extSpans = rawExt.flatMap { it.third }
-        val liveOwned = rawOwned.filter { o -> o.third.any { !subsumedBy(it, extSpans) } }
-        val liveExt = rawExt.filter { e -> e.third.any { !subsumedBy(it, ownedSpans) } }
-        val bestOwnedLen = liveOwned.maxOfOrNull { it.second } ?: 0
-        val bestExtLen = liveExt.maxOfOrNull { it.second } ?: 0
-        val bestOwned = liveOwned.filter { it.second == bestOwnedLen }.map { it.first }
-        val bestExt = liveExt.filter { it.second == bestExtLen }.map { it.first }
+        val allSpans = rawOwned.flatMap { it.third } + rawExt.flatMap { it.third }
+        val liveOwned = rawOwned.filter { o -> o.third.any { !subsumedBy(it, allSpans) } }.map { it.first }
+        val liveExt = rawExt.filter { e -> e.third.any { !subsumedBy(it, allSpans) } }.map { it.first }
         return when {
-            bestOwned.isEmpty() && bestExt.isEmpty() -> null
-            bestOwned.isNotEmpty() && bestExt.isNotEmpty() -> Target.Ambiguous(bestOwned, bestExt)
-            bestExt.size == 1 -> Target.External(bestExt.single())
-            bestExt.size > 1 -> Target.Ambiguous(emptyList(), bestExt)
-            bestOwned.size == 1 -> Target.Owned(bestOwned.single())
-            else -> Target.Ambiguous(bestOwned, emptyList())
+            liveOwned.isEmpty() && liveExt.isEmpty() -> null
+            liveOwned.isNotEmpty() && liveExt.isNotEmpty() -> Target.Ambiguous(liveOwned, liveExt)
+            liveExt.size == 1 -> Target.External(liveExt.single())
+            liveExt.size > 1 -> Target.Ambiguous(emptyList(), liveExt)
+            liveOwned.size == 1 -> Target.Owned(liveOwned.single())
+            else -> Target.Ambiguous(liveOwned, emptyList())
         }
     }
 

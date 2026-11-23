@@ -689,12 +689,20 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Please don't go cancelling the Noma table",
     "Don't let the Noma table get cancelled",
     "Don't forget the cancelled Noma table policy",
+    "Don't forget the cancelled Noma table at the end of the report",
+    "Don't worry about the stopped Noma table the rain will end soon",
+    "Don't worry about the cancelled Noma table we can drop by later",
+    "Don't worry about the cancelled Noma table I'll stop by tomorrow",
     "Don't worry about the cancelled Noma table",
     "Don't wait for the stopped Noma table",
     "Don't worry about a stopped Noma table",
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
+    "Stop talking about whether we should just cancel the Noma table",
+    "Stop telling me to just cancel the Noma table",
+    "Stop asking me whether to just cancel the Noma table",
+    "Stop explaining why I should just cancel the Noma table",
     "It doesn't matter just stop talking about the Noma table",
     "I don't like it when you cancel the Noma table",
     "I don't know if you should cancel the Noma table",
@@ -749,4 +757,23 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv4.toolCall("x2", "cancel_task", { task: "Weather" });
   sv4.advance(0.1);
   assert.equal(sv4.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'then cancel' must cancel Weather");
+
+  const sv5 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv5.advance(0.1);
+  sv5.turn("Book a table at Noma");
+  sv5.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv5.advance(0.3);
+  sv5.turn("Find flights to Paris");
+  sv5.toolCall("c2", "ask_hermes", { label: "Paris flights" });
+  sv5.advance(0.3);
+  sv5.turn("Check Copenhagen weather");
+  sv5.toolCall("c3", "ask_hermes", { label: "Weather" });
+  sv5.advance(0.3);
+  sv5.turn("Stop talking about Noma and the flights then cancel the weather");
+  sv5.toolCall("x1", "cancel_task", { task: "Paris flights" });
+  sv5.advance(0.1);
+  assert.equal(sv5.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode coordinated stop-talking must not cancel Paris flights");
+  sv5.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv5.advance(0.1);
+  assert.equal(sv5.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'and the flights then cancel' must cancel Weather");
 });

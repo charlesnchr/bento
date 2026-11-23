@@ -1601,12 +1601,20 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Please don't go cancelling the Noma table",
     "Don't let the Noma table get cancelled",
     "Don't forget the cancelled Noma table policy",
+    "Don't forget the cancelled Noma table at the end of the report",
+    "Don't worry about the stopped Noma table the rain will end soon",
+    "Don't worry about the cancelled Noma table we can drop by later",
+    "Don't worry about the cancelled Noma table I'll stop by tomorrow",
     "Don't worry about the cancelled Noma table",
     "Don't wait for the stopped Noma table",
     "Don't worry about a stopped Noma table",
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
+    "Stop talking about whether we should just cancel the Noma table",
+    "Stop telling me to just cancel the Noma table",
+    "Stop asking me whether to just cancel the Noma table",
+    "Stop explaining why I should just cancel the Noma table",
     "It doesn't matter just stop talking about the Noma table",
     "I don't like it when you cancel the Noma table",
     "I don't know if you should cancel the Noma table",
@@ -1824,6 +1832,22 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   const resp10n: string = s10n.sentTurns().at(-1).parts[0].functionResponse.response.message;
   assert.ok(resp10n.includes("is ambiguous") && resp10n.includes('"Email"') && resp10n.includes('"Landlord email"'), `expected ambiguity naming both, got: ${resp10n}`);
 
+  // 8i-3) Disjoint owned labels of different lengths ("Weather" and "Paris flights") stay ambiguous instead of silently picking the longer label.
+  const s10p = chat();
+  s10p.push({ type: "note", id: "call-1-17", label: "Gym booking", text: "Booked.", active: false, request: "Book gym" });
+  s10p.advance(0.1);
+  s10p.type("Check Copenhagen weather");
+  s10p.calls("ask_hermes", { label: "Weather" });
+  s10p.advance(0.1);
+  s10p.type("Find flights to Paris");
+  s10p.calls("ask_hermes", { label: "Paris flights" });
+  s10p.advance(0.1);
+  s10p.type("Update the weather using the dates from Paris flights");
+  s10p.calls("ask_hermes", { continue_task: "Revision" });
+  s10p.advance(0.1);
+  const resp10p: string = s10p.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10p.startsWith("Not executed:") && resp10p.includes('"Weather"') && resp10p.includes('"Paris flights"'), `expected ambiguity between Weather and Paris flights, got: ${resp10p}`);
+
   // 8j) Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") out of active cancel scope, while splitting explicit "and cancel" / "then cancel".
   const s10l = chat();
   s10l.type("Book a table at Noma");
@@ -1866,6 +1890,24 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10o.calls("cancel_task", { task: "Weather" });
   s10o.advance(0.1);
   assert.equal(s10o.commands.filter((c) => c.type === "tool.cancel").length, 1, "'then cancel the weather' must cancel Weather");
+
+  const s10q = chat();
+  s10q.type("Book a table at Noma");
+  s10q.calls("ask_hermes", { label: "Noma table" });
+  s10q.advance(0.1);
+  s10q.type("Find flights to Paris");
+  s10q.calls("ask_hermes", { label: "Paris flights" });
+  s10q.advance(0.1);
+  s10q.type("Check Copenhagen weather");
+  s10q.calls("ask_hermes", { label: "Weather" });
+  s10q.advance(0.1);
+  s10q.type("Stop talking about Noma and the flights then cancel the weather");
+  s10q.calls("cancel_task", { task: "Paris flights" });
+  s10q.advance(0.1);
+  assert.equal(s10q.commands.filter((c) => c.type === "tool.cancel").length, 0, "coordinated stop-talking object must not cancel Paris flights");
+  s10q.calls("cancel_task", { task: "Weather" });
+  s10q.advance(0.1);
+  assert.equal(s10q.commands.filter((c) => c.type === "tool.cancel").length, 1, "'and the flights then cancel the weather' must cancel Weather");
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [

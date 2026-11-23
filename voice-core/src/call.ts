@@ -90,6 +90,8 @@ const NOT_STATE_TAIL = /^(?:(?:anymore|now|yet|just|so|then)\s*)*$/;
 const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
+const LATER_CANCEL_CMD = /\b(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+
 function isDontCancel(clause: string): boolean {
   NEG_OPENER.lastIndex = 0;
   let open: RegExpExecArray | null;
@@ -103,10 +105,10 @@ function isDontCancel(clause: string): boolean {
     const tail = words.slice(start + 1).join(" ");
     const full = words.join(" ");
     if (!BASE_CANCEL_VERB.test(m[2])) {
-      // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if a separate base-form cancel imperative follows in the same clause.
+      // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if an explicit cancel command follows in the same clause.
       const prev = words[words.length - 1] ?? "";
       const after = rest.slice(m.index + m[0].length);
-      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && /\b(?:cancel|stop|abort|kill|drop|end|halt)\b/i.test(after)) continue;
+      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && LATER_CANCEL_CMD.test(after)) continue;
       return true;
     }
     if (open[2] != null) {
@@ -143,6 +145,9 @@ const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|
 const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/i;
 /** Transition before an explicit cancel command following a stop-speaking phrase in the same clause ("Stop talking about Noma then cancel the weather", "Stop talking about it just cancel the weather"). */
 const SPLIT_AFTER_SPEAKING = /\s+(?:(?:then|so|now|just|please)\s+)+(?=(?:please\s+|just\s+|now\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+/** Text allowed between a stop-speaking verb and a split-out cancel command: empty or an "about ..." topic without an embedded clause. */
+const SAFE_SPEAK_TOPIC = /^(?:\s+about\b.*)?$/i;
+const EMBEDDED_CLAUSE = /\b(?:to|whether|why|if|how|should|could|would|might|may|must|can|will)\b/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
@@ -2346,20 +2351,15 @@ export class Call {
     const rawExt = this.externalTasks
       .map((ext) => { const lt = tokens(ext.label); return { ext, len: lt.length, spans: spansOf(said, lt) }; })
       .filter((e) => e.spans.length > 0);
-    const ownedSpans = rawOwned.flatMap((o) => o.spans);
-    const extSpans = rawExt.flatMap((e) => e.spans);
-    const liveOwned = rawOwned.filter((o) => o.spans.some((sp) => !subsumedBy(sp, extSpans)));
-    const liveExt = rawExt.filter((e) => e.spans.some((sp) => !subsumedBy(sp, ownedSpans)));
-    const bestOwnedLen = liveOwned.reduce((m, o) => Math.max(m, o.len), 0);
-    const bestExtLen = liveExt.reduce((m, e) => Math.max(m, e.len), 0);
-    const bestOwned = liveOwned.filter((o) => o.len === bestOwnedLen).map((o) => o.task);
-    const bestExt = liveExt.filter((e) => e.len === bestExtLen).map((e) => e.ext);
-    if (bestOwned.length === 0 && bestExt.length === 0) return null;
-    if (bestOwned.length > 0 && bestExt.length > 0) return { kind: "ambiguous", owned: bestOwned, external: bestExt };
-    if (bestExt.length === 1) return { kind: "external", task: bestExt[0] };
-    if (bestExt.length > 1) return { kind: "ambiguous", owned: [], external: bestExt };
-    if (bestOwned.length === 1) return { kind: "owned", task: bestOwned[0] };
-    return { kind: "ambiguous", owned: bestOwned, external: [] };
+    const allSpans = [...rawOwned.flatMap((o) => o.spans), ...rawExt.flatMap((e) => e.spans)];
+    const liveOwned = rawOwned.filter((o) => o.spans.some((sp) => !subsumedBy(sp, allSpans))).map((o) => o.task);
+    const liveExt = rawExt.filter((e) => e.spans.some((sp) => !subsumedBy(sp, allSpans))).map((e) => e.ext);
+    if (liveOwned.length === 0 && liveExt.length === 0) return null;
+    if (liveOwned.length > 0 && liveExt.length > 0) return { kind: "ambiguous", owned: liveOwned, external: liveExt };
+    if (liveExt.length === 1) return { kind: "external", task: liveExt[0] };
+    if (liveExt.length > 1) return { kind: "ambiguous", owned: [], external: liveExt };
+    if (liveOwned.length === 1) return { kind: "owned", task: liveOwned[0] };
+    return { kind: "ambiguous", owned: liveOwned, external: [] };
   }
 
   private asking(): Task[] {
@@ -2880,9 +2880,9 @@ export class Call {
     restOnly: boolean;
     parts: string[];
   }[] {
-    const spans: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] }[] = [];
+    const spans: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; canSplit: boolean; parts: string[] }[] = [];
     for (const clause of this.splitClauses(said)) {
-      let cur: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] } | null = null;
+      let cur: { kind: "active" | "protect" | "ignore"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; canSplit: boolean; parts: string[] } | null = null;
       for (const part of this.splitAnd(clause)) {
         const explicitDontOrKeep = isDontCancel(part) || KEEP_RUNNING.test(part);
         const targetOnlyProtect = KEEP_TARGET.test(part) || EXCLUDE_TASK.test(part);
@@ -2893,26 +2893,41 @@ export class Call {
             explicitDontOrKeep,
             explicitExcl: EXPLICIT_EXCLUSION.test(part),
             restOnly: KEEP_THE_REST.test(part),
+            canSplit: true,
             parts: [part],
           };
           spans.push(cur);
         } else if (speakMatch != null) {
-          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") out of active cancel scope, while splitting out an explicit cancel command after "then/just/please/now/so".
+          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") and embedded clauses ("Stop telling me to just cancel...") out of active cancel scope, while splitting standalone cancel commands after an empty or "about ..." topic.
           const tail = part.slice(speakMatch.index + speakMatch[0].length);
           const split = SPLIT_AFTER_SPEAKING.exec(tail);
-          if (split != null) {
+          const between = split != null ? tail.slice(0, split.index) : tail;
+          const safeTopic = SAFE_SPEAK_TOPIC.test(between) && !EMBEDDED_CLAUSE.test(between);
+          if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
-            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [before] });
-            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [after] };
+            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
             spans.push(cur);
           } else {
-            cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
+            cur = { kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: safeTopic, parts: [part] };
             spans.push(cur);
           }
-        } else if (cur == null || ((cur.kind === "protect" || cur.kind === "ignore") && CANCEL_VERB_START.test(part))) {
-          cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, parts: [part] };
+        } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit)) && CANCEL_VERB_START.test(part))) {
+          cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [part] };
           spans.push(cur);
+        } else if (cur.kind === "ignore" && cur.canSplit) {
+          const split = SPLIT_AFTER_SPEAKING.exec(part);
+          if (split != null && !EMBEDDED_CLAUSE.test(part.slice(0, split.index))) {
+            const before = part.slice(0, split.index).trim();
+            const after = part.slice(split.index + split[0].length).trim();
+            if (before.length > 0) cur.parts.push(before);
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+            spans.push(cur);
+          } else {
+            if (EMBEDDED_CLAUSE.test(part)) cur.canSplit = false;
+            cur.parts.push(part);
+          }
         } else {
           cur.parts.push(part);
           if (cur.kind === "protect" && KEEP_THE_REST.test(part)) cur.restOnly = true;
