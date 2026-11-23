@@ -1620,12 +1620,14 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Never mind the dropped call why would you cancel the Noma table",
     "Never mind the dropped call just drop me a note about the Noma table",
     "Never mind the dropped call just end the summary with the Noma table",
+    "Never mind the dropped call just end this summary with the Noma table",
     "Don't worry about the cancelled Noma table",
     "Don't wait for the stopped Noma table",
     "Don't worry about a stopped Noma table",
     "I don't care if they cancel the Noma table",
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
+    "Stop repeating that some restaurants just cancel the Noma table all the time",
     "Stop talking about plans to just cancel the Noma table",
     "Stop talking about plans to really just cancel the Noma table",
     "Stop explaining that my manager will just cancel the Noma table",
@@ -1964,10 +1966,27 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10s.advance(0.1);
   assert.equal(s10s.commands.filter((c) => c.type === "tool.cancel").length, 0, "embedded wh-question 'what happens when we then cancel the weather' must not cancel Weather");
 
+  // 8l) With Summary and Noma both running, "Never mind the dropped call just end the summary with the Noma table" keeps only "the summary" in active scope (refuses Noma, cancels Summary).
+  const s10t = chat();
+  s10t.type("Write a summary of the trip");
+  s10t.calls("ask_hermes", { label: "Summary" });
+  s10t.advance(0.1);
+  s10t.type("Book a table at Noma");
+  s10t.calls("ask_hermes", { label: "Noma table" });
+  s10t.advance(0.1);
+  s10t.type("Never mind the dropped call just end the summary with the Noma table");
+  s10t.calls("cancel_task", { task: "Noma table" });
+  s10t.advance(0.1);
+  assert.equal(s10t.commands.filter((c) => c.type === "tool.cancel").length, 0, "prepositional 'with the Noma table' must not authorize cancelling Noma");
+  s10t.calls("cancel_task", { task: "Summary" });
+  s10t.advance(0.1);
+  assert.equal(s10t.commands.filter((c) => c.type === "tool.cancel").length, 1, "direct object 'the summary' must still cancel Summary");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
     "Don't worry about the cancellation fee just cancel the weather",
+    "Don't worry about the cancelled Copenhagen dinner reservation just cancel the weather",
     "Never mind the dropped call just cancel the weather",
     "Never mind the dropped call can you cancel the weather",
     "Never mind the dropped call just end the weather task",
@@ -1980,6 +1999,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop rambling please cancel the weather",
     "Stop talking about flights to Paris and cancel the weather",
     "Stop mentioning Noma and cancel the weather",
+    "Stop explaining the Noma policy and cancel the weather",
     "Stop telling me about Noma then cancel the weather",
     "Stop talking about the trip to Paris then cancel the weather",
     "Stop talking about that Noma table then cancel the weather",

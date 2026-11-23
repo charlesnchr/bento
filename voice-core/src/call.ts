@@ -91,37 +91,43 @@ const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
 const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(cancel|abort|kill|halt|drop|end|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
-const BAD_IDIOM_NP_WORD = /\b(?:don'?t|do|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it|it'll|it'd|that'll|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|said|told|asked|know|think|want|need|mean|really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always)\b/i;
+const BAD_IDIOM_NP_WORD = /\b(?:don'?t|do|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it|it'll|it'd|that'll|people|everyone|everybody|someone|somebody|anyone|anybody|nobody|restaurants|hotels|airlines|companies|vendors|stores|places|sites|services|teams|managers|staff|agents|bots|users|customers|clients|folks|guys|others|said|told|asked|know|think|want|need|mean|really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always)\b/i;
 const DIRECT_TASK_OBJECT_START = /^\s+(?:the|this|that|my|our|it|them|all|both|every)\b/i;
-const DIRECT_OBJECT_PRONOUN = /\b(?:it|them|that|this|all|both|everything)\b/i;
+const DIRECT_OBJECT_PRONOUN = /^(?:it|them|that|this|all|both|everything)(?:\s+(?:one|task|tasks))?$/i;
+const DIRECT_OBJECT_BOUNDARY = /\b(?:with|about|for|at|in|on|by|to|from|of)\b/i;
 
 /**
- * Index of a standalone cancel command/request inside [text] right after a short verb-free noun phrase
- * (0 to 2 words, no modals/negations/pronouns/wh-words/adverbs/subjects), or -1.
- * For ambiguous verbs ("drop", "end"), requires the task (or a direct task pronoun) to be the immediate
- * direct object before any preposition.
+ * Span `[start, end)` of a standalone cancel command/request inside [text] right after a short verb-free
+ * noun phrase (0 to 4 words, no modals/negations/pronouns/wh-words/adverbs/subjects), or null.
+ * For ambiguous verbs ("drop", "end"), requires the task (or an exact task pronoun) to be the immediate
+ * direct object before any preposition and trims `end` to that direct object so later prepositional phrases
+ * cannot authorize cancelling another task.
  */
-function findLaterCancelCmd(text: string, matchesTaskObject?: (obj: string) => boolean): number {
+function findLaterCancelCmd(text: string, matchesTaskObject?: (obj: string) => boolean): { start: number; end: number } | null {
   LATER_CANCEL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = LATER_CANCEL_RE.exec(text)) != null) {
     const prefix = text.slice(0, m.index).trim();
     const prefixWords = prefix.length > 0 ? prefix.split(/\s+/) : [];
-    if (prefixWords.length > 2 || BAD_IDIOM_NP_WORD.test(prefix)) continue;
+    if (prefixWords.length > 4 || BAD_IDIOM_NP_WORD.test(prefix)) continue;
     const verb = m[1].toLowerCase();
     if (verb === "drop" || verb === "end") {
-      const afterVerb = text.slice(m.index + m[0].length);
+      const afterVerbStart = m.index + m[0].length;
+      const afterVerb = text.slice(afterVerbStart);
       if (!DIRECT_TASK_OBJECT_START.test(afterVerb)) continue;
-      const directObj = afterVerb.split(/\b(?:with|about|for|at|in|on|by|to|from)\b/i)[0].trim();
+      const boundary = DIRECT_OBJECT_BOUNDARY.exec(afterVerb);
+      const rawObj = boundary != null ? afterVerb.slice(0, boundary.index) : afterVerb;
+      const directObj = rawObj.trim();
       if (!DIRECT_OBJECT_PRONOUN.test(directObj) && !(matchesTaskObject?.(directObj) ?? false)) continue;
+      return { start: m.index, end: afterVerbStart + rawObj.trimEnd().length };
     }
-    return m.index;
+    return { start: m.index, end: text.length };
   }
-  return -1;
+  return null;
 }
 
-/** When [clause] is a direct lead-in idiom containing an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), returns the split index of the following standalone cancel command, or -1. */
-function idiomCancelSplitIndex(clause: string, matchesTaskObject?: (obj: string) => boolean): number {
+/** When [clause] is a direct lead-in idiom containing an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), returns the active cancel command slice `[start, end)`, or null. */
+function idiomCancelSplitSpan(clause: string, matchesTaskObject?: (obj: string) => boolean): { start: number; end: number } | null {
   NEG_OPENER.lastIndex = 0;
   let open: RegExpExecArray | null;
   while ((open = NEG_OPENER.exec(clause)) != null) {
@@ -137,9 +143,9 @@ function idiomCancelSplitIndex(clause: string, matchesTaskObject?: (obj: string)
     if (!DIRECT_IDIOM_VERB.test(verb) || !/^(?:the|a|an|that|this|my|our)$/.test(prev)) continue;
     const afterInflection = afterOpen + m.index + m[0].length;
     const rel = findLaterCancelCmd(clause.slice(afterInflection), matchesTaskObject);
-    if (rel >= 0) return afterInflection + rel;
+    if (rel != null) return { start: afterInflection + rel.start, end: afterInflection + rel.end };
   }
-  return -1;
+  return null;
 }
 
 function isDontCancel(clause: string, matchesTaskObject?: (obj: string) => boolean): boolean {
@@ -158,7 +164,7 @@ function isDontCancel(clause: string, matchesTaskObject?: (obj: string) => boole
       // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if an explicit cancel command/request follows immediately after that short noun phrase.
       const prev = words[words.length - 1] ?? "";
       const after = rest.slice(m.index + m[0].length);
-      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && findLaterCancelCmd(after, matchesTaskObject) >= 0) continue;
+      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && findLaterCancelCmd(after, matchesTaskObject) != null) continue;
       return true;
     }
     if (open[2] != null) {
@@ -195,13 +201,15 @@ const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|
 const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/i;
 /** Transition before an explicit cancel command following a stop-speaking phrase in the same clause ("Stop talking about Noma then cancel the weather", "Stop talking about it just cancel the weather"). */
 const SPLIT_AFTER_SPEAKING = /\s+(?:(?:then|so|now|just|please)\s+)+(?=(?:please\s+|just\s+|now\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
-/** Reporting stop-speaking verbs that require an explicit "about" topic before splitting out a cancel command (blocks "Stop telling people...", "Stop asking Hermes...", "Stop explaining that..."). */
-const REPORTING_SPEAK_VERB = /^(?:telling|asking|explaining)$/i;
+/** Reporting stop-speaking verbs taking a person object that require an explicit "about" topic before splitting out a cancel command (blocks "Stop telling people...", "Stop asking Hermes..."), while allowing noun-object "Stop explaining the Noma policy and cancel the weather". */
+const REPORTING_SPEAK_VERB = /^(?:telling|asking)$/i;
 const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|told|asked)\b/i;
+/** Reported-speech complementizer immediately after a stop-speaking verb ("Stop repeating that...", "Stop explaining that..."), distinct from "about that ...". */
+const THAT_COMPLEMENT = /^\s+that\b/i;
 /** Trailing adverbs stripped before testing whether a proposed split point sits inside an infinitive or modal ("to maybe", "will probably"). */
 const TRAILING_ADVS = /(?:\s+(?:really|probably|maybe|definitely|even|actually|simply|rather|perhaps|likely|always|never|still|also|only|ever|basically|literally|honestly|apparently|supposedly|obviously|clearly|surely|totally|completely|quickly|easily|immediately|directly|automatically|accidentally|prematurely))+$/i;
 /** Embedded-clause markers (indirect wh-questions, modals/reported verbs, pronoun clauses, infinitive cancel complements) kept inside stop-speaking spans without blocking nouns like "that Noma table" or "flights to Paris". */
-const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|will|would|should|could|might|must|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|don'?t|doesn'?t|didn'?t|said|told|asked|says|tells|asks|(?:i|we|you|they|he|she|it)(?:'ll|'d|'ve|'m|'re|'s)\b|(?:i|we|you|they|he|she|it)\s+(?:can|need|want|have|just|then|so|now)\b|to\s+(?:(?:really|probably|maybe|definitely|even|actually|simply|just|please|now)\s+)*(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|because|will|would|should|could|might|must|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|don'?t|doesn'?t|didn'?t|saying|said|told|asked|says|tells|asks|(?:i|we|you|they|he|she|it)(?:'ll|'d|'ve|'m|'re|'s)\b|(?:i|we|you|they|he|she|it)\s+(?:can|need|want|have|just|then|so|now)\b|to\s+(?:(?:really|probably|maybe|definitely|even|actually|simply|just|please|now)\s+)*(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Ending tokens (after stripping trailing adverbs) immediately before a proposed stop-speaking split that show the cancel verb is governed by an infinitive or auxiliary ("plans to", "telling people to maybe", "team will probably"). */
 const UNSAFE_SPLIT_END = /\b(?:to|will|would|should|could|can|might|must|may|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|don'?t|doesn'?t|didn'?t)\s*$/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
@@ -2943,6 +2951,7 @@ export class Call {
       return false;
     };
     const isSafeSplitPrefix = (prefix: string, isSplit: boolean, speakVerb?: string): boolean => {
+      if (speakVerb != null && THAT_COMPLEMENT.test(prefix)) return false;
       if (speakVerb != null && REPORTING_SPEAK_VERB.test(speakVerb) && prefix.trim().length > 0 && !/\babout\b/i.test(prefix)) return false;
       if (speakVerb == null && REPORTING_IN_CONTINUATION.test(prefix)) return false;
       if (EMBEDDED_CLAUSE.test(prefix)) return false;
@@ -2986,14 +2995,16 @@ export class Call {
             spans.push(cur);
           }
         } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit)) && CANCEL_VERB_START.test(part))) {
-          // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), split off the lead-in object so it cannot be scored as the cancel target.
-          const idiomSplit = idiomCancelSplitIndex(part, matchesTaskObject);
-          if (idiomSplit > 0) {
-            const before = part.slice(0, idiomSplit).trim();
-            const after = part.slice(idiomSplit).trim();
+          // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), keep only the standalone cancel command (and for drop/end, its direct object) in the active span.
+          const idiomSpan = idiomCancelSplitSpan(part, matchesTaskObject);
+          if (idiomSpan != null) {
+            const before = part.slice(0, idiomSpan.start).trim();
+            const activeCmd = part.slice(idiomSpan.start, idiomSpan.end).trim();
+            const trailing = part.slice(idiomSpan.end).trim();
             if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
-            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [activeCmd] };
             spans.push(cur);
+            if (trailing.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [trailing] });
           } else {
             cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [part] };
             spans.push(cur);
