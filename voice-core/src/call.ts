@@ -90,15 +90,15 @@ const NOT_STATE_TAIL = /^(?:(?:anymore|now|yet|just|so|then)\s*)*$/;
 const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
-const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(?:cancel|abort|kill|halt|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
-const DECLARATIVE_BEFORE = /\b(?:don'?t|do\s+not|never|not|i|i'll|we|we'll|they|they'll|he|he'll|she|she'll|it|it'll|you'll|that'll)(?:\s+(?:can|will|would|could|should|might|may|must))?\s*$/i;
+const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(?:cancel|abort|kill|halt|drop(?!\s+(?:by|in|over|off|out)\b)|end(?=\s+(?:the|this|that|my|our|it|them|all|both|every)\b)|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
+const UNSAFE_BEFORE_CMD = /\b(?:don'?t|do\s+not|doesn'?t|didn'?t|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|mightn'?t|mustn'?t|never|not|no|why|how|what|when|where|whether|if|who|to|can|could|would|will|should|might|may|must|shall|i|i'll|i'd|i've|i'm|we|we'll|we'd|we've|we're|you|you'll|you'd|you've|you're|they|they'll|they'd|they've|they're|he|he'll|he'd|he's|she|she'll|she'd|she's|it'll|it'd|that'll)\s*$/i;
 
-/** Index of a standalone cancel command/request inside [text] (not preceded by a negation or declarative subject), or -1. */
+/** Index of a standalone cancel command/request inside [text] (not preceded by a negation, modal, wh-word, `to`, or declarative subject), or -1. */
 function findLaterCancelCmd(text: string): number {
   LATER_CANCEL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = LATER_CANCEL_RE.exec(text)) != null) {
-    if (!DECLARATIVE_BEFORE.test(text.slice(0, m.index))) return m.index;
+    if (!UNSAFE_BEFORE_CMD.test(text.slice(0, m.index))) return m.index;
   }
   return -1;
 }
@@ -180,8 +180,10 @@ const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambl
 const SPLIT_AFTER_SPEAKING = /\s+(?:(?:then|so|now|just|please)\s+)+(?=(?:please\s+|just\s+|now\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Person-object direct/reported speech after "stop telling/asking me ..." without "about" ("Stop telling me to just cancel..."). */
 const DIRECT_SPEECH_LEAD = /^(?:\s+(?:me|us|him|her|them))\b(?!\s+about\b)/i;
-/** Embedded-clause markers (indirect wh-questions, reported speech, infinitive cancel complements) kept inside stop-speaking spans without blocking prepositional nouns like "flights to Paris". */
-const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|that\s+(?:i|we|you|they|he|she|it)\b|(?:i|we|you|they|he|she|it)(?:'ll|'d|'ve|'m|'re|'s)?\s+(?:should|could|would|might|must|can|will|need|want|have|just|then|so|now)\b|to\s+(?:(?:just|please|now|really|actually|simply)\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+/** Embedded-clause markers (indirect wh-questions, reported `that`-clauses, subject-modal clauses, infinitive cancel complements) kept inside stop-speaking spans without blocking prepositional nouns like "flights to Paris". */
+const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|that\s+\S+\s+\S+|(?:i|we|you|they|he|she|it)(?:'ll|'d|'ve|'m|'re|'s)?\s+(?:should|could|would|might|must|can|will|need|want|have|just|then|so|now)\b|to\s+(?:(?:just|please|now|really|actually|simply)\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+/** Ending tokens immediately before a proposed stop-speaking split that show the cancel verb is governed by an infinitive or auxiliary ("plans to", "telling people to", "manager will"). */
+const UNSAFE_SPLIT_END = /\b(?:to|will|would|should|could|can|might|must|may|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|don'?t|doesn'?t|didn'?t)\s*$/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
@@ -2936,7 +2938,7 @@ export class Call {
           const tail = part.slice(speakMatch.index + speakMatch[0].length);
           const split = SPLIT_AFTER_SPEAKING.exec(tail);
           const between = split != null ? tail.slice(0, split.index) : tail;
-          const safeTopic = !DIRECT_SPEECH_LEAD.test(between) && !EMBEDDED_CLAUSE.test(between);
+          const safeTopic = !DIRECT_SPEECH_LEAD.test(between) && !EMBEDDED_CLAUSE.test(between) && !(split != null && UNSAFE_SPLIT_END.test(between));
           if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
@@ -2962,14 +2964,15 @@ export class Call {
           }
         } else if (cur.kind === "ignore" && cur.canSplit) {
           const split = SPLIT_AFTER_SPEAKING.exec(part);
-          if (split != null && !EMBEDDED_CLAUSE.test(part.slice(0, split.index))) {
-            const before = part.slice(0, split.index).trim();
+          const prefix = split != null ? part.slice(0, split.index) : part;
+          if (split != null && !EMBEDDED_CLAUSE.test(prefix) && !UNSAFE_SPLIT_END.test(prefix)) {
+            const before = prefix.trim();
             const after = part.slice(split.index + split[0].length).trim();
             if (before.length > 0) cur.parts.push(before);
             cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
             spans.push(cur);
           } else {
-            if (EMBEDDED_CLAUSE.test(part)) cur.canSplit = false;
+            if (EMBEDDED_CLAUSE.test(part) || (split != null && UNSAFE_SPLIT_END.test(prefix))) cur.canSplit = false;
             cur.parts.push(part);
           }
         } else {
