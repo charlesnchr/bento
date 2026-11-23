@@ -48,7 +48,7 @@ const FAKE_TV = [
 ];
 
 const PRESETS: Record<string, Record<string, unknown>> = {
-  web: { platform: "web", device: "browser", standbyAfter: 30, hangUpAfter: 300, handOff: "named", supervise: true, vocabulary: ["Hermes", "Bento", "Woodhouse", "Pennyworth", "T3"] },
+  web: { platform: "web", device: "browser", standbyAfter: 30, handOff: "named", supervise: true, vocabulary: ["Hermes", "Bento", "Woodhouse", "Pennyworth", "T3"] },
   "web wake word": {
     platform: "web", device: "browser", standbyAfter: 20, hangUpAfter: 120, handOff: "named", supervise: true,
     attention: { mode: "window", afterWake: 8, window: 5, afterQuestion: 10, afterHandOff: 3, afterAnnouncement: 0 },
@@ -89,9 +89,11 @@ let holding = false;
 let wakeLock: { release(): Promise<void> } | null = null;
 /** Wake word loop state: armed between calls, requested by core while dormant/speaking, or mid-handoff. */
 let wakeArmed = false;
+let armGen = 0;
 let coreWantsWake = false;
 let wakeLoading = false;
 let wakeStarting = false;
+let startingCall = false;
 let openingChunks: Uint8Array[] = [];
 let openingBytes = 0;
 const OPENING_MAX_BYTES = 10 * 32_000;
@@ -635,7 +637,9 @@ function showStatus(message?: string) {
   document.body.classList.toggle("in-session", Boolean(callId));
   const wakeLabel = selectedWakeModel()?.label ?? "wake word";
   let text = armedIdle
-    ? (wakeLoading ? `Loading “${wakeLabel}”…` : `Waiting for “${wakeLabel}”`)
+    ? (wakeLoading ? `Loading “${wakeLabel}”…`
+      : audio.audioSuspended ? `Tap anywhere to activate “${wakeLabel}”`
+      : `Waiting for “${wakeLabel}”`)
     : speaking ? "Speaking"
     : coreStatus === "dormant" ? `Dormant · say “${wakeLabel}”`
     : STATUS_TEXT[coreStatus] ?? coreStatus;
@@ -940,6 +944,22 @@ function numberSetting(id: string, fallback: number, min = 0, max = 3600): numbe
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
+function developerOverrides() {
+  try {
+    const given = JSON.parse($<HTMLTextAreaElement>("config").value);
+    if (!given || typeof given !== "object") return { hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
+    const mic = given.mic && typeof given.mic === "object" ? given.mic : null;
+    return {
+      hasAttention: given.attention !== undefined,
+      hasHangUp: given.hangUpAfter !== undefined,
+      hasStandby: given.standbyAfter !== undefined,
+      hasMicWhileSpeaking: mic != null && mic.whileSpeaking !== undefined,
+    };
+  } catch {
+    return { hasAttention: false, hasHangUp: false, hasStandby: false, hasMicWhileSpeaking: false };
+  }
+}
+
 function readConfig(): Record<string, unknown> {
   const given = JSON.parse($<HTMLTextAreaElement>("config").value);
   const config: Record<string, unknown> = {
@@ -955,28 +975,9 @@ function readConfig(): Record<string, unknown> {
   if (config.supervise === undefined && config.platform === "web") config.supervise = true;
   if (checked("coding") && (server.t3 || checked("fakehermes")) && config.codingAgent === undefined) config.codingAgent = { projects: server.t3 ?? [] };
   if (checked("captions") && server.captionsModel && config.captions === undefined) config.captions = { model: server.captionsModel };
-  // Apply Settings signaling controls when using the default web preset without raw Developer JSON overrides.
-  const customJson = localStorage.getItem("voice-core.config") != null;
-  const presetName = $<HTMLSelectElement>("preset").value;
+  // Apply each Settings signaling field independently unless explicitly set in Developer JSON / preset.
   const signaling = $<HTMLSelectElement>("signaling").value;
-  if (!customJson && presetName === "web") {
-    config.hangUpAfter = numberSetting("hangup-after", signaling === "echo" ? 15 : 300, 0, 3600);
-    if (signaling === "window" || signaling === "echo") {
-      config.attention = {
-        mode: "window",
-        afterWake: numberSetting("attn-after-wake", 8, 1, 60),
-        window: numberSetting("attn-window", 5, 0, 60),
-        afterQuestion: numberSetting("attn-after-question", 10, 0, 60),
-        afterHandOff: 3,
-        afterAnnouncement: 0,
-      };
-      if (signaling === "echo") config.standbyAfter = 8;
-    }
-    if (checked("wake-barge") || signaling === "echo") {
-      const mic = (config.mic && typeof config.mic === "object" ? config.mic : {}) as Record<string, unknown>;
-      config.mic = { gainDb: 0, ...mic, whileSpeaking: "wake" };
-    }
-  } else if (given.attention === undefined && (signaling === "window" || signaling === "echo")) {
+  if (given.attention === undefined && (signaling === "window" || signaling === "echo")) {
     config.attention = {
       mode: "window",
       afterWake: numberSetting("attn-after-wake", 8, 1, 60),
@@ -986,83 +987,108 @@ function readConfig(): Record<string, unknown> {
       afterAnnouncement: 0,
     };
   }
+  if (given.hangUpAfter === undefined) {
+    config.hangUpAfter = numberSetting("hangup-after", signaling === "echo" ? 15 : 300, 0, 3600);
+  }
+  if (signaling === "echo" && given.standbyAfter === undefined) {
+    config.standbyAfter = 8;
+  }
+  const givenMic = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
+  if ((!givenMic || givenMic.whileSpeaking === undefined) && (checked("wake-barge") || signaling === "echo")) {
+    config.mic = { gainDb: 0, ...(givenMic ?? {}), whileSpeaking: "wake" };
+  }
   return config;
 }
 
 /** Starts a voice call, or with [typed] a chat (the core's medium "text": no audio, a text model). */
-async function start(carryOn = false, typed = false) {
-  await ending;
-  if (callId) return;
-  let given: Record<string, unknown>;
+async function start(carryOn = false, typed = false): Promise<boolean> {
+  if (startingCall || callId) return false;
+  startingCall = true;
   try {
-    given = readConfig();
-  } catch (err) {
-    toast(`The developer settings aren't valid JSON: ${(err as Error).message}`);
-    return;
-  }
-  if (typed) {
-    if (!server.textModel) { toast("This server has no text model for a chat: start a call to type to it"); return; }
-    given = { ...given, medium: "text", muted: false };
-    delete given.captions;
-    if (wakeArmed) audio.stopMic();
-  }
-  $<HTMLButtonElement>("call").disabled = true;
-  $<HTMLButtonElement>("hero-call").disabled = true;
-  if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission().catch(() => {});
-  try {
-    if (!typed) await audio.open();
-    core = await loadCore();
-  } finally {
-    $<HTMLButtonElement>("call").disabled = false;
-    $<HTMLButtonElement>("hero-call").disabled = false;
-  }
-  if (callId) return; // another start got there first
-  medium = typed ? "text" : "voice";
-  thinking = false;
-  $("version").textContent = core.version;
-  $("log").innerHTML = "";
-  if (!typed && (tasks.size > 0 || $("transcript").childElementCount > 1)) note(`New call · ${new Date().toLocaleTimeString()}`);
-  scrollDown(true);
-  tasks.clear();
-  showTasks();
-  counts = { mic: 0, play: 0, sent: 0 };
-  metrics.reply = [];
-  startedAt = now();
-  muted = given.muted === true;
-  // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
-  // A chat always carries on from what's on the screen (an earlier call or chat on this page).
-  if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
-  else if (carryOn && given.history === undefined) given.history = savedHistory();
-  else if (!carryOn) chat = [];
-  if (carryOn && !typed) chat = savedHistory();
-  lastLine = null;
-  openLine = null;
-  syncResumeButtons(false);
-  callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${typed ? "chat" : "web"}-${core.version}`;
-  const created = JSON.parse(core.create(JSON.stringify(given), now()));
-  callId = created.id;
-  if (!typed) {
-    setCallButton(true);
-    $<HTMLButtonElement>("mic").disabled = false;
-  }
-  $<HTMLButtonElement>("hush").disabled = false;
-  $("mic").classList.toggle("muted", muted);
-  run(created.commands);
-  showStatus();
-  ticker = window.setInterval(() => {
-    push({ type: "tick" });
-    const level = muted && !holding ? 0 : audio.level;
-    const strength = Math.min(1, level * 12);
-    $("ring").style.opacity = String(strength);
-    $("ring").style.transform = `scale(${(1 + strength * 0.12).toFixed(3)})`;
-    $("counts").textContent = `mic ${counts.mic} · sent ${counts.sent} · played ${counts.play} · queued ${audio.queued.toFixed(1)} s`;
+    await ending;
+    if (callId) return false;
+    let given: Record<string, unknown>;
+    try {
+      given = readConfig();
+    } catch (err) {
+      toast(`The developer settings aren't valid JSON: ${(err as Error).message}`);
+      return false;
+    }
+    if (typed) {
+      if (!server.textModel) { toast("This server has no text model for a chat: start a call to type to it"); return false; }
+      given = { ...given, medium: "text", muted: false };
+      delete given.captions;
+    }
+    $<HTMLButtonElement>("call").disabled = true;
+    $<HTMLButtonElement>("hero-call").disabled = true;
+    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission().catch(() => {});
+    let loadedCore: Core;
+    try {
+      if (!typed) await audio.open();
+      loadedCore = await loadCore();
+    } finally {
+      $<HTMLButtonElement>("call").disabled = false;
+      $<HTMLButtonElement>("hero-call").disabled = false;
+    }
+    if (callId) return false;
+    core = loadedCore;
+    if (typed) {
+      wakeStarting = false;
+      openingChunks = [];
+      openingBytes = 0;
+      if (wakeArmed) audio.stopMic();
+    }
+    medium = typed ? "text" : "voice";
+    thinking = false;
+    $("version").textContent = core.version;
+    $("log").innerHTML = "";
+    if (!typed && (tasks.size > 0 || $("transcript").childElementCount > 1)) note(`New call · ${new Date().toLocaleTimeString()}`);
+    scrollDown(true);
+    tasks.clear();
+    showTasks();
+    counts = { mic: 0, play: 0, sent: 0 };
+    metrics.reply = [];
+    startedAt = now();
+    muted = given.muted === true;
+    // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
+    // A chat always carries on from what's on the screen (an earlier call or chat on this page).
+    if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
+    else if (carryOn && given.history === undefined) given.history = savedHistory();
+    else if (!carryOn) chat = [];
+    if (carryOn && !typed) chat = savedHistory();
+    lastLine = null;
+    openLine = null;
+    syncResumeButtons(false);
+    callName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${typed ? "chat" : "web"}-${core.version}`;
+    const created = JSON.parse(core.create(JSON.stringify(given), now()));
+    callId = created.id;
+    if (!typed) {
+      setCallButton(true);
+      $<HTMLButtonElement>("mic").disabled = false;
+    }
+    $<HTMLButtonElement>("hush").disabled = false;
+    $("mic").classList.toggle("muted", muted);
+    run(created.commands);
     showStatus();
-  }, 100);
-  traceTimer = window.setInterval(() => { void saveTrace(); void ping(); showTasks(); }, 5000);
-  void ping();
-  if (typed) return;
-  stopWords.start();
-  await acquireWakeLock();
+    ticker = window.setInterval(() => {
+      push({ type: "tick" });
+      const level = muted && !holding ? 0 : audio.level;
+      const strength = Math.min(1, level * 12);
+      $("ring").style.opacity = String(strength);
+      $("ring").style.transform = `scale(${(1 + strength * 0.12).toFixed(3)})`;
+      $("counts").textContent = `mic ${counts.mic} · sent ${counts.sent} · played ${counts.play} · queued ${audio.queued.toFixed(1)} s`;
+      showStatus();
+    }, 100);
+    traceTimer = window.setInterval(() => { void saveTrace(); void ping(); showTasks(); }, 5000);
+    void ping();
+    if (!typed) {
+      stopWords.start();
+      await acquireWakeLock();
+    }
+    return true;
+  } finally {
+    startingCall = false;
+  }
 }
 
 /** The Call button: hangs up a call; starts one; or, with a chat on, ends the chat and carries its conversation on by voice. */
@@ -1225,7 +1251,7 @@ function wakeThreshold(): number {
 }
 
 function shouldFeedWake(): boolean {
-  if (wakeStarting) return false;
+  if (wakeStarting || startingCall) return false;
   if (callId === 0) return wakeArmed;
   return medium === "voice" && coreWantsWake && !(muted && !holding);
 }
@@ -1235,6 +1261,7 @@ function renderWakeTelemetry() {
   if (!active) { $("heard").textContent = ""; return; }
   const label = selectedWakeModel()?.label ?? "wake word";
   if (wakeLoading) { $("heard").textContent = `Loading wake word “${label}”…`; return; }
+  if (callId === 0 && audio.audioSuspended) { $("heard").textContent = `Audio paused by browser · tap or press a key to resume “${label}”`; return; }
   if (!wakeLastTel) { $("heard").textContent = `Wake “${label}” ready (threshold ${wakeThreshold().toFixed(2)})`; return; }
   const state = wakeLastTel.gateOpen ? `scoring ${wakeLastTel.score.toFixed(2)}` : "quiet";
   const speed = wakeLastTel.inferMs > 0 ? ` · ${wakeLastTel.inferMs.toFixed(1)} ms` : "";
@@ -1255,7 +1282,7 @@ function syncWakeUi() {
   hero.hidden = !hasModels;
   hero.classList.toggle("on", wakeArmed);
   hero.textContent = wakeArmed
-    ? (wakeLoading ? `Loading “${label}”…` : `Listening for “${label}”`)
+    ? (wakeLoading ? `Loading “${label}”…` : audio.audioSuspended ? `Activate “${label}”` : `Listening for “${label}”`)
     : `Listen for “${label}”`;
   $<HTMLInputElement>("wake-enabled").checked = wakeArmed;
   renderWakeTelemetry();
@@ -1263,21 +1290,35 @@ function syncWakeUi() {
 }
 
 function syncSignalingUi() {
-  const signaling = $<HTMLSelectElement>("signaling").value;
-  const customJson = localStorage.getItem("voice-core.config") != null;
-  const isWeb = $<HTMLSelectElement>("preset").value === "web";
-  const windowControls = signaling === "window" || signaling === "echo";
+  const ov = developerOverrides();
+  const signalingEl = $<HTMLSelectElement>("signaling");
+  const signaling = signalingEl.value;
+  signalingEl.disabled = ov.hasAttention;
+  const windowControls = !ov.hasAttention && (signaling === "window" || signaling === "echo");
   for (const id of ["attn-after-wake", "attn-window", "attn-after-question"]) {
     $<HTMLInputElement>(id).disabled = !windowControls;
   }
+  $<HTMLInputElement>("hangup-after").disabled = ov.hasHangUp;
   const barge = $<HTMLInputElement>("wake-barge");
-  if (signaling === "echo" && !customJson && isWeb) {
+  if (ov.hasMicWhileSpeaking) {
+    barge.disabled = true;
+  } else if (signaling === "echo") {
     barge.checked = true;
     barge.disabled = true;
   } else {
     barge.disabled = false;
     barge.checked = localStorage.getItem("voice.wake-barge") === "1";
   }
+  const overridden: string[] = [];
+  if (ov.hasAttention) overridden.push("attention");
+  if (ov.hasHangUp) overridden.push("hangUpAfter");
+  if (ov.hasMicWhileSpeaking) overridden.push("mic.whileSpeaking");
+  const hasModels = (server?.wakeModels?.length ?? 0) > 0;
+  $("signaling-help").textContent = overridden.length > 0
+    ? `Developer config sets ${overridden.join(", ")}.`
+    : !hasModels && signaling !== "open"
+      ? "No wake models on server: use the Wake button when dormant."
+      : "Applied on the next call unless overridden in Developer JSON.";
 }
 
 const wakeClient = new WakeClient({
@@ -1309,6 +1350,7 @@ async function armWake(on: boolean, persist = true) {
     $<HTMLInputElement>("wake-enabled").checked = false;
     return;
   }
+  const gen = ++armGen;
   wakeArmed = on;
   if (persist) localStorage.setItem("voice.wake-enabled", on ? "1" : "0");
   if (on && model) {
@@ -1318,9 +1360,11 @@ async function armWake(on: boolean, persist = true) {
     if (!callId) {
       try {
         await audio.ensureMic(onMic, micOptions());
+        if (gen !== armGen || !wakeArmed) return;
         wakeClient.reset();
         await acquireWakeLock();
       } catch (err) {
+        if (gen !== armGen) return;
         wakeArmed = false;
         wakeLoading = false;
         if (persist) localStorage.setItem("voice.wake-enabled", "0");
@@ -1373,12 +1417,16 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   wakeStarting = true;
   openingChunks = [];
   openingBytes = 0;
-  if (hit.rest.byteLength > 0) {
-    openingChunks.push(hit.rest);
-    openingBytes = hit.rest.byteLength;
+  for (const chunk of hit.trailing) {
+    if (chunk.byteLength === 0) continue;
+    openingChunks.push(chunk);
+    openingBytes += chunk.byteLength;
+    while (openingBytes > OPENING_MAX_BYTES && openingChunks.length > 1) {
+      openingBytes -= openingChunks.shift()!.byteLength;
+    }
   }
-  void start(chat.length > 0).then(() => {
-    if (!callId && wakeStarting) {
+  void start(chat.length > 0).then((started) => {
+    if (!started && wakeStarting) {
       wakeStarting = false;
       openingChunks = [];
       openingBytes = 0;
@@ -1416,7 +1464,10 @@ function settingsFromStorage() {
   ] as const) {
     const saved = localStorage.getItem(key);
     if (saved != null) $<HTMLInputElement>(id).value = saved;
-    $(id).addEventListener("change", () => localStorage.setItem(key, $<HTMLInputElement>(id).value));
+    $(id).addEventListener("change", () => {
+      localStorage.setItem(key, $<HTMLInputElement>(id).value);
+      if (id === "hangup-after") localStorage.setItem("voice.hangup-custom", "1");
+    });
   }
   const thresh = localStorage.getItem("voice.wake-threshold");
   if (thresh != null) $<HTMLInputElement>("wake-threshold").value = thresh;
@@ -1433,9 +1484,11 @@ function settingsFromStorage() {
   $("signaling").addEventListener("change", () => {
     const mode = $<HTMLSelectElement>("signaling").value;
     localStorage.setItem("voice.signaling", mode);
-    const def = mode === "echo" ? "15" : "300";
-    $<HTMLInputElement>("hangup-after").value = def;
-    localStorage.setItem("voice.hangup-after", def);
+    if (localStorage.getItem("voice.hangup-custom") !== "1") {
+      const def = mode === "echo" ? "15" : "300";
+      $<HTMLInputElement>("hangup-after").value = def;
+      localStorage.setItem("voice.hangup-after", def);
+    }
     syncSignalingUi();
   });
   $("wake-enabled").addEventListener("change", () => void armWake(checked("wake-enabled")));
@@ -1475,6 +1528,14 @@ function settingsFromStorage() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && (callId || wakeArmed)) void acquireWakeLock();
   });
+  audio.onAudioStateChange(() => syncWakeUi());
+  const resumeIfSuspended = () => {
+    if (audio.audioSuspended && (wakeArmed || callId)) {
+      void audio.resumeAudio().then(() => syncWakeUi());
+    }
+  };
+  document.addEventListener("pointerdown", resumeIfSuspended, { passive: true });
+  document.addEventListener("keydown", resumeIfSuspended, { passive: true });
   syncSignalingUi();
 }
 
@@ -1606,6 +1667,7 @@ async function main() {
   preset.value = localStorage.getItem("voice-core.preset") ?? "web";
   if (!PRESETS[preset.value]) preset.value = "web";
   $<HTMLTextAreaElement>("config").value = localStorage.getItem("voice-core.config") ?? JSON.stringify(PRESETS[preset.value], null, 2);
+  syncSignalingUi();
   preset.onchange = () => {
     $<HTMLTextAreaElement>("config").value = JSON.stringify(PRESETS[preset.value], null, 2);
     localStorage.setItem("voice-core.preset", preset.value);
@@ -1623,8 +1685,14 @@ async function main() {
   const onResumeClick = () => void start(true).catch((err) => { toast(err.message); log("error", err.message, "err"); });
   $("call").onclick = onCallClick;
   $("hero-call").onclick = onHeroCallClick;
-  $("hero-wake").onclick = () => void armWake(!wakeArmed);
-  $("wakebtn").onclick = () => void armWake(!wakeArmed);
+  $("hero-wake").onclick = () => {
+    if (wakeArmed && audio.audioSuspended) { void audio.resumeAudio().then(() => syncWakeUi()); return; }
+    void armWake(!wakeArmed);
+  };
+  $("wakebtn").onclick = () => {
+    if (wakeArmed && audio.audioSuspended) { void audio.resumeAudio().then(() => syncWakeUi()); return; }
+    void armWake(!wakeArmed);
+  };
   $("wake-now").onclick = () => { if (callId) push({ type: "resume" }); };
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;

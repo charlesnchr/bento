@@ -1,22 +1,24 @@
 // Dedicated Web Worker for local wake word detection.
 // Runs ONNX Runtime Web (WASM) off the main thread so inference never stalls audio or UI.
+// Every session/reset carries a client generation (`gen`) and every audio chunk a sequence number
+// (`seq`) so stale detections or ready events after a reset or model switch are ignored cleanly.
 
 import { OnnxWakeModel } from "./onnxWakeModel.ts";
 import { WakeDetector } from "./wakeDetector.ts";
 
 type InMessage =
-  | { type: "load"; url: string; modelId: string; threshold: number; wasmPaths?: string }
+  | { type: "load"; gen: number; url: string; modelId: string; threshold: number; wasmPaths?: string }
   | { type: "config"; threshold: number }
-  | { type: "feed"; pcm: ArrayBuffer }
-  | { type: "reset" }
-  | { type: "dispose" };
+  | { type: "feed"; gen: number; seq: number; pcm: ArrayBuffer }
+  | { type: "reset"; gen: number }
+  | { type: "dispose"; gen: number };
 
 let model: OnnxWakeModel | null = null;
 let detector: WakeDetector | null = null;
 let threshold = 0.7;
 let loadedUrl = "";
 let queue: Promise<void> = Promise.resolve();
-let loadGeneration = 0;
+let activeGen = 0;
 let lastTelemetryAt = 0;
 let lastGateOpen = false;
 let lastInferMs = 0;
@@ -35,14 +37,18 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
     case "config":
       threshold = msg.threshold;
       break;
-    case "reset":
+    case "reset": {
+      activeGen = msg.gen;
+      const gen = msg.gen;
       enqueue(async () => {
+        if (gen !== activeGen) return;
         detector?.reset();
         lastGateOpen = false;
       });
       break;
-    case "dispose":
-      loadGeneration++;
+    }
+    case "dispose": {
+      activeGen = msg.gen;
       enqueue(async () => {
         detector = null;
         loadedUrl = "";
@@ -53,14 +59,17 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
         }
       });
       break;
+    }
     case "load": {
-      const gen = ++loadGeneration;
+      activeGen = msg.gen;
+      const gen = msg.gen;
       threshold = msg.threshold;
       enqueue(async () => {
-        if (gen !== loadGeneration) return;
+        if (gen !== activeGen) return;
         if (model && loadedUrl === msg.url) {
           detector?.reset();
-          post({ type: "ready", modelId: msg.modelId, warmupMs: 0 });
+          lastGateOpen = false;
+          post({ type: "ready", gen, modelId: msg.modelId, warmupMs: 0 });
           return;
         }
         try {
@@ -68,9 +77,9 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
           const res = await fetch(msg.url);
           if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${msg.url}`);
           const buf = await res.arrayBuffer();
-          if (gen !== loadGeneration) return;
+          if (gen !== activeGen) return;
           const next = await OnnxWakeModel.load(buf, msg.wasmPaths ?? "/ort/");
-          if (gen !== loadGeneration) {
+          if (gen !== activeGen) {
             await next.close();
             return;
           }
@@ -79,22 +88,26 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
           loadedUrl = msg.url;
           detector = new WakeDetector(model, { threshold }, () => threshold);
           lastGateOpen = false;
-          post({ type: "ready", modelId: msg.modelId, warmupMs: Math.round(performance.now() - t0) });
+          post({ type: "ready", gen, modelId: msg.modelId, warmupMs: Math.round(performance.now() - t0) });
         } catch (err) {
-          if (gen !== loadGeneration) return;
-          post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+          if (gen !== activeGen) return;
+          post({ type: "error", gen, message: err instanceof Error ? err.message : String(err) });
         }
       });
       break;
     }
-    case "feed":
+    case "feed": {
+      const gen = msg.gen;
+      const seq = msg.seq;
+      if (gen !== activeGen) return;
       enqueue(async () => {
-        if (!detector) return;
+        if (!detector || gen !== activeGen) return;
         const pcm = new Int16Array(msg.pcm);
         const scoredBefore = detector.scored;
         const t0 = performance.now();
         try {
           const hit = await detector.feed(pcm);
+          if (gen !== activeGen) return;
           const scoredNow = detector.scored - scoredBefore;
           if (scoredNow > 0) lastInferMs = (performance.now() - t0) / scoredNow;
           if (hit) {
@@ -104,6 +117,8 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
             post(
               {
                 type: "detected",
+                gen,
+                seq,
                 score: hit.score,
                 atFrame: hit.atFrame,
                 restBytes: restCopy.buffer,
@@ -120,6 +135,7 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
             lastGateOpen = detector.gateOpen;
             post({
               type: "telemetry",
+              gen,
               score: detector.lastScore,
               peak: detector.takePeak(),
               gateOpen: detector.gateOpen,
@@ -129,9 +145,11 @@ self.onmessage = (event: MessageEvent<InMessage>) => {
             });
           }
         } catch (err) {
-          post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+          if (gen !== activeGen) return;
+          post({ type: "error", gen, message: err instanceof Error ? err.message : String(err) });
         }
       });
       break;
+    }
   }
 };

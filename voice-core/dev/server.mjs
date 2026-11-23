@@ -291,16 +291,34 @@ const web = await esbuild.context({
   sourcemap: "inline",
   logLevel: "warning",
 });
-const wakeWorker = await esbuild.context({
-  entryPoints: [join(root, "web/wake.worker.ts")],
-  bundle: true,
-  format: "esm",
-  target: "es2022",
-  outfile: join(root, "web/dist/wake.worker.js"),
-  sourcemap: "inline",
-  logLevel: "warning",
-});
-await Promise.all([web.rebuild(), wakeWorker.rebuild()]);
+let wakeWorker = null;
+let wakeWorkerReady = false;
+async function buildWakeWorker() {
+  if (!existsSync(ORT_DIR)) {
+    wakeWorkerReady = false;
+    return;
+  }
+  try {
+    if (!wakeWorker) {
+      wakeWorker = await esbuild.context({
+        entryPoints: [join(root, "web/wake.worker.ts")],
+        bundle: true,
+        format: "esm",
+        target: "es2022",
+        outfile: join(root, "web/dist/wake.worker.js"),
+        sourcemap: "inline",
+        logLevel: "warning",
+      });
+    }
+    await wakeWorker.rebuild();
+    wakeWorkerReady = true;
+  } catch (err) {
+    wakeWorkerReady = false;
+    console.warn(`wake worker disabled (${err.message}); run npm ci in voice-core to enable`);
+  }
+}
+await web.rebuild();
+await buildWakeWorker();
 
 let pending = null;
 function rebuildSoon(what) {
@@ -312,7 +330,8 @@ function rebuildSoon(what) {
         coreVersion = version;
         if (changed) { console.log(`core rebuilt: ${version}`); announce("core", { version }); }
       } else {
-        await Promise.all([web.rebuild(), wakeWorker.rebuild()]);
+        await web.rebuild();
+        await buildWakeWorker();
         announce("app", {});
       }
     } catch (err) {
@@ -358,12 +377,15 @@ const server = createServer(async (req, res) => {
   try {
     if (path === "/") return file(res, join(root, "web/index.html"));
     if (path === "/app.js") return file(res, join(root, "web/dist/app.js"));
-    if (path === "/wake.worker.js") return file(res, join(root, "web/dist/wake.worker.js"));
+    if (path === "/wake.worker.js") {
+      if (!wakeWorkerReady) { res.writeHead(404); return res.end(); }
+      return file(res, join(root, "web/dist/wake.worker.js"));
+    }
     if (path === "/voice-core.js") return file(res, OUT);
     if (path === "/config") {
       res.writeHead(200, { "content-type": "application/json" });
       const projects = T3.available() ? (await T3.projects().catch(() => [])).map((p) => p.title) : null;
-      const models = [...wakeModels.values()].map(({ id, label }) => ({ id, label }));
+      const models = wakeWorkerReady ? [...wakeModels.values()].map(({ id, label }) => ({ id, label })) : [];
       return res.end(JSON.stringify({ route: ROUTE, model, captionsModel, textModel: TEXT_MODEL, version: coreVersion, hermes: Boolean(HERMES_URL && HERMES_KEY), t3: projects, wakeModels: models }));
     }
     if (path.startsWith("/wake/models/") && path.endsWith(".onnx")) {
@@ -487,6 +509,6 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  const models = [...wakeModels.keys()].join(", ") || "none";
+  const models = wakeWorkerReady ? ([...wakeModels.keys()].join(", ") || "none") : "disabled (onnxruntime-web missing)";
   console.log(`voice core dev server on http://${HOST}:${PORT} (core ${coreVersion}, model route ${ROUTE}${ROUTE === "vertex" ? " via " + SOCKS : ""}, Hermes ${HERMES_URL ? "on" : "off"}, wake models: ${models})`);
 });

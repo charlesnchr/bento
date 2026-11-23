@@ -62,7 +62,9 @@ Access, Google sign-in, Charles only) or, on the tailnet, https://homelab.tailbf
      (dormant) and `mic.whileSpeaking: "wake"` (Echo-style barge-in). Settings lets you switch models
      (`pennyworth` from the repo plus any `.onnx` models in `VOICE_CORE_WAKE_DIR` or
      `~/workspace/home-assistant/wakeword/models/lkww`), adjust threshold live, and compare
-     beginning/end signaling modes (`open`, `window`, and `echo`).
+     beginning/end signaling modes (`open`, `window`, and `echo`). Run `npm ci` in `voice-core/`
+     after pulling so `onnxruntime-web` is installed for the worker build (if absent, the dev server
+     starts with wake word disabled rather than failing).
    - Type to the call (Enter), or pick "New Hermes task" / "New coding task" to start one without
      saying it. With no call on, typing starts a chat instead (see "Typed chat"): the same main
      thread in text, with the same task cards. Call then ends the chat and carries its
