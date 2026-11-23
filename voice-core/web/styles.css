@@ -585,6 +585,7 @@ main {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overflow-anchor: none;
   padding: 22px max(18px, calc(50% - 390px)) 28px;
   display: flex;
   flex-direction: column;
