@@ -1126,3 +1126,101 @@ test("note remove event clears a cancelled detached task from a live chat so it 
   s.advance(0.1);
   assert.ok(s.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), "removed detached task must not block cancelling Noma");
 });
+
+test("explicit refusals ('Don't ever cancel...', 'Leave ... as it is') never cancel, while clause-scoped keep allows cancelling the other task", () => {
+  for (const phrase of ["Don't ever cancel the Noma booking", "Leave Noma as it is"]) {
+    const s = chat();
+    s.type("Book a table at Noma");
+    s.calls("ask_hermes", { label: "Noma table" });
+    s.advance(0.1);
+    s.type(phrase);
+    s.calls("cancel_task", { task: "Noma table" });
+    s.advance(0.1);
+    assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), `must refuse: ${phrase}`);
+  }
+  // Clause-scoped keep: "Cancel the Noma table but keep the weather one" cancels Noma and protects Weather.
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Noma table" });
+  s2.advance(0.1);
+  s2.type("Check Copenhagen weather");
+  s2.calls("ask_hermes", { label: "Copenhagen weather" });
+  s2.advance(0.1);
+  s2.type("Cancel the Noma table but keep the weather one");
+  s2.calls("cancel_task", { task: "Copenhagen weather" });
+  s2.advance(0.1);
+  assert.ok(!s2.commands.some((c) => c.type === "tool.cancel"), "keep clause must protect weather");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "cancel clause must cancel Noma");
+});
+
+test("refusing on a keep turn never arms a bare 'Yes please' cancel, and one 'Yes please' never cancels two tasks", () => {
+  // 1) Refusal on "Actually, keep Noma running." must not authorize a later "Yes please" (e.g. answering a weather question).
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s.advance(0.1);
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.type("Cancel the Alchemist dinner booking.");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  s.writes("Did you want me to cancel Dinner booking?");
+  s.type("Actually, keep Noma running.");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  s.writes("Okay, keeping Noma running. Want the hourly weather forecast?");
+  s.type("Yes please");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "'Yes please' after 'Actually, keep Noma running.' must not cancel Noma");
+
+  // 2) With two running tasks refused on Turn 1, bare "Yes please" must not cancel either; "Yes, Noma" cancels only Noma.
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Noma table" });
+  s2.advance(0.1);
+  s2.type("Find flights to Paris");
+  s2.calls("ask_hermes", { label: "Paris flights" });
+  s2.advance(0.1);
+  s2.type("What is 2 + 2?");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  s2.calls("cancel_task", { task: "Paris flights" });
+  s2.advance(0.1);
+  s2.writes("Did you want me to cancel Noma table?");
+  s2.type("Yes please");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  s2.calls("cancel_task", { task: "Paris flights" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, "bare 'Yes please' must not cancel multiple running tasks");
+  s2.writes("Which one did you want to cancel, Noma or Paris flights?");
+  s2.type("Yes, Noma");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  s2.calls("cancel_task", { task: "Paris flights" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "'Yes, Noma' must cancel only Noma");
+});
+
+test("many queued messages behind 'Yes, book it' do not evict the question snapshot or bypass the continue_task guard", () => {
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Shall I book it?");
+  s.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Alchemist has a table at nine. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Yes, book it");
+  const answerReq = s.requests().at(-1)!.id;
+  // Queue 9 newer messages while the model is still answering "Yes, book it".
+  for (let i = 1; i <= 9; i++) {
+    s.advance(0.05);
+    s.type(`Follow-up note ${i}`);
+  }
+  s.calls("ask_hermes", { continue_task: "Noma table" }, answerReq);
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "queued messages must not evict the question snapshot and let 'Yes, book it' route to Noma");
+});

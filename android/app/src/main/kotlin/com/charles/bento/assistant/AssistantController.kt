@@ -869,7 +869,8 @@ class AssistantController(
                             val turnsNow = _state.value.messages.count { it.role == "user" }
                             for (t in _state.value.tasks) {
                                 if (t.detached && t.active && conversationDetached.none { it.id == t.id }) {
-                                    recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = t.request))
+                                    val combined = board.requestHistory(t.id, t.request)
+                                    recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = combined))
                                 }
                             }
                         }
@@ -966,13 +967,14 @@ class AssistantController(
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = board.spoken)
         val known = board.find(uiId)
         val priorSid = (known?.sessionId ?: board.sessionId(uiId))?.takeIf { request.followUp }
-        val originalRequest = board.rememberRequest(uiId, known?.request?.takeIf { it.isNotBlank() } ?: request.task)
-        val combinedRequest = if (request.task.isNotBlank() && !originalRequest.contains(request.task)) "$originalRequest ${request.task}" else originalRequest
+        if (known != null && known.request.isNotBlank()) board.accumulateRequest(uiId, known.request)
+        val combinedRequest = board.accumulateRequest(uiId, request.task)
+        val displayRequest = known?.request?.takeIf { it.isNotBlank() } ?: request.task
         val now = SystemClock.elapsedRealtime()
         val label = request.label.ifEmpty { TaskLabel.short(request.task) }
         var taskMessages = known?.messages.orEmpty() + ask
         if (known == null) {
-            board.update { it + TaskUi(uiId, originalRequest, label, sessionId = priorSid, messages = taskMessages, startedAt = now, detached = board.detached) }
+            board.update { it + TaskUi(uiId, displayRequest, label, sessionId = priorSid, messages = taskMessages, startedAt = now, detached = board.detached) }
         } else {
             board.task(uiId) { it.copy(status = "running", progress = null, question = null, messages = taskMessages, startedAt = now) }
         }
@@ -980,11 +982,11 @@ class AssistantController(
             voiceBoundary = true
             chatLine = null
             if (board.detached) {
-                val activeNote = DetachedNote(uiId, label, originalRequest, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = combinedRequest)
+                val activeNote = DetachedNote(uiId, label, displayRequest, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = combinedRequest)
                 recordDetached(activeNote)
                 val openChat = chat
                 when {
-                    openChat != null -> openChat.note(label, originalRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
+                    openChat != null -> openChat.note(label, displayRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
                     chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(activeNote))
                 }
             }
@@ -1280,11 +1282,23 @@ internal class TaskBoard(
     private val uiToCore = HashMap<String, String>()
     /** Session IDs remembered per UI task id so a dispatched follow-up recovers its session even if its completed row was dropped at hang-up. */
     private val sessions = HashMap<String, String>()
-    /** Original first request remembered per UI task id so follow-ups ("Yes, book it") never erase the task's identifying prompt. */
-    private val originalRequests = HashMap<String, String>()
+    /** Accumulated distinct prompts per UI task id (bounded) so both original and follow-up identifying words survive hang-up. */
+    private val taskRequests = HashMap<String, String>()
 
-    fun rememberRequest(uiId: String, request: String): String =
-        originalRequests.getOrPut(uiId) { request }
+    fun accumulateRequest(uiId: String, request: String): String {
+        val clean = request.trim()
+        val prev = taskRequests[uiId]
+        val merged = when {
+            prev.isNullOrBlank() -> clean
+            clean.isBlank() || prev.contains(clean, ignoreCase = true) -> prev
+            else -> "$prev $clean"
+        }.take(1000)
+        if (merged.isNotBlank()) taskRequests[uiId] = merged
+        return merged
+    }
+
+    fun requestHistory(uiId: String, fallback: String): String =
+        taskRequests[uiId] ?: fallback
 
     /** True once a voice call ended and its surviving tasks live in `state.tasks`. */
     val detached: Boolean get() = spoken && callEnded

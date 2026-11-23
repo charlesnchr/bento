@@ -71,10 +71,10 @@ export class TextLine {
   /** An answer asked the model to go on (anything but a silent one). */
   private speak = false;
   /** User turns that came while the model's turn was under way. */
-  private readonly held: { content: Content; complete: boolean; turn: { seq: number; text: string } | null }[] = [];
-  /** Sequence and text of the latest complete user turn accepted into `contents`. */
+  private readonly held: { content: Content; complete: boolean; turn: { seq: number; turnId: number | null; text: string } | null }[] = [];
+  /** Sequence, protocol turn id and text of the latest complete user turn accepted into `contents`. */
   private nextUserTurn = 0;
-  private latestUserTurn: { seq: number; text: string } | null = null;
+  private latestUserTurn: { seq: number; turnId: number | null; text: string } | null = null;
   /** A user turn waits for the model's answer. */
   private due = false;
   private turnOpen = false;
@@ -86,7 +86,7 @@ export class TextLine {
    */
   asOf = 0;
   /** The exact complete user turn the current model turn is answering (immune to same-timestamp queuing). */
-  answeredTurn: { seq: number; text: string } | null = null;
+  answeredTurn: { seq: number; turnId: number | null; text: string } | null = null;
   private readonly host: LineHost;
   private readonly c: LineConfig;
 
@@ -109,7 +109,7 @@ export class TextLine {
   }
 
   /** A frame the call would send Gemini Live. [recap]: the earlier conversation's own recap frame, which carries its own fence. */
-  send(frame: string, recap = false): void {
+  send(frame: string, recap = false, turnId: number | null = null): void {
     if (this.stopped) return;
     const f = parse(frame);
     if (!f) return;
@@ -122,7 +122,7 @@ export class TextLine {
         // A turn the model isn't to answer is a note of Bento's (a result, a cancellation): fenced, so the user's next message stands apart from it.
         const complete = content.turnComplete === true && i === turns.length - 1;
         const note = content.turnComplete !== true && !recap;
-        const userTurn = complete ? { seq: ++this.nextUserTurn, text } : null;
+        const userTurn = complete ? { seq: ++this.nextUserTurn, turnId, text } : null;
         this.take({ role: "user", parts: [{ text: note ? fencedNote(text) : text }] }, complete, userTurn);
       });
       return;
@@ -134,7 +134,7 @@ export class TextLine {
     return this.request != null || this.calls.length > 0;
   }
 
-  private take(content: Content, complete: boolean, turn: { seq: number; text: string } | null): void {
+  private take(content: Content, complete: boolean, turn: { seq: number; turnId: number | null; text: string } | null): void {
     if (this.busy) { this.held.push({ content, complete, turn }); return; }
     this.contents.push(content);
     if (complete) { this.due = true; if (turn) this.latestUserTurn = turn; }

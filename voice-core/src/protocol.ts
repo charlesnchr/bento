@@ -71,16 +71,24 @@ export class CallProtocol {
   private history: Fragment[] = [];
   private historyBytes = 0;
   private nextTurn = 0;
+  /** In a typed chat, the turn the model is currently answering so queuing many later messages never evicts it. */
+  pinnedTurn: number | null = null;
 
-  /** A new user turn begins (ACTIVITY_START). */
-  activityStarted(at: number): void {
+  /** A new user turn begins (ACTIVITY_START). Returns its turn id, or null if rejected. */
+  activityStarted(at: number): number | null {
     const last = lastOrNull(this.turns);
-    if (!Number.isFinite(at) || at < (last?.started ?? 0)) return;
+    if (!Number.isFinite(at) || at < (last?.started ?? 0)) return null;
     const turn = new Turn(this.nextTurn, at);
     if (last != null && last.text.length === 0 && (last.ended == null || at - last.ended < 3)) turn.ambiguous = true;
     this.turns.push(turn);
     this.nextTurn++;
-    if (this.turns.length > 32) this.turns.shift();
+    while (this.turns.length > 32) {
+      if (this.pinnedTurn != null && this.turns[0].id >= this.pinnedTurn) {
+        if (this.turns.length <= 256) break;
+      }
+      this.turns.shift();
+    }
+    return turn.id;
   }
 
   /** The current user turn ends (ACTIVITY_END). */
@@ -108,9 +116,13 @@ export class CallProtocol {
   }
 
   /** A new call of a delegating tool ([names]), or null for anything else (unknown name, repeated or bad ID). */
-  delegation(name: string | null, id: string | null, at: number, names: string[] = [TOOL]): Delegation | null {
+  delegation(name: string | null, id: string | null, at: number, names: string[] = [TOOL], exactTurn: number | null = null): Delegation | null {
     if (name == null || !names.includes(name) || !id || id.length >= 200 || this.seen.has(id) || this.seen.size >= 256 || !Number.isFinite(at) || at < 0) return null;
     this.seen.add(id);
+    if (exactTurn != null) {
+      const pinned = this.turns.find((t) => t.id === exactTurn) ?? null;
+      return { id, at, turn: pinned?.id ?? null };
+    }
     const started = this.turns.filter((t) => t.started <= at);
     let turn: Turn | null = lastOrNull(started);
     // The model answers a turn just after its end, so a turn still open when the call arrives is a

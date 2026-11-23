@@ -133,13 +133,16 @@ class VoiceCallDecoupleTest {
         board.update { it + TaskUi(uiId, "Book table", "Table", status = "completed", sessionId = "sid-original") }
         board.setSessionId(uiId, "sid-original")
 
-        // Hang up drops completed rows from UI, but the board retains session identity and original request for a dispatched follow-up.
-        assertEquals("Book a table at Alchemist", board.rememberRequest(uiId, "Book a table at Alchemist"))
+        // Hang up drops completed rows from UI, but the board retains session identity and accumulated requests (original + follow-ups) without duplication.
+        assertEquals("Find somewhere for dinner", board.accumulateRequest(uiId, "Find somewhere for dinner"))
+        assertEquals("Find somewhere for dinner Book that Alchemist option", board.accumulateRequest(uiId, "Book that Alchemist option"))
+        assertEquals("Find somewhere for dinner Book that Alchemist option", board.accumulateRequest(uiId, "Book that Alchemist option"))
         board.detach()
         state = AssistantController.endCallState(state, error = null)
         assertNull(board.find(uiId))
         assertEquals("sid-original", board.sessionId(uiId))
-        assertEquals("Book a table at Alchemist", board.rememberRequest(uiId, "Yes, book it"))
+        assertEquals("Find somewhere for dinner Book that Alchemist option", board.requestHistory(uiId, "Find somewhere for dinner"))
+        assertEquals("Find somewhere for dinner Book that Alchemist option Yes, book it", board.accumulateRequest(uiId, "Yes, book it"))
     }
 
     @Test fun activeTaskForSessionMatchesRunningCallOrDetachedTasksOnly() {
