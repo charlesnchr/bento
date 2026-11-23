@@ -1260,6 +1260,23 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both London hotel bookings", "Book a London flight & a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
     ["Both London hotel bookings", "Book a London flight and a hotel ASAP", "London trip", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Book a London flight and a hotel please, Thanks", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a two-night Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a non-smoking hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a pet-friendly hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a romantic hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a seaside hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a charming hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Book a London hotel and a red-eye flight", "London trip", "Cancel both London flight bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in lockdown; check when it reopens", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Photograph the Lobby", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Who Owns It", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight & book a Paris hotel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight as well as a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Fortnum & Mason in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to reassure the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to please the clients", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Find a London flight and book a seat to split the family is already there", "Split flight", "Cancel both London flight bookings in progress", 0],
+    ["Both Dubrovnik flight bookings", "Find a Dubrovnik flight and book a seat to split", "Split flight", "Cancel both Dubrovnik flight bookings in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
