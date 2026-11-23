@@ -2621,6 +2621,78 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10bh.advance(0.1);
   assert.equal(s10bh.commands.filter((c) => c.type === "tool.cancel").length, 2, "multiword finished group 'Both hotel bookings' with running modifier must cancel both London and Paris hotels");
 
+  // 8aa) Narrowing modifiers ("hotel" in "Both hotel bookings" / "Both hotel tasks") must match the candidate task; function words ("our"/"the"/"your") in finished group labels never match unrelated Weather; vowel-ending plurals ("Both videos") still cancel active video tasks.
+  const s10bi = chat();
+  s10bi.type("Check both hotel bookings");
+  s10bi.calls("ask_hermes", { label: "Both hotel bookings" });
+  s10bi.advance(0.1);
+  s10bi.complete("Done.", s10bi.hermes()[0].run);
+  s10bi.advance(0.1);
+  s10bi.type("Book a London hotel");
+  s10bi.calls("ask_hermes", { label: "London hotel" });
+  s10bi.advance(0.1);
+  s10bi.type("Book a flight");
+  s10bi.calls("ask_hermes", { label: "Flight booking" });
+  s10bi.advance(0.1);
+  s10bi.type("Cancel both hotel bookings that are still running");
+  s10bi.calls("cancel_task", { task: "Flight booking" });
+  s10bi.advance(0.1);
+  assert.equal(s10bi.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel both hotel bookings that are still running' must not cancel Flight booking");
+
+  const s10bj = chat();
+  s10bj.type("Check both hotel tasks");
+  s10bj.calls("ask_hermes", { label: "Both hotel tasks" });
+  s10bj.advance(0.1);
+  s10bj.complete("Done.", s10bj.hermes()[0].run);
+  s10bj.advance(0.1);
+  s10bj.type("Check Paris weather");
+  s10bj.calls("ask_hermes", { label: "Weather" });
+  s10bj.advance(0.1);
+  s10bj.type("Cancel both hotel tasks that are still running");
+  s10bj.calls("cancel_task", { task: "Weather" });
+  s10bj.advance(0.1);
+  assert.equal(s10bj.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Both hotel tasks' must still require 'hotel' and refuse unrelated Weather");
+
+  for (const [finishedLabel, weatherReq, phrase] of [
+    ["Both our bookings", "Check the weather for our trip", "Cancel both our bookings that are still running"],
+    ["All of the bookings", "Check the Paris weather", "Cancel all of the bookings in progress"],
+    ["All your bookings", "What's your forecast for Paris", "Cancel all your bookings in progress"],
+  ] as const) {
+    const s10bk = chat();
+    s10bk.type(`Check ${finishedLabel}`);
+    s10bk.calls("ask_hermes", { label: finishedLabel });
+    s10bk.advance(0.1);
+    s10bk.complete("Done.", s10bk.hermes()[0].run);
+    s10bk.advance(0.1);
+    s10bk.type("Book a hotel");
+    s10bk.calls("ask_hermes", { label: "Hotel booking" });
+    s10bk.advance(0.1);
+    s10bk.type(weatherReq);
+    s10bk.calls("ask_hermes", { label: "Weather" });
+    s10bk.advance(0.1);
+    s10bk.type(phrase);
+    s10bk.calls("cancel_task", { task: "Weather" });
+    s10bk.advance(0.1);
+    assert.equal(s10bk.commands.filter((c) => c.type === "tool.cancel").length, 0, `function words in '${finishedLabel}' must not cancel Weather on: ${phrase}`);
+  }
+
+  const s10bl = chat();
+  s10bl.type("Render both videos");
+  s10bl.calls("ask_hermes", { label: "Both videos" });
+  s10bl.advance(0.1);
+  s10bl.complete("Done.", s10bl.hermes()[0].run);
+  s10bl.advance(0.1);
+  s10bl.type("Render product video");
+  s10bl.calls("ask_hermes", { label: "Product video" });
+  s10bl.advance(0.1);
+  s10bl.type("Render training video");
+  s10bl.calls("ask_hermes", { label: "Training video" });
+  s10bl.advance(0.1);
+  s10bl.type("Cancel both videos in progress");
+  s10bl.calls("cancel_task", { task: "Product video" });
+  s10bl.advance(0.1);
+  assert.equal(s10bl.commands.filter((c) => c.type === "tool.cancel").length, 1, "finished 'Both videos' with 'in progress' must cancel active 'Product video'");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2654,6 +2726,8 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that sales order confirmation aloud then cancel the weather",
     "Stop reading that benefits brochure aloud then cancel the weather",
     "Stop reading that benefits catalog introduction aloud then cancel the weather",
+    "Stop reading that staff outline word for word then cancel the weather",
+    "Stop reading that sales report line by line and cancel the weather",
     "Stop reading that sales report aloud and cancel the weather",
     "Stop reading that sales report every morning and cancel the weather",
     "Stop reading that sales report summary and cancel the weather",

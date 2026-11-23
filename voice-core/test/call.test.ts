@@ -990,4 +990,28 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv11.toolCall("x1", "cancel_task", { task: "Weather" });
   sv11.advance(0.1);
   assert.equal(sv11.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Cancel both bookings in progress' must not cancel unrelated Weather");
+
+  for (const [finishedLabel, weatherReq, phrase] of [
+    ["Both our bookings", "Check the weather for our trip", "Cancel both our bookings that are still running"],
+    ["All of the bookings", "Check the Paris weather", "Cancel all of the bookings in progress"],
+    ["All your bookings", "What's your forecast for Paris", "Cancel all your bookings in progress"],
+  ] as const) {
+    const sv12 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv12.advance(0.1);
+    sv12.turn(`Check ${finishedLabel}`);
+    sv12.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv12.advance(0.3);
+    sv12.complete("Done.", sv12.hermes()[0].run);
+    sv12.advance(0.3);
+    sv12.turn("Book a hotel");
+    sv12.toolCall("c2", "ask_hermes", { label: "Hotel booking" });
+    sv12.advance(0.3);
+    sv12.turn(weatherReq);
+    sv12.toolCall("c3", "ask_hermes", { label: "Weather" });
+    sv12.advance(0.3);
+    sv12.turn(phrase);
+    sv12.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv12.advance(0.1);
+    assert.equal(sv12.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode function words in '${finishedLabel}' must not cancel Weather on: ${phrase}`);
+  }
 });

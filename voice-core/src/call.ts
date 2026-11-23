@@ -270,8 +270,9 @@ const PERSON_REPORTING_VERB = /^(?:telling|asking)$/i;
 const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|told|asked)\b/i;
 /** Reported-speech `that <clause>` complementizer immediately after a reporting verb ("Stop repeating that some restaurants..."), allowing bare object "Stop repeating that and/then cancel" and non-reporting "Stop reading that report and cancel". */
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
-/** Trailing reading/time adverbials stripped when checking whether a `that ...` phrase is a demonstrative noun phrase ("that sales report every morning", "that staff rota aloud", "that staff meeting this week"). */
-const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
+/** Trailing reading/time adverbials stripped when checking whether a `that ...` phrase is a demonstrative noun phrase ("that sales report every morning", "that staff rota aloud", "that staff outline word for word", "that staff meeting this week"). */
+const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|word\s+for\s+word|line\s+by\s+line|verbatim|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
+const TRAILING_READING_MODIFIER = /\s+(?:aloud|out\s+loud|word\s+for\s+word|line\s+by\s+line|verbatim)\s*$/i;
 /** Strictly singular document-compound heads that cannot act as a finite transitive verb or an uncountable bare object ("that sales report summary", "that staff meeting agenda"). */
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
 const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|foreword|prologue|epilogue|conclusion)$/i;
@@ -295,8 +296,8 @@ function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // Actual reading requests ending in "aloud"/"out loud" ("Stop reading that staff report aloud", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun (and for 3-word compounds, singular head after a document modifier and non-agentive first word so "auditors review terms aloud" stays refused).
-    const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && /\s+(?:aloud|out\s+loud)\s*$/i.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
+    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun (and for 3-word compounds, singular head after a document modifier and non-agentive first word so "auditors review terms aloud" stays refused).
+    const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && TRAILING_READING_MODIFIER.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
     if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1]))) return false;
     if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
@@ -3313,18 +3314,20 @@ export class Call {
   /** Direct post-modifier immediately following a plural group scope ("both bookings that are still running", "both bookings in progress", "both hotel bookings that are still running") that lets a broad cancel ignore a finished task with that same plural label ONLY for candidate tasks belonging to the named group. */
   private static readonly DIRECT_RUNNING_MODIFIER = /^\s+(?:(?:that|which)\s+are\s+(?:(?:still|currently)\s+)?(?:running|active|open|in\s+progress|going)|(?:still|currently)\s+(?:running|active|open|in\s+progress|going)|in\s+progress)\b/i;
   private static readonly GENERIC_GROUP_HEAD = /^(?:tasks|runs|jobs|requests|items|ones)$/i;
+  private static readonly NON_GROUP_PLURAL_OS = /^(?:chaos|ethos|pathos|cosmos|kudos|macos)$/i;
 
-  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings" or "both hotel bookings". */
+  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", or "both hotel bookings". Function words are stripped via TaskNames.distinctive, and every narrowing modifier (e.g. "hotel" in "both hotel bookings" or "both hotel tasks") must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
-    const m = /^(?:all|both|every)\s+(?:the\s+)?(.+)$/i.exec(lbl.trim());
+    const m = /^(?:all|both|every)\s+(?:of\s+)?(?:(?:the|our|my|your|their|these|those)\s+)*(.+)$/i.exec(lbl.trim());
     if (!m) return false;
-    const groupWords = m[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (groupWords.length === 0) return false;
-    const head = groupWords[groupWords.length - 1];
-    if (!isPluralWord(head)) return false;
-    if (Call.GENERIC_GROUP_HEAD.test(head)) return true;
+    const rawWords = m[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (rawWords.length === 0) return false;
+    const head = rawWords[rawWords.length - 1];
+    const isGroupPlural = isPluralWord(head) || (head.length >= 4 && /^[a-z]{3,}os$/i.test(head) && !Call.NON_GROUP_PLURAL_OS.test(head));
+    if (!isGroupPlural) return false;
+    const modifiers = rawWords.slice(0, -1).filter((w) => TaskNames.distinctive(w).size > 0);
+    if (modifiers.length === 0 && Call.GENERIC_GROUP_HEAD.test(head)) return true;
     if (task == null) return false;
-    const taskWords = new Set((`${task.label} ${task.latest} ${task.request}`.toLowerCase().match(/[a-z0-9]+/g) ?? []));
     const stemVariants = (w: string): string[] => {
       const out = [w];
       if (w.endsWith("ies") && w.length > 4) out.push(w.slice(0, -3) + "y");
@@ -3332,7 +3335,13 @@ export class Call {
       else if (w.endsWith("s") && w.length > 3) out.push(w.slice(0, -1));
       return out;
     };
-    return groupWords.some((w) => w.length >= 3 && stemVariants(w).some((v) => taskWords.has(v)));
+    const taskWords = new Set<string>();
+    for (const w of TaskNames.distinctive(`${task.label} ${task.latest} ${task.request}`)) {
+      for (const v of stemVariants(w)) taskWords.add(v);
+    }
+    const matchesTask = (w: string): boolean => stemVariants(w).some((v) => taskWords.has(v));
+    if (modifiers.length > 0) return modifiers.every(matchesTask);
+    return TaskNames.distinctive(head).size > 0 && matchesTask(head);
   }
 
   /** Whether [text] requests cancelling all tasks (or a named group containing [task]), ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier and [task] belongs to that group). */
