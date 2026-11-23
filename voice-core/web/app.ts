@@ -195,10 +195,9 @@ function parsePrefix(text: string): { mode: "hermes" | "t3" | null; rest: string
 
 function syncComposer() {
   const input = $<HTMLInputElement>("text");
-  const raw = input.value;
-  const trimmed = raw.trim();
+  const trimmed = input.value.trim();
   $("sendbtn").classList.toggle("ready", trimmed.length > 0);
-  const parsed = parsePrefix(raw.trimStart());
+  const parsed = parsePrefix(trimmed);
   $("mode-wrap").dataset.mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
 }
 
@@ -1163,7 +1162,7 @@ function keys() {
       if (callId) { push({ type: "interrupt" }); audio.flush(); return; }
       return;
     }
-    if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (typing() || !$("settings").hidden || document.body.classList.contains("tasks-open") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "m" || e.key === "M") { setMuted(!muted); e.preventDefault(); }
     else if (e.key === "/") { $("text").focus(); e.preventDefault(); }
     else if (e.code === "Space" && callId && muted && !e.repeat) { holding = true; push({ type: "unmute" }); showStatus(); e.preventDefault(); }

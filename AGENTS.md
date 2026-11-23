@@ -34,7 +34,7 @@ Never leave a Bento PR open as the finished state. Work is not done until the PR
    - macOS (`Sources/`): `scripts/release.sh X.Y.Z` on a Mac (bump patch from latest `vX.Y.Z` tag).
    - Android (`android/` or `voice-core/dist/voice-core.js`): `scripts/release-android.sh X.Y.Z` (bump patch from latest `android-vX.Y.Z` tag).
    - Sync server (`server/`): `scripts/deploy-server.sh`.
-   - Voice web surface (`voice-core/web/` or `voice-core/dev/`): fast-forward `~/workspace/bento-voice-core` to `origin/main` (and run `systemctl --user restart voice-core-dev` if `dev/` changed) so https://voice.charlesnchr.com serves the merged change.
+   - Voice web surface (`voice-core/src/`, `voice-core/web/`, or `voice-core/dev/`): fast-forward `~/workspace/bento-voice-core` to `origin/main` (and run `systemctl --user restart voice-core-dev` if `dev/` changed) so https://voice.charlesnchr.com serves the merged change.
    - If a surface cannot be released from the current host (for example, macOS builds on Linux), state that explicitly and complete every release/deploy step reachable from this host.
 
 ## Seeing and driving the UI
