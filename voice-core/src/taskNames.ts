@@ -155,19 +155,34 @@ function forms(whole: string): string[] {
   return out.length > 0 ? out : [whole];
 }
 
+/** Keys whose task name matches [ref] ignoring possessives ("Sarah's" == "Sarah") and "the"/"task"/"one". */
+export function looseMatches(ref: string, tasks: Map<string, [string, string]>): string[] {
+  const whole = norm(ref);
+  if (whole.length === 0) return [];
+  const entries = [...tasks.entries()];
+  for (const r of forms(whole)) {
+    const b = bare(r);
+    const matched = entries.filter(([, v]) => norm(v[0]) === r || sameWords(bare(v[0]), b)).map(([k]) => k);
+    if (matched.length > 0) return matched;
+  }
+  return [];
+}
+
 /**
- * All keys tied for the best match to [ref] among (name, request) pairs by key: exact/loose
- * (ignoring possessives and "the"/"task"/"one") first, then whole-name containment, then
- * distinctive-word overlap. Empty when nothing matches.
+ * All keys tied for the best match to [ref] among (name, request) pairs by key: exact name first,
+ * then possessive-loose name, then unique whole-name containment, falling through containment ties
+ * to distinctive-word scoring (including request text). Empty when nothing matches.
  */
 export function matches(ref: string, tasks: Map<string, [string, string]>): string[] {
   const whole = norm(ref);
   if (whole.length === 0) return [];
   const entries = [...tasks.entries()];
   for (const r of forms(whole)) {
-    const b = bare(r);
-    const exact = entries.filter(([, v]) => norm(v[0]) === r || sameWords(bare(v[0]), b)).map(([k]) => k);
+    const exact = entries.filter(([, v]) => norm(v[0]) === r).map(([k]) => k);
     if (exact.length > 0) return exact;
+    const b = bare(r);
+    const loose = entries.filter(([, v]) => sameWords(bare(v[0]), b)).map(([k]) => k);
+    if (loose.length > 0) return loose;
   }
   const all = forms(whole);
   const r = all[all.length - 1];
@@ -182,17 +197,19 @@ export function matches(ref: string, tasks: Map<string, [string, string]>): stri
     within.push([key, name.filter((w) => said.includes(w)).length]);
   }
   const most = maxOrNull(within.map((w) => w[1]));
-  if (most != null) return within.filter((w) => w[1] === most).map((w) => w[0]);
+  const topWithin = most != null ? within.filter((w) => w[1] === most).map((w) => w[0]) : [];
+  if (topWithin.length === 1) return topWithin;
   const wanted = distinctive(r);
-  if (wanted.size === 0) return [];
+  if (wanted.size === 0) return topWithin;
+  const pool = topWithin.length > 1 ? entries.filter(([k]) => topWithin.includes(k)) : entries;
   const scored = sortByDescending(
-    entries.map(([key, v]): [string, number] => [
+    pool.map(([key, v]): [string, number] => [
       key,
       [...distinctive(v[0])].filter((w) => wanted.has(w)).length * 2 + [...distinctive(v[1])].filter((w) => wanted.has(w)).length,
     ]).filter((s) => s[1] > 0),
     (s) => s[1],
   );
-  if (scored.length === 0) return [];
+  if (scored.length === 0) return topWithin;
   const top = scored[0][1];
   return scored.filter((s) => s[1] === top).map((s) => s[0]);
 }

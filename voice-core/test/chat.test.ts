@@ -596,13 +596,23 @@ test("ambiguous model-supplied label on a bare answer is refused even when owned
   // Owned task completes AFTER the detached note, so owned asked last.
   s.complete("Table at eight at Noma. Shall I book it?");
   s.advance(0.1);
+  // 1) "Yes, book Alchemist" explicitly names Alchemist -> refused pointing to the earlier call's Continue it.
   s.type("Yes, book Alchemist");
   s.calls("ask_hermes", { label: "Dinner booking" });
   s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "bare answer naming earlier detached Alchemist must not start a blank Hermes session");
+  const refusal1 = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal1.startsWith('Not executed: "Dinner booking" asked'), refusal1);
+  assert.match(refusal1, /Continue it/);
+  s.writes("Tap Continue it on Alchemist's reply.");
+  // 2) Generic "Yes, book it" with ambiguous model-supplied label "Dinner booking" -> refused as ambiguous.
+  s.type("Yes, book it");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
   assert.equal(s.hermes().length, 1, "ambiguous label on bare answer must not start a blank Hermes session");
-  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
-  assert.ok(refusal.startsWith('Not executed: "Dinner booking" is ambiguous'), refusal);
-  assert.match(refusal, /Continue it/);
+  const refusal2 = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal2.startsWith('Not executed: "Dinner booking" is ambiguous'), refusal2);
+  assert.match(refusal2, /Continue it/);
 });
 
 test("replayed detached note preserves question age so expired questions do not block new requests while label still guards continue_task", () => {
@@ -656,9 +666,73 @@ test("two tied owned tasks do not fall through to an unrelated weaker detached m
   assert.match(refusal, /Noma table/);
   assert.match(refusal, /Geranium table/);
   s.writes("Which table task did you mean?");
-  // "Noma Geranium" ties only the two owned tasks (0 overlap with "Table lamp order"): starts a new task without blaming "Table lamp order".
+  // "Noma Geranium" ties only the two owned tasks (0 overlap with "Table lamp order"): refused as owned-task ambiguity without blaming "Table lamp order" or starting a blank task.
   s.type("Combine Noma and Geranium");
   s.calls("ask_hermes", { continue_task: "Noma Geranium" });
   s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  const ownedTie = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(ownedTie.startsWith('Not executed: "Noma Geranium" could mean more than one task'), ownedTie);
+  assert.ok(!ownedTie.includes("Table lamp order"), ownedTie);
+});
+
+test("exact owned-only match works between Sarah booking and Sarah's booking", () => {
+  const s = chat();
+  s.type("Book Sarah");
+  s.calls("ask_hermes", { label: "Sarah booking" });
+  s.advance(0.1);
+  s.complete("Slot A ready.");
+  s.type("Also book Sarah's follow-up");
+  s.calls("ask_hermes", { label: "Sarah's booking" });
+  s.advance(0.1);
+  s.complete("Slot B ready.");
+  s.type("Confirm Sarah's booking");
+  s.calls("ask_hermes", { continue_task: "Sarah's booking" });
+  s.advance(0.1);
   assert.equal(s.hermes().length, 3);
+  assert.equal(s.hermes()[2].taskId, s.hermes()[1].taskId);
+  assert.equal(s.hermes()[2].followUp, true);
+});
+
+test("cancel_task refuses shared owned/detached label instead of cancelling the owned run", () => {
+  const s = chat();
+  s.type("Book Noma for dinner");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Alchemist table at nine." });
+  s.advance(0.1);
+  s.type("Cancel the Alchemist dinner booking. Keep looking at Noma");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "cancel_task must not cancel owned Noma on an ambiguous shared label");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Dinner booking" matches both this chat'), refusal);
+});
+
+test("when detached Alchemist asked first and owned Noma asked second, 'Yes, book Alchemist' with no tool args does not route to Noma", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "There is a table at nine at Alchemist. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Book Noma for dinner");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("There is a table at eight at Noma. Shall I book it?");
+  s.advance(0.1);
+  // User names Alchemist in their answer; Gemini calls ask_hermes with no arguments.
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "answer naming earlier detached Alchemist must not route to owned Noma");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed:"), refusal);
+  assert.match(refusal, /Alchemist table/);
+  assert.match(refusal, /Continue it/);
+  s.writes("Open Alchemist table's reply and tap Continue it.");
+  // A generic bare answer still routes to Noma (the newer owned question).
+  s.type("Yes, book it");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
+  assert.equal(s.hermes()[1].followUp, true);
 });

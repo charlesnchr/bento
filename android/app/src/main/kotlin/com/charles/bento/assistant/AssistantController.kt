@@ -193,11 +193,13 @@ class AssistantController(
     private var chat: CoreChat? = null
     private var chatJob: Job? = null
     private data class DetachedNote(val id: String, val label: String, val text: String, val failed: Boolean, val userTurnsAt: Int)
+    private sealed interface EarlyChatEvent {
+        data class Typed(val text: String) : EarlyChatEvent
+        data class Noted(val note: DetachedNote) : EarlyChatEvent
+    }
 
-    /** Messages typed while the chat's core was loading. */
-    private val typedEarly = ArrayList<String>()
-    /** Detached voice-call results that arrived while the chat's core was loading, replayed into CoreChat as notes. */
-    private val notedEarly = ArrayList<DetachedNote>()
+    /** User messages and detached notes that arrived while the chat's core was loading, replayed in arrival order. */
+    private val earlyChatEvents = ArrayList<EarlyChatEvent>()
     /** Detached voice-call results in this conversation: kept until leaving the conversation so every CoreChat startup registers their labels and questions. */
     private val conversationDetached = ArrayList<DetachedNote>()
     /** The row Gemini's words of one of the core's transcript lines go on. */
@@ -511,7 +513,7 @@ class AssistantController(
         chatLine = null
         voiceBoundary = true
         chat?.let { it.say(message); return }
-        typedEarly.add(message)
+        earlyChatEvents.add(EarlyChatEvent.Typed(message))
         if (chatJob != null) return // its core is loading: the message goes with the first
         chatJob = scope.launch {
             val bundle = withContext(Dispatchers.IO) {
@@ -532,10 +534,11 @@ class AssistantController(
                 val age = (turnsBefore - n.userTurnsAt).coerceAtLeast(0)
                 c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age)
             }
-            for (n in notedEarly) c.note(n.label, n.text, n.failed, id = n.id)
-            notedEarly.clear()
-            for (typed in typedEarly) c.say(typed)
-            typedEarly.clear()
+            for (event in earlyChatEvents) when (event) {
+                is EarlyChatEvent.Typed -> c.say(event.text)
+                is EarlyChatEvent.Noted -> c.note(event.note.label, event.note.text, event.note.failed, id = event.note.id)
+            }
+            earlyChatEvents.clear()
             launch {
                 c.thinking.collect { thinking ->
                     // Gemini's turn is over: its message is whole.
@@ -569,9 +572,8 @@ class AssistantController(
     private fun chatFailed(why: String?) {
         chatUnavailable = true
         chatJob = null
-        val typed = typedEarly.joinToString("\n\n")
-        typedEarly.clear()
-        notedEarly.clear()
+        val typed = earlyChatEvents.filterIsInstance<EarlyChatEvent.Typed>().joinToString("\n\n") { it.text }
+        earlyChatEvents.clear()
         set { it.copy(thinking = false, error = why) }
         if (typed.isNotEmpty() && !_state.value.working) {
             turnJob = scope.launch { runTurn(typed, TYPED_INSTRUCTIONS + callContext(_state.value.messages), null) }
@@ -605,8 +607,7 @@ class AssistantController(
         board?.detach()
         chatJob?.cancel()
         chatJob = null
-        typedEarly.clear()
-        notedEarly.clear()
+        earlyChatEvents.clear()
         chatLine = null
         c?.stop()
         set { s -> endChatState(s) }
@@ -1100,7 +1101,7 @@ class AssistantController(
                     val openChat = chat
                     when {
                         openChat != null -> openChat.note(label, noteText, failed, id = uiId)
-                        chatJob != null -> notedEarly.add(note)
+                        chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(note))
                     }
                 }
             }
