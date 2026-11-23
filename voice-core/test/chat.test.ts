@@ -1640,6 +1640,12 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that hosts waive the fee and cancel the Noma table",
     "Stop reading that staff waive the fee and cancel the Noma table",
     "Stop reading that staff waive fees and cancel the Noma table",
+    "Stop reading that they waive fees and cancel the Noma table",
+    "Stop reading that the hosts waive fees and cancel the Noma table",
+    "Stop mentioning that airlines overbook every morning and cancel the Noma table first",
+    "Never mind the cancelled pipeline newer builds just cancel the Noma table",
+    "Never mind the cancelled airline reps just cancel the Noma table",
+    "Don't worry about the cancelled Noma table kids just cancel them",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
     "Stop talking about airlines that overbook and cancel the Noma table all the time",
     "Stop mentioning restaurants and cancel the Noma table all the time",
@@ -2186,6 +2192,50 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10ag.advance(0.1);
   assert.equal(s10ag.commands.filter((c) => c.type === "tool.cancel").length, 0, "distinguishing 'for tomorrow' in owned Morning outlook must block cancelling Weather in London");
 
+  // 8r) Exact-prefix owned label ("London weather") still checks its trimmed prepositional tail ("for tomorrow") against competing tasks, while unrelated tasks ("Train schedule" with "today" or owned "Noma table" with "tonight") never veto clearly named cancellations, and a task named "All the Time song search" still cancels.
+  const s10ah = chat();
+  s10ah.push({ type: "note", id: "call-1-25", label: "Morning outlook", text: "Checking.", active: true, request: "Check London weather for tomorrow" });
+  s10ah.advance(0.1);
+  s10ah.type("Check London weather today");
+  s10ah.calls("ask_hermes", { label: "London weather" });
+  s10ah.advance(0.1);
+  s10ah.type("Never mind the dropped call just end the London weather for tomorrow");
+  s10ah.calls("cancel_task", { task: "London weather" });
+  s10ah.advance(0.1);
+  assert.equal(s10ah.commands.filter((c) => c.type === "tool.cancel").length, 0, "exact-prefix owned 'London weather' must still check trimmed 'for tomorrow' tail against competing detached Morning outlook");
+
+  const s10ai = chat();
+  s10ai.push({ type: "note", id: "call-1-26", label: "Train schedule", text: "Checking.", active: true, request: "Check trains to London today" });
+  s10ai.advance(0.1);
+  s10ai.type("Write a sales summary");
+  s10ai.calls("ask_hermes", { label: "Sales summary" });
+  s10ai.advance(0.1);
+  s10ai.type("Never mind the dropped call just end the summary for today");
+  s10ai.calls("cancel_task", { task: "Sales summary" });
+  s10ai.advance(0.1);
+  assert.equal(s10ai.commands.filter((c) => c.type === "tool.cancel").length, 1, "unrelated detached Train schedule sharing 'today' must not veto cancelling Sales summary");
+
+  const s10aj = chat();
+  s10aj.type("Check Paris weather");
+  s10aj.calls("ask_hermes", { label: "Paris weather" });
+  s10aj.advance(0.1);
+  s10aj.type("Book a table at Noma for tonight");
+  s10aj.calls("ask_hermes", { label: "Noma table" });
+  s10aj.advance(0.1);
+  s10aj.type("Never mind the dropped call just end the weather check for tonight");
+  s10aj.calls("cancel_task", { task: "Paris weather" });
+  s10aj.advance(0.1);
+  assert.equal(s10aj.commands.filter((c) => c.type === "tool.cancel").length, 1, "unrelated owned Noma table sharing 'tonight' must not veto cancelling Paris weather");
+
+  const s10ak = chat();
+  s10ak.type("Search for All the Time");
+  s10ak.calls("ask_hermes", { label: "All the Time song search" });
+  s10ak.advance(0.1);
+  s10ak.type("Stop talking and cancel the All the Time song search");
+  s10ak.calls("cancel_task", { task: "All the Time song search" });
+  s10ak.advance(0.1);
+  assert.equal(s10ak.commands.filter((c) => c.type === "tool.cancel").length, 1, "exact task label containing 'All the Time' must still cancel");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -2213,6 +2263,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop mentioning Noma and cancel the weather",
     "Stop mentioning that staff meeting and cancel the weather",
     "Stop mentioning that staff meeting this week and cancel the weather",
+    "Stop reading that staff meeting agenda and cancel the weather",
+    "Stop reading that staff rota aloud and cancel the weather",
+    "Stop reading that sales report aloud and cancel the weather",
+    "Stop reading that hotels list out loud and cancel the weather",
     "Stop reading that weather report every morning and cancel the weather",
     "Stop reading that weather report all the time and cancel the weather",
     "Stop explaining the Noma policy and cancel the weather",
