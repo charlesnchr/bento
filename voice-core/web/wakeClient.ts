@@ -14,6 +14,8 @@ export interface WakeTelemetry {
 }
 
 export interface WakeTrailingChunk {
+  /** Sequence number from `feed()`, matching the fed chunk. */
+  seq: number;
   bytes: Uint8Array;
   /** True when the core suppressed (silenced) this frame during audible playback (`whileSpeaking !== "send"`). */
   suppressed: boolean;
@@ -31,6 +33,8 @@ export interface WakeClientCallbacks {
   onReady?: (modelId: string, warmupMs: number) => void;
   onDetected: (hit: WakeDetectionEvent) => void;
   onTelemetry?: (t: WakeTelemetry) => void;
+  /** Called once all in-flight suppressed frames have been scored without firing a detection. */
+  onSuppressedSettled?: () => void;
   onError?: (message: string) => void;
 }
 
@@ -53,6 +57,8 @@ export class WakeClient {
   private currentThreshold = 0.7;
   private gen = 0;
   private seq = 0;
+  private lastSuppressedSeq = 0;
+  private lastAckedSeq = 0;
   private recent: { seq: number; bytes: Uint8Array; suppressed: boolean }[] = [];
   private recentBytes = 0;
   ready = false;
@@ -65,9 +71,21 @@ export class WakeClient {
     this.createWorker = createWorker;
   }
 
+  /** True while at least one suppressed frame is still queued or scoring in the worker. */
+  get suppressedInFlight(): boolean {
+    return this.lastSuppressedSeq > this.lastAckedSeq;
+  }
+
   private clearRecent(): void {
     this.recent = [];
     this.recentBytes = 0;
+  }
+
+  private clearSuppressedTracking(): void {
+    const hadInFlight = this.suppressedInFlight;
+    this.lastSuppressedSeq = 0;
+    this.lastAckedSeq = 0;
+    if (hadInFlight) this.callbacks.onSuppressedSettled?.();
   }
 
   private ensureWorker(): WorkerLike {
@@ -81,18 +99,24 @@ export class WakeClient {
         this.loadedModelId = m.modelId;
         this.ready = true;
         this.callbacks.onReady?.(m.modelId, m.warmupMs);
+      } else if (m.type === "ack") {
+        const wasInFlight = this.suppressedInFlight;
+        if (typeof m.seq === "number" && m.seq > this.lastAckedSeq) this.lastAckedSeq = m.seq;
+        if (wasInFlight && !this.suppressedInFlight) this.callbacks.onSuppressedSettled?.();
       } else if (m.type === "detected") {
         const trailing: WakeTrailingChunk[] = [];
         const rest = new Uint8Array(m.restBytes as ArrayBuffer);
         const hitSeq = typeof m.seq === "number" ? m.seq : Number.MAX_SAFE_INTEGER;
         const hitItem = this.recent.find((item) => item.seq === hitSeq);
         if (rest.byteLength > 0) {
-          trailing.push({ bytes: rest, suppressed: hitItem?.suppressed ?? false });
+          trailing.push({ seq: hitSeq, bytes: rest, suppressed: hitItem?.suppressed ?? false });
         }
         for (const item of this.recent) {
-          if (item.seq > hitSeq) trailing.push({ bytes: item.bytes, suppressed: item.suppressed });
+          if (item.seq > hitSeq) trailing.push({ seq: item.seq, bytes: item.bytes, suppressed: item.suppressed });
         }
         this.clearRecent();
+        this.lastSuppressedSeq = 0;
+        this.lastAckedSeq = 0;
         this.callbacks.onDetected({
           score: m.score,
           atFrame: m.atFrame,
@@ -111,12 +135,14 @@ export class WakeClient {
       } else if (m.type === "error") {
         this.loadingModelId = null;
         this.ready = false;
+        this.clearSuppressedTracking();
         this.callbacks.onError?.(String(m.message ?? "wake worker error"));
       }
     };
     worker.onerror = (err) => {
       this.loadingModelId = null;
       this.ready = false;
+      this.clearSuppressedTracking();
       this.callbacks.onError?.(err.message || "wake worker failed");
     };
     this.worker = worker;
@@ -139,6 +165,7 @@ export class WakeClient {
     this.ready = false;
     this.loadingModelId = modelId;
     this.clearRecent();
+    this.clearSuppressedTracking();
     worker.postMessage({
       type: "load",
       gen: this.gen,
@@ -154,9 +181,11 @@ export class WakeClient {
     this.worker?.postMessage({ type: "config", threshold });
   }
 
-  feed(samples: Int16Array, suppressed = false): void {
-    if (!this.ready || !this.worker) return;
+  /** Feeds a 16 kHz PCM16 chunk to the worker; returns its sequence number (or 0 if not ready). */
+  feed(samples: Int16Array, suppressed = false): number {
+    if (!this.ready || !this.worker) return 0;
     const seq = ++this.seq;
+    if (suppressed) this.lastSuppressedSeq = seq;
     const bytes = new Uint8Array(samples.byteLength);
     bytes.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
     this.recent.push({ seq, bytes, suppressed });
@@ -166,11 +195,13 @@ export class WakeClient {
     }
     const copy = new Int16Array(samples.length);
     copy.set(samples);
-    this.worker.postMessage({ type: "feed", gen: this.gen, seq, pcm: copy.buffer }, [copy.buffer]);
+    this.worker.postMessage({ type: "feed", gen: this.gen, seq, ack: suppressed, pcm: copy.buffer }, [copy.buffer]);
+    return seq;
   }
 
   reset(): void {
     this.clearRecent();
+    this.clearSuppressedTracking();
     if (!this.worker || !this.ready) return;
     this.gen++;
     this.worker.postMessage({ type: "reset", gen: this.gen });
@@ -182,6 +213,7 @@ export class WakeClient {
     this.loadedModelId = null;
     this.loadingModelId = null;
     this.clearRecent();
+    this.clearSuppressedTracking();
     if (this.worker) {
       this.worker.postMessage({ type: "dispose", gen: this.gen });
       this.worker.terminate();

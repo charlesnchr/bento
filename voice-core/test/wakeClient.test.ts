@@ -98,15 +98,48 @@ test("WakeClient preserves restBytes plus per-frame suppressed flags across play
   assert.equal(hits.length, 1);
   assert.deepEqual(
     hits[0].trailing.map((t) => ({
+      seq: t.seq,
       samples: [...new Int16Array(t.bytes.buffer, t.bytes.byteOffset, t.bytes.byteLength / 2)],
       suppressed: t.suppressed,
     })),
     [
-      { samples: [3, 4], suppressed: true },
-      { samples: [5, 6, 7, 8], suppressed: true },
-      { samples: [9, 10, 11, 12], suppressed: false },
+      { seq: seq1, samples: [3, 4], suppressed: true },
+      { seq: seq1 + 1, samples: [5, 6, 7, 8], suppressed: true },
+      { seq: seq1 + 2, samples: [9, 10, 11, 12], suppressed: false },
     ],
   );
+  assert.equal(client.suppressedInFlight, false);
+});
+
+test("WakeClient tracks suppressedInFlight via worker acks and fires onSuppressedSettled", () => {
+  const worker = new MockWorker();
+  let settled = 0;
+  const client = new WakeClient(
+    {
+      onDetected: () => {},
+      onSuppressedSettled: () => { settled++; },
+    },
+    () => worker,
+  );
+
+  client.load("pennyworth", 0.7);
+  const gen = worker.sent.at(-1)!.gen as number;
+  worker.emit({ type: "ready", gen, modelId: "pennyworth", warmupMs: 50 });
+
+  assert.equal(client.suppressedInFlight, false);
+  const seq1 = client.feed(new Int16Array([1, 2]), true);
+  assert.equal(worker.sent.at(-1)!.ack, true);
+  assert.equal(client.suppressedInFlight, true);
+
+  const seq2 = client.feed(new Int16Array([3, 4]), false);
+  assert.equal(worker.sent.at(-1)!.ack, false);
+  assert.equal(seq2, seq1 + 1);
+  assert.equal(client.suppressedInFlight, true);
+
+  // Worker clears seq1 without detecting: suppressedInFlight becomes false and triggers flush callback.
+  worker.emit({ type: "ack", gen, seq: seq1 });
+  assert.equal(client.suppressedInFlight, false);
+  assert.equal(settled, 1);
 });
 
 test("ScreenWakeLock clears sentinel on browser release and reacquires on visibility return", async () => {

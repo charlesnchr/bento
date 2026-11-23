@@ -126,9 +126,13 @@ const screenWakeLock = new ScreenWakeLock();
 let wakeArmed = false;
 let armGen = 0;
 let coreWantsWake = false;
+/** Which call (or 0 for idle) owns the wake worker's current listening period. */
+let wakePeriodCallId: number | null = null;
 let callWhileSpeaking = "send";
 /** Mirrors the core's `speechUntil` clock so each mic frame records whether `call.ts` suppressed it. */
 let coreSpeechUntil = 0;
+/** Post-playback unsuppressed mic frames held briefly while a suppressed frame is still scoring in the wake worker. */
+let deferredMic: { seq: number; pcm: string; t: number }[] = [];
 let wakeLoading = false;
 let wakeStarting = false;
 let startingCall = false;
@@ -1029,10 +1033,21 @@ function run(commands: Command[], eventTime = now()) {
   }
 }
 
+function flushDeferredMic() {
+  if (deferredMic.length === 0) return;
+  const items = deferredMic.splice(0);
+  if (!callId || medium !== "voice") return;
+  for (const item of items) {
+    if (!callId) break;
+    counts.mic++;
+    push({ type: "mic", pcm: item.pcm }, item.t);
+  }
+}
+
 function onMic(samples: Int16Array, level: number) {
   const t = now();
   const suppressed = callId !== 0 && medium === "voice" && callWhileSpeaking !== "send" && t < coreSpeechUntil;
-  if (shouldFeedWake()) wakeClient.feed(samples, suppressed);
+  const seq = shouldFeedWake() ? wakeClient.feed(samples, suppressed) : 0;
   if (wakeStarting) {
     const copy = new Uint8Array(samples.byteLength);
     copy.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
@@ -1044,12 +1059,21 @@ function onMic(samples: Int16Array, level: number) {
     return;
   }
   if (!callId || medium !== "voice") return;
-  counts.mic++;
   if (level > 0.03 && !(muted && !holding)) {
     metrics.lastVoice = t;
     if (audio.queued < 0.05) metrics.replied = false;
   }
-  push({ type: "mic", pcm: bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)) }, t);
+  const pcm = bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+  // If playback just ended while a suppressed frame is still scoring in the wake worker, hold
+  // unsuppressed frames briefly so they never land ahead of a suppressed wake tail in pre-roll.
+  if (!suppressed && wakeClient.suppressedInFlight && callWhileSpeaking !== "send") {
+    deferredMic.push({ seq, pcm, t });
+    if (deferredMic.length > 75) flushDeferredMic();
+    return;
+  }
+  if (deferredMic.length > 0) flushDeferredMic();
+  counts.mic++;
+  push({ type: "mic", pcm }, t);
 }
 
 function connect(sid: number, captions: boolean) {
@@ -1315,6 +1339,9 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
     callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
     coreSpeechUntil = 0;
+    deferredMic = [];
+    wakePeriodCallId = null;
+    wakeClient.reset();
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
     // A chat always carries on from what's on the screen (an earlier call or chat on this page).
     if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
@@ -1381,6 +1408,8 @@ function end() {
   syncResultFollowUpButtons();
   coreWantsWake = false;
   coreSpeechUntil = 0;
+  deferredMic = [];
+  wakePeriodCallId = wakeArmed ? 0 : null;
   wakeStarting = false;
   openingChunks = [];
   openingBytes = 0;
@@ -1423,6 +1452,10 @@ function end() {
 function setMuted(value: boolean) {
   if (!callId || muted === value) return;
   muted = value;
+  if (muted) {
+    flushDeferredMic();
+    wakeClient.reset();
+  }
   $("mic").classList.toggle("muted", muted);
   push({ type: muted ? "mute" : "unmute" });
   showStatus();
@@ -1522,6 +1555,17 @@ function shouldFeedWake(): boolean {
   return medium === "voice" && coreWantsWake && !(muted && !holding);
 }
 
+/**
+ * Whether a wake detection returning asynchronously from the worker still belongs to the active
+ * listening period. Unlike `shouldFeedWake()`, this stays true for an active voice call even if
+ * `coreWantsWake` just flipped off as playback ended while the worker was scoring the last frame.
+ */
+function canAcceptWakeHit(): boolean {
+  if (wakeStarting || startingCall) return false;
+  if (callId === 0) return wakeArmed && wakePeriodCallId === 0;
+  return medium === "voice" && !(muted && !holding) && wakePeriodCallId === callId;
+}
+
 function renderWakeTelemetry() {
   const active = (callId === 0 && wakeArmed) || (callId !== 0 && medium === "voice" && coreWantsWake);
   if (!active) { $("heard").textContent = ""; return; }
@@ -1603,8 +1647,12 @@ const wakeClient = new WakeClient({
     wakeLastTel = tel;
     renderWakeTelemetry();
   },
+  onSuppressedSettled() {
+    flushDeferredMic();
+  },
   onError(message) {
     wakeLoading = false;
+    flushDeferredMic();
     log("error", `wake word: ${message}`, "err");
     toast(`Wake word error: ${message}`);
     if (wakeArmed) void armWake(false);
@@ -1630,6 +1678,7 @@ async function armWake(on: boolean, persist = true) {
       try {
         await audio.ensureMic(onMic, micOptions());
         if (gen !== armGen || !wakeArmed) return;
+        wakePeriodCallId = 0;
         wakeClient.reset();
         await acquireWakeLock();
       } catch (err) {
@@ -1649,6 +1698,7 @@ async function armWake(on: boolean, persist = true) {
     wakeLoading = false;
     wakeLastTel = null;
     if (!callId) {
+      wakePeriodCallId = null;
       audio.stopMic();
       releaseWakeLock();
       wakeClient.reset();
@@ -1665,6 +1715,7 @@ function ensureCoreWake(on: boolean) {
       log("warn", "core asked for wake word, but no models are available", "warn");
     } else {
       wakeLastTel = null;
+      wakePeriodCallId = callId;
       if (!wakeClient.ready || wakeClient.modelId !== model.id) wakeLoading = true;
       wakeClient.load(model.id, wakeThreshold());
       wakeClient.reset();
@@ -1678,20 +1729,31 @@ function ensureCoreWake(on: boolean) {
 }
 
 function onWakeDetected(hit: WakeDetectionEvent) {
-  if (!shouldFeedWake()) return;
+  if (!canAcceptWakeHit()) return;
   const label = selectedWakeModel()?.label ?? "wake word";
   log("out", `wake detected “${label}” (score ${hit.score.toFixed(2)}, ${hit.inferMs.toFixed(1)} ms)`, "out");
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
+    const deferred = deferredMic.splice(0);
+    const deferredSeqs = new Set(deferred.map((d) => d.seq).filter((s) => s > 0));
     push({ type: "wake" });
-    // Replay only the trailing chunks that the core suppressed to silence during audible playback,
-    // avoiding both lost syllables after playback ends and duplicate replay of unsuppressed audio.
+    // Replay suppressed chunks and any deferred post-playback chunks in exact chronological order,
+    // so playback ending mid-inference never reverses or loses speech.
+    const replayedSeqs = new Set<number>();
     for (const chunk of hit.trailing) {
       if (!callId) break;
-      if (!chunk.suppressed || chunk.bytes.byteLength === 0) continue;
+      if (chunk.bytes.byteLength === 0) continue;
+      if (!chunk.suppressed && !deferredSeqs.has(chunk.seq)) continue;
+      if (chunk.seq > 0) replayedSeqs.add(chunk.seq);
       counts.mic++;
       push({ type: "mic", pcm: bytesToBase64(chunk.bytes) });
+    }
+    for (const item of deferred) {
+      if (!callId) break;
+      if (item.seq > 0 && replayedSeqs.has(item.seq)) continue;
+      counts.mic++;
+      push({ type: "mic", pcm: item.pcm }, item.t);
     }
     return;
   }
@@ -2015,7 +2077,7 @@ async function main() {
     if (wakeArmed && audio.audioSuspended) { void audio.resumeAudio().then(() => syncWakeUi()); return; }
     void armWake(!wakeArmed);
   };
-  $("wake-now").onclick = () => { if (callId) push({ type: "resume" }); };
+  $("wake-now").onclick = () => { if (callId) { flushDeferredMic(); push({ type: "resume" }); } };
   $("resume").onclick = onResumeClick;
   $("hero-resume").onclick = onResumeClick;
   syncWakeUi();
