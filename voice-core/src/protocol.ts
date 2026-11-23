@@ -85,6 +85,8 @@ interface Entry {
   lastAt: number;
   /** User turn ID when role is "user", so consecutive user turns stay distinct. */
   turn: number | null;
+  /** True when the entry came from typed input rather than voice transcription. */
+  typed: boolean;
   seq: number;
   bytes: number;
   text: string;
@@ -102,13 +104,31 @@ function safeTake(text: string, n: number): string {
   return text.slice(0, c >= 0xd800 && c <= 0xdbff ? n - 1 : n);
 }
 
-/** Cleans stray spacing from joined streaming fragments while keeping intentional newlines in typed messages. */
-function normalizeTurn(text: string): string {
-  return text
+/** Cleans stray spacing from joined streaming fragments; typed user input is preserved verbatim. */
+function cleanEntry(e: Entry): string {
+  if (e.typed) return e.text.trim();
+  return e.text
     .split(/\r?\n/)
     .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
     .filter((line) => line.length > 0)
     .join("\n");
+}
+
+function formatEntry(e: Entry, maxLine: number, userMaxLine: number, markTruncated: boolean): { line: string; clean: string; suffix: string } | null {
+  const clean = cleanEntry(e);
+  if (clean.length === 0) return null;
+  const lineLimit = e.role === "user" ? userMaxLine : maxLine;
+  const suffix = markTruncated && e.role === "user" ? TRUNCATED_SUFFIX : "…";
+  const body = clean.length > lineLimit
+    ? safeTake(clean, Math.max(1, lineLimit - suffix.length)).trimEnd() + suffix
+    : clean;
+  return { line: `${e.role}: ${body}`, clean, suffix };
+}
+
+function clampEntry(e: Entry, clean: string, suffix: string, maxChars: number): string | null {
+  const room = maxChars - e.role.length - 2 - suffix.length;
+  if (room <= 0) return null;
+  return `${e.role}: ${safeTake(clean, room).trimEnd()}${suffix}`;
 }
 
 function formatHistory(entries: readonly Entry[], options: ContextOptions = {}): string {
@@ -117,39 +137,62 @@ function formatHistory(entries: readonly Entry[], options: ContextOptions = {}):
   const maxLine = options.maxLine ?? DEFAULT_CONTEXT.maxLine;
   const userMaxLine = options.userMaxLine ?? maxLine;
   const markTruncated = userMaxLine > maxLine;
+
+  // For refers_back, reserve space up front for the latest non-empty user turn so long assistant
+  // replies after it can never crowd it out of the budget.
+  let reservedIdx = -1;
+  let reservedLine: string | null = null;
+  if (markTruncated) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].role !== "user") continue;
+      const formatted = formatEntry(entries[i], maxLine, userMaxLine, true);
+      if (!formatted) continue;
+      reservedIdx = i;
+      reservedLine = formatted.line.length <= maxChars
+        ? formatted.line
+        : clampEntry(entries[i], formatted.clean, formatted.suffix, maxChars);
+      break;
+    }
+  }
+
   const picked: string[] = [];
   let used = 0;
-  let hasUser = false;
   for (let i = entries.length - 1; i >= 0 && picked.length < maxTurns; i--) {
-    const e = entries[i];
-    const clean = normalizeTurn(e.text);
-    if (clean.length === 0) continue;
-    const lineLimit = e.role === "user" ? userMaxLine : maxLine;
-    const suffix = markTruncated && e.role === "user" ? TRUNCATED_SUFFIX : "…";
-    const body = clean.length > lineLimit
-      ? safeTake(clean, Math.max(1, lineLimit - suffix.length)).trimEnd() + suffix
-      : clean;
-    const line = `${e.role}: ${body}`;
-    const add = picked.length > 0 ? line.length + 1 : line.length;
-    if (used + add > maxChars) {
-      if (markTruncated && e.role === "user" && !hasUser) {
-        // For refers_back, never let verbose assistant replies crowd out the latest user turn.
+    if (i === reservedIdx && reservedLine != null) {
+      const add = picked.length > 0 ? reservedLine.length + 1 : reservedLine.length;
+      if (used + add <= maxChars) {
+        picked.push(reservedLine);
+        used += add;
+      } else {
         picked.length = 0;
-        if (line.length <= maxChars) {
-          picked.push(line);
-        } else {
-          const room = maxChars - e.role.length - 2 - suffix.length;
-          if (room > 0) picked.push(`${e.role}: ${safeTake(clean, room).trimEnd()}${suffix}`);
-        }
-      } else if (picked.length === 0) {
-        const room = maxChars - e.role.length - 2 - suffix.length;
-        if (room > 0) picked.push(`${e.role}: ${safeTake(clean, room).trimEnd()}${suffix}`);
+        picked.push(reservedLine);
+        used = reservedLine.length;
+        break;
+      }
+      reservedIdx = -1;
+      reservedLine = null;
+      continue;
+    }
+    const e = entries[i];
+    const formatted = formatEntry(e, maxLine, userMaxLine, markTruncated);
+    if (!formatted) continue;
+    const reserveChars = reservedIdx >= 0 && i > reservedIdx && reservedLine != null ? reservedLine.length + 1 : 0;
+    const reserveSlots = reservedIdx >= 0 && i > reservedIdx ? 1 : 0;
+    const add = picked.length > 0 ? formatted.line.length + 1 : formatted.line.length;
+    if (picked.length + reserveSlots >= maxTurns || used + add + reserveChars > maxChars) {
+      if (reservedIdx >= 0 && i > reservedIdx) {
+        // Stop taking assistant replies after the latest user turn and jump directly to it.
+        i = reservedIdx + 1;
+        continue;
+      }
+      if (picked.length === 0) {
+        const clamped = clampEntry(e, formatted.clean, formatted.suffix, maxChars);
+        if (clamped) picked.push(clamped);
       }
       break;
     }
-    picked.push(line);
+    picked.push(formatted.line);
     used += add;
-    if (e.role === "user") hasUser = true;
   }
   return picked.reverse().join("\n");
 }
@@ -215,8 +258,10 @@ export class CallProtocol {
       this.assistantSpokeAt.push(at);
       if (this.assistantSpokeAt.length > MAX_ASSISTANT_TIMESTAMPS) this.assistantSpokeAt.shift();
     }
-    const currentTurn = role === "user" ? (lastOrNull(this.turns)?.id ?? null) : null;
-    if (prev != null && !this.breakNext && prev.role === role && prev.turn === currentTurn && prev.bytes + size <= maxEntry) {
+    const latestTurn = role === "user" ? lastOrNull(this.turns) : null;
+    const currentTurn = latestTurn?.id ?? null;
+    const isTyped = latestTurn?.typed === true;
+    if (prev != null && !this.breakNext && prev.role === role && prev.turn === currentTurn && prev.typed === isTyped && prev.bytes + size <= maxEntry) {
       const lastCode = prev.text.charCodeAt(prev.text.length - 1);
       const splitSurrogate = lastCode >= 0xd800 && lastCode <= 0xdbff;
       prev.text += text;
@@ -225,7 +270,7 @@ export class CallProtocol {
       this.historyBytes += nextBytes - prev.bytes;
       prev.bytes = nextBytes;
     } else {
-      this.history.push({ role, at, lastAt: at, turn: currentTurn, seq: this.nextSeq++, bytes: size, text });
+      this.history.push({ role, at, lastAt: at, turn: currentTurn, typed: isTyped, seq: this.nextSeq++, bytes: size, text });
       this.historyBytes += size;
     }
     this.breakNext = false;

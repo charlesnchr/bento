@@ -261,6 +261,54 @@ test("prompt history eviction under byte pressure does not affect delegation ans
   assert.equal(req?.task, "Check my email");
 });
 
+test("typed user messages keep indentation, blank lines, and repeated spaces verbatim in prior context", () => {
+  const s = new Sim({ config: { medium: "text", limits: fast, supervise: true } as any });
+  s.advance(0.1);
+  const yaml = "service:\n  env:\n    NOTE: \"keep  both spaces\"\n\n  replicas: 2";
+  s.type(yaml);
+  s.advance(0.2);
+  s.writes("Shall I apply that?");
+  s.advance(0.2);
+  s.type("Do that with Hermes");
+  s.calls("ask_hermes", { label: "apply yaml", refers_back: true });
+  s.advance(0.1);
+  const [asked] = s.hermes();
+  assert.ok(asked.message.includes(`user: ${yaml}\n`), asked.message);
+});
+
+test("refers_back reserves room for the latest user turn even behind many long assistant replies", () => {
+  const p = new CallProtocol();
+  p.activityStarted(1);
+  p.transcript("user", "Deploy the staging branch only, never prod.", 1.1);
+  p.activityEnded(1.2);
+  for (let i = 0; i < 8; i++) {
+    p.transcript("assistant", `Reply ${i}: ` + "x".repeat(780), 2 + i);
+    p.turnBreak();
+  }
+  p.activityStarted(12);
+  p.transcript("user", "Do that with Hermes", 12.1);
+  p.activityEnded(12.2);
+  const d = p.delegation("ask_hermes", "c1", 12.3)!;
+  const req = p.request(d, REFERRED_CONTEXT)!;
+  assert.ok(req.context.length <= REFERRED_CONTEXT.maxChars);
+  assert.ok(req.context.includes("user: Deploy the staging branch only, never prod."), req.context);
+});
+
+test("refers_back with no earlier conversation still instructs the agent to ask for clarification", () => {
+  const surface = { platform: "web", device: "browser" };
+  const emptyReferred = { task: "Do that with Hermes", context: "", followUp: false, refersBack: true };
+  for (const message of [
+    voiceMessage(emptyReferred, "2026-11-23", surface),
+    typedMessage(emptyReferred, "2026-11-23", surface),
+    codingMessage(emptyReferred, "2026-11-23", surface),
+    typedCodingMessage(emptyReferred, "2026-11-23", surface),
+  ]) {
+    assert.ok(message.includes("no earlier conversation is available here"), message);
+    assert.ok(message.includes("Ask the user to clarify what they want before acting."), message);
+    assert.ok(!message.includes("<prior_conversation>"), message);
+  }
+});
+
 test("typed chat streams assistant chunks into one clean line in subsequent delegation context", () => {
   const s = new Sim({ config: { medium: "text", limits: fast, codingAgent: { projects: ["Bento"] } } as any });
   s.advance(0.1);
