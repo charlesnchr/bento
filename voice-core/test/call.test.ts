@@ -1146,6 +1146,16 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both hotel reservations", "Find a London hotel and reserve a room for Friday", "London hotel", "Cancel both hotel reservations that are still running", 1],
     ["Both bookings", "Book 2 summary please", "Book summary", "Cancel both bookings in progress", 0],
     ["Both reservations", "Help me reserve some savings for the trip", "Savings", "Cancel both reservations in progress", 0],
+    ["Both London hotel bookings", "Check London flight prices and book a Paris hotel", "Paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and gather hotel prices", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and book a hotel near Paddington", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book two adjoining rooms at the London hotel", "London rooms", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices and book that tour", "London tour", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Check hotel prices and book one tour of the Tower", "Tower tour", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a flight to London and check hotel prices, then book it", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a cheap flight to London, check hotel prices, and book it", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London bookings", "Check London weather and book a ferry to Paris", "Paris ferry", "Cancel both London bookings in progress", 0],
+    ["Both London bookings", "Check London weather and book a table at Le Comptoir in Paris", "Paris dinner", "Cancel both London bookings in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);

@@ -278,7 +278,7 @@ const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|brief
 const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|foreword|prologue|epilogue|conclusion)$/i;
 const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event|catalog|catalogue|brochure|manual|handbook|guide|newsletter|bulletin|dossier|prospectus|syllabus|booklet|pamphlet)$/i;
 const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
-const HUMAN_PLURAL_NON_SUFFIX = /^(?:nurses|surgeons|executives|architects|judges|witnesses|colleagues|guests|hosts|pilots|captains|clerks|officials|candidates|delegates|chiefs|leads|heads|bosses|admins|reps|folks|adults|kids|others|peers|chefs|cooks|bakers|notaries|paralegals|secretaries|curators|mediators|couriers|patrons|citizens|attorneys|mechanics)$/i;
+const HUMAN_PLURAL_NON_SUFFIX = /^(?:nurses|surgeons|executives|architects|judges|witnesses|colleagues|guests|hosts|pilots|captains|clerks|officials|candidates|delegates|chiefs|leads|heads|bosses|admins|reps|folks|adults|kids|others|peers|chefs|cooks|bakers|notaries|paralegals|secretaries|curators|mediators|couriers|patrons|citizens|attorneys|mechanics|analysts|friends|neighbors|neighbours|landlords)$/i;
 const INANIMATE_PLURAL_MODIFIER = /^(?:routers|scanners|sensors|folders|headers|footers|orders|letters|numbers|chapters|papers|offers|vouchers|transfers|reminders|computers|errors|events|comments|documents|payments|shipments|accounts|incidents|elements|contents|discounts|clusters|containers|adapters|triggers|timers|meters)$/i;
 function isAgentivePlural(word: string): boolean {
   return HUMAN_PLURAL_NON_SUFFIX.test(word) || (AGENTIVE_PLURAL_SUFFIX.test(word) && !INANIMATE_PLURAL_MODIFIER.test(word));
@@ -3329,29 +3329,34 @@ export class Call {
     "can", "could", "will", "would", "shall", "should", "may", "might", "must",
   ]);
 
-  /** Bounded verb-position + object-start equivalents for booking/reservation group heads (stored in a Map to avoid prototype-property lookups such as "constructor") so "Both hotel bookings" / "Both hotel reservations" match "Book/Reserve a London hotel", "Can you please book a hotel in London", or "Find a London hotel and book a room" without matching noun/adjective uses ("reserved parking", "Reserve price", "Book 2 summary", "to book club", "to reserve savings"). */
+  /** Bounded verb-position + object-start equivalents for booking/reservation group heads (stored in a Map to avoid prototype-property lookups such as "constructor"). Each regex matches globally and captures the start of the verb's object so every booking action in a multi-clause request is evaluated against its own object span. */
   private static readonly GROUP_HEAD_VERB: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     [
       "booking",
-      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and|i(?:'d|\s+would))\s+)book(?:ing)?\s+(?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b)/i,
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and(?:\s+then)?|then|i(?:'d|\s+would))\s+)book(?:ing)?\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:club|review|store|shop|shelf|summary|report|chapter|page|of|price|fund|account|savings|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
     [
       "reservation",
-      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+(?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b)/i,
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and(?:\s+then)?|then|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:club|review|store|shop|shelf|summary|report|chapter|page|of|price|fund|account|savings|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
   ]);
-  private static readonly REQUEST_CLAUSE_SPLIT = /[.?!;:]|\s*,\s+(?:and\s+then|and|but|then|also|plus)\s+|\s+(?:and\s+then|and|but|also|plus|then)\s+(?=(?:(?:please|just)\s+)?(?:check|find|look|search|compare|summarize|summarise|get|show|tell|email|send|remind|draft|write|review|list|monitor|track|watch|calculate|compute|plan|research|book|booking|reserve|reserving)\b)/i;
+  /** Boundary ending a booking verb's direct object span ("Book a flight to London and gather/see/fetch/check hotel prices" cuts at "and <verb>", while coordinated objects like "Book a flight and a hotel in London" stay in one span). */
+  private static readonly OBJ_SPAN_END = /[.?!;:,]|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\s+(?!(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b)/i;
+  /** Bare anaphoric pronoun object right after a booking verb ("book it", "book it for Friday"), never a determiner + noun ("book that tour", "book one tour"). */
+  private static readonly BARE_ANAPHOR_OBJ = /^(?:(?:me|us)\s+)?(?:it|them|that|one)(?:\s*$|\s+(?:for|on|at|in|by|from|to|with|now|today|tonight|tomorrow|please|too|as\s+well|instead|again)\b)/i;
+  /** Bookable sub-unit object patterns (lowercase adjectives only so a new destination like "a Paris room" does not inherit "London"). */
   private static readonly CATEGORY_SUBUNIT: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
-    ["hotel", /\b(?:it|them|that|one|rooms?|stays?|suites?|nights?)\b/i],
-    ["dinner", /\b(?:it|them|that|one|tables?|seats?|spots?)\b/i],
-    ["lunch", /\b(?:it|them|that|one|tables?|seats?|spots?)\b/i],
-    ["restaurant", /\b(?:it|them|that|one|tables?|seats?|spots?)\b/i],
-    ["flight", /\b(?:it|them|that|one|seats?|tickets?)\b/i],
-    ["train", /\b(?:it|them|that|one|seats?|tickets?)\b/i],
-    ["bus", /\b(?:it|them|that|one|seats?|tickets?)\b/i],
-    ["car", /\b(?:it|them|that|one|vehicles?|rentals?)\b/i],
-    ["spa", /\b(?:it|them|that|one|sessions?|appointments?|slots?)\b/i],
+    ["hotel", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:rooms?|stays?|suites?|nights?)\b/],
+    ["dinner", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:tables?|seats?|spots?)\b/],
+    ["lunch", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:tables?|seats?|spots?)\b/],
+    ["restaurant", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:tables?|seats?|spots?)\b/],
+    ["flight", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:seats?|tickets?)\b/],
+    ["train", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:seats?|tickets?)\b/],
+    ["bus", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:seats?|tickets?)\b/],
+    ["car", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:vehicles?|rentals?)\b/],
+    ["spa", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:sessions?|appointments?|slots?)\b/],
   ]);
+  private static readonly BOOK_CATEGORIES = ["hotel", "flight", "train", "bus", "ferry", "car", "spa", "dinner", "lunch", "restaurant", "tour", "concert", "show", "table", "ticket"];
 
   /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel reservations", "both IT tasks", or "both last-minute bookings". Both sides are tokenized identically from original-case text (splitting hyphens, keeping all-caps acronyms like "IT"/"US"/"AM", and filtering lowercase function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
@@ -3397,41 +3402,51 @@ export class Call {
     const taskWords = wordSet(`${task.label} ${task.latest} ${task.request}`);
     const matchesIn = (set: Set<string>, w: string): boolean => stemVariants(w).some((v) => set.has(v));
     const matchesTask = (w: string): boolean => matchesIn(taskWords, w);
-    const clauses = task.request.split(Call.REQUEST_CLAUSE_SPLIT).map((c) => c.trim()).filter(Boolean);
-    let bookingClauseIdx = -1;
-    const headVerbRe = headParts.length === 1 ? stemVariants(headParts[0]).map((v) => Call.GROUP_HEAD_VERB.get(v)).find((r) => r != null) : undefined;
-    if (headVerbRe != null) {
-      bookingClauseIdx = clauses.findIndex((c) => headVerbRe.test(c));
-    }
-    const headMatchesTask = (w: string): boolean => {
-      const variants = stemVariants(w);
-      if (variants.some((v) => taskWords.has(v))) return true;
-      for (const v of variants) {
-        const verbRe = Call.GROUP_HEAD_VERB.get(v);
-        if (verbRe != null && clauses.some((c) => verbRe.test(c))) return true;
+    const bookingSpans = (verbRe: RegExp): Array<{ before: string; obj: string }> => {
+      const out: Array<{ before: string; obj: string }> = [];
+      const req = task.request;
+      verbRe.lastIndex = 0;
+      let vm: RegExpExecArray | null;
+      while ((vm = verbRe.exec(req)) != null) {
+        const objStart = vm.index + vm[0].length - vm[1].length;
+        const tail = req.slice(objStart);
+        const endMatch = Call.OBJ_SPAN_END.exec(tail);
+        const obj = (endMatch != null ? tail.slice(0, endMatch.index) : tail).trim();
+        out.push({ before: req.slice(0, vm.index), obj });
       }
-      return false;
+      return out;
     };
+    const headVerbRe = headParts.length === 1 ? stemVariants(headParts[0]).map((v) => Call.GROUP_HEAD_VERB.get(v)).find((r) => r != null) : undefined;
+    const verbMatches = headVerbRe != null ? bookingSpans(headVerbRe) : [];
+    const literalHeadMatch = headParts.length > 0 && headParts.every((w) => matchesTask(w));
     if (!modifiers.every(matchesTask)) return false;
     if (headParts.length === 1 && Call.GENERIC_GROUP_HEAD.test(headLast)) return true;
-    if (headParts.length === 0 || !headParts.every(headMatchesTask)) return false;
-    // When a booking/reservation head matches a multi-clause request ("book a flight to London and check hotel prices" vs "Find a London hotel and book a room"), require narrowing modifiers to apply to the booking clause itself (or be inherited from a preceding clause/label when the booking clause targets an anaphoric or compatible sub-unit object such as "a room").
-    if (modifiers.length > 0 && bookingClauseIdx >= 0 && clauses.length > 1) {
-      const bookingClause = clauses[bookingClauseIdx];
-      const bookingWords = wordSet(bookingClause);
-      if (!modifiers.every((mod) => matchesIn(bookingWords, mod))) {
-        const priorWords = wordSet(`${task.label} ${clauses.slice(0, bookingClauseIdx + 1).join(" ")}`);
+    if (!literalHeadMatch && verbMatches.length === 0) return false;
+    // When a booking/reservation head matches action verb(s) in task.request, verify that at least one booking action's own direct object satisfies every narrowing modifier (or strictly inherits missing modifiers from an unambiguous earlier clause via a bare pronoun or matching sub-unit noun such as "a room").
+    if (modifiers.length > 0 && verbMatches.length > 0) {
+      const modCategories = Call.BOOK_CATEGORIES.filter((cat) => modifiers.some((mod) => stemVariants(mod).includes(cat)));
+      const anyBookingMatches = verbMatches.some(({ before, obj }) => {
+        const objWords = wordSet(obj);
+        if (modifiers.every((mod) => matchesIn(objWords, mod))) return true;
+        const beforeWords = wordSet(before);
+        const priorWords = wordSet(`${task.label} ${before} ${obj}`);
         if (!modifiers.every((mod) => matchesIn(priorWords, mod))) return false;
-        const conflictingCategory = [...Call.CATEGORY_SUBUNIT.keys()].some(
-          (cat) => matchesIn(bookingWords, cat) && !modifiers.some((mod) => stemVariants(mod).includes(cat)),
-        );
-        if (conflictingCategory) return false;
-        for (const mod of modifiers) {
-          if (matchesIn(bookingWords, mod)) continue;
-          const subRe = stemVariants(mod).map((v) => Call.CATEGORY_SUBUNIT.get(v)).find((r) => r != null);
-          if (subRe != null && !subRe.test(bookingClause)) return false;
+        const priorCategories = Call.BOOK_CATEGORIES.filter((cat) => matchesIn(beforeWords, cat));
+        const isBareAnaphor = Call.BARE_ANAPHOR_OBJ.test(obj);
+        const matchedSubunitCats = [...Call.CATEGORY_SUBUNIT.entries()]
+          .filter(([cat, subRe]) => matchesIn(beforeWords, cat) && subRe.test(obj))
+          .map(([cat]) => cat);
+        if (!isBareAnaphor && matchedSubunitCats.length === 0) return false;
+        // Ambiguous earlier clauses naming another bookable category cannot safely lend modifiers to an anaphoric or sub-unit booking.
+        if (modCategories.length > 0) {
+          if (priorCategories.some((cat) => !modCategories.includes(cat))) return false;
+          if (!isBareAnaphor && !modCategories.every((cat) => matchesIn(objWords, cat) || matchedSubunitCats.includes(cat))) return false;
+        } else {
+          if (priorCategories.length > 1) return false;
         }
-      }
+        return true;
+      });
+      if (!anyBookingMatches) return false;
     }
     return true;
   }
