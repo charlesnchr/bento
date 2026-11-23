@@ -238,6 +238,9 @@ class AssistantCall(
     private val tasks = LinkedHashMap<String, Task>()
     /** Detached tasks from earlier calls registered via [note], so cancel_task won't fuzzy-match them onto this call's runs. */
     private val externalTasks = LinkedHashMap<String, Pair<String, String>>()
+    /** Latest user utterance words, checked against [externalTasks] before cancelling an owned task. */
+    private var utterance = ""
+    private var lastWords = ""
     private var nextTask = 1
     /** `ask_hermes` calls still waiting for their transcript to settle: no task yet, and no answer sent. */
     private var settling = 0
@@ -1220,6 +1223,7 @@ class AssistantCall(
                 if (answerFor.size > 8) answerFor.removeFirst()
                 geminiTurns.addLast(GeminiTurn(now()))
                 if (geminiTurns.size > 8) geminiTurns.removeFirst()
+                utterance = ""
             }
             "ACTIVITY_END" -> {
                 protocol.activityEnded(now()); lastSpeech = now(); userTalking = false; turnCarried = false; replyDue = now(); unanswered = now()
@@ -1250,6 +1254,7 @@ class AssistantCall(
                 if (later == null) captionEndedAt = null
                 captionText = null
                 protocol.transcript("user", it, now()); onTranscript?.invoke("user", it); lastSpeech = now()
+                utterance = (utterance + it).take(400); lastWords = utterance
                 later?.let { text -> showCaption(text, captionShownFrom!!) }
             }
             (source["outputTranscription"] as? JsonObject)?.str("text")?.takeIf { it.isNotEmpty() }?.let {
@@ -1605,11 +1610,10 @@ class AssistantCall(
             refWords.any { it in pool }
         }
         val matchedExt = externalTasks.values.filter { (label, detail) ->
-            val pool = TaskNames.distinctive("$label $detail")
+            val pool = TaskNames.distinctive(if (byRequest) "$label $detail" else label)
             refWords.any { it in pool }
         }.map { it.first }
         if (matchedOwned.size + matchedExt.size > 1) return Target.Ambiguous(matchedOwned, matchedExt)
-        if (matchedOwned.isEmpty() && matchedExt.size == 1) return Target.External(matchedExt.single())
         return null
     }
 
@@ -1916,7 +1920,18 @@ class AssistantCall(
                                 "Not executed: \"$ref\" could mean more than one task in this call ($ownedNames). Nothing was cancelled. Ask the user which one they mean."
                             }
                         }
-                        target is Target.Owned -> cancelNow(target.task.id)
+                        target is Target.Owned -> {
+                            val cancelText = lastWords.split(Regex("[,.;?!]+|\\s+(?=\\b(?:not|except)\\b)", RegexOption.IGNORE_CASE))
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() && !Regex("^(?:not|except)\\b", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+                                .joinToString(". ")
+                                .ifEmpty { lastWords }
+                            val wordConflicts = externalConflicts(cancelText, target.task)
+                            if (wordConflicts.isNotEmpty()) {
+                                val extNames = wordConflicts.joinToString(", ") { "\"$it\"" }
+                                "Not executed: the user's words mention an earlier call's task ($extNames), which cancel_task cannot cancel here. Nothing was cancelled. Ask the user to confirm by naming \"${target.task.label}\" if they meant to cancel it, or tap Cancel on the detached task's card."
+                            } else cancelNow(target.task.id)
+                        }
                         else -> "Not executed: $missing"
                     }
                 }

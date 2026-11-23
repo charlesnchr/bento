@@ -4807,6 +4807,12 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
         assertTrue(transport.responses()[2].message().startsWith("Not executed:"), transport.responses()[2].message())
         assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must stay running")
+
+        // Even when Gemini passes the exact owned label "Noma table", the user's words ("Cancel the Alchemist table") must still block cancelling Noma.
+        transport.push(Live.call("x2", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
+        assertTrue(transport.responses()[3].message().startsWith("Not executed:"), transport.responses()[3].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must still stay running when Gemini passes its exact label")
         call.stop()
     }
 }

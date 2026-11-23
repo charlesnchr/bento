@@ -74,8 +74,8 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Clause-level phrasing that explicitly forbids cancelling (distinct from "Don't bother with..." or "Never mind"). */
-const DONT_CANCEL = /\b(?:don'?t|do\s+not|doesn'?t|never|not)\s+(?:\w+\s+){0,3}?(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+/** Clause-level phrasing that explicitly forbids cancelling (distinct from "Don't bother with...", "Never mind...", "Why not just cancel..."). */
+const DONT_CANCEL = /\b(?:(?:don'?t|do\s+not|doesn'?t|never)\s+(?:(?:ever|actually|really|please|just|yet|still|even|want|need|try|dare|to)\s+){0,3}(?:cancel|stop|abort|kill|drop|end|halt)\b|(?<!\bwhy\s+)not\s+(?:(?:ever|actually|really|just|yet|still|even|to)\s+){0,2}(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Clause-level phrasing asking to keep or leave a task running (applies even without naming a task, e.g. "Keep it running", "Leave it alone"). */
 const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|(?!me\b|us\b)[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
 /** Clause-level "keep <task>" phrasing (protects a task only when the clause resolves to that task, never via the unnamed fallback). */
@@ -2657,10 +2657,14 @@ export class Call {
 
   /**
    * Splits [said] into primary clauses without breaking "except X and Y" or "Cancel X and Y" prematurely;
-   * secondary "and" splits happen inside active or exclusion spans.
+   * also splits mid-sentence exclusions ("Cancel the weather not the Noma table") and comma-less lead-ins
+   * ("Not that one cancel the weather", "Never mind cancel the weather").
    */
   private splitClauses(said: string): string[] {
-    return said.split(/[.?!;]+|\s*,\s*|\s+\b(?:but|while|though|although)\b\s+|\s+(?=\bexcept\b)/i)
+    const normalized = said
+      .replace(/\b(not\s+(?:that|this)(?:\s+one)?|not\s+now|never\s+mind)\s+(?=(?:please\s+|just\s+|also\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/gi, "$1, ")
+      .replace(/(?<!\b(?:do|did|does|why|would|should|could|will|can|may|might|must))\s+(?=\bnot\s+[A-Z])/g, ", ");
+    return normalized.split(/[.?!;]+|\s*,\s*|\s+\b(?:but|while|though|although)\b\s+|\s+(?=\bexcept\b)|\s+(?=\bnot\s+(?:the|that|this|my)\b)/i)
       .map((c) => c.trim())
       .filter((c) => c.length > 0);
   }
@@ -2753,17 +2757,20 @@ export class Call {
     const spans = this.parseCancelSpans(said);
     const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
     const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
+    const broadCancel = CANCEL_ALL_SCOPE.test(activeParts.join(". "));
     for (const span of spans) {
       if (span.kind !== "protect") continue;
+      const isExcept = /^except\b/i.test(span.parts[0] ?? "");
       let anyNamedOther = false;
       for (const sub of span.parts) {
         const { namedThis, namedOther } = this.clauseResolution(sub, task);
         if (namedThis) return true;
         if (namedOther) anyNamedOther = true;
         else if (span.explicitExcl) {
-          // Only fail closed on an unresolved exclusion when it carries a real descriptor word (e.g. "except the vegan one"), not bare "Not that one".
+          // Fail closed on an unresolved exclusion when it uses "except ...", accompanies a broad cancel ("Cancel everything except that one"),
+          // or carries a real descriptor word ("not the vegan one"); allow bare "Not that one, cancel the weather".
           const hasDescriptor = [...TaskNames.distinctive(sub)].some((w) => !CANCEL_ACTION_WORDS.has(w));
-          if (hasDescriptor) return true;
+          if (isExcept || broadCancel || hasDescriptor) return true;
         }
       }
       // Unnamed "don't cancel / keep running" protects this task unless it explicitly says "keep the rest" while an active span names this task.

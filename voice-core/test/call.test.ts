@@ -600,4 +600,40 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   s2.toolCall("x5", "cancel_task", { task: "Weather" });
   s2.advance(0.1);
   assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "Weather cancels cleanly in voice mode");
+
+  // Comma-less voice transcript exclusion ("Cancel the weather not the Noma table") protects Noma and cancels Weather.
+  const s3 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s3.advance(0.1);
+  s3.turn("Book a table at Noma");
+  s3.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  s3.advance(0.3);
+  s3.turn("Check the weather");
+  s3.toolCall("c2", "ask_hermes", { label: "Weather" });
+  s3.advance(0.3);
+  s3.turn("Cancel the weather not the Noma table");
+  s3.toolCall("x6", "cancel_task", { task: "Noma table" });
+  s3.advance(0.1);
+  assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 0, "comma-less voice exclusion must protect Noma");
+  s3.toolCall("x7", "cancel_task", { task: "Weather" });
+  s3.advance(0.1);
+  assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 1, "comma-less voice exclusion must cancel Weather");
+
+  // Comma-less idiomatic voice cancels ("Never mind cancel...", "Why not just cancel...", "Not that one cancel...") still cancel.
+  for (const phrase of [
+    "Never mind cancel the weather",
+    "Actually never mind stop the weather",
+    "No don't wait just cancel the weather",
+    "Why not just cancel the weather",
+    "Not that one cancel the weather",
+  ]) {
+    const sv = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv.advance(0.1);
+    sv.turn("Check the weather");
+    sv.toolCall("c1", "ask_hermes", { label: "Weather" });
+    sv.advance(0.3);
+    sv.turn(phrase);
+    sv.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv.advance(0.1);
+    assert.equal(sv.commands.filter((c) => c.type === "tool.cancel").length, 1, `voice mode should cancel on: ${phrase}`);
+  }
 });

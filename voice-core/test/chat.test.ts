@@ -1544,4 +1544,32 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     s3.advance(0.1);
     assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 1, `must cancel Weather on: ${phrase}`);
   }
+
+  // 4) Comma-less mid-sentence exclusion ("Cancel the weather not the Noma table") cancels Weather and protects Noma.
+  const s4 = chat();
+  s4.type("Book a table at Noma");
+  s4.calls("ask_hermes", { label: "Noma table" });
+  s4.advance(0.1);
+  s4.type("Check Copenhagen weather");
+  s4.calls("ask_hermes", { label: "Weather" });
+  s4.advance(0.1);
+  s4.type("Cancel the weather not the Noma table");
+  s4.calls("cancel_task", { task: "Noma table" });
+  s4.advance(0.1);
+  assert.equal(s4.commands.filter((c) => c.type === "tool.cancel").length, 0, "comma-less exclusion must protect Noma");
+  s4.calls("cancel_task", { task: "Weather" });
+  s4.advance(0.1);
+  assert.equal(s4.commands.filter((c) => c.type === "tool.cancel").length, 1, "comma-less exclusion must allow cancelling Weather");
+
+  // 5) Unresolved broad exclusion ("Cancel everything except that one") fails closed across all tasks.
+  const s5 = chat();
+  for (const [req, lbl] of [["Book Noma", "Noma table"], ["Check weather", "Weather"], ["Find flights", "Paris flights"], ["Draft email", "Email"]]) {
+    s5.type(req);
+    s5.calls("ask_hermes", { label: lbl });
+    s5.advance(0.1);
+  }
+  s5.type("Cancel everything except that one");
+  s5.calls("cancel_task", { task: "Noma table" });
+  s5.advance(0.1);
+  assert.equal(s5.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel everything except that one' must fail closed");
 });
