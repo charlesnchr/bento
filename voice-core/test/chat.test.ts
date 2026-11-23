@@ -1670,6 +1670,12 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Stop reading that airlines catalog complaints and cancel the Noma table",
     "Stop reading that engineers spec parts and cancel the Noma table",
+    "Stop reading that staff outline risks then cancel the Noma table",
+    "Stop reading that managers outline plans and cancel the Noma table",
+    "Stop reading that hosts outline changes and cancel the Noma table",
+    "Stop reading that restaurants abstract fees and cancel the Noma table",
+    "Stop reading that hosts preface apologies and cancel the Noma table",
+    "Stop reading that managers overview bookings and cancel the Noma table",
     "Stop mentioning that airlines send alerts and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
@@ -2552,6 +2558,68 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10be.calls("cancel_task", { task: "Flight booking" });
   s10be.advance(0.1);
   assert.equal(s10be.commands.filter((c) => c.type === "tool.cancel").length, 2, "direct modifier 'in progress' on finished 'Both bookings' must cancel both active bookings");
+
+  // 8z) Qualified finished-group cancellation checks group membership (refusing unrelated Weather on "both bookings in progress", "All Access in progress", and "All Hands still running") and supports multiword groups ("both hotel bookings that are still running").
+  const s10bf = chat();
+  s10bf.type("Check both bookings");
+  s10bf.calls("ask_hermes", { label: "Both bookings" });
+  s10bf.advance(0.1);
+  s10bf.complete("Done.", s10bf.hermes()[0].run);
+  s10bf.advance(0.1);
+  s10bf.type("Book a hotel");
+  s10bf.calls("ask_hermes", { label: "Hotel booking" });
+  s10bf.advance(0.1);
+  s10bf.type("Book a flight");
+  s10bf.calls("ask_hermes", { label: "Flight booking" });
+  s10bf.advance(0.1);
+  s10bf.type("Check Paris weather");
+  s10bf.calls("ask_hermes", { label: "Weather" });
+  s10bf.advance(0.1);
+  s10bf.type("Cancel both bookings in progress");
+  s10bf.calls("cancel_task", { task: "Weather" });
+  s10bf.advance(0.1);
+  assert.equal(s10bf.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel both bookings in progress' must not cancel unrelated Weather");
+
+  const s10bg = chat();
+  s10bg.type("Check All Access");
+  s10bg.calls("ask_hermes", { label: "All Access" });
+  s10bg.advance(0.1);
+  s10bg.complete("Done.", s10bg.hermes()[0].run);
+  s10bg.advance(0.1);
+  s10bg.type("Check All Hands");
+  s10bg.calls("ask_hermes", { label: "All Hands" });
+  s10bg.advance(0.1);
+  s10bg.complete("Done.", s10bg.hermes()[1].run);
+  s10bg.advance(0.1);
+  s10bg.type("Check Paris weather");
+  s10bg.calls("ask_hermes", { label: "Weather" });
+  s10bg.advance(0.1);
+  s10bg.type("Cancel All Access in progress");
+  s10bg.calls("cancel_task", { task: "Weather" });
+  s10bg.advance(0.1);
+  assert.equal(s10bg.commands.filter((c) => c.type === "tool.cancel").length, 0, "finished 'All Access' must not cancel unrelated Weather");
+  s10bg.type("Cancel All Hands still running");
+  s10bg.calls("cancel_task", { task: "Weather" });
+  s10bg.advance(0.1);
+  assert.equal(s10bg.commands.filter((c) => c.type === "tool.cancel").length, 0, "finished 'All Hands' must not cancel unrelated Weather");
+
+  const s10bh = chat();
+  s10bh.type("Check both hotel bookings");
+  s10bh.calls("ask_hermes", { label: "Both hotel bookings" });
+  s10bh.advance(0.1);
+  s10bh.complete("Done.", s10bh.hermes()[0].run);
+  s10bh.advance(0.1);
+  s10bh.type("Book a London hotel");
+  s10bh.calls("ask_hermes", { label: "London hotel" });
+  s10bh.advance(0.1);
+  s10bh.type("Book a Paris hotel");
+  s10bh.calls("ask_hermes", { label: "Paris hotel" });
+  s10bh.advance(0.1);
+  s10bh.type("Cancel both hotel bookings that are still running");
+  s10bh.calls("cancel_task", { task: "London hotel" });
+  s10bh.calls("cancel_task", { task: "Paris hotel" });
+  s10bh.advance(0.1);
+  assert.equal(s10bh.commands.filter((c) => c.type === "tool.cancel").length, 2, "multiword finished group 'Both hotel bookings' with running modifier must cancel both London and Paris hotels");
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [

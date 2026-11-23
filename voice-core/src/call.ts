@@ -274,10 +274,10 @@ const THAT_COMPLEMENT = /^\s+that\s+\S/i;
 const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
 /** Strictly singular document-compound heads that cannot act as a finite transitive verb or an uncountable bare object ("that sales report summary", "that staff meeting agenda"). */
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
-const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|preface|foreword|prologue|epilogue|conclusion|abstract|overview|outline)$/i;
+const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|foreword|prologue|epilogue|conclusion)$/i;
 const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event|catalog|catalogue|brochure|manual|handbook|guide|newsletter|bulletin|dossier|prospectus|syllabus|booklet|pamphlet)$/i;
 const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
-const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|spec|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb)$/i;
+const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|spec|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb|outline|abstract|preface|overview)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
@@ -3310,11 +3310,33 @@ export class Call {
     return [...this.cancelTurnLabels.labels];
   }
 
-  /** Direct post-modifier immediately following a plural group scope ("both bookings that are still running", "both bookings in progress") that lets a broad cancel ignore a finished task with that same plural label, without letting separate remarks ("if it's still running", "I think it is still running") override an exact task name. */
+  /** Direct post-modifier immediately following a plural group scope ("both bookings that are still running", "both bookings in progress", "both hotel bookings that are still running") that lets a broad cancel ignore a finished task with that same plural label ONLY for candidate tasks belonging to the named group. */
   private static readonly DIRECT_RUNNING_MODIFIER = /^\s+(?:(?:that|which)\s+are\s+(?:(?:still|currently)\s+)?(?:running|active|open|in\s+progress|going)|(?:still|currently)\s+(?:running|active|open|in\s+progress|going)|in\s+progress)\b/i;
+  private static readonly GENERIC_GROUP_HEAD = /^(?:tasks|runs|jobs|requests|items|ones)$/i;
 
-  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier). */
-  private isBroadCancel(text: string): boolean {
+  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings" or "both hotel bookings". */
+  private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
+    const m = /^(?:all|both|every)\s+(?:the\s+)?(.+)$/i.exec(lbl.trim());
+    if (!m) return false;
+    const groupWords = m[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (groupWords.length === 0) return false;
+    const head = groupWords[groupWords.length - 1];
+    if (!isPluralWord(head)) return false;
+    if (Call.GENERIC_GROUP_HEAD.test(head)) return true;
+    if (task == null) return false;
+    const taskWords = new Set((`${task.label} ${task.latest} ${task.request}`.toLowerCase().match(/[a-z0-9]+/g) ?? []));
+    const stemVariants = (w: string): string[] => {
+      const out = [w];
+      if (w.endsWith("ies") && w.length > 4) out.push(w.slice(0, -3) + "y");
+      else if (w.endsWith("es") && w.length > 4) out.push(w.slice(0, -2), w.slice(0, -1));
+      else if (w.endsWith("s") && w.length > 3) out.push(w.slice(0, -1));
+      return out;
+    };
+    return groupWords.some((w) => w.length >= 3 && stemVariants(w).some((v) => taskWords.has(v)));
+  }
+
+  /** Whether [text] requests cancelling all tasks (or a named group containing [task]), ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier and [task] belongs to that group). */
+  private isBroadCancel(text: string, task?: Task): boolean {
     const lower = text.toLowerCase();
     const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
     const seq = this.turnAnswered?.[0] ?? this.userTurns;
@@ -3340,8 +3362,7 @@ export class Call {
           if (idx < 0) break;
           const end = idx + lbl.length;
           if (idx <= wordStart && wordEnd <= end && !isWordChar(lower[idx - 1]) && !isWordChar(lower[end])) {
-            const isFinishedPluralGroup = !activeLabels.has(lbl) && /\b(?:all|both|every)\s+\S+s$/i.test(lbl);
-            if (isFinishedPluralGroup && Call.DIRECT_RUNNING_MODIFIER.test(lower.slice(end))) {
+            if (!activeLabels.has(lbl) && Call.DIRECT_RUNNING_MODIFIER.test(lower.slice(end)) && this.taskMatchesFinishedGroup(lbl, task)) {
               from = idx + 1;
               continue;
             }
@@ -3362,7 +3383,7 @@ export class Call {
     const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
     const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
     const activeJoined = activeParts.join(". ");
-    const broadCancel = this.isBroadCancel(activeJoined);
+    const broadCancel = this.isBroadCancel(activeJoined, task);
     CANCEL_ALL_SCOPE.lastIndex = 0;
     const rawBroadCancel = CANCEL_ALL_SCOPE.test(activeJoined);
     let sawActive = false;
@@ -3483,7 +3504,7 @@ export class Call {
       }
       const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
       const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
-      const targetsOnlyOther = mentionsOther && !mentionsThis && !this.isBroadCancel(activeText);
+      const targetsOnlyOther = mentionsOther && !mentionsThis && !this.isBroadCancel(activeText, task);
       if (!targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, TaskNames.mentions(activeText, task.label, task.latest + " " + task.request))) return true;
       this.cancelDoubt = { tasks: new Set([task.id]), seq: answeredSeq };
       return false;
@@ -3509,7 +3530,7 @@ export class Call {
     // Score each active cancel conjunct separately so "Cancel the weather and the Noma table booking" names both tasks.
     const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
     const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
-    const targetsOnlyOther = !mentionsThis && mentionsOther && !this.isBroadCancel(activeText);
+    const targetsOnlyOther = !mentionsThis && mentionsOther && !this.isBroadCancel(activeText, task);
     if (activeText.length > 0 && !targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, mentionsThis)) {
       this.cancelDoubt = null;
       return true;

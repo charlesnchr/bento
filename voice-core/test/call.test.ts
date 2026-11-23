@@ -776,6 +776,12 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop reading that auditors review terms aloud and cancel the Noma table",
     "Stop reading that airlines catalog complaints and cancel the Noma table",
     "Stop reading that engineers spec parts and cancel the Noma table",
+    "Stop reading that staff outline risks then cancel the Noma table",
+    "Stop reading that managers outline plans and cancel the Noma table",
+    "Stop reading that hosts outline changes and cancel the Noma table",
+    "Stop reading that restaurants abstract fees and cancel the Noma table",
+    "Stop reading that hosts preface apologies and cancel the Noma table",
+    "Stop reading that managers overview bookings and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
@@ -966,4 +972,22 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     sv10.advance(0.1);
     assert.equal(sv10.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode finished 'All the Time' must not cancel Weather on: ${phrase}`);
   }
+
+  const sv11 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv11.advance(0.1);
+  sv11.turn("Check both bookings");
+  sv11.toolCall("c1", "ask_hermes", { label: "Both bookings" });
+  sv11.advance(0.3);
+  sv11.complete("Done.", sv11.hermes()[0].run);
+  sv11.advance(0.3);
+  sv11.turn("Book a hotel");
+  sv11.toolCall("c2", "ask_hermes", { label: "Hotel booking" });
+  sv11.advance(0.3);
+  sv11.turn("Check Paris weather");
+  sv11.toolCall("c3", "ask_hermes", { label: "Weather" });
+  sv11.advance(0.3);
+  sv11.turn("Cancel both bookings in progress");
+  sv11.toolCall("x1", "cancel_task", { task: "Weather" });
+  sv11.advance(0.1);
+  assert.equal(sv11.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Cancel both bookings in progress' must not cancel unrelated Weather");
 });
