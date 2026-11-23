@@ -2957,6 +2957,16 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both London hotel bookings", "Find a London hotel and book it to accommodate the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Find a London hotel and book it to spoil Anna", "London stay", "Cancel both London hotel bookings in progress", 1],
     ["Both London hotel bookings", "Find a London hotel and book it to honor them", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Check London flights and book a ticket to paris a few days later", "Paris flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the fifteenth", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to paris the last weekend of June", "Paris flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the cheapest way", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London hotel bookings", "Book a hotel in Paris, OR compare London options", "Paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to paris, a hotel in rome", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: refundable only", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a flight to Paris, a hotel in London: the Savoy", "Euro trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book a room in May, OK", "London stay", "Cancel both London hotel bookings in progress", 1],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
