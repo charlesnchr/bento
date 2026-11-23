@@ -807,3 +807,73 @@ test("WakeAudioGate: rejected 1-byte PCM, deliverMax drop, and voice 'stop' over
   stopped.push({ type: "ws.message", sid: stopped.getSid(), data: JSON.stringify({ serverContent: { turnComplete: true } }) }, 1.9);
   assertCleanPlaybackEndWake(stopped, 2.4, "voice stop");
 });
+
+test("WakeAudioGate: late brief before tick expiry and 'not a stop after all' both flush gap audio before tick announcement", () => {
+  const briefPcm = Buffer.alloc(Math.round(0.4 * 24_000) * 2, 1).toString("base64");
+
+  const triggerBrief = (h: ReturnType<typeof createCoreHarness>, id: string) => {
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 0.22);
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "Check status" } } }) }, 0.24);
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 0.26);
+    h.push({
+      type: "ws.message",
+      sid: h.getSid(),
+      data: JSON.stringify({ toolCall: { functionCalls: [{ id, name: "ask_hermes", args: {} }] } }),
+    }, 0.3);
+    h.advanceTo(0.45);
+    h.advanceTo(0.65);
+    const tc = h.commands.find((c): c is Extract<Command, { type: "tool.call" }> => c.type === "tool.call")!;
+    h.push({ type: "ws.message", sid: h.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 0.68);
+    h.push({ type: "tool.result", run: tc.run, text: "All green." }, 0.7);
+    return h.commands.find((c): c is Extract<Command, { type: "brief" }> => c.type === "brief")!;
+  };
+
+  // Case 1: brief.ready arrives past briefWait without an intervening tick; call.ts accepts and queues it.
+  const late = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 0.5, maxWait: 8, maxWords: 28 },
+  });
+  late.start();
+  late.advanceTo(0.2);
+  const lateReq = triggerBrief(late, "tc_late"); // briefAsked = 0.7, briefWait = 0.5 -> deadline 1.2
+  // Model playback runs 1.0 -> 2.0 with NO tick in between; brief.ready arrives at 1.4 (> 1.2) and is accepted + queued.
+  late.modelAudio(1.0, 1.0);
+  late.push({ type: "brief.ready", id: lateReq.id, text: "All green.", pcm: briefPcm }, 1.4);
+  late.push({ type: "ws.message", sid: late.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 1.5);
+  const lateSeq1 = late.micFrame(1001, 1.8);
+  late.sentAudioTags.length = 0;
+  late.micFrame(200, 2.35);
+  assert.equal(late.gate.hasDeferred, true);
+  // Tick at 2.40 starts the queued late brief: gap frame 200 must flush unsuppressed before tick.
+  late.advanceTo(2.40);
+  assert.ok(late.commands.some((c) => c.type === "play" && c.source === "announcer"), "late brief should start on tick");
+  assert.ok(late.sentAudioTags.includes(200), "gap frame 200 must reach model unsuppressed before late brief starts");
+  late.emitAck(lateSeq1);
+
+  // Case 2: user says "stop" then " by the office" ("not a stop after all: the model may answer");
+  // the core restores the brief, and the gate must flush deferred gap audio before the tick that replays it.
+  const notStop = createCoreHarness({
+    announce: { by: "host", engaged: 6, lull: 0.3, attach: 0.3, briefWait: 5, maxWait: 8, maxWords: 28 },
+  });
+  notStop.start();
+  notStop.advanceTo(0.2);
+  const nsReq = triggerBrief(notStop, "tc_ns");
+  notStop.push({ type: "brief.ready", id: nsReq.id, text: "All green.", pcm: briefPcm }, 1.5);
+  assert.equal(notStop.commands.filter((c) => c.type === "play" && c.source === "announcer").length, 1);
+  // Cut at 1.6 (< 80%), say "stop" at 1.7, then continue with " by the office" at 1.75.
+  notStop.push({ type: "ws.message", sid: notStop.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_START" } }) }, 1.6);
+  notStop.push({ type: "ws.message", sid: notStop.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: "stop" } } }) }, 1.7);
+  notStop.push({ type: "ws.message", sid: notStop.getSid(), data: JSON.stringify({ serverContent: { inputTranscription: { text: " by the office" } } }) }, 1.75);
+  notStop.push({ type: "ws.message", sid: notStop.getSid(), data: JSON.stringify({ voiceActivity: { type: "ACTIVITY_END" } }) }, 1.8);
+  // Model replies 2.0 -> 2.4 and finishes its turn; restored brief is still queued for attach after 2.4.
+  notStop.modelAudio(0.4, 2.0);
+  notStop.push({ type: "ws.message", sid: notStop.getSid(), data: JSON.stringify({ serverContent: { generationComplete: true, turnComplete: true } }) }, 2.1);
+  const nsSeq1 = notStop.micFrame(1001, 2.2);
+  notStop.sentAudioTags.length = 0;
+  notStop.micFrame(200, 2.75);
+  assert.equal(notStop.gate.hasDeferred, true);
+  // Tick at 2.80 replays the restored brief: gap frame 200 must flush unsuppressed BEFORE tick.
+  notStop.advanceTo(2.80);
+  assert.equal(notStop.commands.filter((c) => c.type === "play" && c.source === "announcer").length, 2, "restored brief should replay on tick");
+  assert.ok(notStop.sentAudioTags.includes(200), "gap frame 200 must reach model unsuppressed before restored brief plays");
+  notStop.emitAck(nsSeq1);
+});

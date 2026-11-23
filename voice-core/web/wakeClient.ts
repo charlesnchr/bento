@@ -370,7 +370,6 @@ export class WakeAudioGate {
     if (source === "announcer") {
       const briefAt = this.readyBriefs.shift() ?? eventTime;
       this.activeBrief = { from: eventTime, until: this.speechUntil, briefAt };
-      this.lastCut = null;
       this.lastStoppedBriefAt = null;
     }
   }
@@ -386,11 +385,12 @@ export class WakeAudioGate {
       // Match call.ts cutAnnouncement() and hushReply(): a brief hushed, >= 80% played,
       // or past deliverMax is not re-queued.
       const played = (eventTime - a.from) / Math.max(0.1, a.until - a.from);
-      if (!hushed && played < 0.8 && eventTime - a.briefAt < this.deliverMax) {
+      if (hushed) {
+        this.lastStoppedBriefAt = a.briefAt;
+        this.lastCut = null;
+      } else if (played < 0.8 && eventTime - a.briefAt < this.deliverMax) {
         this.readyBriefs.push(a.briefAt);
         this.lastCut = { at: eventTime, briefAt: a.briefAt };
-      } else {
-        this.lastCut = null;
       }
       return;
     }
@@ -401,6 +401,8 @@ export class WakeAudioGate {
         this.readyBriefs.splice(idx, 1);
         this.lastStoppedBriefAt = this.lastCut.briefAt;
       }
+      this.lastCut = null;
+    } else if (hushed) {
       this.lastCut = null;
     }
   }
@@ -422,9 +424,20 @@ export class WakeAudioGate {
         this.onFlush(eventTime, hushed);
       } else if (c.type === "brief" && typeof c.id === "string") {
         this.onBriefRequest(c.id, eventTime);
-      } else if (c.type === "log" && c.message === "not a stop after all" && this.lastStoppedBriefAt != null) {
+      } else if (
+        c.type === "log" &&
+        typeof c.message === "string" &&
+        c.message.startsWith("not a stop after all") &&
+        this.lastStoppedBriefAt != null
+      ) {
         this.readyBriefs.push(this.lastStoppedBriefAt);
         this.lastStoppedBriefAt = null;
+      }
+    }
+    // call.ts only expires pending brief requests inside announce() on tick or brief.ready.
+    if (eventType === "tick" || eventType === "brief.ready") {
+      for (const [id, askedAt] of this.requestedBriefs) {
+        if (eventTime - askedAt >= this.briefWait) this.requestedBriefs.delete(id);
       }
     }
   }
@@ -438,12 +451,11 @@ export class WakeAudioGate {
     eventTime = 0,
   ): { pcm: string; t: number }[] {
     let acceptedBrief = false;
-    if (event.type === "brief.ready" && typeof event.id === "string") {
-      const askedAt = this.requestedBriefs.get(event.id);
-      if (askedAt !== undefined) {
-        this.requestedBriefs.delete(event.id);
+    if (event.type === "brief.failed" && typeof event.id === "string") {
+      this.requestedBriefs.delete(event.id);
+    } else if (event.type === "brief.ready" && typeof event.id === "string") {
+      if (this.requestedBriefs.delete(event.id)) {
         const valid =
-          eventTime - askedAt < this.briefWait &&
           validBriefPcmBytes(event.pcm) > 0 &&
           typeof event.text === "string" &&
           event.text.trim().length > 0;
