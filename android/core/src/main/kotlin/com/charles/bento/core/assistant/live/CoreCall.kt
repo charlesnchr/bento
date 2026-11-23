@@ -33,6 +33,7 @@ import java.util.Base64
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 
 /**
  * A voice call run by the shared voice core (`voice-core/`, [VoiceCore]): the same call logic the
@@ -499,9 +500,11 @@ class CoreCall(
             }
             toolJobs[run] = work
             jobs[run] = scope.launch {
+                val waiter = coroutineContext[Job]
                 val result = try {
                     outcome.await()
                 } catch (e: CancellationException) {
+                    if (waiter != null) jobs.remove(run, waiter)
                     throw e
                 } finally {
                     toolJobs.remove(run, work)

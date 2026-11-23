@@ -95,16 +95,61 @@ class VoiceCallDecoupleTest {
     }
 
     @Test fun endChatPreservesDetachedVoiceTasksAndDropsChatTasks() {
-        val detached = TaskUi(id = "call-1-1", request = "Voice task", status = "running", detached = true)
+        val detachedActive = TaskUi(id = "call-1-1", request = "Voice task", status = "running", detached = true)
+        val detachedDone = TaskUi(id = "call-1-2", request = "Finished voice task", status = "completed", detached = true)
         val chatOwned = TaskUi(id = "chat-1-1", request = "Typed task", status = "running", detached = false)
         val streamingGemini = ChatMessage("g1", "assistant", "Thinking...", speaker = AssistantController.GEMINI, streaming = true, call = true)
-        val before = AssistantUi(thinking = true, tasks = listOf(detached, chatOwned), messages = listOf(streamingGemini))
+        val before = AssistantUi(thinking = true, tasks = listOf(detachedActive, detachedDone, chatOwned), messages = listOf(streamingGemini))
 
         val after = AssistantController.endChatState(before)
 
         assertFalse(after.thinking)
-        assertEquals(listOf(detached), after.tasks)
+        assertEquals(listOf(detachedActive), after.tasks, "only active detached voice tasks survive chat teardown")
         assertFalse(after.messages.single().streaming)
+    }
+
+    @Test fun endCallDropsPreviouslyFinishedDetachedTasksWhileKeepingActiveOnes() {
+        val oldActive = TaskUi(id = "call-1-1", request = "Still running", status = "running", detached = true)
+        val oldDone = TaskUi(id = "call-1-2", request = "Old done", status = "completed", detached = true)
+        val newActive = TaskUi(id = "call-2-1", request = "New running", status = "running")
+        val before = AssistantUi(tasks = listOf(oldActive, oldDone), call = activeCall.copy(tasks = listOf(newActive)))
+
+        val after = AssistantController.endCallState(before, error = null)
+
+        assertEquals(listOf("call-1-1", "call-2-1"), after.tasks.map { it.id })
+        assertTrue(after.tasks.all { it.detached && it.active })
+    }
+
+    @Test fun taskBoardRemembersSessionAcrossHangUpForLateDispatchedFollowUps() {
+        var state = AssistantUi(call = activeCall)
+        val board = TaskBoard(
+            spoken = true,
+            prefix = "call-1",
+            epoch = 0L,
+            state = { state },
+            updateState = { f -> state = f(state) },
+        )
+        val uiId = board.uiId("1")
+        board.update { it + TaskUi(uiId, "Book table", "Table", status = "completed", sessionId = "sid-original") }
+        board.setSessionId(uiId, "sid-original")
+
+        // Hang up drops completed rows from UI, but the board retains session identity for a dispatched follow-up.
+        board.detach()
+        state = AssistantController.endCallState(state, error = null)
+        assertNull(board.find(uiId))
+        assertEquals("sid-original", board.sessionId(uiId))
+    }
+
+    @Test fun activeTaskForSessionMatchesRunningCallOrDetachedTasksOnly() {
+        val runningDetached = TaskUi(id = "call-1-1", request = "Deep search", status = "running", sessionId = "sid-run", detached = true)
+        val completedDetached = TaskUi(id = "call-1-2", request = "Weather", status = "completed", sessionId = "sid-done", detached = true)
+        val runningInCall = TaskUi(id = "call-2-1", request = "Email", status = "waiting", sessionId = "sid-call")
+        val ui = AssistantUi(tasks = listOf(runningDetached, completedDetached), call = activeCall.copy(tasks = listOf(runningInCall)))
+
+        assertEquals(runningDetached, AssistantController.activeTaskForSession(ui, "sid-run"))
+        assertEquals(runningInCall, AssistantController.activeTaskForSession(ui, "sid-call"))
+        assertNull(AssistantController.activeTaskForSession(ui, "sid-done"))
+        assertNull(AssistantController.activeTaskForSession(ui, "sid-other"))
     }
 
     @Test fun taskBoardDetachesCallReferenceAndRoutesLateUpdatesToChatTasks() {

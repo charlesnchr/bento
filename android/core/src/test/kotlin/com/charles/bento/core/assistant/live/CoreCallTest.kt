@@ -633,4 +633,50 @@ class CoreCallTest {
             http.connectionPool.evictAll()
         }
     }
+
+    @Test fun aFailedTaskWithToolScopeIsToldAsOne() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val call = call(listOf(transport), toolScope = toolScope, onTool = { throw IOException("Hermes is unreachable") })
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "Book the dentist.")
+            transport.push(Live.call("c1"))
+            transport.awaitSent { s -> s.any { "Task failed." in it && "Hermes is unreachable" in it } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun cancellingToolScopeStopsInFlightTaskWithoutCrashingTheCall() = blocking {
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val asked = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = call(
+            listOf(transport), toolScope = serverScope,
+            onTool = {
+                asked.complete(Unit)
+                try {
+                    CompletableDeferred<ToolReply>().await()
+                } catch (e: CancellationException) {
+                    cancelled.complete(Unit)
+                    throw e
+                }
+            },
+        )
+        call.start()
+        call.awaitStatus(AssistantCall.Status.Listening)
+        Live.turn(transport, "Book the dentist.")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { asked.await() }
+
+        // Simulates leaveServer(): cancelling the server-owned scope cancels the Hermes task immediately.
+        serverScope.cancel()
+        withTimeout(5_000) { cancelled.await() }
+        call.stop()
+        assertNull(call.ended().message)
+    }
 }

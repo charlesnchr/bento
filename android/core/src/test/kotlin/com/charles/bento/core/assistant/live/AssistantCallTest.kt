@@ -4759,6 +4759,27 @@ class AssistantCallTest {
             toolScope.cancel()
         }
     }
+
+    @Test fun aFailedTaskWithToolScopeIsToldAsOne() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val call = AssistantCall(
+                transport, FakeAudio(), null,
+                onTool = { throw IOException("Hermes is unreachable") },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            transport.awaitSent { s -> s.any { "Task failed." in it && "Hermes is unreachable" in it } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
 }
 
 /**

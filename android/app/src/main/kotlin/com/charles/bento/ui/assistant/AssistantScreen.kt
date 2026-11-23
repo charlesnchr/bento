@@ -161,8 +161,9 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
         }
     }
 
-    // The tasks on screen: the call's while one is on, otherwise the chat's.
-    val tasks = state.call?.tasks ?: state.tasks
+    // Active tasks on screen: the call's while one is on, plus any detached tasks still running from an earlier call.
+    val allTasks = state.call?.tasks.orEmpty() + state.tasks
+    val detachedDuringCall = if (state.call != null) state.tasks.filter { it.detached && it.active } else emptyList()
     Column(modifier.fillMaxSize().imePadding()) {
         TopAppBar(
             title = {
@@ -188,27 +189,37 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
                 else -> Messages(state.sessionId, state.messages, state.caption, state.working || state.thinking,
                                  workingLabel = if (state.working) "Hermes is working…" else "Gemini is thinking…",
                                  savedScroll = { graph.prefs.hermesScroll.value }, saveScroll = { graph.prefs.hermesScroll.value = it }, onAnswer = assistant::answer,
-                                 onOpen = { m -> m.link?.let { link -> tasks.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
+                                 onOpen = { m -> m.link?.let { link -> allTasks.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }
         // A running call always keeps its bar (and its End button), whatever happens to the setup.
         val c = state.call
-        if (c != null) CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onEnd = { assistant.endCall() },
-                               onOpenTask = { shownTask = it })
-        else if (configured) {
+        if (c != null) {
+            if (detachedDuringCall.isNotEmpty()) ChatTasks(detachedDuringCall, onOpenTask = { shownTask = it })
+            CallBar(c, onMute = { assistant.setMuted(!c.muted) }, onWake = assistant::wakeCall, onEnd = { assistant.endCall() },
+                    onOpenTask = { shownTask = it })
+        } else if (configured) {
             if (state.tasks.isNotEmpty()) ChatTasks(state.tasks, onOpenTask = { shownTask = it })
             ModelPicker(assistant)
             Composer(state.working, stoppable = state.thinking, onSend = assistant::send, onStop = assistant::stop, onCall = ::call)
         }
     }
 
-    if (showHistory) HistorySheet(assistant, state.sessionId, onDismiss = { showHistory = false })
-    val task = tasks.firstOrNull { it.id == shownTask }
+    if (showHistory) HistorySheet(
+        assistant, state.sessionId,
+        onOpenSession = { id ->
+            val live = assistant.activeTaskForSession(id)
+            if (live != null) shownTask = live.id else assistant.open(id)
+        },
+        onDismiss = { showHistory = false },
+    )
+    val task = allTasks.firstOrNull { it.id == shownTask }
     if (task != null) TaskSheet(task, onAnswer = assistant::answer, onCancel = { assistant.cancelTask(task.id) }, onDismiss = { shownTask = null })
     val peek by assistant.peek.collectAsStateWithLifecycle()
     peek?.let { p ->
-        PeekSheet(p, canOpen = state.call == null && !state.busy, onOpen = { assistant.closePeek(); assistant.open(p.sessionId) },
+        val live = assistant.activeTaskForSession(p.sessionId)
+        PeekSheet(p, canOpen = state.call == null && !state.busy && live == null, onOpen = { assistant.closePeek(); assistant.open(p.sessionId) },
                   onDismiss = assistant::closePeek)
     }
 }
@@ -784,7 +795,7 @@ private fun TaskSheet(task: TaskUi, onAnswer: (String, String) -> Unit, onCancel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistorySheet(assistant: AssistantController, current: String?, onDismiss: () -> Unit) {
+private fun HistorySheet(assistant: AssistantController, current: String?, onOpenSession: (String) -> Unit, onDismiss: () -> Unit) {
     val history by assistant.history.collectAsStateWithLifecycle()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
@@ -799,7 +810,7 @@ private fun HistorySheet(assistant: AssistantController, current: String?, onDis
                      modifier = Modifier.padding(24.dp))
             }
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
-                items(history.items, key = { it.id }) { s -> HistoryRow(s, s.id == current, onOpen = { assistant.open(s.id); onDismiss() }, onDelete = { assistant.delete(s.id) }) }
+                items(history.items, key = { it.id }) { s -> HistoryRow(s, s.id == current, onOpen = { onOpenSession(s.id); onDismiss() }, onDelete = { assistant.delete(s.id) }) }
             }
         }
     }
