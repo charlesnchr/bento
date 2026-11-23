@@ -1578,6 +1578,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Please don't accidentally cancel the Noma booking",
     "Do not under any circumstances cancel the Noma booking",
     "I don't want you to cancel the Noma table",
+    "I don't want you to prematurely cancel the Noma table",
     "I don't want it to stop",
     "I don't want that to stop",
     "Do not let it stop",
@@ -1588,6 +1589,15 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "I don't think you should cancel the Noma table",
     "I don't need you to cancel the Noma table",
     "Don't have them cancel the Noma table",
+    "Don't have your assistant cancel the Noma table",
+    "Don't have it cancel the Noma table",
+    "Don't have it stop",
+    "Do not have that stop",
+    "Don't have Sam cancel the Noma table",
+    "Don't have the Noma table task stop",
+    "I'm not going to have you cancel the Noma table",
+    "I don't like it when you cancel the Noma table",
+    "I don't know if you should cancel the Noma table",
     "Don't bother to cancel the Noma table",
     "I'm not ready to cancel the Noma table",
     "Don't worry don't cancel the Noma table",
@@ -1663,6 +1673,29 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10c.calls("ask_hermes", { continue_task: "Revision" });
   s10c.advance(0.1);
   assert.equal(s10c.hermes().length, 0, "user's words naming detached label 'Email' must refuse continue_task('Revision')");
+
+  // 8d) Scored matching prefers stronger detached match ("Alchemist table") over a more recent weaker match ("Noma table"), and asks for clarification on ties.
+  const s10d = chat();
+  s10d.push({ type: "note", id: "call-1-3", label: "Alchemist table", text: "Alchemist can seat four.", active: false, request: "Book at Alchemist" });
+  s10d.push({ type: "note", id: "call-1-4", label: "Noma table", text: "Noma has a waitlist.", active: false, request: "Book at Noma" });
+  s10d.advance(0.1);
+  s10d.type("For the Alchemist table, yes, make it Friday");
+  s10d.calls("ask_hermes", { continue_task: "Revision" });
+  s10d.advance(0.1);
+  assert.equal(s10d.hermes().length, 0, "stronger detached match must refuse instead of starting a fresh run");
+  const resp10d: string = s10d.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10d.includes('"Alchemist table"') && !resp10d.includes('"Noma table"'), `expected redirect to Alchemist table, got: ${resp10d}`);
+
+  const s10e = chat();
+  s10e.push({ type: "note", id: "call-1-3", label: "Alchemist table", text: "Alchemist can seat four.", active: false, request: "Book at Alchemist" });
+  s10e.push({ type: "note", id: "call-1-4", label: "Noma table", text: "Noma has a waitlist.", active: false, request: "Book at Noma" });
+  s10e.advance(0.1);
+  s10e.type("For the table, yes, make it Friday");
+  s10e.calls("ask_hermes", { continue_task: "Revision" });
+  s10e.advance(0.1);
+  assert.equal(s10e.hermes().length, 0, "tied detached labels must refuse instead of starting a fresh run");
+  const resp10e: string = s10e.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10e.includes('"Alchemist table"') && resp10e.includes('"Noma table"'), `expected clarification naming both detached tasks, got: ${resp10e}`);
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [

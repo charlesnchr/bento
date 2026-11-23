@@ -1493,22 +1493,20 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val reqWords = TaskNames.distinctive(request.task)
-                        val extByLabel = externalTasks.values.lastOrNull { (label, _) ->
-                            val lw = TaskNames.distinctive(label)
-                            lw.isNotEmpty() && lw.any { it in reqWords }
-                        }
-                        if (extByLabel != null) {
-                            target = Target.External(extByLabel.first)
+                        val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
+                        val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
+                        if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
+                            target = byUser
                         } else {
-                            val userWords = reqWords.filterNot { it in CONFLICT_VERBS }
-                            val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
-                            if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
-                                target = byUser
+                            val byUserLabel = findTarget(request.task, byRequest = false)
+                            if (byUserLabel is Target.External || (byUserLabel is Target.Ambiguous && byUserLabel.external.isNotEmpty())) {
+                                target = byUserLabel
                             } else if (byDetail is Target.Owned) {
-                                val extConflicts = externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
-                                val matchedExt = extConflicts.lastOrNull()
-                                if (matchedExt != null) target = Target.External(matchedExt)
+                                val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
+                                when {
+                                    extConflicts.size == 1 -> target = Target.External(extConflicts.single())
+                                    extConflicts.size > 1 -> target = Target.Ambiguous(listOf(byDetail.task), extConflicts)
+                                }
                             }
                         }
                     }
@@ -1520,12 +1518,16 @@ class AssistantCall(
                 }
                 if (target is Target.Ambiguous) {
                     val ownedNames = target.owned.joinToString(", ") { "\"${it.label}\"" }
-                    val msg = if (target.external.isNotEmpty()) {
-                        val extNames = target.external.joinToString(", ") { "\"$it\"" }
-                        "Not executed: \"$named\" is ambiguous because both this call ($ownedNames) and an earlier call ($extNames) have a matching task. " +
-                            "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply in chat and tap Continue it. No action was run."
-                    } else {
-                        "Not executed: \"$named\" could mean more than one task in this call ($ownedNames). Ask the user which one they mean, then call ask_hermes with that task's exact name as continue_task. No action was run."
+                    val extNames = target.external.joinToString(", ") { "\"$it\"" }
+                    val msg = when {
+                        target.external.isNotEmpty() && target.owned.isNotEmpty() ->
+                            "Not executed: \"$named\" is ambiguous because both this call ($ownedNames) and an earlier call ($extNames) have a matching task. " +
+                                "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply in chat and tap Continue it. No action was run."
+                        target.external.isNotEmpty() ->
+                            "Not executed: \"$named\" could mean more than one task from an earlier call ($extNames). " +
+                                "Ask the user which one they mean, and tell them to open its reply in chat and tap Continue it. No action was run."
+                        else ->
+                            "Not executed: \"$named\" could mean more than one task in this call ($ownedNames). Ask the user which one they mean, then call ask_hermes with that task's exact name as continue_task. No action was run."
                     }
                     respond(d.id, msg, executed = false)
                     return@launch
@@ -1974,11 +1976,14 @@ class AssistantCall(
                         target is Target.External -> "Not executed: \"${target.label}\" ran in an earlier call, so cancel_task cannot cancel it here. Nothing was cancelled."
                         target is Target.Ambiguous -> {
                             val ownedNames = target.owned.joinToString(", ") { "\"${it.label}\"" }
-                            if (target.external.isNotEmpty()) {
-                                val extNames = target.external.joinToString(", ") { "\"$it\"" }
-                                "Not executed: \"$ref\" matches both this call ($ownedNames) and an earlier call ($extNames). Nothing was cancelled. Ask the user to clarify, or tap Cancel on the detached task's card."
-                            } else {
-                                "Not executed: \"$ref\" could mean more than one task in this call ($ownedNames). Nothing was cancelled. Ask the user which one they mean."
+                            val extNames = target.external.joinToString(", ") { "\"$it\"" }
+                            when {
+                                target.external.isNotEmpty() && target.owned.isNotEmpty() ->
+                                    "Not executed: \"$ref\" matches both this call ($ownedNames) and an earlier call ($extNames). Nothing was cancelled. Ask the user to clarify, or tap Cancel on the detached task's card."
+                                target.external.isNotEmpty() ->
+                                    "Not executed: \"$ref\" matches tasks from an earlier call ($extNames), which cancel_task cannot cancel here. Nothing was cancelled. Ask the user to tap Cancel on the detached task's card."
+                                else ->
+                                    "Not executed: \"$ref\" could mean more than one task in this call ($ownedNames). Nothing was cancelled. Ask the user which one they mean."
                             }
                         }
                         target is Target.Owned -> {

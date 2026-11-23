@@ -74,15 +74,19 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Matches each negation opener; `isDontCancel` inspects every occurrence independently so "Don't worry don't cancel" catches the second negation while skipping non-prohibiting lead-in idioms ("don't worry/care/know", "don't really need it", "don't have to wait", "not going to need it") and preserving prohibitions ("I don't want it to stop", "Do not let it stop", "I don't think you should cancel", "Don't have them cancel"). */
+/** Matches each negation opener; `isDontCancel` inspects every occurrence independently and fails closed, skipping only explicit affirmative lead-ins before the cancel verb. */
 const NEG_OPENER = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\b/gi;
-const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,4}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,6}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
 const LEAD_ADV = /^(?:really|even|actually|quite)$/;
-const DIRECT_IDIOM_VERB = /^(?:mind|wait|worry|forget|hesitate|care|know|like)$/;
-const MODAL_LEAD_VERB = /^(?:want|need|think|bother)$/;
-const HAVE_AGENT = /^(?:them|him|her|us|me|anyone|someone|anybody|somebody|people|hermes|the\s+\w+)$/;
-const NOT_STATE_FIRST = /^(?:needed|finished|done|ready|working|responding|loading|happening|moving|sure|that|this)$/;
-const GOVERNS_CANCEL = /(?:^|\s)(?:to|should)(?:\s+(?:accidentally|actually|really|ever|just|simply|still|yet|now|even|immediately|automatically))?$/;
+const DIRECT_IDIOM_VERB = /^(?:mind|wait|worry|forget|hesitate)$/;
+const LEAD_FILLER = /^(?:(?:anymore|anyway|whatever|really|just|so|then)\s*)*$/;
+const OBJECT_DISMISS = /^(?:it|that|this|them)(?:\s+(?:anymore|now|either|just|so|then))*$/;
+const WAIT_DISMISS = /^to\s+wait(?:\s+(?:anymore|just|so|then))*$/;
+const HAVE_IDIOM = /^(?:to\s+wait|time|all\s+day)(?:\s+(?:anymore|just|so|then))*$/;
+const NOT_STATE = /^(?:needed|finished|done|ready|working|responding|loading|happening|moving)$/;
+const NOT_STATE_TAIL = /^(?:(?:anymore|now|yet|just|so|then)\s*)*$/;
+const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
+const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
 function isDontCancel(clause: string): boolean {
   NEG_OPENER.lastIndex = 0;
@@ -96,10 +100,18 @@ function isDontCancel(clause: string): boolean {
     const verb = words[start] ?? "";
     const tail = words.slice(start + 1).join(" ");
     const full = words.join(" ");
+    if (open[2] != null) {
+      if (NOT_STATE.test(verb) && NOT_STATE_TAIL.test(tail)) continue;
+      if (NOT_THAT_ONE.test(full) || NOT_GOING_OTHER.test(full)) continue;
+      return true;
+    }
     if (DIRECT_IDIOM_VERB.test(verb)) continue;
-    if (MODAL_LEAD_VERB.test(verb) && !GOVERNS_CANCEL.test(tail)) continue;
-    if (verb === "have" && !GOVERNS_CANCEL.test(tail) && !HAVE_AGENT.test(tail)) continue;
-    if (open[2] != null && ((NOT_STATE_FIRST.test(verb) && !GOVERNS_CANCEL.test(tail)) || (words.length > 2 && !GOVERNS_CANCEL.test(full)))) continue;
+    if ((verb === "care" || verb === "know") && LEAD_FILLER.test(tail)) continue;
+    if (verb === "like" && OBJECT_DISMISS.test(tail)) continue;
+    if ((verb === "want" || verb === "need") && (OBJECT_DISMISS.test(tail) || WAIT_DISMISS.test(tail))) continue;
+    if (verb === "bother" && /^(?:waiting(?:\s+(?:anymore|just|so|then))*|(?:just|so|then)?)$/.test(tail)) continue;
+    if (verb === "think" && /^so(?:\s+(?:just|so|then))*$/.test(tail)) continue;
+    if (verb === "have" && HAVE_IDIOM.test(tail)) continue;
     return true;
   }
   return false;
@@ -2027,18 +2039,21 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Check unfiltered user words against detached labels, then verb-filtered user words against detached requests/summaries, before starting a fresh run.
-        const extByLabel = [...this.externalTasks].reverse().find((e) => TaskNames.mentions(request.task, e.label, ""));
-        if (extByLabel != null) {
-          target = { kind: "external", task: extByLabel };
+        // Check scored verb-filtered user words across labels/requests/summaries first, then scored unfiltered labels as fallback, asking for clarification on ties.
+        const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+        const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
+        if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
+          target = byUser;
         } else {
-          const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
-          const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
-          if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
-            target = byUser;
+          const byUserLabel = this.findTarget(request.task, false);
+          if (byUserLabel != null && (byUserLabel.kind === "external" || (byUserLabel.kind === "ambiguous" && byUserLabel.external.length > 0))) {
+            target = byUserLabel;
           } else if (byDetail?.kind === "owned") {
-            const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)];
-            if (extConflicts.length > 0) target = { kind: "external", task: extConflicts[extConflicts.length - 1] };
+            const seen = new Set<string>();
+            const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
+              .filter((e) => !seen.has(e.key) && (seen.add(e.key), true));
+            if (extConflicts.length === 1) target = { kind: "external", task: extConflicts[0] };
+            else if (extConflicts.length > 1) target = { kind: "ambiguous", owned: [byDetail.task], external: extConflicts };
           }
         }
       }
@@ -2054,10 +2069,13 @@ export class Call {
     }
     if (target?.kind === "ambiguous") {
       const ownedNames = target.owned.map((t) => `"${t.label}"`).join(", ");
-      if (target.external.length > 0) {
-        const extNames = target.external.map((e) => `"${e.label}"`).join(", ");
+      const extNames = target.external.map((e) => `"${e.label}"`).join(", ");
+      if (target.external.length > 0 && target.owned.length > 0) {
         this.respond(d.id, `Not executed: "${named}" is ambiguous because both ${where} (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
           `Ask the user which one they mean: to continue the task from an earlier call, tell them to open ${whereReply} and tap Continue it. No action was run.`, false);
+      } else if (target.external.length > 0) {
+        this.respond(d.id, `Not executed: "${named}" could mean more than one task from an earlier call (${extNames}). ` +
+          `Ask the user which one they mean, and tell them to open ${whereReply} and tap Continue it. No action was run.`, false);
       } else {
         this.respond(d.id, `Not executed: "${named}" could mean more than one task in ${where} (${ownedNames}). ` +
           "Ask the user which one they mean, then call ask_hermes with that task's exact name as continue_task. No action was run.", false);
@@ -2160,10 +2178,13 @@ export class Call {
       }
       if (labelTarget?.kind === "ambiguous") {
         const ownedNames = labelTarget.owned.map((t) => `"${t.label}"`).join(", ");
-        if (labelTarget.external.length > 0) {
-          const extNames = labelTarget.external.map((e) => `"${e.label}"`).join(", ");
+        const extNames = labelTarget.external.map((e) => `"${e.label}"`).join(", ");
+        if (labelTarget.external.length > 0 && labelTarget.owned.length > 0) {
           this.respond(d.id, `Not executed: "${label}" is ambiguous because both ${where} (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
             `Ask the user which one they mean: to continue the task from an earlier call, tell them to open ${whereReply} and tap Continue it. No action was run.`, false);
+        } else if (labelTarget.external.length > 0) {
+          this.respond(d.id, `Not executed: "${label}" could mean more than one task from an earlier call (${extNames}). ` +
+            `Ask the user which one they mean, and tell them to open ${whereReply} and tap Continue it. No action was run.`, false);
         } else {
           this.respond(d.id, `Not executed: "${label}" could mean more than one task in ${where} (${ownedNames}). ` +
             "Ask the user which one they mean, then call ask_hermes with that task's exact name as continue_task. No action was run.", false);
@@ -2257,8 +2278,8 @@ export class Call {
       if (conflicts.length > 0) return { kind: "ambiguous", owned, external: conflicts };
       return { kind: "owned", task: owned[0] };
     }
-    if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
-    if (owned.length > 0 && (external.length > 0 || owned.length > 1)) return { kind: "ambiguous", owned, external };
+    if (owned.length === 0 && external.length === 1) return { kind: "external", task: external[0] };
+    if (owned.length + external.length > 1) return { kind: "ambiguous", owned, external };
     return null;
   }
 
@@ -2661,9 +2682,12 @@ export class Call {
       else if (target?.kind === "ambiguous") {
         const where = this.textLine ? "this chat" : "this call";
         const ownedNames = target.owned.map((t) => `"${t.label}"`).join(", ");
-        message = target.external.length > 0
-          ? `Not executed: "${ref}" matches both ${where} (${ownedNames}) and an earlier call (${target.external.map((e) => `"${e.label}"`).join(", ")}). Nothing was cancelled. Ask the user to clarify, or tap Cancel on the detached task's card.`
-          : `Not executed: "${ref}" could mean more than one task in ${where} (${ownedNames}). Nothing was cancelled. Ask the user which one they mean.`;
+        const extNames = target.external.map((e) => `"${e.label}"`).join(", ");
+        message = target.external.length > 0 && target.owned.length > 0
+          ? `Not executed: "${ref}" matches both ${where} (${ownedNames}) and an earlier call (${extNames}). Nothing was cancelled. Ask the user to clarify, or tap Cancel on the detached task's card.`
+          : target.external.length > 0
+            ? `Not executed: "${ref}" matches tasks from an earlier call (${extNames}), which cancel_task cannot cancel here. Nothing was cancelled. Ask the user to tap Cancel on the detached task's card.`
+            : `Not executed: "${ref}" could mean more than one task in ${where} (${ownedNames}). Nothing was cancelled. Ask the user which one they mean.`;
       } else if (target?.kind === "external") {
         message = `Not executed: "${target.task.label}" ran in an earlier call, so cancel_task cannot cancel it here. Nothing was cancelled.`;
       } else if (task == null) message = "Not executed: " + missing;

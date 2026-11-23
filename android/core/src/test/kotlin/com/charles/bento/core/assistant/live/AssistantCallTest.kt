@@ -4855,6 +4855,16 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 10 }
         assertEquals(1, asked.size, "user's words naming detached label 'Email' must refuse continue_task('Revision')")
         assertTrue(transport.responses()[9].message().startsWith("Not executed:"), transport.responses()[9].message())
+
+        // Stronger detached match ("Alchemist table") beats a more recent weaker match ("Geranium table"), and ties ask for clarification.
+        call.note("Alchemist table", "Alchemist can seat four.", inHistory = true, id = "call-1-3", active = false, request = "Book at Alchemist")
+        call.note("Geranium table", "Geranium has a waitlist.", inHistory = true, id = "call-1-4", active = false, request = "Book at Geranium")
+        Live.turn(transport, "For the Alchemist table, yes, make it Friday")
+        transport.push(Live.call("c6", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 11 }
+        assertEquals(1, asked.size, "stronger detached match must refuse instead of starting a fresh run")
+        val msg6 = transport.responses()[10].message()
+        assertTrue("\"Alchemist table\"" in msg6 && "\"Geranium table\"" !in msg6, msg6)
         call.stop()
     }
 }
