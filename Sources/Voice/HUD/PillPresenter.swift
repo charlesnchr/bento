@@ -28,7 +28,6 @@ final class PillPresenter {
     private let earcons = EarconPlayer.shared
     private var cancellables: Set<AnyCancellable> = []
 
-    private var previousState: DictationState = .idle
     private var sessionStartedAt: Date?
     private var elapsedTimer: Timer?
     private var slowTimer: Timer?
@@ -121,13 +120,47 @@ final class PillPresenter {
 
     // MARK: - State → HUD/earcons (frame-synced: sound fires on the same tick)
 
+    /// Pure state → earcon rule for dictation sessions.
+    ///
+    /// Recording cues `.start` once when a session begins; locking into
+    /// hands-free (`.recording(locked: true)`) is always silent so single-tap
+    /// hands-free, UI-started hands-free, and Dictate to Assistant never double-beep.
+    static func earcon(
+        for state: DictationState,
+        sessionDuration: TimeInterval? = nil,
+        assistantBusy: Bool = false
+    ) -> EarconPlayer.Earcon? {
+        switch state {
+        case .warming:
+            return .start
+        case .finalizing:
+            return .stop
+        case .cancelled:
+            return (sessionDuration ?? 0) > 0.5 ? .cancel : nil
+        case .failed:
+            return .error
+        case .done(.inserted), .done(.copiedToClipboard):
+            return assistantBusy ? nil : .success
+        case .idle, .recording, .transcribing, .inserting, .done:
+            return nil
+        }
+    }
+
     func transition(to state: DictationState) {
-        defer { previousState = state }
         dismissTask?.cancel()
 
         // Background notices deferred during a live session flush once it ends.
         if case .idle = state { flushPendingNotice() }
         if state.isTerminal { flushPendingNotice() }
+
+        if case .done = state {
+            // Outcome sounds wait for any live-correction sweep in handleOutcome(_:).
+        } else if let sound = Self.earcon(
+            for: state,
+            sessionDuration: sessionStartedAt.map { Date().timeIntervalSince($0) }
+        ) {
+            earcons.play(sound)
+        }
 
         switch state {
         case .idle:
@@ -139,21 +172,16 @@ final class PillPresenter {
             correctionDeferral = nil
             correctionHoldUntil = .distantPast
             sessionStartedAt = Date()
-            earcons.play(.start)
             hud.repositionToActiveScreen() // follow the dictation display (audit L14)
             setPill(.listening(locked: false))
             startElapsedTimer()
             onStatusItemState?(.listening)
 
         case .recording(let locked):
-            if case .recording(false) = previousState, locked {
-                earcons.play(.lock)
-            }
             setPill(.listening(locked: locked))
             onStatusItemState?(.listening)
 
         case .finalizing:
-            earcons.play(.stop)
             stopElapsedTimer()
             setPill(.processing)
             armSlowTimer()
@@ -186,16 +214,11 @@ final class PillPresenter {
             clearSlowTimer()
             stopElapsedTimer()
             onStatusItemState?(.idle)
-            // Short accidental taps stay silent; deliberate cancels get the soft damp.
-            if let startedAt = sessionStartedAt, Date().timeIntervalSince(startedAt) > 0.5 {
-                earcons.play(.cancel)
-            }
             setPill(.idleDot)
 
         case .failed(let failure):
             clearSlowTimer()
             stopElapsedTimer()
-            earcons.play(.error)
             // Key/permission problems persist beyond the toast — the menu bar
             // icon carries the attention state until resolved (audit L12).
             onStatusItemState?(failure == .auth || failure == .modelAccess ? .attention : .idle)
@@ -205,14 +228,15 @@ final class PillPresenter {
 
     private func handleOutcome(_ outcome: DictationOutcome) {
         if isAssistantBusy() { setPill(.processing); onStatusItemState?(.processing); return }
+        if let sound = Self.earcon(for: .done(outcome)) {
+            earcons.play(sound)
+        }
         switch outcome {
         case .inserted:
-            earcons.play(.success)
             let words = coordinator.lastResult.map { $0.split(separator: " ").count }
             setPill(.success(words: words))
             dismissAfter(0.7)
         case .copiedToClipboard:
-            earcons.play(.success)
             showNotice("Copied — press ⌘V to paste", for: 4.0, sound: nil)
         case .awaitingChip:
             showNotice("You switched apps — press ⌘V to paste", for: 5.0, sound: nil)
