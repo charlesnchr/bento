@@ -31,7 +31,7 @@ interface VoiceCall {
     fun progress(taskId: String, text: String)
     /** Cancels one running task; the call and the other tasks go on. */
     fun cancelTask(taskId: String)
-    /** Ends the call at once; running Hermes tasks are cancelled, not undone. */
+    /** Ends the call at once; dispatched Hermes tasks continue when run on an external tool scope. */
     fun stop(message: String? = null)
 }
 

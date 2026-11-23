@@ -4,6 +4,7 @@ import com.charles.bento.core.assistant.live.CallProtocol.Companion.str
 import com.charles.bento.core.voice.VoiceLog
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -108,7 +109,7 @@ class AssistantCall(
     transport: LiveTransport,
     private val audio: CallAudio,
     private val resume: CallSetup.Resume?,
-    /** Runs one task in Hermes and returns its reply; cancelled when the task or the call is. Called on the call's thread. */
+    /** Runs one task in Hermes and returns its reply; cancelled on explicit task cancellation, or when the call ends if [toolScope] is null. */
     private val onTool: suspend (HermesCall) -> String,
     private val ending: (LiveTransport) -> LiveSocketEnding = { LiveSocketEnding() },
     private val limits: Limits = Limits(),
@@ -128,6 +129,8 @@ class AssistantCall(
     private val opening: (() -> ByteArray?)? = null,
     /** Seconds without speech after which a call with nothing left to do hangs up (0 = never); read as the call goes. */
     private val hangUpAfter: () -> Double = { 0.0 },
+    /** Scope for dispatched Hermes tool runs so they outlive call hang-up; null cancels them with the call. */
+    private val toolScope: CoroutineScope? = null,
 ) : VoiceCall {
     data class Limits(
         val connect: Double = 25.0,
@@ -403,6 +406,8 @@ class AssistantCall(
         val queued = ArrayDeque<Run>()
         var runs = 1
         var job: Job? = null
+        /** Dispatched tool run in [toolScope]; cancelled only on explicit task cancellation, not call teardown. */
+        var toolJob: Job? = null
         var state = RUNNING
         var progress: String? = null
         var result: String? = null
@@ -1619,10 +1624,46 @@ class AssistantCall(
         task.state = RUNNING
         task.current = run
         task.progress = null
+        val request = run.request.copy(taskId = task.id, followUp = run.followUp, label = task.label)
+        val external = toolScope
+        val outcome: CompletableDeferred<Result<String>>?
+        val work: Job?
+        if (external != null) {
+            val runTool = onTool
+            val deferred = CompletableDeferred<Result<String>>()
+            outcome = deferred
+            work = external.launch {
+                val res = try {
+                    Result.success(runTool(request))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    deferred.cancel(e)
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                deferred.complete(res)
+            }
+            task.toolJob = work
+        } else {
+            outcome = null
+            work = null
+        }
         task.job = scope.launch {
-            val result = runCatching { onTool(run.request.copy(taskId = task.id, followUp = run.followUp, label = task.label)) }.getOrElse {
-                if (it is kotlinx.coroutines.CancellationException) throw it
-                "Task failed. No automatic retry. Completed actions were not undone. " + (it.message ?: "")
+            val result = if (outcome != null) {
+                try {
+                    outcome.await().getOrElse {
+                        "Task failed. No automatic retry. Completed actions were not undone. " + (it.message ?: "")
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } finally {
+                    if (task.toolJob === work) task.toolJob = null
+                }
+            } else {
+                runCatching { onTool(request) }.getOrElse {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    "Task failed. No automatic retry. Completed actions were not undone. " + (it.message ?: "")
+                }
             }
             if (!active || task.state != RUNNING || task.current !== run) return@launch
             task.result = result
@@ -1658,6 +1699,7 @@ class AssistantCall(
         task.state = state
         task.result = result
         task.job = null
+        task.toolJob = null
         questionsChanged()
     }
 
@@ -1684,6 +1726,8 @@ class AssistantCall(
             (if (queued > 0) " Its $queued follow-up${if (queued > 1) "s" else ""} waiting never ran." else "")
         val job = task.job
         job?.cancel()
+        task.toolJob?.cancel()
+        task.toolJob = null
         finished(task, CANCELLED, message)
         val runs = listOf(task.current) + task.queued
         task.queued.clear()
@@ -1887,7 +1931,7 @@ class AssistantCall(
 
     private fun fail(message: String) = stop(message)
 
-    /** Ends the call at once; running Hermes tasks are cancelled, not undone. */
+    /** Ends the call at once; dispatched Hermes tasks continue when run on [toolScope]. */
     override fun stop(message: String?) {
         scope.launch {
             if (!active) return@launch
@@ -1896,6 +1940,7 @@ class AssistantCall(
             captions?.stop()
             mic.close()
             socket.close()
+            for (task in tasks.values) task.toolJob = null
             _status.value = Status.Ended(message)
             scope.cancel()
         }

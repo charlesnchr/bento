@@ -597,7 +597,7 @@ private fun CallBar(c: CallUi, onMute: () -> Unit, onWake: () -> Unit, onEnd: ()
                         Icon(if (c.muted) Icons.Rounded.MicOff else Icons.Rounded.Mic, if (c.muted) "Unmute" else "Mute")
                     }
                 }
-                // Ends the call and every task still running; each task's sheet cancels it alone.
+                // Ends the call without cancelling dispatched Hermes tasks; each task's sheet cancels it alone.
                 FilledIconButton(onClick = onEnd, modifier = Modifier.size(56.dp).testTag("assistant-end-call"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) {
                     Icon(Icons.Rounded.CallEnd, "End call", tint = MaterialTheme.colorScheme.onError)

@@ -7,7 +7,12 @@ import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.json
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -4667,6 +4672,92 @@ class AssistantCallTest {
         assertEquals("Gemini rejected the API key. Check it in Settings → Dictation.", AssistantCall.endingMessage(LiveSocketEnding(httpStatus = 403), false))
         assertEquals("Gemini voice disconnected. No task was retried.", AssistantCall.endingMessage(LiveSocketEnding(closeCode = 1000), false))
         assertEquals("Gemini voice failed (HTTP 500, close 1011). No task was retried.", AssistantCall.endingMessage(LiveSocketEnding(500, 1011), false))
+    }
+
+    @Test fun hangingUpWithToolScopeLeavesDispatchedHermesTaskRunning() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio()
+            val asked = CompletableDeferred<HermesCall>()
+            val reply = CompletableDeferred<String>()
+            val cancelled = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<String>()
+            val call = AssistantCall(
+                transport, audio, null,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        reply.await().also { finished.complete(it) }
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            withTimeout(5_000) { asked.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+
+            call.stop()
+            assertNull(call.ended().message)
+            assertTrue(audio.stopped)
+            assertEquals(1, transport.closeCount)
+
+            val sentAtEnd = transport.sent.size
+            val cuesAtEnd = audio.cues.size
+            delay(200)
+            assertFalse(cancelled.isCompleted, "hanging up must not cancel a dispatched Hermes task")
+
+            reply.complete("Booked for 8pm.")
+            assertEquals("Booked for 8pm.", withTimeout(5_000) { finished.await() })
+            delay(150)
+            assertEquals(sentAtEnd, transport.sent.size)
+            assertEquals(cuesAtEnd, audio.cues.size)
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun explicitCancelStillCancelsHermesTaskWithToolScope() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val asked = CompletableDeferred<HermesCall>()
+            val cancelled = CompletableDeferred<Unit>()
+            val call = AssistantCall(
+                transport, FakeAudio(), null,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        CompletableDeferred<String>().await()
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            withTimeout(5_000) { asked.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+
+            call.cancelTask("1")
+            withTimeout(5_000) { cancelled.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
     }
 }
 

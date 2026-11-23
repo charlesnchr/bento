@@ -6,6 +6,7 @@ import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
 import com.charles.bento.core.voicecore.VoiceCore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -58,7 +59,7 @@ class CoreCall(
     /** A new socket to Gemini Live: the first, one for each rotation, and one after standby. */
     private val transport: () -> LiveTransport,
     private val audio: CallAudio,
-    /** Runs one task in Hermes and returns its reply; cancelled when the task or the call is. Called on the call's thread. */
+    /** Runs one task in Hermes and returns its reply; cancelled on explicit task cancellation, or when the call ends if [toolScope] is null. */
     private val onTool: suspend (HermesCall) -> ToolReply,
     private val ending: (LiveTransport) -> LiveSocketEnding = { LiveSocketEnding() },
     private val clock: () -> Double = { System.nanoTime() / 1e9 },
@@ -72,6 +73,11 @@ class CoreCall(
     /** How often the core's timers get to run. */
     private val tickMillis: Long = 100,
     captionLinger: Double = 4.0,
+    /**
+     * Scope for dispatched Hermes tool runs. When set, tool runs outlive call hang-up/teardown and
+     * are cancelled only on explicit task cancellation (`tool.cancel` with `reason: "cancelled"`).
+     */
+    private val toolScope: CoroutineScope? = null,
 ) : VoiceCall {
     private val executor = Executors.newSingleThreadExecutor { run -> Thread(run, "bento-call").apply { isDaemon = true } }
     private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
@@ -114,6 +120,8 @@ class CoreCall(
 
     private val sockets = HashMap<Int, Sock>()
     private val jobs = HashMap<String, Job>()
+    /** Dispatched tool runs executing in [toolScope]; cancelled only on explicit task cancellation, not call teardown. */
+    private val toolJobs = HashMap<String, Job>()
     /** Microphone frames, each with the [lends] count it was captured under; when it's full the oldest goes ([offer]). */
     private val mic = Channel<Pair<Int, ByteArray>>(AssistantCall.MIC_FRAMES)
     private var micJob: Job? = null
@@ -265,7 +273,11 @@ class CoreCall(
                 "flush" -> audio.flush()
                 "cue" -> audio.cue(if (c.str("earcon") == "taskStarted") Earcon.TaskStarted else Earcon.ResultArrived)
                 "tool.call" -> tool(c)
-                "tool.cancel" -> jobs.remove(c.str("run"))?.cancel()
+                "tool.cancel" -> {
+                    val run = c.str("run")
+                    jobs.remove(run)?.cancel()
+                    if (c.str("reason") == "cancelled") toolJobs.remove(run)?.cancel() else toolJobs.remove(run)
+                }
                 // The phone can't add to a Hermes run that's underway: the core queues the follow-up instead.
                 "tool.steer" -> push(event("tool.steerFailed") { put("run", c.str("run").orEmpty()); put("text", c.str("text").orEmpty()) })
                 // The phone makes no spoken headlines of its own: Gemini tells the result.
@@ -309,7 +321,7 @@ class CoreCall(
         else onTranscript?.invoke(role, text)
     }
 
-    /** The call is over: the audio, the sockets and the tasks stop, and the app is told. */
+    /** The call is over: the audio and sockets stop, call-scoped waiters stop, and the app is told. */
     private fun finish(message: String?) {
         if (ended) return
         ended = true
@@ -320,6 +332,8 @@ class CoreCall(
         sockets.clear()
         for (job in jobs.values) job.cancel()
         jobs.clear()
+        // Dispatched runs in toolScope outlive the call: drop references without cancelling them.
+        toolJobs.clear()
         queue.clear()
         _status.value = AssistantCall.Status.Ended(message)
     }
@@ -467,16 +481,50 @@ class CoreCall(
             id = run, task = c.str("request").orEmpty(), context = "", taskId = c.str("taskId").orEmpty(),
             followUp = (c["followUp"] as? JsonPrimitive)?.booleanOrNull == true, label = c.str("label").orEmpty(), message = c.str("message"),
         )
-        jobs[run] = scope.launch {
-            val reply = try {
-                onTool(request)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (jobs.remove(run) != null) push(event("tool.error") { put("run", run); put("message", e.message.orEmpty()) })
-                return@launch
+        val external = toolScope
+        if (external != null) {
+            // Hoist onTool so the decoupled coroutine does not retain this CoreCall after teardown.
+            val runTool = onTool
+            val outcome = CompletableDeferred<Result<ToolReply>>()
+            val work = external.launch {
+                val result = try {
+                    Result.success(runTool(request))
+                } catch (e: CancellationException) {
+                    outcome.cancel(e)
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                outcome.complete(result)
             }
-            if (jobs.remove(run) != null) push(event("tool.result") { put("run", run); put("text", reply.text); if (reply.failed) put("failed", true) })
+            toolJobs[run] = work
+            jobs[run] = scope.launch {
+                val result = try {
+                    outcome.await()
+                } catch (e: CancellationException) {
+                    throw e
+                } finally {
+                    toolJobs.remove(run, work)
+                }
+                if (jobs.remove(run) != null) {
+                    result.fold(
+                        onSuccess = { reply -> push(event("tool.result") { put("run", run); put("text", reply.text); if (reply.failed) put("failed", true) }) },
+                        onFailure = { e -> push(event("tool.error") { put("run", run); put("message", e.message.orEmpty()) }) },
+                    )
+                }
+            }
+        } else {
+            jobs[run] = scope.launch {
+                val reply = try {
+                    onTool(request)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (jobs.remove(run) != null) push(event("tool.error") { put("run", run); put("message", e.message.orEmpty()) })
+                    return@launch
+                }
+                if (jobs.remove(run) != null) push(event("tool.result") { put("run", run); put("text", reply.text); if (reply.failed) put("failed", true) })
+            }
         }
     }
 
