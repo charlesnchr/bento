@@ -1,7 +1,8 @@
-// Main-thread controller for the wake word Web Worker.
+// Main-thread controller for the wake word Web Worker and Screen Wake Lock helper.
 // Tags every load and reset with a monotonic generation (`gen`) so stale detections or ready events
 // after a model switch or reset are ignored, and keeps a short ring buffer of recent fed chunks
-// indexed by `seq` so audio captured while the worker was scoring is preserved in `hit.trailing`.
+// indexed by `seq` (with per-frame `suppressed` flags) so audio captured while the worker was
+// scoring is preserved in `hit.trailing` without duplicating unsuppressed frames.
 
 export interface WakeTelemetry {
   score: number;
@@ -12,11 +13,17 @@ export interface WakeTelemetry {
   inferMs: number;
 }
 
+export interface WakeTrailingChunk {
+  bytes: Uint8Array;
+  /** True when the core suppressed (silenced) this frame during audible playback (`whileSpeaking !== "send"`). */
+  suppressed: boolean;
+}
+
 export interface WakeDetectionEvent {
   score: number;
   atFrame: number;
   /** Audio chunks spoken after the wake word: the triggering chunk's tail plus any chunks already sent after it. */
-  trailing: Uint8Array[];
+  trailing: WakeTrailingChunk[];
   inferMs: number;
 }
 
@@ -46,7 +53,7 @@ export class WakeClient {
   private currentThreshold = 0.7;
   private gen = 0;
   private seq = 0;
-  private recent: { seq: number; bytes: Uint8Array }[] = [];
+  private recent: { seq: number; bytes: Uint8Array; suppressed: boolean }[] = [];
   private recentBytes = 0;
   ready = false;
 
@@ -75,12 +82,15 @@ export class WakeClient {
         this.ready = true;
         this.callbacks.onReady?.(m.modelId, m.warmupMs);
       } else if (m.type === "detected") {
-        const trailing: Uint8Array[] = [];
+        const trailing: WakeTrailingChunk[] = [];
         const rest = new Uint8Array(m.restBytes as ArrayBuffer);
-        if (rest.byteLength > 0) trailing.push(rest);
         const hitSeq = typeof m.seq === "number" ? m.seq : Number.MAX_SAFE_INTEGER;
+        const hitItem = this.recent.find((item) => item.seq === hitSeq);
+        if (rest.byteLength > 0) {
+          trailing.push({ bytes: rest, suppressed: hitItem?.suppressed ?? false });
+        }
         for (const item of this.recent) {
-          if (item.seq > hitSeq) trailing.push(item.bytes);
+          if (item.seq > hitSeq) trailing.push({ bytes: item.bytes, suppressed: item.suppressed });
         }
         this.clearRecent();
         this.callbacks.onDetected({
@@ -144,12 +154,12 @@ export class WakeClient {
     this.worker?.postMessage({ type: "config", threshold });
   }
 
-  feed(samples: Int16Array): void {
+  feed(samples: Int16Array, suppressed = false): void {
     if (!this.ready || !this.worker) return;
     const seq = ++this.seq;
     const bytes = new Uint8Array(samples.byteLength);
     bytes.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
-    this.recent.push({ seq, bytes });
+    this.recent.push({ seq, bytes, suppressed });
     this.recentBytes += bytes.byteLength;
     while (this.recentBytes > RECENT_MAX_BYTES && this.recent.length > 1) {
       this.recentBytes -= this.recent.shift()!.bytes.byteLength;
@@ -185,5 +195,56 @@ export class WakeClient {
 
   get threshold(): number {
     return this.currentThreshold;
+  }
+}
+
+export interface WakeLockSentinelLike {
+  readonly released?: boolean;
+  release(): Promise<void>;
+  addEventListener?(type: string, listener: () => void): void;
+}
+
+/**
+ * Wraps the Screen Wake Lock API so browser-initiated releases (such as hiding a tab) clear the
+ * stored sentinel and allow reacquiring on visibility restore, while cancelling in-flight requests.
+ */
+export class ScreenWakeLock {
+  private sentinel: WakeLockSentinelLike | null = null;
+  private gen = 0;
+  private readonly requestLock: () => Promise<WakeLockSentinelLike | undefined>;
+
+  constructor(
+    requestLock: () => Promise<WakeLockSentinelLike | undefined> = () =>
+      (navigator as any).wakeLock?.request("screen") ?? Promise.resolve(undefined),
+  ) {
+    this.requestLock = requestLock;
+  }
+
+  get held(): boolean {
+    return this.sentinel != null && !this.sentinel.released;
+  }
+
+  async acquire(stillWanted: () => boolean): Promise<void> {
+    if (this.held || !stillWanted()) return;
+    const gen = ++this.gen;
+    try {
+      const lock = await this.requestLock();
+      if (!lock) return;
+      if (gen !== this.gen || !stillWanted()) {
+        void lock.release().catch(() => {});
+        return;
+      }
+      this.sentinel = lock;
+      lock.addEventListener?.("release", () => {
+        if (this.sentinel === lock) this.sentinel = null;
+      });
+    } catch {}
+  }
+
+  release(): void {
+    this.gen++;
+    const lock = this.sentinel;
+    this.sentinel = null;
+    void lock?.release().catch(() => {});
   }
 }

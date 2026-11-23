@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CallAudio } from "../web/audio.ts";
-import { WakeClient, type WakeDetectionEvent, type WorkerLike } from "../web/wakeClient.ts";
+import { ScreenWakeLock, WakeClient, type WakeDetectionEvent, type WakeLockSentinelLike, type WorkerLike } from "../web/wakeClient.ts";
 
 class MockWorker implements WorkerLike {
   onmessage: ((e: MessageEvent<Record<string, any>>) => void) | null = null;
@@ -66,7 +66,7 @@ test("WakeClient ignores stale ready, detected, and error events from earlier ge
   assert.deepEqual(hits, []);
 });
 
-test("WakeClient preserves restBytes plus all chunks sent after the triggering seq", () => {
+test("WakeClient preserves restBytes plus per-frame suppressed flags across playback boundaries", () => {
   const worker = new MockWorker();
   const hits: WakeDetectionEvent[] = [];
   const client = new WakeClient({ onDetected: (hit) => hits.push(hit) }, () => worker);
@@ -78,12 +78,12 @@ test("WakeClient preserves restBytes plus all chunks sent after the triggering s
   const c1 = new Int16Array([1, 2, 3, 4]);
   const c2 = new Int16Array([5, 6, 7, 8]);
   const c3 = new Int16Array([9, 10, 11, 12]);
-  client.feed(c1);
+  // c1 and c2 were suppressed during playback; c3 arrived after playback ended (not suppressed).
+  client.feed(c1, true);
   const seq1 = worker.sent.at(-1)!.seq as number;
-  client.feed(c2);
-  client.feed(c3);
+  client.feed(c2, true);
+  client.feed(c3, false);
 
-  // Worker detects on seq1 with tail [3, 4] while c2 and c3 were already posted.
   const rest = new Int16Array([3, 4]);
   worker.emit({
     type: "detected",
@@ -96,16 +96,56 @@ test("WakeClient preserves restBytes plus all chunks sent after the triggering s
   });
 
   assert.equal(hits.length, 1);
-  const combined = new Int16Array(
-    hits[0].trailing.reduce((sum, b) => sum + b.byteLength, 0) / 2,
+  assert.deepEqual(
+    hits[0].trailing.map((t) => ({
+      samples: [...new Int16Array(t.bytes.buffer, t.bytes.byteOffset, t.bytes.byteLength / 2)],
+      suppressed: t.suppressed,
+    })),
+    [
+      { samples: [3, 4], suppressed: true },
+      { samples: [5, 6, 7, 8], suppressed: true },
+      { samples: [9, 10, 11, 12], suppressed: false },
+    ],
   );
-  let off = 0;
-  for (const b of hits[0].trailing) {
-    const view = new Int16Array(b.buffer, b.byteOffset, b.byteLength / 2);
-    combined.set(view, off);
-    off += view.length;
-  }
-  assert.deepEqual([...combined], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+});
+
+test("ScreenWakeLock clears sentinel on browser release and reacquires on visibility return", async () => {
+  let requests = 0;
+  let hidden = false;
+  const listeners: Array<() => void> = [];
+  const sentinels: Array<{ released: boolean; releaseCalls: number }> = [];
+
+  const lock = new ScreenWakeLock(async () => {
+    requests++;
+    const state = { released: false, releaseCalls: 0 };
+    sentinels.push(state);
+    const sentinel: WakeLockSentinelLike = {
+      get released() { return state.released; },
+      async release() { state.released = true; state.releaseCalls++; },
+      addEventListener(type, fn) { if (type === "release") listeners.push(fn); },
+    };
+    return sentinel;
+  });
+
+  await lock.acquire(() => !hidden);
+  assert.equal(requests, 1);
+  assert.equal(lock.held, true);
+
+  // Browser hides tab and releases sentinel.
+  hidden = true;
+  sentinels[0].released = true;
+  listeners.shift()!();
+  assert.equal(lock.held, false);
+
+  // Tab becomes visible again: acquire() must request a new sentinel.
+  hidden = false;
+  await lock.acquire(() => !hidden);
+  assert.equal(requests, 2);
+  assert.equal(lock.held, true);
+
+  lock.release();
+  assert.equal(sentinels[1].releaseCalls, 1);
+  assert.equal(lock.held, false);
 });
 
 test("CallAudio stops tracks if stopMic or an overlapping startMic supersedes a pending getUserMedia", async () => {

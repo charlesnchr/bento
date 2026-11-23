@@ -25,7 +25,7 @@ import {
   shouldClearUnreadResults,
   type SideFilter,
 } from "./ui.ts";
-import { WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
+import { ScreenWakeLock, WakeClient, type WakeDetectionEvent, type WakeTelemetry } from "./wakeClient.ts";
 
 interface Core {
   version: string;
@@ -121,12 +121,14 @@ let fakeTvLevel = 15;
 let coreStatus = "idle";
 let muted = false;
 let holding = false;
-let wakeLock: { release(): Promise<void> } | null = null;
+const screenWakeLock = new ScreenWakeLock();
 /** Wake word loop state: armed between calls, requested by core while dormant/speaking, or mid-handoff. */
 let wakeArmed = false;
 let armGen = 0;
 let coreWantsWake = false;
 let callWhileSpeaking = "send";
+/** Mirrors the core's `speechUntil` clock so each mic frame records whether `call.ts` suppressed it. */
+let coreSpeechUntil = 0;
 let wakeLoading = false;
 let wakeStarting = false;
 let startingCall = false;
@@ -907,17 +909,17 @@ function showStatus(message?: string) {
 
 // The call.
 
-function push(event: Record<string, unknown>): Command[] {
+function push(event: Record<string, unknown>, t = now()): Command[] {
   if (!core || !callId) return [];
-  const e: Record<string, unknown> = { ...event, t: now() };
+  const e: Record<string, unknown> = { ...event, t };
   const quiet = e.type === "mic" || e.type === "tick";
   if (!quiet) log("in", e.type === "ws.message" ? `ws ${e.sid} ← ${brief(String(e.data))}` : JSON.stringify(e).slice(0, 400), "in");
   const commands = JSON.parse(core.push(callId, JSON.stringify(e))) as Command[];
-  run(commands);
+  run(commands, t);
   return commands;
 }
 
-function run(commands: Command[]) {
+function run(commands: Command[], eventTime = now()) {
   for (const c of commands) {
     switch (c.type) {
       case "ws.connect": connect(c.sid, c.purpose === "captions"); break;
@@ -957,6 +959,9 @@ function run(commands: Command[]) {
         break;
       case "play": {
         const t = now();
+        const pad = c.pcm.endsWith("==") ? 2 : c.pcm.endsWith("=") ? 1 : 0;
+        const pcmBytes = Math.max(0, Math.floor((c.pcm.length * 3) / 4) - pad);
+        coreSpeechUntil = Math.max(coreSpeechUntil, eventTime) + pcmBytes / 48_000;
         // A reply starting: from the end of the user's speech to its first sound.
         if (!metrics.replied && audio.queued < 0.05 && t - metrics.lastPlay > 0.6 && metrics.lastVoice > 0 && t - metrics.lastVoice < 10) {
           metrics.reply.push(t - metrics.lastVoice);
@@ -969,7 +974,11 @@ function run(commands: Command[]) {
         counts.play++;
         break;
       }
-      case "flush": audio.flush(); log("out", "flush", "out"); break;
+      case "flush":
+        coreSpeechUntil = Math.min(coreSpeechUntil, eventTime);
+        audio.flush();
+        log("out", "flush", "out");
+        break;
       case "cue":
         audio.cue(c.pcm);
         log("out", `cue ${c.earcon}`, "out");
@@ -1021,7 +1030,9 @@ function run(commands: Command[]) {
 }
 
 function onMic(samples: Int16Array, level: number) {
-  if (shouldFeedWake()) wakeClient.feed(samples);
+  const t = now();
+  const suppressed = callId !== 0 && medium === "voice" && callWhileSpeaking !== "send" && t < coreSpeechUntil;
+  if (shouldFeedWake()) wakeClient.feed(samples, suppressed);
   if (wakeStarting) {
     const copy = new Uint8Array(samples.byteLength);
     copy.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
@@ -1035,10 +1046,10 @@ function onMic(samples: Int16Array, level: number) {
   if (!callId || medium !== "voice") return;
   counts.mic++;
   if (level > 0.03 && !(muted && !holding)) {
-    metrics.lastVoice = now();
+    metrics.lastVoice = t;
     if (audio.queued < 0.05) metrics.replied = false;
   }
-  push({ type: "mic", pcm: bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)) });
+  push({ type: "mic", pcm: bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)) }, t);
 }
 
 function connect(sid: number, captions: boolean) {
@@ -1303,6 +1314,7 @@ async function start(carryOn = false, typed = false): Promise<boolean> {
     muted = given.muted === true;
     const micCfg = given.mic && typeof given.mic === "object" ? (given.mic as Record<string, unknown>) : null;
     callWhileSpeaking = typeof micCfg?.whileSpeaking === "string" ? micCfg.whileSpeaking : "send";
+    coreSpeechUntil = 0;
     // Carrying on: the model gets the last conversation as a recap. The core caps it, latest lines first.
     // A chat always carries on from what's on the screen (an earlier call or chat on this page).
     if (typed) { if (chat.length > 0 && given.history === undefined) given.history = chat; }
@@ -1368,6 +1380,7 @@ function end() {
   activeSession = 0;
   syncResultFollowUpButtons();
   coreWantsWake = false;
+  coreSpeechUntil = 0;
   wakeStarting = false;
   openingChunks = [];
   openingBytes = 0;
@@ -1484,13 +1497,11 @@ const stopWords = new StopWords();
 // and inside an active call whenever the core asks (`wakeword: on`: dormant or whileSpeaking "wake").
 
 async function acquireWakeLock() {
-  if (wakeLock || document.hidden) return;
-  try { wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch {}
+  await screenWakeLock.acquire(() => !document.hidden && (callId !== 0 || wakeArmed));
 }
 
 function releaseWakeLock() {
-  void wakeLock?.release().catch(() => {});
-  wakeLock = null;
+  screenWakeLock.release();
 }
 
 function selectedWakeModel(): WakeModelInfo | null {
@@ -1673,18 +1684,14 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   if (checked("wake-cue")) void audio.open().then(() => audio.cue(WAKE_TONE)).catch(() => {});
   toast(`Heard “${label}” (${hit.score.toFixed(2)})`);
   if (callId !== 0) {
-    const commands = push({ type: "wake" });
-    // Whenever the core cut audible playback (flush) under a mic-suppressing policy (whileSpeaking !== "send"),
-    // frames during playback were replaced with silence (both live and in dormant/standby pre-roll):
-    // replay the speech captured right after the wake word so the opening syllables aren't clipped.
-    const cutReply = commands.some((c) => c.type === "flush");
-    if (cutReply && callWhileSpeaking !== "send" && callId !== 0 && hit.trailing.length > 0) {
-      for (const chunk of hit.trailing) {
-        if (!callId) break;
-        if (chunk.byteLength === 0) continue;
-        counts.mic++;
-        push({ type: "mic", pcm: bytesToBase64(chunk) });
-      }
+    push({ type: "wake" });
+    // Replay only the trailing chunks that the core suppressed to silence during audible playback,
+    // avoiding both lost syllables after playback ends and duplicate replay of unsuppressed audio.
+    for (const chunk of hit.trailing) {
+      if (!callId) break;
+      if (!chunk.suppressed || chunk.bytes.byteLength === 0) continue;
+      counts.mic++;
+      push({ type: "mic", pcm: bytesToBase64(chunk.bytes) });
     }
     return;
   }
@@ -1692,9 +1699,9 @@ function onWakeDetected(hit: WakeDetectionEvent) {
   openingChunks = [];
   openingBytes = 0;
   for (const chunk of hit.trailing) {
-    if (chunk.byteLength === 0) continue;
-    openingChunks.push(chunk);
-    openingBytes += chunk.byteLength;
+    if (chunk.bytes.byteLength === 0) continue;
+    openingChunks.push(chunk.bytes);
+    openingBytes += chunk.bytes.byteLength;
     while (openingBytes > OPENING_MAX_BYTES && openingChunks.length > 1) {
       openingBytes -= openingChunks.shift()!.byteLength;
     }
