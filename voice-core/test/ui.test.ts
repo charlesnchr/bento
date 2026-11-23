@@ -1,12 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  canFollowUpResult,
   formatShortTime,
   normalizeDensity,
   normalizeSideFilter,
   parsePrefix,
   plainPreview,
   resolveSideSections,
+  shouldClearUnreadResults,
 } from "../web/ui.ts";
 
 describe("web UI helpers", () => {
@@ -30,6 +32,22 @@ describe("web UI helpers", () => {
     assert.deepEqual(parsePrefix("/t3 fix layout"), { mode: "t3", rest: "fix layout" });
     assert.deepEqual(parsePrefix("/code add test"), { mode: "t3", rest: "add test" });
     assert.deepEqual(parsePrefix("plain message"), { mode: null, rest: "plain message" });
+  });
+
+  it("scopes result follow-ups to the originating session", () => {
+    assert.equal(canFollowUpResult(1, 1, true), true);
+    assert.equal(canFollowUpResult(1, 2, true), false); // later call reusing taskId 1
+    assert.equal(canFollowUpResult(1, 0, true), false); // call ended
+    assert.equal(canFollowUpResult(0, 0, true), false); // no active call
+    assert.equal(canFollowUpResult(2, 2, false), false); // task missing
+  });
+
+  it("clears mobile unread result alerts only when results are visible", () => {
+    assert.equal(shouldClearUnreadResults(false, false, "active"), true); // desktop always clears
+    assert.equal(shouldClearUnreadResults(true, false, "all"), false); // drawer closed on mobile
+    assert.equal(shouldClearUnreadResults(true, true, "active"), false); // drawer open, but filtered to Active
+    assert.equal(shouldClearUnreadResults(true, true, "all"), true);
+    assert.equal(shouldClearUnreadResults(true, true, "results"), true);
   });
 
   it("flattens markdown into a single-line plain preview and truncates cleanly", () => {

@@ -1463,13 +1463,15 @@ body.in-session #bar #status { display: none; }
 
 .res-body {
   padding: 7px 10px;
-  max-height: var(--res-clamp-max);
-  overflow: hidden;
   position: relative;
   color: var(--ink);
   font-size: var(--res-font);
   line-height: var(--res-lh);
   overflow-wrap: anywhere;
+}
+.res-card.clamped:not(.open) .res-body {
+  max-height: var(--res-clamp-max);
+  overflow: hidden;
 }
 .res-card.clamped:not(.open) .res-body::after {
   content: "";
@@ -1478,9 +1480,6 @@ body.in-session #bar #status { display: none; }
   height: 28px;
   background: linear-gradient(to bottom, transparent, var(--bg) 90%);
   pointer-events: none;
-}
-.res-card.open .res-body {
-  max-height: none;
 }
 
 .res-body .md-h {

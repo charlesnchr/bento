@@ -169,10 +169,10 @@
         <span>Agents</span>
         <span id="taskcount"></span>
       </div>
-      <div class="side-tabs" id="side-tabs" role="tablist" aria-label="Agent view">
-        <button type="button" role="tab" data-filter="all" aria-selected="true" class="on">All</button>
-        <button type="button" role="tab" data-filter="active" aria-selected="false">Active <span class="tab-n" id="side-active-n"></span></button>
-        <button type="button" role="tab" data-filter="results" aria-selected="false">Results <span class="tab-n" id="side-results-n"></span></button>
+      <div class="side-tabs" id="side-tabs" role="group" aria-label="Agent view">
+        <button type="button" data-filter="all" aria-pressed="true" class="on">All</button>
+        <button type="button" data-filter="active" aria-pressed="false">Active <span class="tab-n" id="side-active-n"></span></button>
+        <button type="button" data-filter="results" aria-pressed="false">Results <span class="tab-n" id="side-results-n"></span></button>
       </div>
       <div class="side-head-acts">
         <button id="cancelall" type="button" hidden title="Cancel every running task">Cancel all</button>

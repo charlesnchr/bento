@@ -12,13 +12,16 @@
 import { commandIn } from "../src/commands.ts";
 import { CallAudio } from "./audio.ts";
 import { Replay } from "./replay.ts";
+import { AutoScroller } from "./scroll.ts";
 import {
+  canFollowUpResult,
   formatShortTime,
   normalizeDensity,
   normalizeSideFilter,
   parsePrefix,
   plainPreview,
   resolveSideSections,
+  shouldClearUnreadResults,
   type SideFilter,
 } from "./ui.ts";
 
@@ -70,6 +73,9 @@ const audio = new CallAudio();
 let server: ServerConfig;
 let core: Core | null = null;
 let callId = 0;
+/** Monotonic per-page session id (unlike core's callId/taskId, which restart after loadCore()). */
+let sessionSeq = 0;
+let activeSession = 0;
 let callName = "";
 let ticker = 0;
 let traceTimer = 0;
@@ -87,6 +93,7 @@ interface ResultEntry {
   text: string;
   failed: boolean;
   taskId?: string;
+  sessionId: number;
   card: HTMLElement;
   head: HTMLButtonElement;
   body: HTMLElement;
@@ -234,12 +241,6 @@ function syncComposer() {
   $("mode-wrap").dataset.mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
 }
 
-function updateJumpButton() {
-  const pane = $("transcript");
-  const away = pane.scrollHeight - pane.scrollTop - pane.clientHeight > 120;
-  $("jumpbottom").hidden = !away || !$("empty").hidden;
-}
-
 function formatClock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   const h = Math.floor(total / 3600);
@@ -337,10 +338,13 @@ function markdown(text: string): string {
   }).join("");
 }
 
+const transcriptScroll = new AutoScroller($("transcript"), {
+  onJumpChange: (show) => { $("jumpbottom").hidden = !show; },
+  isEmpty: () => !$("empty").hidden,
+});
+
 function scrollDown(force = false) {
-  const pane = $("transcript");
-  if (force || pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 80) pane.scrollTop = pane.scrollHeight;
-  updateJumpButton();
+  transcriptScroll.onContent(force);
 }
 
 /** The core's number for the line the last row shows, until another row follows it. */
@@ -361,7 +365,7 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
     pane.append(row);
     openLine = line;
   }
-  scrollDown(role === "user");
+  scrollDown();
 }
 
 /**
@@ -371,7 +375,7 @@ function transcript(role: "user" | "assistant", text: string, line: number) {
 function caption(text: string | null) {
   const pane = $("transcript");
   let row = document.getElementById("caption");
-  if (text == null) { row?.remove(); updateJumpButton(); return; }
+  if (text == null) { row?.remove(); scrollDown(); return; }
   $("empty").hidden = true;
   if (!row) {
     row = document.createElement("div");
@@ -381,7 +385,7 @@ function caption(text: string | null) {
     pane.prepend(row);
   }
   row.querySelector(".text")!.textContent = text;
-  scrollDown(true);
+  scrollDown();
 }
 
 function note(text: string) {
@@ -422,7 +426,8 @@ function setResultOpen(entry: ResultEntry, open: boolean) {
 
 function updateResultClamping(entry: ResultEntry) {
   if (entry.body.offsetParent === null) return;
-  const overflows = entry.body.scrollHeight > resultClampPx(entry.card) + 6;
+  // Unclamped cards have no max-height, so scrollHeight is always the full natural height.
+  const overflows = entry.body.scrollHeight > resultClampPx(entry.card) + 4;
   entry.card.classList.toggle("clamped", overflows);
   if (!overflows) entry.card.classList.remove("open");
   entry.moreBtn.hidden = !overflows;
@@ -439,9 +444,18 @@ function updateAllResultClamping() {
 function syncResultFollowUpButtons() {
   for (const entry of results.values()) {
     if (!entry.followBtn) continue;
-    const canFollow = Boolean(callId && entry.taskId && tasks.has(entry.taskId));
+    const canFollow = canFollowUpResult(entry.sessionId, activeSession, Boolean(entry.taskId && tasks.has(entry.taskId)));
     entry.followBtn.hidden = !canFollow;
     if (!canFollow) entry.card.querySelector("form")?.remove();
+  }
+}
+
+function clearUnreadIfResultsVisible() {
+  if (unreadMobileResults === 0) return;
+  const drawerOpen = document.body.classList.contains("tasks-open");
+  if (shouldClearUnreadResults(mobileLayout.matches, drawerOpen, sideFilter)) {
+    unreadMobileResults = 0;
+    updateTaskChrome();
   }
 }
 
@@ -462,7 +476,7 @@ function focusResult(id: string) {
   });
 }
 
-function result(agent: string, label: string, text: string, failed = false, taskId?: string): string {
+function result(agent: string, label: string, text: string, failed = false, taskId?: string, sessionId = activeSession): string {
   $("empty").hidden = true;
   const id = `res-${++nextResultSeq}`;
   const who = agent === "t3" ? "T3" : "Hermes";
@@ -532,15 +546,19 @@ function result(agent: string, label: string, text: string, failed = false, task
     followBtn.className = "res-act";
     followBtn.textContent = "Follow up";
     followBtn.onclick = () => {
+      if (!canFollowUpResult(sessionId, activeSession, tasks.has(taskId))) {
+        syncResultFollowUpButtons();
+        return;
+      }
       const view = tasks.get(taskId);
-      if (view) followUpForm(card, view.c);
+      if (view) followUpForm(card, view.c, sessionId);
     };
     foot.append(followBtn);
   }
 
   card.append(head, body, foot);
 
-  const entry: ResultEntry = { id, agent, label, text, failed, taskId, card, head, body, moreBtn, followBtn, refRow };
+  const entry: ResultEntry = { id, agent, label, text, failed, taskId, sessionId, card, head, body, moreBtn, followBtn, refRow };
   const toggle = () => {
     if (!entry.card.classList.contains("clamped")) return;
     setResultOpen(entry, !entry.card.classList.contains("open"));
@@ -550,7 +568,8 @@ function result(agent: string, label: string, text: string, failed = false, task
 
   results.set(id, entry);
   $("results").prepend(card);
-  if (mobileLayout.matches && !document.body.classList.contains("tasks-open")) unreadMobileResults++;
+  const drawerOpen = document.body.classList.contains("tasks-open");
+  if (!shouldClearUnreadResults(mobileLayout.matches, drawerOpen, sideFilter)) unreadMobileResults++;
 
   syncSideLayout();
   updateTaskChrome();
@@ -570,23 +589,25 @@ function elapsed(seconds: number): string {
 /** The empty task list's words, kept to put back. */
 const noTasks = document.getElementById("notasks")!;
 
-/** Whether a task still wants the screen: it's working, or it waits for the user. The rest fold away under Finished. */
+/** Whether a task still wants the screen: it's working, waiting, or needs approval. The rest fold away under Finished. */
 const live = (state: string) => state === "running" || state.startsWith("waiting");
+const isActiveTask = (view: TaskView) => live(view.c.state) || Boolean(view.approval);
 
 function setSideFilter(filter: SideFilter) {
   sideFilter = normalizeSideFilter(filter);
   for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#side-tabs button"))) {
     const on = btn.dataset.filter === sideFilter;
     btn.classList.toggle("on", on);
-    btn.setAttribute("aria-selected", String(on));
+    btn.setAttribute("aria-pressed", String(on));
   }
   syncSideLayout();
+  clearUnreadIfResultsVisible();
   requestAnimationFrame(() => updateAllResultClamping());
 }
 
 function syncSideLayout() {
   const all = [...tasks.values()];
-  const activeCurrent = all.filter((t) => live(t.c.state)).length;
+  const activeCurrent = all.filter(isActiveTask).length;
   const activeTotal = activeCurrent + earlierActiveCount;
   const resultsTotal = results.size;
   const earlierShown = $("earlier").childElementCount;
@@ -615,7 +636,7 @@ function syncSideLayout() {
 
 function updateTaskChrome() {
   const all = [...tasks.values()];
-  const activeCurrent = all.filter((t) => live(t.c.state) || Boolean(t.approval)).length;
+  const activeCurrent = all.filter(isActiveTask).length;
   const waiting = all.filter((t) => t.c.state.startsWith("waiting") || Boolean(t.approval)).length;
   const activeTotal = activeCurrent + earlierActiveCount;
   const attentionTotal = waiting + earlierWaitingCount;
@@ -661,7 +682,7 @@ function showTasks(force = false) {
     return;
   }
   const running = all.filter((t) => t.c.state === "running").length;
-  const activeCount = all.filter((t) => live(t.c.state)).length;
+  const activeCount = all.filter(isActiveTask).length;
   $("taskcount").textContent = running > 0 ? `${running} running` : activeCount > 0 ? `${activeCount} waiting` : "";
   $("cancelall").hidden = !callId || running < 2;
   for (const view of all) {
@@ -722,21 +743,22 @@ function showTasks(force = false) {
       acts.append(b);
       return b;
     };
-    if (callId) {
-      button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t));
+    if (callId && activeSession > 0) {
+      const originSession = activeSession;
+      button(waiting ? "Answer" : "Follow up", () => followUpForm(card, t, originSession));
       if (t.state === "running") button("Cancel", () => push({ type: "cancelTask", task: t.id }), "danger");
     }
     if (view.resultId) button("Result", () => focusResult(view.resultId!));
     if (view.thread) button("Copy id", () => { void navigator.clipboard?.writeText(view.thread!); toast("Thread id copied"); });
     if (acts.childElementCount) card.append(acts);
-    (live(t.state) ? pane : done).append(card);
+    (isActiveTask(view) ? pane : done).append(card);
   }
   if (pane.childElementCount === 0) pane.append(noTasks);
   syncSideLayout();
   updateTaskChrome();
 }
 
-function followUpForm(card: HTMLElement, t: Command) {
+function followUpForm(card: HTMLElement, t: Command, originSession: number) {
   const existing = card.querySelector("form");
   if (existing) { existing.querySelector("input")?.focus(); return; }
   const form = document.createElement("form");
@@ -746,7 +768,15 @@ function followUpForm(card: HTMLElement, t: Command) {
   form.onsubmit = (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (text) { push({ type: "steer", task: t.id, text }); note(`You → ${t.label}: ${text}`); }
+    if (text) {
+      if (!canFollowUpResult(originSession, activeSession, tasks.has(t.id))) {
+        toast("That task's call has ended");
+      } else {
+        push({ type: "steer", task: t.id, text });
+        note(`You → ${t.label}: ${text}`);
+        scrollDown(true);
+      }
+    }
     input.blur();
     form.remove();
     showTasks();
@@ -1014,6 +1044,7 @@ async function tool(c: Command) {
     return;
   }
   const agent = c.agent === "t3" ? "t3" : "hermes";
+  const originSession = activeSession;
   log("out", `${agent} ${c.followUp ? "follow-up" : "task"} "${c.label}"${c.project ? ` in ${c.project}` : ""}: ${c.request}`, "out");
   const abort = new AbortController();
   runs.set(c.run, { abort, agent, taskId: c.taskId });
@@ -1021,7 +1052,7 @@ async function tool(c: Command) {
     if (!runs.has(c.run)) return;
     runs.delete(c.run);
     const view = tasks.get(c.taskId);
-    const resId = result(agent, c.label, text, failed, c.taskId);
+    const resId = result(agent, c.label, text, failed, c.taskId, originSession);
     notify(`${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`, text);
     if (!failed) { remember("assistant", text, `${agent === "t3" ? "T3" : "Hermes"} · ${c.label}`); lastLine = null; }
     if (view) { view.resultId = resId; showTasks(); }
@@ -1125,7 +1156,9 @@ async function start(carryOn = false, typed = false) {
   $("version").textContent = core.version;
   $("log").innerHTML = "";
   if (!typed && (tasks.size > 0 || $("transcript").childElementCount > 1)) note(`New call · ${new Date().toLocaleTimeString()}`);
+  scrollDown(true);
   tasks.clear();
+  activeSession = ++sessionSeq;
   showTasks();
   counts = { mic: 0, play: 0, sent: 0 };
   metrics.reply = [];
@@ -1188,6 +1221,8 @@ function end() {
   window.clearInterval(ticker);
   window.clearInterval(traceTimer);
   stopWords.stop();
+  activeSession = 0;
+  syncResultFollowUpButtons();
   ending = saveTrace().then(() => { if (core && callId) core.dispose(callId); callId = 0; showTasks(); showStatus(); });
   audio.stop();
   for (const ws of sockets.values()) ws.close();
@@ -1342,15 +1377,19 @@ function setTasksOpen(open: boolean, opener?: HTMLElement | null) {
   $("tasks-toggle").setAttribute("aria-expanded", String(next));
   $("mobile-tasks-bar").setAttribute("aria-expanded", String(next));
   if (next && !wasOpen) {
-    unreadMobileResults = 0;
-    updateTaskChrome();
     drawerOpener = opener ?? (document.activeElement as HTMLElement | null);
+    clearUnreadIfResultsVisible();
     $("tasks-close").focus();
     requestAnimationFrame(() => updateAllResultClamping());
   } else if (!next && wasOpen) {
     const target = drawerOpener;
     drawerOpener = null;
-    if (target && target.isConnected && !target.hidden && target.offsetParent !== null) target.focus();
+    if (target && target.isConnected && !target.hidden && target.offsetParent !== null) {
+      target.focus();
+    } else if (target === $("mobile-tasks-bar")) {
+      const fallback = $("tasks-toggle");
+      if (!fallback.hidden && fallback.offsetParent !== null) fallback.focus();
+    }
   }
 }
 
@@ -1380,13 +1419,16 @@ function tabs() {
   $("closesettings-x").onclick = () => { $("settings").hidden = true; };
   $("settings").onclick = (e) => { if (e.target === $("settings")) $("settings").hidden = true; };
   $("tasks-toggle").onclick = () => setTasksOpen(!document.body.classList.contains("tasks-open"), $("tasks-toggle"));
-  $("mobile-tasks-bar").onclick = () => setTasksOpen(true, $("mobile-tasks-bar"));
+  $("mobile-tasks-bar").onclick = () => {
+    const activeTotal = [...tasks.values()].filter(isActiveTask).length + earlierActiveCount;
+    if (activeTotal === 0 && unreadMobileResults > 0) setSideFilter("results");
+    setTasksOpen(true, $("mobile-tasks-bar"));
+  };
   $("tasks-close").onclick = () => setTasksOpen(false);
   $("side-backdrop").onclick = () => setTasksOpen(false);
   mobileLayout.addEventListener("change", () => {
-    if (!mobileLayout.matches) unreadMobileResults = 0;
     setTasksOpen(false);
-    updateTaskChrome();
+    clearUnreadIfResultsVisible();
     requestAnimationFrame(() => updateAllResultClamping());
   });
   setTasksOpen(false);
@@ -1432,10 +1474,13 @@ async function submitText(e: Event) {
   const mode = parsed.mode ?? $<HTMLSelectElement>("mode").value;
   text = parsed.rest;
   if (!text) return;
-  if (mode === "say") push({ type: "say", text });
-  else {
+  if (mode === "say") {
+    push({ type: "say", text });
+    scrollDown(true);
+  } else {
     push({ type: "ask", text, agent: mode });
     note(`You → new ${mode === "t3" ? "coding" : "Hermes"} task: ${text}`);
+    scrollDown(true);
   }
   input.value = "";
   syncComposer();
@@ -1486,11 +1531,16 @@ async function main() {
   $("donebox").addEventListener("toggle", () => { if ($<HTMLDetailsElement>("donebox").open) $("donebox").scrollIntoView({ block: "nearest" }); });
   $("say").onsubmit = (e) => void submitText(e);
   $("text").addEventListener("input", syncComposer);
-  $("transcript").addEventListener("scroll", updateJumpButton, { passive: true });
-  $("jumpbottom").onclick = () => $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
+  const transcriptPane = $("transcript");
+  transcriptPane.addEventListener("scroll", () => transcriptScroll.onScroll(), { passive: true });
+  transcriptPane.addEventListener("scrollend", () => transcriptScroll.onScrollEnd(), { passive: true });
+  transcriptPane.addEventListener("wheel", (e) => { if (e.deltaY < 0) transcriptScroll.cancelJump(); }, { passive: true });
+  transcriptPane.addEventListener("touchstart", () => transcriptScroll.cancelJump(), { passive: true });
   if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => transcriptScroll.onResize()).observe(transcriptPane);
     new ResizeObserver(() => updateAllResultClamping()).observe($("results"));
   }
+  $("jumpbottom").onclick = () => transcriptScroll.jumpToBottom();
   syncComposer();
   syncSideLayout();
   tabs();

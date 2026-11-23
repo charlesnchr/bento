@@ -34,6 +34,16 @@ export function parsePrefix(text: string): { mode: "hermes" | "t3" | null; rest:
   return { mode: /^(t3|code)$/i.test(m[1]) ? "t3" : "hermes", rest: m[2].trim() };
 }
 
+/** A result card may only steer a task that belongs to the same active session (task IDs restart per call). */
+export function canFollowUpResult(resultSession: number, activeSession: number, hasTask: boolean): boolean {
+  return activeSession > 0 && resultSession === activeSession && hasTask;
+}
+
+/** Unread mobile result alerts only clear once the Results section is actually visible to the user. */
+export function shouldClearUnreadResults(isMobile: boolean, drawerOpen: boolean, filter: SideFilter): boolean {
+  return !isMobile || (drawerOpen && filter !== "active");
+}
+
 /** Flatten a Markdown agent reply into a single-line plain-text preview for inline handoff chips. */
 export function plainPreview(text: string, maxLen = 150): string {
   const cleaned = text
