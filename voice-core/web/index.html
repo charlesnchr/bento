@@ -15,6 +15,8 @@
   try {
     const t = localStorage.getItem("voice.theme");
     if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+    const d = localStorage.getItem("voice.density");
+    if (d === "comfortable") document.documentElement.dataset.density = "comfortable";
     const dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.getElementById("theme-color")?.setAttribute("content", dark ? "#0e0f0f" : "#f6f5f0");
   } catch {}
@@ -46,7 +48,7 @@
 
   <div class="header-right">
     <span id="metrics"></span>
-    <button id="tasks-toggle" class="icon-btn" title="Tasks" aria-label="Tasks">
+    <button id="tasks-toggle" class="icon-btn" title="Agents and results" aria-label="Agents and results">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="4" width="18" height="16" rx="3"/>
         <path d="M9 9h6M9 13h6M9 17h3"/>
@@ -94,7 +96,7 @@
             </svg>
           </div>
           <h2>Ready when you are</h2>
-          <p class="hero-sub">Start a voice call or type below. Background work goes to Hermes and code changes to T3 while the conversation continues.</p>
+          <p class="hero-sub">Start a voice call or type below. Live voice turns stay here while Hermes and T3 handoffs stream on the right.</p>
           <div class="hero-actions">
             <button id="hero-call" class="hero-cta" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
@@ -105,7 +107,7 @@
           </div>
           <div class="hero-tips">
             <div class="tip"><strong>Voice commands</strong>Say “stop” to interrupt, “stop everything” to cancel tasks, or “goodbye” to hang up.</div>
-            <div class="tip"><strong>Direct dispatch</strong>Type <code>/h</code> for a Hermes task or <code>/t3</code> for a coding agent, or follow up from any task card.</div>
+            <div class="tip"><strong>Direct dispatch</strong>Type <code>/h</code> for a Hermes task or <code>/t3</code> for a coding agent, or follow up from any card.</div>
           </div>
         </div>
       </div>
@@ -129,6 +131,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
           </button>
         </form>
+        <div class="composer-sep" aria-hidden="true"></div>
         <div id="bar">
           <span id="status" class="idle" aria-live="polite"><span class="dot"></span><span id="statustext">Idle</span></span>
           <div class="controls">
@@ -168,26 +171,47 @@
   </div>
 
   <div id="side-backdrop"></div>
-  <aside id="side" aria-label="Tasks">
+  <aside id="side" aria-label="Agent tasks and results">
     <div class="side-head">
-      <div class="side-title"><span>Tasks</span><span id="taskcount"></span></div>
+      <div class="side-title">
+        <span>Agents</span>
+        <span id="taskcount"></span>
+      </div>
+      <div class="side-tabs" id="side-tabs" role="group" aria-label="Agent view">
+        <button type="button" data-filter="all" aria-pressed="true" class="on">All</button>
+        <button type="button" data-filter="active" aria-pressed="false">Active <span class="tab-n" id="side-active-n"></span></button>
+        <button type="button" data-filter="results" aria-pressed="false">Results <span class="tab-n" id="side-results-n"></span></button>
+      </div>
       <div class="side-head-acts">
         <button id="cancelall" type="button" hidden title="Cancel every running task">Cancel all</button>
-        <button id="tasks-close" class="icon-btn" type="button" title="Close tasks" aria-label="Close tasks">
+        <button id="tasks-close" class="icon-btn" type="button" title="Close panel" aria-label="Close panel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
     </div>
-    <div class="side-scroll">
-      <div id="tasks">
-        <div id="notasks"><strong>No active tasks</strong>Ask for work during a call or chat and progress cards appear here.</div>
+    <div class="side-scroll" id="side-scroll">
+      <div id="tasks-section">
+        <div id="tasks">
+          <div id="notasks"><strong>No active tasks</strong>Ask for work during a call or chat; Hermes and T3 progress and handoff responses appear here.</div>
+        </div>
       </div>
+
+      <div id="results-section" hidden>
+        <div class="side-section-bar">
+          <h2 class="side-section-label">Handoffs &amp; results <span id="resultscount"></span></h2>
+          <button id="toggle-all-results" type="button" class="mini-link" hidden>Expand all</button>
+        </div>
+        <div id="results"></div>
+        <div id="noresults" hidden><strong>No agent results yet</strong>Finished Hermes and T3 responses appear here so they do not crowd out the voice transcript.</div>
+      </div>
+
       <div id="earlierbox" hidden>
         <h2 class="side-section-label">Coding agents from earlier calls</h2>
         <div id="earlier"></div>
       </div>
+
       <details id="donebox" hidden>
-        <summary><span>Finished <span id="donecount"></span></span></summary>
+        <summary><span>Finished tasks <span id="donecount"></span></span></summary>
         <div id="done"><div id="donenow"></div><div id="doneearlier"></div></div>
       </details>
     </div>
@@ -313,6 +337,13 @@
             <button type="button" data-theme="system" class="on">System</button>
             <button type="button" data-theme="dark">Dark</button>
             <button type="button" data-theme="light">Light</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-text"><strong>Density</strong><small>Compact fits more messages and responses on laptop screens.</small></span>
+          <div class="segmented" id="density-picker" role="group" aria-label="Density">
+            <button type="button" data-density="compact" class="on">Compact</button>
+            <button type="button" data-density="comfortable">Comfortable</button>
           </div>
         </div>
       </div>
