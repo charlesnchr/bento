@@ -478,3 +478,51 @@ test("a detached note containing literal <earlier_conversation> is still fenced 
   assert.ok(noteTurn.endsWith("\n</bento_note>"), noteTurn);
   assert.equal(noteTurn.match(/<\/bento_note>/g)?.length, 1, noteTurn);
 });
+
+test("explicit continue_task naming a detached task does not fuzzy-match an owned task and directs to Continue it", () => {
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("There is a table at eight. Shall I book it?");
+  s.push({ type: "note", label: "Alchemist table", text: "There is a table at nine. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Yes, book Alchemist");
+  // Even if Gemini passes continue_task: "Alchemist table", it must NOT fuzzy-match "Noma table" via the shared word "table".
+  s.calls("ask_hermes", { continue_task: "Alchemist table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Alchemist table" ran in an earlier call'), refusal);
+  assert.match(refusal, /Continue it/);
+  s.writes("Open Alchemist table's reply and tap Continue it.");
+  // Noma's own pending question still routes when named explicitly.
+  s.type("Actually book Noma");
+  s.calls("ask_hermes", { continue_task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
+  assert.equal(s.hermes()[1].followUp, true);
+});
+
+test("a detached result registered with inHistory guards bare and named answers without duplicating recap text", () => {
+  const s = chat({
+    history: [
+      { role: "user", text: "Book a table at Alchemist" },
+      { role: "assistant", speaker: "Hermes: Alchemist table", text: "There is a table at nine. Shall I book it?" },
+    ],
+  });
+  s.push({ type: "note", label: "Alchemist table", text: "There is a table at nine. Shall I book it?", inHistory: true });
+  s.advance(0.1);
+  s.type("Yes, book it");
+  const texts = s.sentTurns().map((t: any) => String(t.parts?.[0]?.text ?? ""));
+  assert.ok(texts[0].includes("<earlier_conversation>"), texts[0]);
+  assert.ok(!texts.some((t: string) => t.startsWith("<bento_note>")), "inHistory note must not duplicate recap in a <bento_note>");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 0);
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed:"), refusal);
+  assert.match(refusal, /Alchemist table/);
+  assert.match(refusal, /Continue it/);
+});

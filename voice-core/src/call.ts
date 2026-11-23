@@ -335,8 +335,9 @@ export class Call {
   private turnAudible = false;
   private asks = 0;
   private readonly answerFor: [number, string[], { label: string; asked: string }[]][] = [];
-  /** Questions asked by external detached results (via `note`): they can't be continued here, but still guard against misrouting bare answers. */
-  private externalQuestions: { label: string; asked: string; askedAt: number; askedTurn: number }[] = [];
+  /** External detached tasks (via `note`): they can't be continued here, but still guard against fuzzy-matching or misrouting answers. */
+  private externalTasks: { key: string; label: string; asked: string | null; askedAt: number; askedTurn: number }[] = [];
+  private nextExternal = 1;
   /** Tool runs in flight: a Hermes task's request, or a host tool's call. */
   private readonly jobs = new Map<string, { task: Task; run: Run } | { hostCall: string; name: string }>();
   /** whileSpeaking: the reply was cut by the wake word; the rest of its turn isn't played. */
@@ -553,7 +554,7 @@ export class Call {
       case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
-      case "note": return this.note(e.label, e.text, e.failed === true);
+      case "note": return this.note(e.label, e.text, e.failed === true, e.inHistory === true);
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
@@ -894,7 +895,9 @@ export class Call {
     for (const task of this.tasks.values()) {
       if (task.asked != null && task.askedAt > 0 && this.userTurns - task.askedTurn > ANSWER_TURNS) { task.asked = null; changed = true; }
     }
-    this.externalQuestions = this.externalQuestions.filter((q) => this.userTurns - q.askedTurn <= ANSWER_TURNS);
+    for (const ext of this.externalTasks) {
+      if (ext.asked != null && ext.askedAt > 0 && this.userTurns - ext.askedTurn > ANSWER_TURNS) ext.asked = null;
+    }
     if (changed) this.questionsChanged();
   }
 
@@ -1924,7 +1927,15 @@ export class Call {
       this.respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", false);
       return;
     }
-    const found = named != null ? this.find(named, false) : null;
+    const target = named != null ? this.findTarget(named, false) : null;
+    if (target?.kind === "external") {
+      const ext = target.task;
+      const askedPart = ext.asked != null ? ` and asked "${ext.asked}"` : "";
+      this.respond(d.id, `Not executed: "${ext.label}" ran in an earlier call${askedPart}, so this chat cannot continue that session directly. ` +
+        `Tell the user to open "${ext.label}"'s reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.`, false);
+      return;
+    }
+    const found = target?.kind === "owned" ? target.task : null;
     const { tasks: answering, external: externalAnswering } =
       named == null && label == null && TaskNames.isAnswer(request.task)
         ? this.answering(d)
@@ -1963,12 +1974,27 @@ export class Call {
   }
 
   private find(ref: string, byRequest = true): Task | null {
+    const target = this.findTarget(ref, byRequest);
+    return target?.kind === "owned" ? target.task : null;
+  }
+
+  private findTarget(ref: string, byRequest = true): { kind: "owned"; task: Task } | { kind: "external"; task: { key: string; label: string; asked: string | null; askedAt: number; askedTurn: number } } | null {
     const trimmed = ref.trim();
-    if (trimmed.length > 0 && /^\d+$/.test(trimmed)) return this.tasks.get(trimmed) ?? null;
+    if (trimmed.length > 0 && /^\d+$/.test(trimmed)) {
+      const task = this.tasks.get(trimmed);
+      return task ? { kind: "owned", task } : null;
+    }
     const pairs = new Map<string, [string, string]>();
     for (const [key, t] of this.tasks) pairs.set(key, [t.label, byRequest ? t.request : ""]);
+    for (const ext of this.externalTasks) pairs.set(ext.key, [ext.label, ""]);
     const key = TaskNames.find(ref, pairs);
-    return key != null ? this.tasks.get(key) ?? null : null;
+    if (key == null) return null;
+    if (key.startsWith("ext:")) {
+      const ext = this.externalTasks.find((e) => e.key === key);
+      return ext ? { kind: "external", task: ext } : null;
+    }
+    const task = this.tasks.get(key);
+    return task ? { kind: "owned", task } : null;
   }
 
   private asking(): Task[] {
@@ -1981,8 +2007,8 @@ export class Call {
   private recordAnswerFor(at: number): void {
     const owned = this.asking();
     const latestOwned = owned[0]?.askedAt ?? 0;
-    const external = this.externalQuestions
-      .filter((q) => q.askedAt >= latestOwned)
+    const external = this.externalTasks
+      .filter((q): q is { key: string; label: string; asked: string; askedAt: number; askedTurn: number } => q.asked != null && q.askedAt > 0 && q.askedAt >= latestOwned)
       .map(({ label, asked }) => ({ label, asked }));
     this.answerFor.push([at, owned.map((t) => t.id), external]);
     if (this.answerFor.length > 8) this.answerFor.shift();
@@ -2195,22 +2221,34 @@ export class Call {
   }
 
   /** A result that arrived outside this call/chat (e.g. a detached voice task): kept in history and fenced into text chat context. */
-  private note(label: string, text: string, failed: boolean): void {
+  private note(label: string, text: string, failed: boolean, inHistory = false): void {
     if (!this.active) return;
-    if (!failed && text.trim().length > 0) {
+    if (!inHistory && !failed && text.trim().length > 0) {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
       this.boundary = true;
     }
     const asked = !failed ? TaskNames.question(text) : null;
-    if (asked != null && this.textLine) {
-      this.externalQuestions.push({ label, asked, askedAt: ++this.asks, askedTurn: this.userTurns });
-      if (this.externalQuestions.length > MAX_TASKS) this.externalQuestions.shift();
-    }
     if (this.textLine) {
-      const extra = asked != null
-        ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
-        : "";
-      this.send(noteFrame(resultNote(label, text, null, failed) + extra), true);
+      const cleanLabel = label.trim();
+      if (cleanLabel.length > 0) {
+        const lower = cleanLabel.toLowerCase();
+        const existing = this.externalTasks.findIndex((e) => e.label.toLowerCase() === lower);
+        if (existing >= 0) this.externalTasks.splice(existing, 1);
+        this.externalTasks.push({
+          key: `ext:${this.nextExternal++}`,
+          label: cleanLabel,
+          asked,
+          askedAt: asked != null ? ++this.asks : 0,
+          askedTurn: this.userTurns,
+        });
+        if (this.externalTasks.length > MAX_TASKS) this.externalTasks.shift();
+      }
+      if (!inHistory) {
+        const extra = asked != null
+          ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
+          : "";
+        this.send(noteFrame(resultNote(label, text, null, failed) + extra), true);
+      }
     }
   }
 

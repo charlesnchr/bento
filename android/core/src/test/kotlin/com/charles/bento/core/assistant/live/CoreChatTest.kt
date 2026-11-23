@@ -265,4 +265,48 @@ class CoreChatTest {
         assertTrue(asked[1].followUp)
         c.stop()
     }
+
+    @Test fun explicitContinueTaskOnDetachedNoteDoesNotFuzzyMatchOwnedTaskAndPreChatInHistoryGuardsAnswer() = blocking {
+        // 1. Named continue_task for "Alchemist table" must not fuzzy-match owned "Noma table".
+        val model1 = Scripted(
+            calls("ask_hermes", """{"label":"Noma table"}"""),
+            calls("ask_hermes", """{"continue_task":"Alchemist table"}"""),
+            words("Open Alchemist table and tap Continue it."),
+        )
+        val heard1 = Heard()
+        val asked1 = CopyOnWriteArrayList<HermesCall>()
+        val c1 = chat(model1, heard1) { call -> asked1.add(call); ToolReply("There's a table at eight. Shall I book it?") }
+        c1.start()
+        c1.say("Book a table at Noma")
+        until("Noma question") { c1.questions.value == mapOf("1" to "Shall I book it?") }
+        c1.note("Alchemist table", "There's a table at nine. Shall I book it?")
+        delay(100)
+        c1.say("Yes, book Alchemist")
+        until("Continue it reply") { heard1.said() == listOf("Open Alchemist table and tap Continue it.") }
+        assertEquals(1, asked1.size, "continue_task on detached Alchemist table must not dispatch to Noma table")
+        c1.stop()
+
+        // 2. Detached result arriving before chat starts (inHistory = true) still guards bare answers without duplicating recap text.
+        val model2 = Scripted(
+            calls("ask_hermes"),
+            words("Open Alchemist table's reply and tap Continue it."),
+        )
+        val heard2 = Heard()
+        val asked2 = CopyOnWriteArrayList<HermesCall>()
+        val c2 = chat(
+            model2,
+            heard2,
+            history = listOf(
+                CoreCall.Line("user", "Book a table at Alchemist"),
+                CoreCall.Line("assistant", "There's a table at nine. Shall I book it?", "Hermes: Alchemist table"),
+            ),
+        ) { call -> asked2.add(call); ToolReply("Should not run") }
+        c2.start()
+        c2.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true)
+        c2.say("Yes, book it")
+        until("inHistory Continue it reply") { heard2.said() == listOf("Open Alchemist table's reply and tap Continue it.") }
+        assertEquals(0, asked2.size, "pre-chat detached question must block opening a blank Hermes session")
+        assertTrue(model2.texts(0).none { it.startsWith("<bento_note>") }, model2.texts(0).toString())
+        c2.stop()
+    }
 }
