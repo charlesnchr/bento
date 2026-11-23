@@ -3333,17 +3333,21 @@ export class Call {
   private static readonly GROUP_HEAD_VERB: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     [
       "booking",
-      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and(?:\s+then)?|then|i(?:'d|\s+would))\s+)book(?:ing)?\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:club|review|store|shop|shelf|summary|report|chapter|page|of|price|fund|account|savings|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:(?:go\s+ahead\s+)?(?:and|but)(?:\s+then)?|then)(?:\s+(?:please|just))?|i(?:'d|\s+would))\s+)book(?:ing)?\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!clubs?\b|reviews?\b|stores?\b|shops?\b|shel(?:f|ves)\b|summar(?:y|ies)\b|reports?\b|chapters?\b|pages?\b|of\b|prices?\b|funds?\b|accounts?\b|savings?\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:clubs?|reviews?|stores?|shops?|shel(?:f|ves)|summar(?:y|ies)|reports?|chapters?|pages?|of|prices?|funds?|accounts?|savings?|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
     [
       "reservation",
-      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:go\s+ahead\s+)?and(?:\s+then)?|then|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!club\b|review\b|store\b|shop\b|shelf\b|summary\b|report\b|chapter\b|page\b|of\b|price\b|fund\b|account\b|savings\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:club|review|store|shop|shelf|summary|report|chapter|page|of|price|fund|account|savings|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|(?:(?:go\s+ahead\s+)?(?:and|but)(?:\s+then)?|then)(?:\s+(?:please|just))?|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+((?:(?:a|an|the|my|our|your|me|us|this|that|these|those|another)\s+(?!clubs?\b|reviews?\b|stores?\b|shops?\b|shel(?:f|ves)\b|summar(?:y|ies)\b|reports?\b|chapters?\b|pages?\b|of\b|prices?\b|funds?\b|accounts?\b|savings?\b|parking\b)\w+|(?:it|them)\b|(?:one|two|three|four|five|\d+|some)\s+(?:(?!(?:clubs?|reviews?|stores?|shops?|shel(?:f|ves)|summar(?:y|ies)|reports?|chapters?|pages?|of|prices?|funds?|accounts?|savings?|parking)\b)[a-z]+\s+){0,2}(?:flights?|hotels?|rooms?|suites?|nights?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b))/gi,
     ],
   ]);
-  /** Boundary ending a booking verb's direct object span ("Book a flight to London and gather/see/fetch/check hotel prices" cuts at "and <verb>", while coordinated objects like "Book a flight and a hotel in London" stay in one span). */
-  private static readonly OBJ_SPAN_END = /[.?!;:,]|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\s+(?!(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b)/i;
+  private static readonly OBJ_BOUNDARY = /[.?!;:]|,|\s+(?:but|while|whereas|because|since|then|also|plus)\b|\s+and\b/gi;
+  private static readonly COORD_DET_OR_NOUN = /^\s+(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+)\b|(?:flights?|hotels?|rooms?|suites?|tables?|tickets?|seats?|cars?|trains?|buses?|ferries?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b)/i;
+  private static readonly NON_BOOK_TAIL = /^\s+(?:(?:a|an|the|my|our|your)\s+)?(?:\w+\s+){0,2}(?:prices?|rates?|costs?|comparison|weather|forecast|rules?|reviews?|hours?|status|polic(?:y|ies))\b/i;
+  private static readonly COMMA_PLACE_CONT = /^\s+(?!(?:And|But|Then|Also|Plus|Please|Or|So|Yet|While|Because|Since|Check|Find|Gather|See|Fetch|Compare|Summarize|Summarise|Book|Reserve)\b)[A-Z][a-z]+/;
   /** Bare anaphoric pronoun object right after a booking verb ("book it", "book it for Friday"), never a determiner + noun ("book that tour", "book one tour"). */
   private static readonly BARE_ANAPHOR_OBJ = /^(?:(?:me|us)\s+)?(?:it|them|that|one)(?:\s*$|\s+(?:for|on|at|in|by|from|to|with|now|today|tonight|tomorrow|please|too|as\s+well|instead|again)\b)/i;
+  /** Explicit destination phrase inside a booking object ("in Paris", "near Paddington") that prevents inheriting a different location modifier from an earlier clause. */
+  private static readonly EXPLICIT_LOC_PHRASE = /\b(?:in|at|to|near)\s+(?:the\s+)?(?!(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|morning|afternoon|evening|night|noon|midnight|weekend|week|month|year|advance|person|full|total|cash|time|once|\d)\b)[a-z]{3,}\b/i;
   /** Bookable sub-unit object patterns (lowercase adjectives only so a new destination like "a Paris room" does not inherit "London"). */
   private static readonly CATEGORY_SUBUNIT: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     ["hotel", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:rooms?|stays?|suites?|nights?)\b/],
@@ -3357,6 +3361,11 @@ export class Call {
     ["spa", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:sessions?|appointments?|slots?)\b/],
   ]);
   private static readonly BOOK_CATEGORIES = ["hotel", "flight", "train", "bus", "ferry", "car", "spa", "dinner", "lunch", "restaurant", "tour", "concert", "show", "table", "ticket"];
+  /** Sub-unit nouns that belong to a parent category in the same noun phrase ("restaurant with a table", "flight with a flexible ticket") rather than introducing a second referent. */
+  private static readonly SUBUNIT_PARENTS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+    ["table", ["restaurant", "dinner", "lunch"]],
+    ["ticket", ["flight", "train", "bus", "concert", "show"]],
+  ]);
 
   /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel reservations", "both IT tasks", or "both last-minute bookings". Both sides are tokenized identically from original-case text (splitting hyphens, keeping all-caps acronyms like "IT"/"US"/"AM", and filtering lowercase function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
@@ -3402,6 +3411,24 @@ export class Call {
     const taskWords = wordSet(`${task.label} ${task.latest} ${task.request}`);
     const matchesIn = (set: Set<string>, w: string): boolean => stemVariants(w).some((v) => set.has(v));
     const matchesTask = (w: string): boolean => matchesIn(taskWords, w);
+    const sliceObjSpan = (tail: string): string => {
+      Call.OBJ_BOUNDARY.lastIndex = 0;
+      let bm: RegExpExecArray | null;
+      while ((bm = Call.OBJ_BOUNDARY.exec(tail)) != null) {
+        const sep = bm[0];
+        const after = tail.slice(bm.index + sep.length);
+        if (sep === ",") {
+          if ((Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) || Call.COMMA_PLACE_CONT.test(after)) continue;
+          return tail.slice(0, bm.index).trim();
+        }
+        if (/^\s+and$/i.test(sep)) {
+          if (Call.COORD_DET_OR_NOUN.test(after) && !Call.NON_BOOK_TAIL.test(after)) continue;
+          return tail.slice(0, bm.index).trim();
+        }
+        return tail.slice(0, bm.index).trim();
+      }
+      return tail.trim();
+    };
     const bookingSpans = (verbRe: RegExp): Array<{ before: string; obj: string }> => {
       const out: Array<{ before: string; obj: string }> = [];
       const req = task.request;
@@ -3409,10 +3436,7 @@ export class Call {
       let vm: RegExpExecArray | null;
       while ((vm = verbRe.exec(req)) != null) {
         const objStart = vm.index + vm[0].length - vm[1].length;
-        const tail = req.slice(objStart);
-        const endMatch = Call.OBJ_SPAN_END.exec(tail);
-        const obj = (endMatch != null ? tail.slice(0, endMatch.index) : tail).trim();
-        out.push({ before: req.slice(0, vm.index), obj });
+        out.push({ before: req.slice(0, vm.index), obj: sliceObjSpan(req.slice(objStart)) });
       }
       return out;
     };
@@ -3427,11 +3451,28 @@ export class Call {
       const modCategories = Call.BOOK_CATEGORIES.filter((cat) => modifiers.some((mod) => stemVariants(mod).includes(cat)));
       const anyBookingMatches = verbMatches.some(({ before, obj }) => {
         const objWords = wordSet(obj);
-        if (modifiers.every((mod) => matchesIn(objWords, mod))) return true;
+        if (modifiers.every((mod) => matchesIn(objWords, mod))) {
+          // If coordinated items each carry their own destination ("a hotel in London and a flight to Paris"), require a single coordinated item to match all modifiers.
+          const coordParts = obj.split(/\s+and\s+/i).map((p) => p.trim()).filter(Boolean);
+          if (coordParts.length > 1 && coordParts.every((p) => Call.EXPLICIT_LOC_PHRASE.test(p))) {
+            return coordParts.some((p) => {
+              const pw = wordSet(p);
+              return modifiers.every((mod) => matchesIn(pw, mod));
+            });
+          }
+          return true;
+        }
         const beforeWords = wordSet(before);
         const priorWords = wordSet(`${task.label} ${before} ${obj}`);
         if (!modifiers.every((mod) => matchesIn(priorWords, mod))) return false;
-        const priorCategories = Call.BOOK_CATEGORIES.filter((cat) => matchesIn(beforeWords, cat));
+        // An explicit destination on the booking object ("in Paris") overrides missing non-category modifiers ("London") from an earlier clause.
+        const missingNonCategoryMod = modifiers.some((mod) => !matchesIn(objWords, mod) && !modCategories.some((cat) => stemVariants(mod).includes(cat)));
+        if (missingNonCategoryMod && Call.EXPLICIT_LOC_PHRASE.test(obj)) return false;
+        const priorCategories = Call.BOOK_CATEGORIES.filter((cat) => {
+          if (!matchesIn(beforeWords, cat)) return false;
+          const parents = Call.SUBUNIT_PARENTS.get(cat);
+          return parents == null || !parents.some((p) => matchesIn(beforeWords, p));
+        });
         const isBareAnaphor = Call.BARE_ANAPHOR_OBJ.test(obj);
         const matchedSubunitCats = [...Call.CATEGORY_SUBUNIT.entries()]
           .filter(([cat, subRe]) => matchesIn(beforeWords, cat) && subRe.test(obj))

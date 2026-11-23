@@ -2850,6 +2850,19 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both London bookings", "Check London weather and book a table at Le Comptoir in Paris", "Paris dinner", "Cancel both London bookings in progress", 0],
     ["Both hotel bookings", "Find a London hotel and book it for Friday", "London hotel", "Cancel both hotel bookings in progress", 1],
     ["Both hotel bookings", "Book a flight and a hotel in London", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Check London hotel prices, then book two adjoining rooms in Paris", "Paris rooms", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a hotel in Soho, London", "Soho stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight and hotel in London", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and hotel in Paris", "Trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book flights and hotels for the London trip", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a hotel, a car and a flight for London", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a hotel near Hyde Park, London", "Hyde Park stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices but book a hotel near Paddington", "Paddington stay", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices and please book a hotel near Paddington", "Paddington stay", "Cancel both hotel bookings in progress", 1],
+    ["Both London restaurant bookings", "Find a London restaurant with a table for two and book it for Friday", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both train bookings", "Summarize: Book Two chapters about trains", "Book summary", "Cancel both train bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a hotel in London and a flight to Paris", "Trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and the hotel prices too", "London flight", "Cancel both hotel bookings in progress", 0],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
