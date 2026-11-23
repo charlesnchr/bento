@@ -465,7 +465,6 @@ export class WakeAudioGate {
     if (event.type === "unmute") {
       this.lastEventRanAnnounce = false;
       this.muted = false;
-      this.deferred = [];
       return [];
     }
     let acceptedBrief = false;

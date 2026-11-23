@@ -908,4 +908,16 @@ test("WakeAudioGate: push-to-talk release/re-press never leaks audio captured wh
   // Unmuted audio after re-press still flows normally.
   ptt.micFrame(6006, 1.27);
   assert.ok(ptt.sentAudioTags.includes(6006));
+
+  // Redundant unmute while mic is already open (e.g. pressing M while holding Space)
+  // must preserve deferred unmuted gap audio instead of dropping it.
+  ptt.modelAudio(0.2, 2.0);
+  const seq2 = ptt.micFrame(1002, 2.1);
+  ptt.sentAudioTags.length = 0;
+  ptt.micFrame(7007, 2.22);
+  assert.equal(ptt.gate.hasDeferred, true);
+  ptt.push({ type: "unmute" }, 2.23);
+  assert.equal(ptt.gate.hasDeferred, true, "redundant unmute must not drop queued unmuted audio");
+  ptt.emitAck(seq2);
+  assert.ok(ptt.sentAudioTags.includes(7007), "queued unmuted audio must reach model after redundant unmute");
 });
