@@ -3024,6 +3024,23 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both London flight bookings", "Book a flight to Paris & Meet in London", "Paris trip", "Cancel both London flight bookings in progress", 0],
     ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Inspect The Hotel", "Paris flight", "Cancel both hotel bookings in progress", 0],
     ["Both hotel bookings", "Book a flight to Paris, a hotel in rome: refundable only", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in rome: Discuss Ritz Hotel", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Upgrade Suites", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a bel-air hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a aix-en-provence hotel", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a baden-baden hotel", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a saint-tropez hotel", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Poppies Fish & Chips in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London flight bookings", "Book a London hotel and an early-morning flight", "London trip", "Cancel both London flight bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and an en-suite hotel room", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a brand-new hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Book a London hotel and a cut-price flight", "London trip", "Cancel both London flight bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and an art-deco hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a 5-Star hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a Stoke on Trent hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Southend on Sea hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a mystic hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the family and me", "Rome flight", "Cancel both London flight bookings in progress", 0],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
