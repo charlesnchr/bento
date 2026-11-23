@@ -133,16 +133,22 @@ class VoiceCallDecoupleTest {
         board.update { it + TaskUi(uiId, "Book table", "Table", status = "completed", sessionId = "sid-original") }
         board.setSessionId(uiId, "sid-original")
 
-        // Hang up drops completed rows from UI, but the board retains session identity and accumulated requests (original + follow-ups) without duplication.
-        assertEquals("Find somewhere for dinner", board.accumulateRequest(uiId, "Find somewhere for dinner"))
-        assertEquals("Find somewhere for dinner Book that Alchemist option", board.accumulateRequest(uiId, "Book that Alchemist option"))
-        assertEquals("Find somewhere for dinner Book that Alchemist option", board.accumulateRequest(uiId, "Book that Alchemist option"))
+        // Hang up drops completed rows from UI, but the board retains session identity, original display request, and bounded head+tail history.
+        val longOriginal = "Find somewhere for dinner " + "x".repeat(1100)
+        board.accumulateRequest(uiId, longOriginal)
+        val merged = board.accumulateRequest(uiId, "Book that Alchemist option")
+        assertTrue(merged.length <= 1000)
+        assertTrue(merged.contains("Find somewhere for dinner"), "head of original prompt must survive cap")
+        assertTrue(merged.contains("Book that Alchemist option"), "latest follow-up must survive cap")
+        assertEquals(longOriginal, board.firstRequest(uiId, "Yes, book it"))
         board.detach()
         state = AssistantController.endCallState(state, error = null)
         assertNull(board.find(uiId))
         assertEquals("sid-original", board.sessionId(uiId))
-        assertEquals("Find somewhere for dinner Book that Alchemist option", board.requestHistory(uiId, "Find somewhere for dinner"))
-        assertEquals("Find somewhere for dinner Book that Alchemist option Yes, book it", board.accumulateRequest(uiId, "Yes, book it"))
+        assertEquals(merged, board.requestHistory(uiId, "fallback"))
+        val afterFollowUp = board.accumulateRequest(uiId, "Yes, book it")
+        assertTrue(afterFollowUp.contains("Book that Alchemist option"))
+        assertTrue(afterFollowUp.contains("Yes, book it"))
     }
 
     @Test fun activeTaskForSessionMatchesRunningCallOrDetachedTasksOnly() {

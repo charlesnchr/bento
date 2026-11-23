@@ -1224,3 +1224,121 @@ test("many queued messages behind 'Yes, book it' do not evict the question snaps
   s.advance(0.1);
   assert.equal(s.hermes().length, 1, "queued messages must not evict the question snapshot and let 'Yes, book it' route to Noma");
 });
+
+test("clause cancel scoping: unnamed third task is not stopped, 'not/except' protects target, and idiomatic cancel clauses still execute", () => {
+  // 1) With Noma, Weather, and Paris running, "Cancel the Noma table but keep the weather one" must NOT cancel Paris.
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.type("Check Copenhagen weather");
+  s.calls("ask_hermes", { label: "Copenhagen weather" });
+  s.advance(0.1);
+  s.type("Find flights to Paris");
+  s.calls("ask_hermes", { label: "Paris flights" });
+  s.advance(0.1);
+  s.type("Cancel the Noma table but keep the weather one");
+  s.calls("cancel_task", { task: "Paris flights" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "unnamed third task Paris must not be cancelled");
+  s.calls("cancel_task", { task: "Copenhagen weather" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "kept task Weather must not be cancelled");
+  s.calls("cancel_task", { task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "named task Noma must cancel");
+
+  // 2) "not the Noma one", "but not Noma", and "except Noma" protect Noma while allowing Weather/Paris to cancel.
+  for (const phrase of [
+    "Cancel the weather search, not the Noma one",
+    "Cancel the weather one but not Noma",
+    "Cancel everything except Noma",
+  ]) {
+    const s2 = chat();
+    s2.type("Book a table at Noma");
+    s2.calls("ask_hermes", { label: "Noma table" });
+    s2.advance(0.1);
+    s2.type("Check Copenhagen weather");
+    s2.calls("ask_hermes", { label: "Copenhagen weather" });
+    s2.advance(0.1);
+    s2.type(phrase);
+    s2.calls("cancel_task", { task: "Noma table" });
+    s2.advance(0.1);
+    assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, `must protect Noma on: ${phrase}`);
+  }
+
+  // 3) Idiomatic phrases with "let", "leave", or "keep" aimed at the user still cancel Noma immediately.
+  for (const phrase of [
+    "Let me be clear, cancel the Noma table",
+    "Cancel the Noma table and leave the rest to me",
+    "Just let it go, cancel the Noma table",
+    "Cancel the Noma table, I'll keep looking myself",
+  ]) {
+    const s3 = chat();
+    s3.type("Book a table at Noma");
+    s3.calls("ask_hermes", { label: "Noma table" });
+    s3.advance(0.1);
+    s3.type(phrase);
+    s3.calls("cancel_task", { task: "Noma table" });
+    s3.advance(0.1);
+    assert.ok(s3.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), `should cancel Noma on: ${phrase}`);
+  }
+});
+
+test("long detached request preserves latest follow-up across 1000-char cap, and queued messages cannot expire a detached question to allow bare 'Yes please' cancel", () => {
+  // 1) Long original request (>1000 chars) + follow-up naming Alchemist keeps Alchemist after cap.
+  const s = chat();
+  const longOriginal = "Find somewhere nice for dinner " + "details ".repeat(160);
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: longOriginal, active: true, request: longOriginal });
+  s.advance(0.1);
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Alchemist has a table at nine.", active: false, request: "Book that Alchemist option" });
+  s.advance(0.1);
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.type("Book the Alchemist option");
+  s.calls("ask_hermes", { continue_task: "Dinner booking" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1, "follow-up naming Alchemist must stay preserved past the 1000-char request cap and block routing to Noma");
+
+  // 2) Queuing 2 messages after "Yes please" while detached Alchemist has a pending question must not expire the snapshot and cancel Noma.
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Noma table" });
+  s2.advance(0.1);
+  s2.type("What is 2 + 2?");
+  s2.calls("cancel_task", { task: "Noma table" });
+  s2.advance(0.1);
+  s2.writes("Did you want me to cancel Noma table?");
+  s2.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Alchemist has a table at nine. Shall I book it?" });
+  s2.advance(0.1);
+  s2.type("Yes please");
+  const yesReq = s2.requests().at(-1)!.id;
+  // Queue two later messages before Gemini answers "Yes please" (which expires live Alchemist question).
+  s2.advance(0.05);
+  s2.type("Also check weather");
+  s2.advance(0.05);
+  s2.type("And remind me at 5");
+  s2.calls("cancel_task", { task: "Noma table" }, yesReq);
+  s2.advance(0.1);
+  assert.ok(!s2.commands.some((c) => c.type === "tool.cancel"), "pinned turn snapshot with Alchemist's question must block bare 'Yes please' cancel even after later queued messages lapse live questions");
+
+  // 3) Repeated bare "Yes" turns after a cross-session refusal never slip through without naming the task.
+  const s3 = chat();
+  s3.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s3.advance(0.1);
+  s3.type("Make a dinner booking at Noma");
+  s3.calls("ask_hermes", { label: "Dinner booking" });
+  s3.advance(0.1);
+  s3.type("Cancel the Alchemist dinner booking.");
+  s3.calls("cancel_task", { task: "Dinner booking" });
+  s3.advance(0.1);
+  s3.writes("Please confirm by naming Dinner booking.");
+  for (let i = 0; i < 3; i++) {
+    s3.type("Yes");
+    s3.calls("cancel_task", { task: "Dinner booking" });
+    s3.advance(0.1);
+    s3.writes("Please name the task to cancel.");
+  }
+  assert.ok(!s3.commands.some((c) => c.type === "tool.cancel"), "repeated bare 'Yes' turns after cross-session refusal must not cancel Noma");
+});

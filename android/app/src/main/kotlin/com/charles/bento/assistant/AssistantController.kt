@@ -868,7 +868,7 @@ class AssistantController(
                         if (conversationEpoch == board.epoch) {
                             val turnsNow = _state.value.messages.count { it.role == "user" }
                             for (t in _state.value.tasks) {
-                                if (t.detached && t.active && conversationDetached.none { it.id == t.id }) {
+                                if (board.ownsUi(t.id) && t.detached && t.active && conversationDetached.none { it.id == t.id }) {
                                     val combined = board.requestHistory(t.id, t.request)
                                     recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = combined))
                                 }
@@ -969,7 +969,7 @@ class AssistantController(
         val priorSid = (known?.sessionId ?: board.sessionId(uiId))?.takeIf { request.followUp }
         if (known != null && known.request.isNotBlank()) board.accumulateRequest(uiId, known.request)
         val combinedRequest = board.accumulateRequest(uiId, request.task)
-        val displayRequest = known?.request?.takeIf { it.isNotBlank() } ?: request.task
+        val displayRequest = known?.request?.takeIf { it.isNotBlank() } ?: board.firstRequest(uiId, request.task)
         val now = SystemClock.elapsedRealtime()
         val label = request.label.ifEmpty { TaskLabel.short(request.task) }
         var taskMessages = known?.messages.orEmpty() + ask
@@ -1282,17 +1282,28 @@ internal class TaskBoard(
     private val uiToCore = HashMap<String, String>()
     /** Session IDs remembered per UI task id so a dispatched follow-up recovers its session even if its completed row was dropped at hang-up. */
     private val sessions = HashMap<String, String>()
-    /** Accumulated distinct prompts per UI task id (bounded) so both original and follow-up identifying words survive hang-up. */
+    /** Original first prompt per UI task id, kept for card display even after a completed row is dropped at hang-up. */
+    private val firstRequests = HashMap<String, String>()
+    /** Accumulated distinct prompts per UI task id (bounded while preserving both head and newest tail) so original and follow-up identifying words survive hang-up. */
     private val taskRequests = HashMap<String, String>()
+
+    fun firstRequest(uiId: String, fallback: String): String =
+        firstRequests[uiId] ?: fallback
 
     fun accumulateRequest(uiId: String, request: String): String {
         val clean = request.trim()
+        if (clean.isNotBlank()) firstRequests.putIfAbsent(uiId, clean)
         val prev = taskRequests[uiId]
+        val cap: (String) -> String = { s ->
+            if (s.length <= 1000) s
+            else "${s.take(500).trimEnd()} ${s.takeLast(499).trimStart()}".trim()
+        }
         val merged = when {
-            prev.isNullOrBlank() -> clean
-            clean.isBlank() || prev.contains(clean, ignoreCase = true) -> prev
-            else -> "$prev $clean"
-        }.take(1000)
+            prev.isNullOrBlank() -> cap(clean)
+            clean.isBlank() || prev.contains(clean, ignoreCase = true) -> cap(prev)
+            clean.contains(prev, ignoreCase = true) -> cap(clean)
+            else -> cap("$prev $clean")
+        }
         if (merged.isNotBlank()) taskRequests[uiId] = merged
         return merged
     }
