@@ -204,6 +204,7 @@ class AssistantController(
     private sealed interface EarlyChatEvent {
         data class Typed(val text: String) : EarlyChatEvent
         data class Noted(val note: DetachedNote) : EarlyChatEvent
+        data class Removed(val id: String) : EarlyChatEvent
     }
 
     /** User messages and detached notes that arrived while the chat's core was loading, replayed in arrival order. */
@@ -551,6 +552,7 @@ class AssistantController(
             for (event in earlyChatEvents) when (event) {
                 is EarlyChatEvent.Typed -> c.say(event.text)
                 is EarlyChatEvent.Noted -> c.note(event.note.label, event.note.text, event.note.failed, inHistory = event.note.active, id = event.note.id, active = event.note.active, request = event.note.request.ifBlank { null })
+                is EarlyChatEvent.Removed -> c.removeNote(event.id)
             }
             earlyChatEvents.clear()
             launch {
@@ -964,11 +966,13 @@ class AssistantController(
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = board.spoken)
         val known = board.find(uiId)
         val priorSid = (known?.sessionId ?: board.sessionId(uiId))?.takeIf { request.followUp }
+        val originalRequest = board.rememberRequest(uiId, known?.request?.takeIf { it.isNotBlank() } ?: request.task)
+        val combinedRequest = if (request.task.isNotBlank() && !originalRequest.contains(request.task)) "$originalRequest ${request.task}" else originalRequest
         val now = SystemClock.elapsedRealtime()
         val label = request.label.ifEmpty { TaskLabel.short(request.task) }
         var taskMessages = known?.messages.orEmpty() + ask
         if (known == null) {
-            board.update { it + TaskUi(uiId, request.task, label, sessionId = priorSid, messages = taskMessages, startedAt = now, detached = board.detached) }
+            board.update { it + TaskUi(uiId, originalRequest, label, sessionId = priorSid, messages = taskMessages, startedAt = now, detached = board.detached) }
         } else {
             board.task(uiId) { it.copy(status = "running", progress = null, question = null, messages = taskMessages, startedAt = now) }
         }
@@ -976,11 +980,11 @@ class AssistantController(
             voiceBoundary = true
             chatLine = null
             if (board.detached) {
-                val activeNote = DetachedNote(uiId, label, request.task, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = request.task)
+                val activeNote = DetachedNote(uiId, label, originalRequest, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = combinedRequest)
                 recordDetached(activeNote)
                 val openChat = chat
                 when {
-                    openChat != null -> openChat.note(label, request.task, failed = false, inHistory = true, id = uiId, active = true, request = request.task)
+                    openChat != null -> openChat.note(label, originalRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
                     chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(activeNote))
                 }
             }
@@ -1011,7 +1015,7 @@ class AssistantController(
                 }
             } catch (e: HermesError) {
                 apply(HermesEvent.Failed(e.message.orEmpty()))
-                return finished(board, uiId, label, request.task, sessionId, shown(), turn.copy(status = "failed"))
+                return finished(board, uiId, label, combinedRequest, sessionId, shown(), turn.copy(status = "failed"))
             }
             turn = turn.copy(sessionId = sid)
             val choice = choiceFor(sid)
@@ -1064,13 +1068,13 @@ class AssistantController(
             withContext(NonCancellable) {
                 run?.let { r -> scope.launch { runCatching { runClient.stop(r) } } }
                 apply(HermesEvent.Finished("cancelled", null, null))
-                finished(board, uiId, label, request.task, sessionId, shown(), turn)
+                finished(board, uiId, label, combinedRequest, sessionId, shown(), turn)
             }
             throw e
         } finally {
             if (myJob != null && taskJobs[uiId] === myJob) taskJobs.remove(uiId)
         }
-        return finished(board, uiId, label, request.task, sessionId, shown(), turn)
+        return finished(board, uiId, label, combinedRequest, sessionId, shown(), turn)
     }
 
     /** The task's conversation after an event: its progress for Gemini and the screen, and approvals in the chat. */
@@ -1121,22 +1125,23 @@ class AssistantController(
             chatLine = null
             // Feed detached voice-call results into the active typed chat without rebuilding it or dropping pending questions.
             if (board.detached) {
-                if (status == "cancelled") {
-                    conversationDetached.removeAll { it.id == uiId && it.active }
+                val noteText = if (status == "cancelled") "" else if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
+                if (noteText.isNotBlank()) {
+                    val failed = status == "failed" && turn.answer.isBlank()
+                    val userTurnsAt = _state.value.messages.count { it.role == "user" }
+                    val note = DetachedNote(uiId, label, noteText, failed, userTurnsAt, active = false, request = requestText)
+                    recordDetached(note)
+                    val openChat = chat
+                    when {
+                        openChat != null -> openChat.note(label, noteText, failed, id = uiId, request = requestText)
+                        chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(note))
+                    }
                 } else {
-                    val noteText = if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
-                    if (noteText.isNotBlank()) {
-                        val failed = status == "failed" && turn.answer.isBlank()
-                        val userTurnsAt = _state.value.messages.count { it.role == "user" }
-                        val note = DetachedNote(uiId, label, noteText, failed, userTurnsAt, active = false, request = requestText)
-                        recordDetached(note)
-                        val openChat = chat
-                        when {
-                            openChat != null -> openChat.note(label, noteText, failed, id = uiId, request = requestText)
-                            chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(note))
-                        }
-                    } else {
-                        conversationDetached.removeAll { it.id == uiId && it.active }
+                    conversationDetached.removeAll { it.id == uiId }
+                    val openChat = chat
+                    when {
+                        openChat != null -> openChat.removeNote(uiId)
+                        chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Removed(uiId))
                     }
                 }
             }
@@ -1275,6 +1280,11 @@ internal class TaskBoard(
     private val uiToCore = HashMap<String, String>()
     /** Session IDs remembered per UI task id so a dispatched follow-up recovers its session even if its completed row was dropped at hang-up. */
     private val sessions = HashMap<String, String>()
+    /** Original first request remembered per UI task id so follow-ups ("Yes, book it") never erase the task's identifying prompt. */
+    private val originalRequests = HashMap<String, String>()
+
+    fun rememberRequest(uiId: String, request: String): String =
+        originalRequests.getOrPut(uiId) { request }
 
     /** True once a voice call ended and its surviving tasks live in `state.tasks`. */
     val detached: Boolean get() = spoken && callEnded

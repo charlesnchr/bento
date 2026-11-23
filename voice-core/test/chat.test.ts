@@ -939,7 +939,9 @@ test("refused cross-session cancel never unlocks on negation, repeating the deta
   s.calls("cancel_task", { task: "Dinner booking" }, s.requests().at(-1)!.id);
   s.advance(0.1);
   assert.ok(!s.commands.some((c) => c.type === "tool.cancel"));
-  s.writes("It is 3pm. Did you want me to cancel Dinner booking?");
+  s.writes("Did you want me to cancel Dinner booking?");
+  // Turn 2: the queued "What time is it?" runs next and finishes before Turn 3.
+  s.writes("It is 3pm.");
   // Turn 3: "No, keep Noma running. Cancel Alchemist." must still refuse.
   s.type("No, keep Noma running. Cancel Alchemist.");
   s.calls("cancel_task", { task: "Dinner booking" });
@@ -1004,4 +1006,123 @@ test("detached task completion preserves its original request for cancel_task co
   s.calls("cancel_task", { task: "Dinner booking" });
   s.advance(0.1);
   assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "preserved original request 'Book a table at Alchemist' must keep blocking Noma cancel after completion");
+});
+
+test("cross-session cancel refusal stays armed across retries on the same turn, expires after unrelated turns, and does not break 'Don't bother' or 'No wait, cancel'", () => {
+  // 1) "Actually, keep Noma running." followed by TWO cancel_task calls on the same turn must refuse both.
+  const s1 = chat();
+  s1.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s1.advance(0.1);
+  s1.type("Make a dinner booking at Noma");
+  s1.calls("ask_hermes", { label: "Dinner booking" });
+  s1.advance(0.1);
+  s1.type("Cancel the Alchemist dinner booking.");
+  s1.calls("cancel_task", { task: "Dinner booking" });
+  s1.advance(0.1);
+  s1.writes("Did you want me to cancel Dinner booking?");
+  s1.type("Actually, keep Noma running.");
+  s1.calls("cancel_task", { task: "Dinner booking" });
+  s1.advance(0.1);
+  // Second cancel_task on the exact same model turn must STILL refuse!
+  s1.calls("cancel_task", { task: "Dinner booking" });
+  s1.advance(0.1);
+  assert.ok(!s1.commands.some((c) => c.type === "tool.cancel"), "second cancel_task on 'Actually, keep Noma running.' must still refuse");
+
+  // 2) Cross-session refusal expires after unrelated intervening turns so a later "Yes please" does not cancel Noma.
+  const s2 = chat();
+  s2.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s2.advance(0.1);
+  s2.type("Make a dinner booking at Noma");
+  s2.calls("ask_hermes", { label: "Dinner booking" });
+  s2.advance(0.1);
+  s2.type("Cancel the Alchemist dinner booking.");
+  s2.calls("cancel_task", { task: "Dinner booking" });
+  s2.advance(0.1);
+  s2.writes("Tap Cancel on Dinner reservation.");
+  s2.type("What's the weather in Copenhagen?");
+  s2.writes("Sunny, 12 degrees.");
+  s2.type("Thanks");
+  s2.writes("You're welcome.");
+  s2.type("Yes please");
+  s2.calls("cancel_task", { task: "Dinner booking" });
+  s2.advance(0.1);
+  assert.ok(!s2.commands.some((c) => c.type === "tool.cancel"), "unrelated 'Yes please' turns later must not inherit an expired cancel refusal");
+
+  // 3) "Don't bother with the Noma booking" and "No wait, cancel the Noma table" still cancel immediately.
+  for (const phrase of ["Don't bother with the Noma booking", "No wait, cancel the Noma table"]) {
+    const s3 = chat();
+    s3.type("Book a table at Noma");
+    s3.calls("ask_hermes", { label: "Noma table" });
+    s3.advance(0.1);
+    s3.type(phrase);
+    s3.calls("cancel_task", { task: "Noma table" });
+    s3.advance(0.1);
+    assert.ok(s3.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), `should cancel on: ${phrase}`);
+  }
+});
+
+test("many queued messages do not evict the model's answered turn for cancel_task", () => {
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.type("Keep Noma running.");
+  const keepReq = s.requests().at(-1)!.id;
+  // Queue 10 later messages ending with "Cancel Noma" while the model is still answering "Keep Noma running."
+  for (let i = 1; i <= 9; i++) s.type(`Unrelated note ${i}`);
+  s.type("Cancel Noma");
+  s.calls("cancel_task", { task: "Noma table" }, keepReq);
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "queued 'Cancel Noma' must not overwrite 'Keep Noma running.'");
+});
+
+test("continue_task with a newer detached question requires unique owned identification (refuses shared 'table' and 'Friday please', allows request-named 'Yes, book Noma')", () => {
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("Noma has tables on Friday or Saturday. Which day would you like?");
+  s.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Alchemist has tables on Friday or Saturday. Which day would you like?" });
+  s.advance(0.1);
+  // 1) Shared label word "table" is not unique identification -> refused.
+  s.type("Yes, book the table");
+  s.calls("ask_hermes", { continue_task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  s.writes("Which restaurant, Noma or Alchemist?");
+  // 2) Unattributed detail "Friday please" is not unique identification -> refused.
+  s.type("Friday please");
+  s.calls("ask_hermes", { continue_task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  s.writes("Noma or Alchemist for Friday?");
+  // 3) Naming "Noma" (unique to owned task) routes cleanly even when label is generic ("Dinner booking").
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Dinner booking" });
+  s2.advance(0.1);
+  s2.complete("Noma has a table at eight. Shall I book it?");
+  s2.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Alchemist has a table at nine. Shall I book it?" });
+  s2.advance(0.1);
+  s2.type("Yes, book Noma");
+  s2.calls("ask_hermes", { continue_task: "Dinner booking" });
+  s2.advance(0.1);
+  assert.equal(s2.hermes().length, 2);
+  assert.equal(s2.hermes()[1].followUp, true);
+});
+
+test("note remove event clears a cancelled detached task from a live chat so it stops blocking unrelated cancels", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s.advance(0.1);
+  // Detached task is cancelled and removed from the live chat.
+  s.push({ type: "note", id: "call-1-1", label: "", text: "", remove: true });
+  s.advance(0.1);
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.type("Cancel the Noma reservation");
+  s.calls("cancel_task", { task: "Dinner booking" });
+  s.advance(0.1);
+  assert.ok(s.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), "removed detached task must not block cancelling Noma");
 });

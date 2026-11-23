@@ -135,6 +135,16 @@ class CoreChat(
         })
     }
 
+    /** Removes a previously registered detached task by [id] (e.g. cancelled or finished with no text) so it stops guarding later commands. */
+    fun removeNote(id: String) = post {
+        push(event("note") {
+            put("id", id)
+            put("label", "")
+            put("text", "")
+            put("remove", true)
+        })
+    }
+
     /** The screen's progress line for a task, for check_task and list_tasks. */
     fun progress(taskId: String, text: String) = post { push(event("task.progress") { put("task", taskId); put("text", text) }) }
 

@@ -350,5 +350,29 @@ class CoreChatTest {
         until("explicit detached continue_task refused") { heard4.said().size == 1 }
         assertEquals(1, asked4.size)
         c4.stop()
+
+        // 5. removeNote clears a cancelled active detached note so it stops guarding later cancel_task calls.
+        val model5 = Scripted(
+            calls("ask_hermes", """{"label":"Dinner booking"}"""),
+            calls("cancel_task", """{"task":"Dinner booking"}"""),
+            words("Cancelled Dinner booking."),
+        )
+        val heard5 = Heard()
+        val cancelled5 = CompletableDeferred<Unit>()
+        val running5 = CompletableDeferred<Unit>()
+        val c5 = chat(model5, heard5) {
+            running5.complete(Unit)
+            try { delay(60_000) } catch (e: CancellationException) { cancelled5.complete(Unit); throw e }
+            ToolReply("")
+        }
+        c5.start()
+        c5.note("Dinner reservation", "Book a table at Alchemist", inHistory = true, id = "call-1-1", active = true, request = "Book a table at Alchemist")
+        c5.removeNote("call-1-1")
+        c5.say("Make a dinner booking at Noma")
+        withTimeout(5000) { running5.await() }
+        c5.say("Cancel the dinner booking; forget Alchemist")
+        withTimeout(5000) { cancelled5.await() }
+        until("cancelled reply") { heard5.said().size == 1 }
+        c5.stop()
     }
 }
