@@ -27,7 +27,7 @@ object TaskNames {
     private fun words(text: String) = text.lowercase().split(Regex("[^\\p{L}\\p{N}']+")).map { it.trim('\'') }.filter { it.isNotEmpty() }
 
     /** Distinctive words: a few letters long and not filler. */
-    private fun distinctive(text: String) = words(text).filter { it.length >= 4 && it !in stop }.toSet()
+    internal fun distinctive(text: String) = words(text).filter { it.length >= 4 && it !in stop }.toSet()
 
     /** A name the user's own words give a task when Gemini gave none: up to three words of what was asked, from its first clause. */
     fun fromRequest(request: String): String {

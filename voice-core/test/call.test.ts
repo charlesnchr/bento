@@ -575,4 +575,10 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   s.toolCall("x2", "cancel_task", { task: "Noma table" });
   s.advance(0.1);
   assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "cancel_task('Noma table') when user said 'Cancel the Alchemist table' must refuse");
+
+  // Naming the detached task as an exclusion ("Cancel the Noma table, not the Alchemist table") allows cancelling owned Noma.
+  s.turn("Cancel the Noma table, not the Alchemist table");
+  s.toolCall("x3", "cancel_task", { task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "excluding detached Alchemist must not block cancelling Noma");
 });

@@ -1412,3 +1412,68 @@ test("bare 'Keep Noma' protects Noma, shared-word exclusions resolve to the name
     assert.ok(s4.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), `should cancel Noma on: ${phrase}`);
   }
 });
+
+test("multi-task cancel ('Cancel the weather and the Noma table booking'), 'except X and Y', unresolved exclusions, and verb-named labels ('Email')", () => {
+  // 1) "Cancel the weather and the Noma table booking" cancels BOTH Weather and Noma, while refusing an unnamed third task (Paris).
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table booking" });
+  s.advance(0.1);
+  s.type("Check Copenhagen weather");
+  s.calls("ask_hermes", { label: "Weather" });
+  s.advance(0.1);
+  s.type("Find flights to Paris");
+  s.calls("ask_hermes", { label: "Paris flights" });
+  s.advance(0.1);
+  s.type("Cancel the weather and the Noma table booking");
+  s.calls("cancel_task", { task: "Paris flights" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "unnamed third task Paris must not cancel");
+  s.calls("cancel_task", { task: "Weather" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "shorter-label task Weather must cancel");
+  s.calls("cancel_task", { task: "Noma table booking" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 2, "longer-label task Noma table booking must cancel");
+
+  // 2) "Cancel everything except the Noma table booking and the weather" protects BOTH Noma and Weather.
+  const s2 = chat();
+  s2.type("Book a table at Noma");
+  s2.calls("ask_hermes", { label: "Noma table booking" });
+  s2.advance(0.1);
+  s2.type("Check Copenhagen weather");
+  s2.calls("ask_hermes", { label: "Weather" });
+  s2.advance(0.1);
+  s2.type("Cancel everything except the Noma table booking and the weather");
+  s2.calls("cancel_task", { task: "Noma table booking" });
+  s2.advance(0.1);
+  s2.calls("cancel_task", { task: "Weather" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, "both excluded tasks must be protected");
+
+  // 3) Unresolved explicit exclusion ("Cancel everything except the vegan one") fails closed.
+  const s3 = chat();
+  s3.type("Book a table at Noma");
+  s3.calls("ask_hermes", { label: "Noma table" });
+  s3.advance(0.1);
+  s3.type("Cancel everything except the vegan one");
+  s3.calls("cancel_task", { task: "Noma table" });
+  s3.advance(0.1);
+  assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 0, "unresolved explicit exclusion must fail closed");
+
+  // 4) Verb-named task label ("Email") still counts in target scoring so "Cancel the email task" does not cancel Weather.
+  const s4 = chat();
+  s4.type("Draft an email to Alice");
+  s4.calls("ask_hermes", { label: "Email" });
+  s4.advance(0.1);
+  s4.type("Check Copenhagen weather");
+  s4.calls("ask_hermes", { label: "Weather" });
+  s4.advance(0.1);
+  s4.type("Cancel the email task");
+  s4.calls("cancel_task", { task: "Weather" });
+  s4.advance(0.1);
+  assert.equal(s4.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel the email task' must not cancel Weather");
+  s4.calls("cancel_task", { task: "Email" });
+  s4.advance(0.1);
+  assert.equal(s4.commands.filter((c) => c.type === "tool.cancel").length, 1, "'Cancel the email task' must cancel Email");
+});

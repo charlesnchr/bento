@@ -519,10 +519,14 @@ class AssistantController(
         if (conversationDetached.size > 20) conversationDetached.removeAt(0)
     }
 
+    /** Combined original + follow-up request history for active detached tasks so a new chat or call after newChat() keeps their full identifying words. */
+    private val detachedRequests = HashMap<String, String>()
+
     private fun say(message: String) {
         val history = callHistory(_state.value.messages)
         val turnsBefore = _state.value.messages.count { it.role == "user" }
         val preChatNotes = conversationDetached.toList()
+        val preChatActive = _state.value.tasks.filter { it.detached && it.active }
         set { it.copy(error = null) }
         messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
         chatLine = null
@@ -545,9 +549,17 @@ class AssistantController(
             c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
             chat = c
             c.start()
+            val registeredIds = HashSet<String>()
             for (n in preChatNotes) {
                 val age = (turnsBefore - n.userTurnsAt).coerceAtLeast(0)
                 c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age, active = n.active, request = n.request.ifBlank { null })
+                registeredIds.add(n.id)
+            }
+            for (t in preChatActive) {
+                if (registeredIds.add(t.id)) {
+                    val req = detachedRequests[t.id] ?: t.request
+                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = req)
+                }
             }
             for (event in earlyChatEvents) when (event) {
                 is EarlyChatEvent.Typed -> c.say(event.text)
@@ -840,7 +852,8 @@ class AssistantController(
             }
             for (t in _state.value.tasks) {
                 if (t.detached && t.active && registeredIds.add(t.id)) {
-                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = t.request)
+                    val req = detachedRequests[t.id] ?: t.request
+                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = req)
                 }
             }
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
@@ -881,9 +894,18 @@ class AssistantController(
                         if (conversationEpoch == board.epoch) {
                             val turnsNow = _state.value.messages.count { it.role == "user" }
                             for (t in _state.value.tasks) {
-                                if (board.ownsUi(t.id) && t.detached && t.active && conversationDetached.none { it.id == t.id }) {
+                                if (board.ownsUi(t.id) && t.detached && t.active) {
                                     val combined = board.requestHistory(t.id, t.request)
-                                    recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = combined))
+                                    detachedRequests[t.id] = combined
+                                    if (conversationDetached.none { it.id == t.id }) {
+                                        recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = combined))
+                                    }
+                                }
+                            }
+                        } else {
+                            for (t in _state.value.tasks) {
+                                if (board.ownsUi(t.id) && t.detached && t.active) {
+                                    detachedRequests[t.id] = board.requestHistory(t.id, t.request)
                                 }
                             }
                         }
@@ -995,6 +1017,7 @@ class AssistantController(
             voiceBoundary = true
             chatLine = null
             if (board.detached) {
+                detachedRequests[uiId] = combinedRequest
                 val activeNote = DetachedNote(uiId, label, displayRequest, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = combinedRequest)
                 recordDetached(activeNote)
                 val openChat = chat
@@ -1125,6 +1148,7 @@ class AssistantController(
         val failure = taskMessages.lastOrNull { it.failed && it.id in turn.ids }?.text
         board.task(uiId) { it.copy(status = status, progress = null) }
         val link = turn.sessionId ?: sessionId
+        if (board.detached) detachedRequests.remove(uiId)
         if (conversationEpoch == board.epoch) {
             messages { list ->
                 // Approvals nobody answered lapse with the request.
@@ -1164,7 +1188,12 @@ class AssistantController(
                 }
             }
         } else if (board.detached) {
-            // An earlier-epoch detached task registered as active in a later call leaves that call once it finishes or cancels.
+            // An earlier-epoch detached task registered as active in a later chat or call leaves it once it finishes or cancels.
+            val openChat = chat
+            when {
+                openChat != null -> openChat.removeNote(uiId)
+                chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Removed(uiId))
+            }
             call?.removeNote(uiId)
         }
         return when {
