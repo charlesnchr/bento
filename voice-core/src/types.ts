@@ -259,8 +259,8 @@ export type Event =
   | { t: number; type: "interrupt" }
   /** The user typed to the model: a turn of its own, as if said. In a typed chat, every message of theirs. */
   | { t: number; type: "say"; text: string }
-  /** A task result that landed outside this call/chat (e.g. a detached voice-call task): added to context without starting a turn. With `inHistory`, the text is already in the startup recap, so only detached-task routing state is registered. `id` identifies the detached task across updates and replays; `turnsAgo` preserves question age across chat restarts. */
-  | { t: number; type: "note"; id?: string; label: string; text: string; failed?: boolean; inHistory?: boolean; turnsAgo?: number }
+  /** A task result (or active detached task with `active: true`) that lives outside this call/chat: added to context without starting a turn. With `inHistory` or `active`, no `<bento_note>` is sent and only detached-task routing state is registered. `id` identifies the detached task across updates and replays; `turnsAgo` preserves question age across chat restarts. */
+  | { t: number; type: "note"; id?: string; label: string; text: string; failed?: boolean; inHistory?: boolean; turnsAgo?: number; active?: boolean }
   /**
    * The text model's answer to `llm.request` [id]: one `generateContent` response as JSON, whole
    * or one chunk of a stream (each `data:` line of `streamGenerateContent?alt=sse`).

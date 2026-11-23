@@ -71,10 +71,13 @@ const MAX_TASKS = 32;
 const PROGRESS_LIMIT = 300;
 /** User turns after hearing a task's question within which an answer the model doesn't place still goes to it. */
 const ANSWER_TURNS = 2;
-/** Generic action verbs common in Hermes confirmation questions: excluded when matching a bare answer against an older detached question so "Yes, book it" doesn't misfire on another task's "Shall I book it?". */
+/** Generic action verbs common in Hermes confirmation questions and statements: excluded when matching bare answers or cross-session references so "Yes, book it" doesn't misfire on another task. */
 const QUESTION_VERBS = new Set([
   "book", "booking", "reserve", "confirm", "send", "cancel", "proceed", "continue", "ahead",
-  "schedule", "order", "submit", "create", "delete", "update", "start", "stop", "want", "shall", "should",
+  "schedule", "order", "submit", "create", "delete", "update", "start", "stop", "approve",
+  "deploy", "merge", "email", "post", "reply", "publish", "apply", "install", "remove",
+  "change", "save", "close", "open", "push", "call", "text", "message", "move", "copy",
+  "edit", "share", "invite", "accept", "decline", "purchase", "check", "find", "search", "look",
 ]);
 /** The longest a stop keeps the model quiet, in seconds, if it never answers. */
 const HUSH_MAX = 10;
@@ -571,6 +574,7 @@ export class Call {
         e.inHistory === true,
         typeof e.id === "string" && e.id.trim().length > 0 ? e.id.trim() : null,
         typeof e.turnsAgo === "number" && Number.isFinite(e.turnsAgo) ? Math.max(0, Math.floor(e.turnsAgo)) : 0,
+        e.active === true,
       );
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
@@ -1965,6 +1969,22 @@ export class Call {
       return;
     }
     const found = target?.kind === "owned" ? target.task : null;
+    if (found != null) {
+      const conflicts = this.externalConflicts(request.task, found);
+      if (conflicts.length > 0) {
+        const extAll = new Set<string>();
+        for (const e of conflicts) for (const w of TaskNames.distinctive(`${e.label} ${e.summary}`)) extAll.add(w);
+        const ownedWords = TaskNames.distinctive(`${found.label} ${found.request}`);
+        const saidWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+        const namesOwned = saidWords.some((w) => ownedWords.has(w) && !extAll.has(w));
+        if (!namesOwned) {
+          const extNames = conflicts.map((e) => `"${e.label}"`).join(", ");
+          this.respond(d.id, `Not executed: the user's message appears to refer to ${extNames} from an earlier call, so this chat cannot continue that session directly. ` +
+            "Tell the user to open that reply and tap Continue it, or ask them to clarify if they meant \"" + found.label + "\". No action was run.", false);
+          return;
+        }
+      }
+    }
     const rawAnswering = named == null && TaskNames.isAnswer(request.task)
       ? this.answering(d)
       : { tasks: [], external: [], allExternal: [] };
@@ -1980,7 +2000,7 @@ export class Call {
         const lastQ = sentences.map((s, i) => (s.endsWith("?") ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
         const statement = lastQ >= 0 ? sentences.filter((_, i) => i !== lastQ).join(" ") : q.summary;
         const extId = new Set<string>(TaskNames.distinctive(q.label));
-        for (const w of TaskNames.distinctive(statement)) extId.add(w);
+        for (const w of TaskNames.distinctive(statement)) if (!QUESTION_VERBS.has(w)) extId.add(w);
         for (const w of TaskNames.distinctive(q.asked)) if (!QUESTION_VERBS.has(w)) extId.add(w);
         for (const w of ownedWords) extId.delete(w);
         return [...saidWords].some((w) => extId.has(w));
@@ -2066,6 +2086,34 @@ export class Call {
     return key != null ? this.tasks.get(key) ?? null : null;
   }
 
+  /**
+   * Detached tasks clearly identified by [text] rather than [owned]: [text] uses a distinctive word
+   * (outside generic confirmation verbs) absent from [owned]'s label/request that either appears in
+   * the detached task's label, appears capitalised in its summary (a proper name such as "Alchemist"),
+   * or appears anywhere in its summary when [text] carries no word unique to [owned].
+   */
+  private externalConflicts(text: string, owned: Task) {
+    if (this.externalTasks.length === 0) return [];
+    const textWords = [...TaskNames.distinctive(text)].filter((w) => !QUESTION_VERBS.has(w));
+    if (textWords.length === 0) return [];
+    const ownedWords = TaskNames.distinctive(`${owned.label} ${owned.request}`);
+    const uniqueToText = textWords.filter((w) => !ownedWords.has(w));
+    if (uniqueToText.length === 0) return [];
+    return this.externalTasks.filter((e) => {
+      const extLabelWords = TaskNames.distinctive(e.label);
+      const extSummaryWords = TaskNames.distinctive(e.summary);
+      const extAll = new Set([...extLabelWords, ...extSummaryWords]);
+      const hasOwnedUnique = textWords.some((w) => ownedWords.has(w) && !extAll.has(w));
+      return uniqueToText.some((w) => {
+        if (extLabelWords.has(w)) return true;
+        if (!extSummaryWords.has(w)) return false;
+        if (!hasOwnedUnique) return true;
+        const cap = w[0].toUpperCase() + w.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`(?<![\\p{L}\\p{N}])${cap}(?![\\p{L}\\p{N}])`, "u").test(e.summary);
+      });
+    });
+  }
+
   private findTarget(
     ref: string,
     byRequest = true,
@@ -2095,19 +2143,8 @@ export class Call {
     const owned = best.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
     const external = best.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
     if (owned.length === 1 && external.length === 0) {
-      // If the reference names a distinctive word that the owned task lacks but any detached task's label or summary has, treat as cross-session ambiguity rather than acting on the owned task.
-      if (byRequest && extPairs.size > 0) {
-        const ownedTask = owned[0];
-        const ownedWords = TaskNames.distinctive(`${ownedTask.label} ${ownedTask.request}`);
-        const refUnique = [...TaskNames.distinctive(ref)].filter((w) => !ownedWords.has(w));
-        if (refUnique.length > 0) {
-          const matchedExts = this.externalTasks.filter((e) => {
-            const extWords = TaskNames.distinctive(`${e.label} ${e.summary}`);
-            return refUnique.some((w) => extWords.has(w));
-          });
-          if (matchedExts.length > 0) return { kind: "ambiguous", owned, external: matchedExts };
-        }
-      }
+      const conflicts = this.externalConflicts(ref, owned[0]);
+      if (conflicts.length > 0) return { kind: "ambiguous", owned, external: conflicts };
       return { kind: "owned", task: owned[0] };
     }
     if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
@@ -2349,14 +2386,14 @@ export class Call {
     this.send(noteFrame(resultNote(task.label, text, asked, failed)), true);
   }
 
-  /** A result that arrived outside this call/chat (e.g. a detached voice task): kept in history and fenced into text chat context. */
-  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null, turnsAgo = 0): void {
+  /** A result (or active detached task with [active]) that lives outside this call/chat: kept in history and fenced into text chat context. */
+  private note(label: string, text: string, failed: boolean, inHistory = false, id: string | null = null, turnsAgo = 0, active = false): void {
     if (!this.active) return;
-    if (!inHistory && !failed && text.trim().length > 0) {
+    if (!active && !inHistory && !failed && text.trim().length > 0) {
       this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
       this.boundary = true;
     }
-    const rawAsked = !failed ? TaskNames.question(text) : null;
+    const rawAsked = !active && !failed ? TaskNames.question(text) : null;
     const asked = rawAsked != null && turnsAgo <= ANSWER_TURNS ? rawAsked : null;
     if (this.textLine) {
       const cleanLabel = label.trim();
@@ -2377,7 +2414,7 @@ export class Call {
         });
         if (this.externalTasks.length > MAX_TASKS) this.externalTasks.shift();
       }
-      if (!inHistory) {
+      if (!active && !inHistory) {
         const extra = asked != null
           ? `\n"${label}" is from an earlier call and asked: ${asked} This chat can't continue it directly; if the user answers it, tell them to open "${label}"'s reply and tap Continue it instead of calling ask_hermes.`
           : "";
@@ -2511,7 +2548,15 @@ export class Call {
       } else if (target?.kind === "external") {
         message = `Not executed: "${target.task.label}" ran in an earlier call, so cancel_task cannot cancel it here. Nothing was cancelled.`;
       } else if (task == null) message = "Not executed: " + missing;
-      else if (task.state === RUNNING && !this.cancelAsked(task)) {
+      else if (
+        this.externalTasks.length > 0 &&
+        !(this.cancelDoubt != null && this.cancelDoubt.task === task.id && this.userTurns > this.cancelDoubt.turn) &&
+        this.externalConflicts(this.wordsAnswered, task).length > 0
+      ) {
+        const extNames = this.externalConflicts(this.wordsAnswered, task).map((e) => `"${e.label}"`).join(", ");
+        this.cancelDoubt = { task: task.id, turn: this.userTurns };
+        message = `Not executed: the user's words mention an earlier call's task (${extNames}), which cancel_task cannot cancel here. Nothing was cancelled. Ask the user to confirm if they meant to cancel "${task.label}", or tap Cancel on the detached task's card.`;
+      } else if (task.state === RUNNING && !this.cancelAsked(task)) {
         const said = collapse(this.wordsAnswered);
         this.log("info", `cancel_task for "${task.label}" refused: the user said "${said}"`);
         message = this.textLine

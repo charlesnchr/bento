@@ -121,8 +121,8 @@ class CoreChat(
     /** What the user typed. */
     fun say(text: String) = post { push(event("say") { put("text", text) }) }
 
-    /** A task reply that landed outside this chat (e.g. a detached voice-call task): added to model context without triggering a turn. With [inHistory], the text is already in the startup recap; [id] identifies the task across updates and restarts, and [turnsAgo] preserves question age. */
-    fun note(label: String, text: String, failed: Boolean = false, inHistory: Boolean = false, id: String? = null, turnsAgo: Int = 0) = post {
+    /** A task reply (or active detached task with [active] = true) that lives outside this chat: added to model context without triggering a turn. With [inHistory] or [active], no `<bento_note>` is sent and only detached-task routing state is registered; [id] identifies the task across updates and restarts, and [turnsAgo] preserves question age. */
+    fun note(label: String, text: String, failed: Boolean = false, inHistory: Boolean = false, id: String? = null, turnsAgo: Int = 0, active: Boolean = false) = post {
         push(event("note") {
             if (!id.isNullOrBlank()) put("id", id)
             put("label", label)
@@ -130,6 +130,7 @@ class CoreChat(
             if (failed) put("failed", true)
             if (inHistory) put("inHistory", true)
             if (turnsAgo > 0) put("turnsAgo", turnsAgo)
+            if (active) put("active", true)
         })
     }
 

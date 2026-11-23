@@ -848,3 +848,75 @@ test("check_task stays scoped to chat-owned tasks even when a detached note ment
   assert.match(checkMsg, /Flight options/);
   assert.match(checkMsg, /TAP flight at 10:00/);
 });
+
+test("named continue_task refuses when reference or user words target a detached task instead of owned Noma", () => {
+  const s = chat();
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Shall I book it?");
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Alchemist has a table at nine. Shall I book it?" });
+  s.advance(0.1);
+  // 1) continue_task: "Alchemist dinner booking" refuses rather than dispatching to Noma.
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes", { continue_task: "Alchemist dinner booking" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  const refusal1 = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal1.startsWith("Not executed:"), refusal1);
+  assert.match(refusal1, /Continue it/);
+  s.writes("Tap Continue it on Alchemist's reply.");
+  // 2) Even if Gemini passes continue_task: "Dinner booking", the user's words "Yes, book Alchemist" stop it from reaching Noma.
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes", { continue_task: "Dinner booking" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  const refusal2 = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal2.startsWith("Not executed:"), refusal2);
+  assert.match(refusal2, /Continue it/);
+});
+
+test("cancel_task checks user words against active detached tasks and does not block clearly named owned cancellations", () => {
+  // 1) Active detached Alchemist task + user says "Cancel the Alchemist dinner booking. Keep looking at Noma" -> Gemini passes "Dinner booking": must NOT cancel Noma.
+  const s1 = chat();
+  s1.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Book a table at Alchemist", active: true });
+  s1.advance(0.1);
+  s1.type("Make a dinner booking at Noma");
+  s1.calls("ask_hermes", { label: "Dinner booking" });
+  s1.advance(0.1);
+  s1.type("Cancel the Alchemist dinner booking. Keep looking at Noma");
+  s1.calls("cancel_task", { task: "Dinner booking" });
+  s1.advance(0.1);
+  assert.ok(!s1.commands.some((c) => c.type === "tool.cancel"), "active detached Alchemist mentioned in user words must block cancelling Noma");
+  const refusal = s1.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed:"), refusal);
+
+  // 2) Clearly named owned cancel ("Noma reservation") is NOT falsely blocked by a lowercase common word ("reservation") in an unrelated detached Hotel search note.
+  const s2 = chat();
+  s2.push({ type: "note", id: "call-1-1", label: "Hotel search", text: "The Lisbon hotel reservation is confirmed for Friday." });
+  s2.advance(0.1);
+  s2.type("Book a table at Noma for Friday");
+  s2.calls("ask_hermes", { label: "Noma table" });
+  s2.advance(0.1);
+  s2.type("Cancel my Noma reservation");
+  s2.calls("cancel_task", { task: "Noma reservation" });
+  s2.advance(0.1);
+  assert.ok(s2.commands.some((c) => c.type === "tool.cancel" && c.reason === "cancelled"), "clearly named Noma reservation should cancel Noma table");
+});
+
+test("generic verb 'book' in an older detached statement does not block 'Yes, book it' for a newer owned Noma question", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "I can book a table at Alchemist at nine. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Get me a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Want me to reserve it?");
+  s.advance(0.1);
+  s.type("Yes, book it");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
+  assert.equal(s.hermes()[1].followUp, true);
+});
