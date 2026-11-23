@@ -2693,6 +2693,76 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10bl.advance(0.1);
   assert.equal(s10bl.commands.filter((c) => c.type === "tool.cancel").length, 1, "finished 'Both videos' with 'in progress' must cancel active 'Product video'");
 
+  // 8ab) Finished group matching requires both narrowing modifiers (including 2-3 letter and hyphenated modifiers) and any non-generic group head, and 2-word reading-modifier clauses with agentive plurals ("auditors report verbatim") remain blocked as reported speech.
+  const s10bm = chat();
+  s10bm.type("Render both video renders");
+  s10bm.calls("ask_hermes", { label: "Both video renders" });
+  s10bm.advance(0.1);
+  s10bm.complete("Done.", s10bm.hermes()[0].run);
+  s10bm.advance(0.1);
+  s10bm.type("Render the product video");
+  s10bm.calls("ask_hermes", { label: "Product render" });
+  s10bm.advance(0.1);
+  s10bm.type("Review the product videos");
+  s10bm.calls("ask_hermes", { label: "Product review" });
+  s10bm.advance(0.1);
+  s10bm.type("Cancel both video renders in progress");
+  s10bm.calls("cancel_task", { task: "Product review" });
+  s10bm.advance(0.1);
+  assert.equal(s10bm.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel both video renders in progress' must require group head 'renders' and refuse Product review");
+  s10bm.calls("cancel_task", { task: "Product render" });
+  s10bm.advance(0.1);
+  assert.equal(s10bm.commands.filter((c) => c.type === "tool.cancel").length, 1, "'Cancel both video renders in progress' must still cancel Product render");
+
+  const s10bn = chat();
+  s10bn.type("Check both last-minute bookings");
+  s10bn.calls("ask_hermes", { label: "Both last-minute bookings" });
+  s10bn.advance(0.1);
+  s10bn.complete("Done.", s10bn.hermes()[0].run);
+  s10bn.advance(0.1);
+  s10bn.type("Book a last-minute hotel");
+  s10bn.calls("ask_hermes", { label: "Last-minute hotel booking" });
+  s10bn.advance(0.1);
+  s10bn.type("Book a last-minute train");
+  s10bn.calls("ask_hermes", { label: "Last-minute train booking" });
+  s10bn.advance(0.1);
+  s10bn.type("Cancel both last-minute bookings that are still running");
+  s10bn.calls("cancel_task", { task: "Last-minute hotel booking" });
+  s10bn.calls("cancel_task", { task: "Last-minute train booking" });
+  s10bn.advance(0.1);
+  assert.equal(s10bn.commands.filter((c) => c.type === "tool.cancel").length, 2, "hyphenated 'Both last-minute bookings' must cancel both matching active bookings");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase, expected] of [
+    ["Both car bookings", "Book a hotel", "Hotel booking", "Cancel both car bookings that are still running", 0],
+    ["Both spa bookings", "Book a hotel", "Hotel booking", "Cancel both spa bookings that are still running", 0],
+    ["Both tax tasks", "Check Paris weather", "Weather", "Cancel both tax tasks that are still running", 0],
+    ["Both gym tasks", "Check Paris weather", "Weather", "Cancel both gym tasks in progress", 0],
+    ["Both car bookings", "Book a car", "Car booking", "Cancel both car bookings that are still running", 1],
+  ] as const) {
+    const s10bo = chat();
+    s10bo.type(`Check ${finishedLabel}`);
+    s10bo.calls("ask_hermes", { label: finishedLabel });
+    s10bo.advance(0.1);
+    s10bo.complete("Done.", s10bo.hermes()[0].run);
+    s10bo.advance(0.1);
+    s10bo.type(activeReq);
+    s10bo.calls("ask_hermes", { label: activeLabel });
+    s10bo.advance(0.1);
+    s10bo.type(phrase);
+    s10bo.calls("cancel_task", { task: activeLabel });
+    s10bo.advance(0.1);
+    assert.equal(s10bo.commands.filter((c) => c.type === "tool.cancel").length, expected, `short modifier '${finishedLabel}' vs '${activeLabel}' on: ${phrase}`);
+  }
+
+  const s10bp = chat();
+  s10bp.type("Run the audit");
+  s10bp.calls("ask_hermes", { label: "Audit" });
+  s10bp.advance(0.1);
+  s10bp.type("Stop reading that auditors report verbatim and cancel the audit");
+  s10bp.calls("cancel_task", { task: "Audit" });
+  s10bp.advance(0.1);
+  assert.equal(s10bp.commands.filter((c) => c.type === "tool.cancel").length, 0, "agentive plural 'auditors report verbatim' must stay blocked as reported speech");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",

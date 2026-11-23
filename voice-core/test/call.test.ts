@@ -1014,4 +1014,75 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     sv12.advance(0.1);
     assert.equal(sv12.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode function words in '${finishedLabel}' must not cancel Weather on: ${phrase}`);
   }
+
+  // Voice mode: finished group requires both non-generic head and short/hyphenated modifiers; agentive plural "auditors report verbatim" stays blocked.
+  const sv13 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv13.advance(0.1);
+  sv13.turn("Render both video renders");
+  sv13.toolCall("c1", "ask_hermes", { label: "Both video renders" });
+  sv13.advance(0.3);
+  sv13.complete("Done.", sv13.hermes()[0].run);
+  sv13.advance(0.3);
+  sv13.turn("Render the product video");
+  sv13.toolCall("c2", "ask_hermes", { label: "Product render" });
+  sv13.advance(0.3);
+  sv13.turn("Review the product videos");
+  sv13.toolCall("c3", "ask_hermes", { label: "Product review" });
+  sv13.advance(0.3);
+  sv13.turn("Cancel both video renders in progress");
+  sv13.toolCall("x1", "cancel_task", { task: "Product review" });
+  sv13.advance(0.1);
+  assert.equal(sv13.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Both video renders' must refuse Product review");
+  sv13.toolCall("x2", "cancel_task", { task: "Product render" });
+  sv13.advance(0.1);
+  assert.equal(sv13.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'Both video renders' must cancel Product render");
+
+  const sv14 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv14.advance(0.1);
+  sv14.turn("Check both last-minute bookings");
+  sv14.toolCall("c1", "ask_hermes", { label: "Both last-minute bookings" });
+  sv14.advance(0.3);
+  sv14.complete("Done.", sv14.hermes()[0].run);
+  sv14.advance(0.3);
+  sv14.turn("Book a last-minute hotel");
+  sv14.toolCall("c2", "ask_hermes", { label: "Last-minute hotel booking" });
+  sv14.advance(0.3);
+  sv14.turn("Book a last-minute train");
+  sv14.toolCall("c3", "ask_hermes", { label: "Last-minute train booking" });
+  sv14.advance(0.3);
+  sv14.turn("Cancel both last-minute bookings that are still running");
+  sv14.toolCall("x1", "cancel_task", { task: "Last-minute hotel booking" });
+  sv14.toolCall("x2", "cancel_task", { task: "Last-minute train booking" });
+  sv14.advance(0.1);
+  assert.equal(sv14.commands.filter((c) => c.type === "tool.cancel").length, 2, "voice mode hyphenated 'Both last-minute bookings' must cancel both matching bookings");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase] of [
+    ["Both car bookings", "Book a hotel", "Hotel booking", "Cancel both car bookings that are still running"],
+    ["Both tax tasks", "Check Paris weather", "Weather", "Cancel both tax tasks in progress"],
+  ] as const) {
+    const sv15 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv15.advance(0.1);
+    sv15.turn(`Check ${finishedLabel}`);
+    sv15.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv15.advance(0.3);
+    sv15.complete("Done.", sv15.hermes()[0].run);
+    sv15.advance(0.3);
+    sv15.turn(activeReq);
+    sv15.toolCall("c2", "ask_hermes", { label: activeLabel });
+    sv15.advance(0.3);
+    sv15.turn(phrase);
+    sv15.toolCall("x1", "cancel_task", { task: activeLabel });
+    sv15.advance(0.1);
+    assert.equal(sv15.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode short modifier '${finishedLabel}' must refuse '${activeLabel}'`);
+  }
+
+  const sv16 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv16.advance(0.1);
+  sv16.turn("Run the audit");
+  sv16.toolCall("c1", "ask_hermes", { label: "Audit" });
+  sv16.advance(0.3);
+  sv16.turn("Stop reading that auditors report verbatim and cancel the audit");
+  sv16.toolCall("x1", "cancel_task", { task: "Audit" });
+  sv16.advance(0.1);
+  assert.equal(sv16.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode agentive plural 'auditors report verbatim' must stay blocked");
 });

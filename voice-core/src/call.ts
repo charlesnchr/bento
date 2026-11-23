@@ -296,15 +296,15 @@ function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun (and for 3-word compounds, singular head after a document modifier and non-agentive first word so "auditors review terms aloud" stays refused).
+    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and not an agentive-plural + verb-capable clause ("auditors report verbatim", "auditors review terms aloud").
     const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && TRAILING_READING_MODIFIER.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
-    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || AMBIG_TOPIC_NOUN.test(coreWords[1]))) return false;
+    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || (!AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(coreWords[1])))) return false;
     if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
-    // Skip the noun/verb-ambiguous head allowance for collective human subjects ("that people order twice", "that staff report twice", "that staff document safety incidents"); inanimate plural modifiers ("sales report summary", "hotels list so loudly") still pass.
-    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
+    // Skip the noun/verb-ambiguous head allowance for collective/agentive human subjects ("that people order twice", "that staff report twice", "that staff document safety incidents", "that auditors report verbatim"); inanimate plural modifiers ("sales report summary", "hotels list so loudly") still pass.
+    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && !AGENTIVE_PLURAL_SUFFIX.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
     if (coreWords.length === 2 && !isPluralWord(coreWords[0]) && !COLLECTIVE_SUBJECT.test(coreWords[0])) return false;
   }
   if (THAT_PREDICATE_CLAUSE.test(prefix)) return true;
@@ -3315,33 +3315,56 @@ export class Call {
   private static readonly DIRECT_RUNNING_MODIFIER = /^\s+(?:(?:that|which)\s+are\s+(?:(?:still|currently)\s+)?(?:running|active|open|in\s+progress|going)|(?:still|currently)\s+(?:running|active|open|in\s+progress|going)|in\s+progress)\b/i;
   private static readonly GENERIC_GROUP_HEAD = /^(?:tasks|runs|jobs|requests|items|ones)$/i;
   private static readonly NON_GROUP_PLURAL_OS = /^(?:chaos|ethos|pathos|cosmos|kudos|macos)$/i;
+  private static readonly GROUP_STOP = new Set([
+    "a", "an", "the", "of", "for", "in", "on", "at", "to", "by", "with", "from", "about", "into",
+    "and", "or", "but", "as", "if", "so", "than", "that", "this", "these", "those",
+    "my", "our", "your", "their", "his", "her", "its", "me", "us", "you", "them", "we", "they", "he", "she", "it",
+    "all", "both", "every", "each", "some", "any", "no", "not", "only", "just", "still", "currently", "current", "now", "here", "there",
+    "is", "are", "was", "were", "be", "been", "being", "am", "has", "have", "had", "do", "does", "did",
+    "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+  ]);
 
-  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", or "both hotel bookings". Function words are stripped via TaskNames.distinctive, and every narrowing modifier (e.g. "hotel" in "both hotel bookings" or "both hotel tasks") must match [task]. */
+  /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel bookings", or "both last-minute bookings". Both sides are tokenized identically on word characters (splitting hyphens and preserving 2-3 letter modifiers like "car"/"spa"/"tax" while filtering function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
     const m = /^(?:all|both|every)\s+(?:of\s+)?(?:(?:the|our|my|your|their|these|those)\s+)*(.+)$/i.exec(lbl.trim());
     if (!m) return false;
     const rawWords = m[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (rawWords.length === 0) return false;
-    const head = rawWords[rawWords.length - 1];
-    const isGroupPlural = isPluralWord(head) || (head.length >= 4 && /^[a-z]{3,}os$/i.test(head) && !Call.NON_GROUP_PLURAL_OS.test(head));
+    const head = rawWords[rawWords.length - 1].replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    const headLast = head.split(/[^\p{L}\p{N}]+/u).filter(Boolean).pop() ?? "";
+    const isGroupPlural = isPluralWord(headLast) || (/^[a-z]{3,}os$/i.test(headLast) && !Call.NON_GROUP_PLURAL_OS.test(headLast));
     if (!isGroupPlural) return false;
-    const modifiers = rawWords.slice(0, -1).filter((w) => TaskNames.distinctive(w).size > 0);
-    if (modifiers.length === 0 && Call.GENERIC_GROUP_HEAD.test(head)) return true;
+    const groupTokens = (text: string): string[] =>
+      (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 2 && !Call.GROUP_STOP.has(w));
+    const headParts = groupTokens(head);
+    const modifiers = groupTokens(rawWords.slice(0, -1).join(" "));
+    if (modifiers.length === 0 && headParts.length === 1 && Call.GENERIC_GROUP_HEAD.test(headLast)) return true;
     if (task == null) return false;
     const stemVariants = (w: string): string[] => {
       const out = [w];
-      if (w.endsWith("ies") && w.length > 4) out.push(w.slice(0, -3) + "y");
-      else if (w.endsWith("es") && w.length > 4) out.push(w.slice(0, -2), w.slice(0, -1));
-      else if (w.endsWith("s") && w.length > 3) out.push(w.slice(0, -1));
+      const addSingular = (s: string): void => {
+        if (!out.includes(s)) out.push(s);
+        if (s.endsWith("ing") && s.length >= 7) {
+          const base = s.slice(0, -3);
+          out.push(base);
+          if (base.length >= 5 && base[base.length - 1] === base[base.length - 2] && !/[lsfz]$/.test(base)) out.push(base.slice(0, -1));
+          else out.push(base + "e");
+        }
+      };
+      if (w.endsWith("ies") && w.length > 4) addSingular(w.slice(0, -3) + "y");
+      else if (w.endsWith("es") && w.length > 4) { addSingular(w.slice(0, -2)); addSingular(w.slice(0, -1)); }
+      else if (w.endsWith("s") && w.length > 3) addSingular(w.slice(0, -1));
+      else addSingular(w);
       return out;
     };
     const taskWords = new Set<string>();
-    for (const w of TaskNames.distinctive(`${task.label} ${task.latest} ${task.request}`)) {
+    for (const w of groupTokens(`${task.label} ${task.latest} ${task.request}`)) {
       for (const v of stemVariants(w)) taskWords.add(v);
     }
     const matchesTask = (w: string): boolean => stemVariants(w).some((v) => taskWords.has(v));
-    if (modifiers.length > 0) return modifiers.every(matchesTask);
-    return TaskNames.distinctive(head).size > 0 && matchesTask(head);
+    if (!modifiers.every(matchesTask)) return false;
+    if (headParts.length === 1 && Call.GENERIC_GROUP_HEAD.test(headLast)) return true;
+    return headParts.length > 0 && headParts.every(matchesTask);
   }
 
   /** Whether [text] requests cancelling all tasks (or a named group containing [task]), ignoring scope words ("all"/"both"/"everything") that appear inside an exact task label (including finished tasks, unless a finished plural group label is directly modified by an active/in-progress qualifier and [task] belongs to that group). */
