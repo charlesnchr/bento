@@ -2823,6 +2823,12 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both AM tasks", "Check Paris weather", "Weather", "Cancel both AM tasks in progress", 0],
     ["Both US bookings", "Book a hotel", "Hotel booking", "Cancel both US bookings that are still running", 0],
     ["Both IT tasks", "Reset my IT laptop", "IT laptop reset", "Cancel both IT tasks in progress", 1],
+    ["Both constructors", "Check Paris weather", "Weather", "Cancel both constructors in progress", 0],
+    ["Both hotel reservations", "Summarize the reserved parking rules at the hotel", "Parking rules", "Cancel both hotel reservations in progress", 0],
+    ["Both hotel reservations", "Reserve price for the London hotel auction, please", "Auction reserve", "Cancel both hotel reservations in progress", 0],
+    ["Both bookings", "Remind me to go to book club on Friday", "Club reminder", "Cancel both bookings in progress", 0],
+    ["Both reservations", "Move 50 pounds to reserve savings", "Savings move", "Cancel both reservations in progress", 0],
+    ["Both hotel bookings", "Can you please book a hotel in London", "London hotel", "Cancel both hotel bookings that are still running", 1],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
@@ -2836,7 +2842,21 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     s10bs.type(phrase);
     s10bs.calls("cancel_task", { task: activeLabel });
     s10bs.advance(0.1);
-    assert.equal(s10bs.commands.filter((c) => c.type === "tool.cancel").length, expected, `acronym modifier '${finishedLabel}' vs '${activeLabel}' on: ${phrase}`);
+    assert.equal(s10bs.commands.filter((c) => c.type === "tool.cancel").length, expected, `group check '${finishedLabel}' vs '${activeLabel}' on: ${phrase}`);
+  }
+
+  for (const phrase of [
+    "Stop reading that chemists report verbatim and cancel the audit",
+    "Stop reading that defendants report aloud and cancel the audit",
+  ]) {
+    const s10bt = chat();
+    s10bt.type("Run the audit");
+    s10bt.calls("ask_hermes", { label: "Audit" });
+    s10bt.advance(0.1);
+    s10bt.type(phrase);
+    s10bt.calls("cancel_task", { task: "Audit" });
+    s10bt.advance(0.1);
+    assert.equal(s10bt.commands.filter((c) => c.type === "tool.cancel").length, 0, `agentive plural must stay blocked on: ${phrase}`);
   }
 
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.

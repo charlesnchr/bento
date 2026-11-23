@@ -1134,6 +1134,12 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both IT tasks", "Check if it rains in Paris", "Weather", "Cancel both IT tasks in progress", 0],
     ["Both US bookings", "Book a hotel", "Hotel booking", "Cancel both US bookings that are still running", 0],
     ["Both IT tasks", "Reset my IT laptop", "IT laptop reset", "Cancel both IT tasks in progress", 1],
+    ["Both constructors", "Check Paris weather", "Weather", "Cancel both constructors in progress", 0],
+    ["Both hotel reservations", "Summarize the reserved parking rules at the hotel", "Parking rules", "Cancel both hotel reservations in progress", 0],
+    ["Both hotel reservations", "Reserve price for the London hotel auction, please", "Auction reserve", "Cancel both hotel reservations in progress", 0],
+    ["Both bookings", "Remind me to go to book club on Friday", "Club reminder", "Cancel both bookings in progress", 0],
+    ["Both reservations", "Move 50 pounds to reserve savings", "Savings move", "Cancel both reservations in progress", 0],
+    ["Both hotel bookings", "Can you please book a hotel in London", "London hotel", "Cancel both hotel bookings that are still running", 1],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
@@ -1148,6 +1154,21 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     sv19.turn(phrase);
     sv19.toolCall("x1", "cancel_task", { task: activeLabel });
     sv19.advance(0.1);
-    assert.equal(sv19.commands.filter((c) => c.type === "tool.cancel").length, expected, `voice mode acronym '${finishedLabel}' vs '${activeLabel}'`);
+    assert.equal(sv19.commands.filter((c) => c.type === "tool.cancel").length, expected, `voice mode group check '${finishedLabel}' vs '${activeLabel}'`);
+  }
+
+  for (const phrase of [
+    "Stop reading that chemists report verbatim and cancel the audit",
+    "Stop reading that defendants report aloud and cancel the audit",
+  ]) {
+    const sv20 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv20.advance(0.1);
+    sv20.turn("Run the audit");
+    sv20.toolCall("c1", "ask_hermes", { label: "Audit" });
+    sv20.advance(0.3);
+    sv20.turn(phrase);
+    sv20.toolCall("x1", "cancel_task", { task: "Audit" });
+    sv20.advance(0.1);
+    assert.equal(sv20.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode agentive plural must stay blocked on: ${phrase}`);
   }
 });

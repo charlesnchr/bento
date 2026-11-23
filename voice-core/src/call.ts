@@ -277,7 +277,11 @@ const TRAILING_READING_MODIFIER = /\s+(?:aloud|out\s+loud|word\s+for\s+word|line
 const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
 const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms|brochure|pamphlet|flyer|handout|booklet|directory|handbook|playbook|checklist|datasheet|dossier|prospectus|syllabus|disclaimer|disclosure|addendum|appendix|glossary|statement|passage|editorial|essay|poem|speech|introduction|intro|foreword|prologue|epilogue|conclusion)$/i;
 const DOC_COMPOUND_MODIFIER = /^(?:order|report|booking|flight|hotel|dinner|table|payment|invoice|receipt|delivery|shipment|travel|trip|sales|budget|tax|expense|policy|safety|meeting|staff|project|status|account|billing|shipping|product|service|client|customer|insurance|rental|lease|loan|warranty|privacy|security|onboarding|training|benefits|payroll|shift|schedule|menu|ticket|event|catalog|catalogue|brochure|manual|handbook|guide|newsletter|bulletin|dossier|prospectus|syllabus|booklet|pamphlet)$/i;
-const HUMAN_PLURAL_SUBJECT = /^(?:auditors|engineers|managers|directors|officers|inspectors|reviewers|advisors|advisers|analysts|consultants|accountants|attorneys|lawyers|doctors|nurses|teachers|professors|students|researchers|scientists|designers|developers|architects|operators|administrators|admins|coordinators|supervisors|executives|founders|owners|partners|members|employees|workers|contractors|vendors|suppliers|sellers|buyers|traders|brokers|bankers|lenders|insurers|carriers|drivers|pilots|captains|agents|representatives|reps|officials|regulators|investigators|examiners|evaluators|assessors|testers|editors|writers|authors|reporters|journalists|speakers|presenters|trainers|coaches|mentors|tutors|guides|hosts|guests|visitors|clients|customers|patients|users|subscribers|readers|viewers|listeners|voters|citizens|residents|tenants|landlords|neighbors|neighbours|parents|adults|kids|folks|others|colleagues|peers|leads|chiefs|heads|bosses|clinicians|physicians|surgeons|pharmacists|therapists|counselors|counsellors|specialists|technicians|mechanics|electricians|plumbers|builders|planners|schedulers|organizers|organisers|recruiters|interviewers|candidates|applicants|interns|trainees|attendees|participants|delegates|witnesses|jurors|judges|mediators|arbitrators|moderators|curators|librarians|archivists|historians|economists|strategists|lobbyists|activists|protesters|volunteers|donors|sponsors|investors|shareholders|stakeholders|creditors|debtors|borrowers|taxpayers|commuters|passengers|travelers|travellers|tourists|shoppers|diners|patrons|consumers|producers|manufacturers|distributors|retailers|wholesalers|importers|exporters|shippers|couriers|dispatchers|clerks|tellers|cashiers|receptionists|assistants|secretaries|paralegals|notaries|translators|interpreters|photographers|videographers|chefs|cooks|bakers)$/i;
+const AGENTIVE_PLURAL_SUFFIX = /(?:ers|ors|ists|ants|ents|ians|ees)$/i;
+const INANIMATE_PLURAL_MODIFIER = /^(?:routers|servers|printers|scanners|sensors|folders|headers|footers|orders|letters|numbers|chapters|papers|offers|vouchers|transfers|reminders|computers|monitors|errors|events|comments|documents|payments|shipments|accounts|incidents|elements|contents|discounts|clusters|containers|adapters|triggers|timers|meters)$/i;
+function isAgentivePlural(word: string): boolean {
+  return AGENTIVE_PLURAL_SUFFIX.test(word) && !INANIMATE_PLURAL_MODIFIER.test(word);
+}
 const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section|spec|catalog|catalogue|charter|leaflet|manifest|warranty|certificate|excerpt|caption|footnote|blurb|outline|abstract|preface|overview)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
@@ -296,15 +300,15 @@ function isThatPredicateClause(prefix: string, speakVerb?: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
-    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that routers list out loud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and not a human-role plural + verb-capable clause ("auditors report verbatim", "auditors review terms aloud").
+    // Actual reading requests ending in a reading modifier ("Stop reading that staff report aloud", "Stop reading that routers list out loud", "Stop reading that staff outline word for word", "Stop reading that benefits brochure aloud", "Stop reading that sales order confirmation aloud") are demonstrative noun phrases only when the head is a recognised topic noun and not an agentive-plural + verb-capable clause ("auditors report verbatim", "chemists report verbatim", "defendants report aloud", "auditors review terms aloud").
     const isReadingAloud = speakVerb != null && /^reading$/i.test(speakVerb) && TRAILING_READING_MODIFIER.test(rawBody) && !/^(?:people|children|men|women)$/i.test(coreWords[0]);
-    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || (!HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(coreWords[1])))) return false;
-    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
+    if (isReadingAloud && coreWords.length === 2 && (PURE_TOPIC_NOUN.test(coreWords[1]) || (!isAgentivePlural(coreWords[0]) && AMBIG_TOPIC_NOUN.test(coreWords[1])))) return false;
+    if (isReadingAloud && coreWords.length === 3 && !COLLECTIVE_SUBJECT.test(coreWords[0]) && !isAgentivePlural(coreWords[0]) && DOC_COMPOUND_MODIFIER.test(coreWords[1]) && !isPluralWord(coreWords[2]) && (PURE_TOPIC_NOUN.test(coreWords[2]) || AMBIG_TOPIC_NOUN.test(coreWords[2]))) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
-    // Skip the noun/verb-ambiguous head allowance for collective/human-role subjects ("that people order twice", "that staff report twice", "that staff document safety incidents", "that auditors report verbatim"); inanimate plural modifiers ("sales report summary", "hotels list so loudly", "routers list out loud") still pass.
-    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && !HUMAN_PLURAL_SUBJECT.test(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
+    // Skip the noun/verb-ambiguous head allowance for collective/agentive subjects ("that people order twice", "that staff report twice", "that staff document safety incidents", "that auditors/chemists report verbatim"); inanimate plural modifiers ("sales report summary", "hotels list so loudly", "routers list out loud") still pass.
+    if (!COLLECTIVE_SUBJECT.test(coreWords[0]) && !isAgentivePlural(coreWords[0]) && AMBIG_TOPIC_NOUN.test(second) && (coreWords.length === 2 || (coreWords.length >= 3 && (MANNER_TAIL_START.test(coreWords[2]) || (coreWords.length === 3 && COUNTABLE_TOPIC_NOUN.test(coreWords[2])))))) return false;
     if (coreWords.length === 2 && !isPluralWord(coreWords[0]) && !COLLECTIVE_SUBJECT.test(coreWords[0])) return false;
   }
   if (THAT_PREDICATE_CLAUSE.test(prefix)) return true;
@@ -3324,11 +3328,17 @@ export class Call {
     "can", "could", "will", "would", "shall", "should", "may", "might", "must",
   ]);
 
-  /** Bounded verb-position equivalents for booking/reservation group heads so "Both hotel bookings" / "Both hotel reservations" match "Book/Reserve a London hotel" without blanket -ing stemming ("screenings" -> "screen", "findings" -> "find") or noun collisions ("Book club", "Nature reserve"). */
-  private static readonly GROUP_HEAD_VERB: Readonly<Record<string, RegExp>> = {
-    booking: /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:to|can\s+you|could\s+you|would\s+you|will\s+you|help\s+me(?:\s+to)?|go\s+ahead\s+and|and|i(?:'d|\s+would|\s+want\s+to|\s+need\s+to))\s+)book\b|\bbooked\b/i,
-    reservation: /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:to|can\s+you|could\s+you|would\s+you|will\s+you|help\s+me(?:\s+to)?|go\s+ahead\s+and|and|i(?:'d|\s+would|\s+want\s+to|\s+need\s+to))\s+)reserve\b|\breserved\b|\breserving\b/i,
-  };
+  /** Bounded verb-position + object-start equivalents for booking/reservation group heads (stored in a Map to avoid prototype-property lookups such as "constructor") so "Both hotel bookings" / "Both hotel reservations" match "Book/Reserve a London hotel" or "Can you please book a hotel in London" without matching noun/adjective uses ("reserved parking", "Reserve price", "to book club", "to reserve savings"). */
+  private static readonly GROUP_HEAD_VERB: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
+    [
+      "booking",
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|go\s+ahead\s+and|i(?:'d|\s+would))\s+)book(?:ing)?\s+(?:a|an|the|my|our|your|me|us|this|that|these|those|one|two|three|four|five|\d+|another|some|flights?|hotels?|rooms?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b/i,
+    ],
+    [
+      "reservation",
+      /(?:(?:^|[.?!,;:]\s*)(?:(?:please|just|also|now)\s+)*|\b(?:(?:can|could|would|will)\s+you(?:\s+(?:please|just))?|(?:want|need|like|try|trying|going|plan|planning|hope|hoping)\s+to|help\s+(?:me|us)(?:\s+to)?|go\s+ahead\s+and|i(?:'d|\s+would))\s+)reserv(?:e|ing)\s+(?:a|an|the|my|our|your|me|us|this|that|these|those|one|two|three|four|five|\d+|another|some|flights?|hotels?|rooms?|tables?|tickets?|seats?|cars?|trains?|trips?|stays?|slots?|dinners?|lunches?|tours?|appointments?|sessions?)\b/i,
+    ],
+  ]);
 
   /** Whether [task] belongs to the plural group named by a finished label such as "both bookings", "both videos", "both hotel reservations", "both IT tasks", or "both last-minute bookings". Both sides are tokenized identically from original-case text (splitting hyphens, keeping all-caps acronyms like "IT"/"US"/"AM", and filtering lowercase function words), and every narrowing modifier plus any non-generic group head must match [task]. */
   private taskMatchesFinishedGroup(lbl: string, task?: Task): boolean {
@@ -3373,7 +3383,7 @@ export class Call {
       const variants = stemVariants(w);
       if (variants.some((v) => taskWords.has(v))) return true;
       for (const v of variants) {
-        const verbRe = Call.GROUP_HEAD_VERB[v];
+        const verbRe = Call.GROUP_HEAD_VERB.get(v);
         if (verbRe != null && verbRe.test(task.request)) return true;
       }
       return false;
