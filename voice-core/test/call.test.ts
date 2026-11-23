@@ -1191,6 +1191,16 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both hotel bookings", "Book a flight to London, without hotel", "London flight", "Cancel both hotel bookings in progress", 0],
     ["Both hotel bookings", "Book a flight to London, hotel already sorted", "London flight", "Cancel both hotel bookings in progress", 0],
     ["Both hotel bookings", "Book a flight to London, the hotel later", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book a room in Nice", "Nice stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both Nice hotel bookings", "Find a hotel in Nice and book a room in Paris", "Paris stay", "Cancel both Nice hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in Long Beach", "Long Beach stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in Mid Wales", "Mid Wales stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, the hotel in London costs more", "Paris flight", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, hotel on hold", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a table at the London wedding venue near a restaurant on King Street with a table for two, then book it for Friday", "London wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant and book it at 7pm", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it for Friday at under 150 pounds", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to celebrate", "London stay", "Cancel both London hotel bookings in progress", 1],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
