@@ -130,19 +130,63 @@ export class CallAudio {
   private capture: AudioWorkletNode | null = null;
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private micOpts: MicOptions | null = null;
+  private onMicFrame: ((samples: Int16Array, level: number) => void) | null = null;
+  /** Incremented on every startMic/stopMic so superseded or cancelled getUserMedia calls never leak tracks. */
+  private micGen = 0;
+  private opening: Promise<void> | null = null;
+  private stateListener: (() => void) | null = null;
   /** Seconds of speech queued, as the worklet last said. */
   queued = 0;
   /** The microphone's level, RMS of the last frame (0 to 1). */
   level = 0;
 
+  onAudioStateChange(listener: (() => void) | null): void {
+    this.stateListener = listener;
+  }
+
+  /** True when an AudioContext exists but the browser suspended it pending a user gesture. */
+  get audioSuspended(): boolean {
+    return this.context != null && this.context.state !== "running";
+  }
+
+  async resumeAudio(): Promise<boolean> {
+    const ctx = this.context;
+    if (!ctx) return false;
+    if (ctx.state === "running") return true;
+    try { await ctx.resume(); } catch {}
+    return (ctx.state as AudioContextState) === "running";
+  }
+
   async open(): Promise<void> {
-    if (this.context) { if (this.context.state === "suspended") await this.context.resume(); return; }
-    this.context = new AudioContext({ latencyHint: "interactive" });
-    const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
-    await this.context.audioWorklet.addModule(url);
-    this.playback = new AudioWorkletNode(this.context, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
-    this.playback.port.onmessage = (e) => { this.queued = e.data.queued; };
-    this.playback.connect(this.context.destination);
+    if (this.opening) {
+      await this.opening;
+      if (this.context?.state === "suspended") await this.context.resume().catch(() => {});
+      return;
+    }
+    if (this.context) { if (this.context.state === "suspended") await this.context.resume().catch(() => {}); return; }
+    const init = (async () => {
+      let ctx: AudioContext | null = null;
+      try {
+        ctx = new AudioContext({ latencyHint: "interactive" });
+        ctx.onstatechange = () => this.stateListener?.();
+        const url = URL.createObjectURL(new Blob([WORKLETS], { type: "text/javascript" }));
+        await ctx.audioWorklet.addModule(url);
+        const playback = new AudioWorkletNode(ctx, "playback", { numberOfInputs: 0, outputChannelCount: [2] });
+        playback.port.onmessage = (e) => { this.queued = e.data.queued; };
+        playback.connect(ctx.destination);
+        this.context = ctx;
+        this.playback = playback;
+        this.stateListener?.();
+      } catch (err) {
+        try { await ctx?.close?.(); } catch {}
+        throw err;
+      } finally {
+        this.opening = null;
+      }
+    })();
+    this.opening = init;
+    await init;
   }
 
   /** Seconds from a sample leaving the worklet to the speaker, as the browser reckons it. */
@@ -151,30 +195,74 @@ export class CallAudio {
     return this.context.baseLatency + ((this.context as AudioContext & { outputLatency?: number }).outputLatency ?? 0);
   }
 
-  async startMic(onFrame: (pcm64: string, level: number) => void, options: MicOptions): Promise<void> {
-    await this.open();
+  get micActive(): boolean {
+    return this.capture != null && this.stream != null && this.stream.getTracks().some((t) => t.readyState === "live");
+  }
+
+  /** Starts the microphone if it isn't already running with the same options; otherwise swaps the frame callback cleanly. */
+  async ensureMic(onFrame: (samples: Int16Array, level: number) => void, options: MicOptions): Promise<void> {
+    if (
+      this.micActive &&
+      this.micOpts &&
+      this.micOpts.echoCancellation === options.echoCancellation &&
+      this.micOpts.noiseSuppression === options.noiseSuppression &&
+      this.micOpts.autoGainControl === options.autoGainControl
+    ) {
+      await this.open();
+      this.onMicFrame = onFrame;
+      return;
+    }
+    await this.startMic(onFrame, options);
+  }
+
+  async startMic(onFrame: (samples: Int16Array, level: number) => void, options: MicOptions): Promise<void> {
     this.stopMic();
+    const gen = ++this.micGen;
+    await this.open();
+    if (gen !== this.micGen) return;
     const context = this.context!;
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, ...options } });
-    this.source = context.createMediaStreamSource(this.stream);
-    this.capture = new AudioWorkletNode(context, "capture", { numberOfOutputs: 0 });
-    this.capture.port.onmessage = (e) => {
-      const frame = new Int16Array(e.data as ArrayBuffer);
-      let sum = 0;
-      for (const s of frame) sum += s * s;
-      this.level = Math.sqrt(sum / frame.length) / 32768;
-      onFrame(bytesToBase64(new Uint8Array(e.data as ArrayBuffer)), this.level);
-    };
-    this.source.connect(this.capture);
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, ...options } });
+    if (gen !== this.micGen) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    let source: MediaStreamAudioSourceNode | null = null;
+    let capture: AudioWorkletNode | null = null;
+    try {
+      source = context.createMediaStreamSource(stream);
+      capture = new AudioWorkletNode(context, "capture", { numberOfOutputs: 0 });
+      capture.port.onmessage = (e) => {
+        const frame = new Int16Array(e.data as ArrayBuffer);
+        let sum = 0;
+        for (const s of frame) sum += s * s;
+        this.level = Math.sqrt(sum / frame.length) / 32768;
+        this.onMicFrame?.(frame, this.level);
+      };
+      source.connect(capture);
+    } catch (err) {
+      source?.disconnect();
+      capture?.port.close();
+      stream.getTracks().forEach((t) => t.stop());
+      throw err;
+    }
+    this.stream = stream;
+    this.micOpts = { ...options };
+    this.onMicFrame = onFrame;
+    this.source = source;
+    this.capture = capture;
   }
 
   stopMic(): void {
+    this.micGen++;
     this.source?.disconnect();
     this.capture?.port.close();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.source = null;
     this.capture = null;
     this.stream = null;
+    this.micOpts = null;
+    this.onMicFrame = null;
+    this.level = 0;
   }
 
   play(pcm64: string): void {
@@ -193,8 +281,13 @@ export class CallAudio {
     this.playback?.port.postMessage({ type: "flush" });
   }
 
+  stopPlayback(): void {
+    this.playback?.port.postMessage({ type: "stop" });
+    this.queued = 0;
+  }
+
   stop(): void {
     this.stopMic();
-    this.playback?.port.postMessage({ type: "stop" });
+    this.stopPlayback();
   }
 }

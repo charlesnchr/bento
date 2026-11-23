@@ -78,6 +78,7 @@
       </div>
       <div class="callbar-right">
         <span id="micwarn" hidden>Mic hears nothing</span>
+        <button id="wake-now" type="button" hidden title="Wake and open the attention window">Wake</button>
         <span id="calltimer" hidden>00:00</span>
       </div>
     </div>
@@ -101,6 +102,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
               Start voice call
             </button>
+            <button id="hero-wake" class="hero-secondary" type="button" hidden>Listen for wake word</button>
             <button id="hero-resume" class="hero-secondary" type="button" hidden>Continue last call</button>
           </div>
           <div class="hero-tips">
@@ -133,6 +135,11 @@
         <div id="bar">
           <span id="status" class="idle" aria-live="polite"><span class="dot"></span><span id="statustext">Idle</span></span>
           <div class="controls">
+            <button id="wakebtn" class="round" type="button" title="Toggle wake word loop (W)" aria-label="Toggle wake word loop" aria-pressed="false" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 6v12M8 9v6M16 9v6M4 11v2M20 11v2"/>
+              </svg>
+            </button>
             <button id="mic" class="round" type="button" title="Mute (M)" aria-label="Mute microphone" disabled>
               <svg class="ic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
               <svg class="ic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9v2a3 3 0 0 0 5.12 2.12M15 9.34V6a3 3 0 0 0-5.94-.6M17 16.95A7 7 0 0 1 5 11M19 11a7 7 0 0 1-.11 1.23M12 18v3M3 3l18 18"/></svg>
@@ -155,6 +162,7 @@
         <span class="keys">
           <span><kbd>Esc</kbd> stop</span>
           <span><kbd>M</kbd> mute</span>
+          <span><kbd>W</kbd> wake</span>
           <span><kbd>Space</kbd> push to talk</span>
           <span><kbd>/</kbd> type</span>
         </span>
@@ -268,6 +276,52 @@
         <label class="setting-row">
           <span class="setting-text"><strong>Start muted</strong><small>Push to talk: hold Space, or tap the microphone, to speak.</small></span>
           <input class="switch" type="checkbox" id="ptt">
+        </label>
+      </div>
+
+      <div class="setting-group" id="wake-settings">
+        <div class="setting-group-title">Wake word and signaling</div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word loop</strong><small id="wake-help">Listen locally in the browser between calls and while dormant.</small></span>
+          <input class="switch" type="checkbox" id="wake-enabled">
+        </label>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word model</strong><small>Local LiveKit WakeWord ONNX model.</small></span>
+          <select id="wake-model"></select>
+        </label>
+        <div class="setting-row">
+          <span class="setting-text"><strong>Detection threshold</strong><small>Higher reduces false wakes; lower triggers more easily. Applies immediately.</small></span>
+          <div class="setting-range">
+            <input type="range" id="wake-threshold" min="0.30" max="0.95" step="0.05" value="0.70" aria-label="Wake word detection threshold">
+            <span id="wake-threshold-val" class="setting-val">0.70</span>
+          </div>
+        </div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake and sleep chimes</strong><small>Play a rising chime on wake and a soft falling tone when going dormant.</small></span>
+          <input class="switch" type="checkbox" id="wake-cue" checked>
+        </label>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Attention and end signaling</strong><small id="signaling-help">Applied on the next call unless overridden in Developer JSON.</small></span>
+          <select id="signaling">
+            <option value="open">Open mic (wake starts call)</option>
+            <option value="window">Attention window (dormant until wake)</option>
+            <option value="echo">Turn window + hang up (Echo-style)</option>
+          </select>
+        </label>
+        <div class="setting-row" id="signaling-timers">
+          <div class="setting-text">
+            <strong>Window and hang-up timers</strong>
+            <div class="setting-inline">
+              <label><small>After wake</small> <input type="number" id="attn-after-wake" value="8" min="1" max="60"> <small>s</small></label>
+              <label><small>After reply</small> <input type="number" id="attn-window" value="5" min="0" max="60"> <small>s</small></label>
+              <label><small>After question</small> <input type="number" id="attn-after-question" value="10" min="0" max="60"> <small>s</small></label>
+              <label><small>Hang up</small> <input type="number" id="hangup-after" value="300" min="0" max="3600"> <small>s</small></label>
+            </div>
+          </div>
+        </div>
+        <label class="setting-row">
+          <span class="setting-text"><strong>Wake word interrupts replies</strong><small>Mute the mic while the model speaks and cut in only on the wake word.</small></span>
+          <input class="switch" type="checkbox" id="wake-barge">
         </label>
       </div>
 
