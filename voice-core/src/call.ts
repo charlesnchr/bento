@@ -74,12 +74,14 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Matches each negation opener; `isDontCancel` inspects every occurrence independently and fails closed, skipping only explicit affirmative lead-ins before the cancel verb. */
+/** Matches each negation opener; `isDontCancel` inspects every occurrence independently and fails closed, skipping only explicit affirmative lead-ins before a base-form cancel imperative. */
 const NEG_OPENER = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\b/gi;
-const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,6}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+const TO_CANCEL_VERB = /^\s+((?:[\w']+\s+){0,6}?)(cancel\w*|stop\w*|abort\w*|kill\w*|drop\w*|end(?:s|ed|ing)?|halt\w*)\b/i;
+const BASE_CANCEL_VERB = /^(?:cancel|stop|abort|kill|drop|end|halt)$/i;
 const LEAD_ADV = /^(?:really|even|actually|quite)$/;
 const DIRECT_IDIOM_VERB = /^(?:mind|wait|worry|forget|hesitate)$/;
 const LEAD_FILLER = /^(?:(?:anymore|anyway|whatever|really|just|so|then)\s*)*$/;
+const CARE_TAIL = /^(?:about\s+(?:it|that|this|them)\s+)?(?:(?:anymore|anyway|whatever|really|just|so|then)\s*)*$/;
 const OBJECT_DISMISS = /^(?:it|that|this|them)(?:\s+(?:anymore|now|either|just|so|then))*$/;
 const WAIT_DISMISS = /^to\s+wait(?:\s+(?:anymore|just|so|then))*$/;
 const HAVE_IDIOM = /^(?:to\s+wait|time|all\s+day)(?:\s+(?:anymore|just|so|then))*$/;
@@ -95,6 +97,7 @@ function isDontCancel(clause: string): boolean {
     const rest = clause.slice(open.index + open[0].length);
     const m = TO_CANCEL_VERB.exec(rest);
     if (!m) continue;
+    if (!BASE_CANCEL_VERB.test(m[2])) return true;
     const words = (m[1] ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
     const start = words.length > 1 && LEAD_ADV.test(words[0]) ? 1 : 0;
     const verb = words[start] ?? "";
@@ -106,7 +109,8 @@ function isDontCancel(clause: string): boolean {
       return true;
     }
     if (DIRECT_IDIOM_VERB.test(verb)) continue;
-    if ((verb === "care" || verb === "know") && LEAD_FILLER.test(tail)) continue;
+    if (verb === "care" && CARE_TAIL.test(tail)) continue;
+    if ((verb === "know" || verb === "matter") && LEAD_FILLER.test(tail)) continue;
     if (verb === "like" && OBJECT_DISMISS.test(tail)) continue;
     if ((verb === "want" || verb === "need") && (OBJECT_DISMISS.test(tail) || WAIT_DISMISS.test(tail))) continue;
     if (verb === "bother" && /^(?:waiting(?:\s+(?:anymore|just|so|then))*|(?:just|so|then)?)$/.test(tail)) continue;
@@ -2039,15 +2043,15 @@ export class Call {
       if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
         target = byDetail;
       } else {
-        // Check scored verb-filtered user words across labels/requests/summaries first, then scored unfiltered labels as fallback, asking for clarification on ties.
-        const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
-        const byUser = userWords.length > 0 ? this.findTarget(userWords.join(" "), true) : null;
-        if (byUser != null && (byUser.kind === "external" || (byUser.kind === "ambiguous" && byUser.external.length > 0))) {
-          target = byUser;
+        // Score detached labels separately (so an owned label cannot hide a named detached task), then verb-filtered user words across detached requests/summaries, asking for clarification on ties.
+        const byExtLabel = this.findExternal(request.task, false);
+        if (byExtLabel != null) {
+          target = byExtLabel;
         } else {
-          const byUserLabel = this.findTarget(request.task, false);
-          if (byUserLabel != null && (byUserLabel.kind === "external" || (byUserLabel.kind === "ambiguous" && byUserLabel.external.length > 0))) {
-            target = byUserLabel;
+          const userWords = [...TaskNames.distinctive(request.task)].filter((w) => !QUESTION_VERBS.has(w));
+          const byExtDetail = userWords.length > 0 ? this.findExternal(userWords.join(" "), true) : null;
+          if (byExtDetail != null) {
+            target = byExtDetail;
           } else if (byDetail?.kind === "owned") {
             const seen = new Set<string>();
             const extConflicts = [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
@@ -2280,6 +2284,25 @@ export class Call {
     }
     if (owned.length === 0 && external.length === 1) return { kind: "external", task: external[0] };
     if (owned.length + external.length > 1) return { kind: "ambiguous", owned, external };
+    return null;
+  }
+
+  /** Scores [ref] against detached external tasks alone so an owned task cannot shadow a named detached task. */
+  private findExternal(
+    ref: string,
+    byRequest: boolean,
+  ):
+    | { kind: "external"; task: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number } }
+    | { kind: "ambiguous"; owned: Task[]; external: { key: string; id: string | null; label: string; request: string; summary: string; asked: string | null; askedAt: number; askedTurn: number }[] }
+    | null {
+    if (this.externalTasks.length === 0) return null;
+    const extPairs = new Map<string, [string, string]>();
+    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, byRequest ? `${ext.request} ${ext.summary}`.trim() : ""]);
+    const best = TaskNames.matches(ref, extPairs)
+      .map((k) => this.externalTasks.find((e) => e.key === k))
+      .filter((e): e is NonNullable<typeof e> => e != null);
+    if (best.length === 1) return { kind: "external", task: best[0] };
+    if (best.length > 1) return { kind: "ambiguous", owned: [], external: best };
     return null;
   }
 

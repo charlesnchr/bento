@@ -1596,6 +1596,11 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't have Sam cancel the Noma table",
     "Don't have the Noma table task stop",
     "I'm not going to have you cancel the Noma table",
+    "I don't want it stopped",
+    "I don't want the Noma table cancelled",
+    "Please don't go cancelling the Noma table",
+    "Don't let the Noma table get cancelled",
+    "I don't care if they cancel the Noma table",
     "I don't like it when you cancel the Noma table",
     "I don't know if you should cancel the Noma table",
     "Don't bother to cancel the Noma table",
@@ -1697,6 +1702,33 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   const resp10e: string = s10e.sentTurns().at(-1).parts[0].functionResponse.response.message;
   assert.ok(resp10e.includes('"Alchemist table"') && resp10e.includes('"Noma table"'), `expected clarification naming both detached tasks, got: ${resp10e}`);
 
+  // 8e) An owned task ("Friday morning") cannot hide a named detached task ("Email") when continue_task misses.
+  const s10f = chat();
+  s10f.push({ type: "note", id: "call-1-5", label: "Email", text: "Drafted a note to Sam.", active: false, request: "Write a message to Sam" });
+  s10f.advance(0.1);
+  s10f.type("Schedule Friday morning standup");
+  s10f.calls("ask_hermes", { label: "Friday morning" });
+  s10f.advance(0.1);
+  s10f.type("For the email, yes, make it Friday morning");
+  s10f.calls("ask_hermes", { continue_task: "Revision" });
+  s10f.advance(0.1);
+  assert.equal(s10f.hermes().length, 1, "owned 'Friday morning' must not hide detached 'Email' and start a new run");
+  const resp10f: string = s10f.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10f.includes('"Email"'), `expected redirect to Email, got: ${resp10f}`);
+
+  // 8f) Three-candidate tie excludes weaker detached matches ("Geranium table") when two tie higher.
+  const s10g = chat();
+  s10g.push({ type: "note", id: "call-1-6", label: "Alchemist table", text: "Alchemist seats four.", active: false, request: "Book at Alchemist" });
+  s10g.push({ type: "note", id: "call-1-7", label: "Noma table", text: "Noma waitlist.", active: false, request: "Book at Noma" });
+  s10g.push({ type: "note", id: "call-1-8", label: "Geranium table", text: "Geranium closed.", active: false, request: "Book at Geranium" });
+  s10g.advance(0.1);
+  s10g.type("Alchemist Noma table Friday");
+  s10g.calls("ask_hermes", { continue_task: "Revision" });
+  s10g.advance(0.1);
+  assert.equal(s10g.hermes().length, 0, "three-candidate tie must refuse instead of starting a new run");
+  const resp10g: string = s10g.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(resp10g.includes('"Alchemist table"') && resp10g.includes('"Noma table"') && !resp10g.includes('"Geranium table"'), `expected top-2 tie without Geranium, got: ${resp10g}`);
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
@@ -1705,6 +1737,8 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "I don't need it just cancel the weather",
     "I don't really need it just cancel the weather",
     "I don't care just stop the weather",
+    "I don't care about that just cancel the weather",
+    "It doesn't matter just cancel the weather",
     "I don't know just cancel the weather",
     "You don't have to wait just cancel the weather",
     "I don't want to wait cancel the weather",

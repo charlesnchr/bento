@@ -1493,14 +1493,14 @@ class AssistantCall(
                     if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
                         target = byDetail
                     } else {
-                        val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
-                        val byUser = if (userWords.isNotEmpty()) findTarget(userWords.joinToString(" "), byRequest = true) else null
-                        if (byUser is Target.External || (byUser is Target.Ambiguous && byUser.external.isNotEmpty())) {
-                            target = byUser
+                        val byExtLabel = findExternal(request.task, byRequest = false)
+                        if (byExtLabel != null) {
+                            target = byExtLabel
                         } else {
-                            val byUserLabel = findTarget(request.task, byRequest = false)
-                            if (byUserLabel is Target.External || (byUserLabel is Target.Ambiguous && byUserLabel.external.isNotEmpty())) {
-                                target = byUserLabel
+                            val userWords = TaskNames.distinctive(request.task).filterNot { it in CONFLICT_VERBS }
+                            val byExtDetail = if (userWords.isNotEmpty()) findExternal(userWords.joinToString(" "), byRequest = true) else null
+                            if (byExtDetail != null) {
+                                target = byExtDetail
                             } else if (byDetail is Target.Owned) {
                                 val extConflicts = (externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)).distinct()
                                 when {
@@ -1660,24 +1660,31 @@ class AssistantCall(
                 else -> Target.Ambiguous(exactOwned, exactExt)
             }
         }
-        val key = TaskNames.find(ref, combined)
-        if (key != null) {
-            if (key.startsWith("ext:")) return Target.External(combined[key]!!.first)
-            val owned = tasks[key] ?: return null
+        val best = TaskNames.matches(ref, combined)
+        if (best.isEmpty()) return null
+        val matchedOwned = best.filterNot { it.startsWith("ext:") }.mapNotNull { tasks[it] }
+        val matchedExt = best.filter { it.startsWith("ext:") }.mapNotNull { combined[it]?.first }
+        if (matchedOwned.size == 1 && matchedExt.isEmpty()) {
+            val owned = matchedOwned.single()
             val conflicts = externalConflicts(ref, owned)
             return if (conflicts.isNotEmpty()) Target.Ambiguous(listOf(owned), conflicts) else Target.Owned(owned)
         }
-        val refWords = TaskNames.distinctive(ref)
-        val matchedOwned = tasks.values.filter { t ->
-            val pool = TaskNames.distinctive(if (byRequest) "${t.label} ${t.request}" else t.label)
-            refWords.any { it in pool }
-        }
-        val matchedExt = externalTasks.values.filter { (label, detail) ->
-            val pool = TaskNames.distinctive(if (byRequest) "$label $detail" else label)
-            refWords.any { it in pool }
-        }.map { it.first }
+        if (matchedOwned.isEmpty() && matchedExt.size == 1) return Target.External(matchedExt.single())
         if (matchedOwned.size + matchedExt.size > 1) return Target.Ambiguous(matchedOwned, matchedExt)
         return null
+    }
+
+    /** Scores [ref] against detached external tasks alone so an owned task cannot shadow a named detached task. */
+    private fun findExternal(ref: String, byRequest: Boolean): Target? {
+        if (externalTasks.isEmpty()) return null
+        val extPairs = LinkedHashMap<String, Pair<String, String>>()
+        for ((k, ext) in externalTasks) extPairs["ext:$k"] = ext.first to if (byRequest) ext.second else ""
+        val best = TaskNames.matches(ref, extPairs).mapNotNull { extPairs[it]?.first }
+        return when {
+            best.size == 1 -> Target.External(best.single())
+            best.size > 1 -> Target.Ambiguous(emptyList(), best)
+            else -> null
+        }
     }
 
     /**

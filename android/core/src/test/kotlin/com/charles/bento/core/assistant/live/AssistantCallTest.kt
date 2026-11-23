@@ -4865,6 +4865,27 @@ class AssistantCallTest {
         assertEquals(1, asked.size, "stronger detached match must refuse instead of starting a fresh run")
         val msg6 = transport.responses()[10].message()
         assertTrue("\"Alchemist table\"" in msg6 && "\"Geranium table\"" !in msg6, msg6)
+
+        // Three-candidate tie excludes the weaker detached match ("Geranium table") when two tie higher.
+        call.note("Kadeau table", "Kadeau has a waitlist.", inHistory = true, id = "call-1-5", active = false, request = "Book at Kadeau")
+        Live.turn(transport, "Alchemist Kadeau table Friday")
+        transport.push(Live.call("c7", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 12 }
+        assertEquals(1, asked.size, "three-candidate tie must refuse instead of starting a new run")
+        val msg7 = transport.responses()[11].message()
+        assertTrue("\"Alchemist table\"" in msg7 && "\"Kadeau table\"" in msg7 && "\"Geranium table\"" !in msg7, msg7)
+
+        // Owned "Friday morning" must not hide detached "Email" when user says "For the email, yes, make it Friday morning".
+        Live.turn(transport, "Schedule Friday morning standup")
+        transport.push(Live.call("c8", args = mapOf("label" to "Friday morning")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 13 }
+        assertEquals(2, asked.size)
+        Live.turn(transport, "For the email, yes, make it Friday morning")
+        transport.push(Live.call("c9", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 14 }
+        assertEquals(2, asked.size, "owned 'Friday morning' must not hide detached 'Email' and start a new run")
+        val msg9 = transport.responses()[13].message()
+        assertTrue("\"Email\"" in msg9, msg9)
         call.stop()
     }
 }
