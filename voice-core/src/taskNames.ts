@@ -28,7 +28,7 @@ function words(text: string): string[] {
 }
 
 /** Distinctive words: a few letters long and not filler. */
-function distinctive(text: string): Set<string> {
+export function distinctive(text: string): Set<string> {
   return new Set(words(text).filter((w) => w.length >= 4 && !STOP.has(w)));
 }
 
@@ -201,9 +201,9 @@ export function matches(ref: string, tasks: Map<string, [string, string]>): stri
   if (topWithin.length === 1) return topWithin;
   const wanted = distinctive(r);
   if (wanted.size === 0) return topWithin;
-  const pool = topWithin.length > 1 ? entries.filter(([k]) => topWithin.includes(k)) : entries;
+  // Score the full entries pool on a containment tie, matching main and Kotlin TaskNames.kt.
   const scored = sortByDescending(
-    pool.map(([key, v]): [string, number] => [
+    entries.map(([key, v]): [string, number] => [
       key,
       [...distinctive(v[0])].filter((w) => wanted.has(w)).length * 2 + [...distinctive(v[1])].filter((w) => wanted.has(w)).length,
     ]).filter((s) => s[1] > 0),

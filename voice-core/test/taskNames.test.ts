@@ -125,6 +125,13 @@ test("the model finds a task by what it says", () => {
   });
   assert.equal(N.find("Sarah's booking", poss), "2");
   assert.equal(N.find("Sarah booking", poss), "1");
+  // Containment tie scores the full pool (not just the tied containment entries), matching main & Kotlin.
+  const travel = tasks({
+    "1": ["Sarah", "Ask Sarah"],
+    "2": ["travel", "Check travel"],
+    "3": ["travel budget options", "Compare travel budget options"],
+  });
+  assert.equal(N.find("Sarah travel budget", travel), "3");
 });
 
 test("a reply asks what its summary asks", () => {

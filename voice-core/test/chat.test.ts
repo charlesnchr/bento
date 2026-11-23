@@ -736,3 +736,64 @@ test("when detached Alchemist asked first and owned Noma asked second, 'Yes, boo
   assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
   assert.equal(s.hermes()[1].followUp, true);
 });
+
+test("cancel_task with Alchemist dinner booking does not cancel owned Noma dinner booking", () => {
+  const s = chat();
+  s.type("Make a dinner booking at Noma");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Alchemist has a table at nine." });
+  s.advance(0.1);
+  s.type("Cancel the Alchemist dinner booking. Keep looking at Noma");
+  s.calls("cancel_task", { task: "Alchemist dinner booking" });
+  s.advance(0.1);
+  assert.ok(!s.commands.some((c) => c.type === "tool.cancel"), "cancel_task must not cancel owned Noma when reference names detached Alchemist");
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith("Not executed:"), refusal);
+});
+
+test("identifying words distinguish 'Yes, book Alchemist' from generic 'Yes, book it' even when only the detached question used 'book'", () => {
+  const s = chat();
+  s.push({ type: "note", id: "call-1-1", label: "Dinner reservation", text: "Alchemist has a table at nine. Shall I book it?" });
+  s.advance(0.1);
+  s.type("Get me a table at Noma");
+  s.calls("ask_hermes", { label: "Book Noma" });
+  s.advance(0.1);
+  s.complete("Noma has a table at eight. Want me to reserve it?");
+  s.advance(0.1);
+  // 1) "Yes, book Alchemist" names Alchemist from the detached summary -> refused with Continue it, not sent to Noma.
+  s.type("Yes, book Alchemist");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 1);
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Dinner reservation" asked'), refusal);
+  assert.match(refusal, /Continue it/);
+  s.writes("Tap Continue it on Dinner reservation.");
+  // 2) Generic "Yes, book it" uses only the question verb "book" (not an identifying subject word) -> routes to newer owned Noma!
+  s.type("Yes, book it");
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
+  assert.equal(s.hermes()[1].followUp, true);
+});
+
+test("owned-only ambiguous label on a bare answer uses owned-only wording without an empty earlier-call list", () => {
+  const s = chat();
+  s.type("Book dinner");
+  s.calls("ask_hermes", { label: "Dinner booking" });
+  s.advance(0.1);
+  s.complete("Table ready. Shall I book it?");
+  s.type("Buy dinner gift");
+  s.calls("ask_hermes", { label: "Dinner gift" });
+  s.advance(0.1);
+  s.complete("Gift ready. Shall I order it?");
+  s.type("Yes, go ahead");
+  s.calls("ask_hermes", { label: "Dinner" });
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  const refusal = s.sentTurns().at(-1).parts[0].functionResponse.response.message;
+  assert.ok(refusal.startsWith('Not executed: "Dinner" could mean more than one task in this chat'), refusal);
+  assert.ok(!refusal.includes("earlier call ()"), refusal);
+});

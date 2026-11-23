@@ -1963,18 +1963,28 @@ export class Call {
     const rawAnswering = named == null && TaskNames.isAnswer(request.task)
       ? this.answering(d)
       : { tasks: [], external: [], allExternal: [] };
-    // Even if an owned task asked more recently, an answer whose own words specifically name an earlier detached question must not route to the owned task.
+    // Even if an owned task asked more recently, an answer whose own words specifically identify an earlier detached question must not route to the owned task.
     if (found == null && rawAnswering.external.length === 0 && rawAnswering.allExternal.length > 0) {
-      const pending = new Map<string, [string, string]>();
-      for (const t of rawAnswering.tasks) pending.set(t.id, [t.label, `${t.request} ${t.asked ?? ""}`]);
-      for (const q of rawAnswering.allExternal) pending.set(q.key, [q.label, q.summary]);
-      const matched = TaskNames.matches(request.task, pending);
-      const matchedOwned = matched.filter((k) => !k.startsWith("ext:"));
-      const matchedExt = matched
-        .filter((k) => k.startsWith("ext:"))
-        .map((k) => rawAnswering.allExternal.find((q) => q.key === k))
-        .filter((q): q is NonNullable<typeof q> => q != null);
-      if (matchedOwned.length === 0 && matchedExt.length > 0) {
+      const saidWords = TaskNames.distinctive(request.task);
+      const ownedWords = new Set<string>();
+      for (const t of rawAnswering.tasks) {
+        for (const w of TaskNames.distinctive(`${t.label} ${t.request} ${t.asked ?? ""}`)) ownedWords.add(w);
+      }
+      const matchedExt = rawAnswering.allExternal.filter((q) => {
+        const statement = q.summary.split(q.asked).join(" ");
+        const askedWords = TaskNames.distinctive(q.asked);
+        const extId = new Set<string>(TaskNames.distinctive(q.label));
+        for (const w of TaskNames.distinctive(statement)) if (!askedWords.has(w)) extId.add(w);
+        for (const w of ownedWords) extId.delete(w);
+        return [...saidWords].some((w) => extId.has(w));
+      });
+      // Only redirect if the answer did not also name a word unique to the owned task(s).
+      const extAllWords = new Set<string>();
+      for (const q of rawAnswering.allExternal) {
+        for (const w of TaskNames.distinctive(`${q.label} ${q.summary}`)) extAllWords.add(w);
+      }
+      const namesOwned = [...saidWords].some((w) => ownedWords.has(w) && !extAllWords.has(w));
+      if (!namesOwned && matchedExt.length > 0) {
         const who = matchedExt.map((q) => `"${q.label}" asked "${q.asked}"`).join("; ");
         this.respond(d.id, `Not executed: ${who} in an earlier call, so this chat cannot continue that session directly. ` +
           "Tell the user to open that reply and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.", false);
@@ -2014,9 +2024,14 @@ export class Call {
       }
       if (labelTarget?.kind === "ambiguous") {
         const ownedNames = labelTarget.owned.map((t) => `"${t.label}"`).join(", ");
-        const extNames = labelTarget.external.map((e) => `"${e.label}"`).join(", ");
-        this.respond(d.id, `Not executed: "${label}" is ambiguous because both this chat (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
-          "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply and tap Continue it. No action was run.", false);
+        if (labelTarget.external.length > 0) {
+          const extNames = labelTarget.external.map((e) => `"${e.label}"`).join(", ");
+          this.respond(d.id, `Not executed: "${label}" is ambiguous because both this chat (${ownedNames}) and an earlier call (${extNames}) have a matching task. ` +
+            "Ask the user which one they mean: to continue the task from an earlier call, tell them to open its reply and tap Continue it. No action was run.", false);
+        } else {
+          this.respond(d.id, `Not executed: "${label}" could mean more than one task in this chat (${ownedNames}). ` +
+            "Ask the user which one they mean, then call ask_hermes with that task's exact name as continue_task. No action was run.", false);
+        }
         return;
       }
     }
@@ -2058,7 +2073,7 @@ export class Call {
     const ownedPairs = new Map<string, [string, string]>();
     for (const [key, t] of this.tasks) ownedPairs.set(key, [t.label, byRequest ? t.request : ""]);
     const extPairs = new Map<string, [string, string]>();
-    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, ""]);
+    for (const ext of this.externalTasks) extPairs.set(ext.key, [ext.label, byRequest ? ext.summary : ""]);
     // Cross-session exact/possessive-loose collision ("Sarah booking" vs "Sarah's booking"): refuse rather than misrouting across sessions, while preserving exact owned-only matching.
     if (extPairs.size > 0) {
       const looseOwned = TaskNames.looseMatches(ref, ownedPairs).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
@@ -2070,7 +2085,21 @@ export class Call {
     if (best.length === 0) return null;
     const owned = best.filter((k) => !k.startsWith("ext:")).map((k) => this.tasks.get(k)).filter((t): t is Task => t != null);
     const external = best.filter((k) => k.startsWith("ext:")).map((k) => this.externalTasks.find((e) => e.key === k)).filter((e): e is NonNullable<typeof e> => e != null);
-    if (owned.length === 1 && external.length === 0) return { kind: "owned", task: owned[0] };
+    if (owned.length === 1 && external.length === 0) {
+      // If a detached task shares this owned task's label and the reference names a word from the detached summary not in the owned task, treat as cross-session ambiguity rather than acting on the owned task.
+      if (byRequest && extPairs.size > 0) {
+        const ownedTask = owned[0];
+        const ownedWords = TaskNames.distinctive(`${ownedTask.label} ${ownedTask.request}`);
+        const refUnique = [...TaskNames.distinctive(ref)].filter((w) => !ownedWords.has(w));
+        if (refUnique.length > 0) {
+          const sameLabelExts = TaskNames.looseMatches(ownedTask.label, extPairs)
+            .map((k) => this.externalTasks.find((e) => e.key === k))
+            .filter((e): e is NonNullable<typeof e> => e != null && refUnique.some((w) => TaskNames.distinctive(e.summary).has(w)));
+          if (sameLabelExts.length > 0) return { kind: "ambiguous", owned, external: sameLabelExts };
+        }
+      }
+      return { kind: "owned", task: owned[0] };
+    }
     if (owned.length === 0 && external.length > 0) return { kind: "external", task: external[external.length - 1] };
     if (owned.length > 0 && (external.length > 0 || owned.length > 1)) return { kind: "ambiguous", owned, external };
     return null;
