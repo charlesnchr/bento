@@ -4813,6 +4813,20 @@ class AssistantCallTest {
         transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
         assertTrue(transport.responses()[3].message().startsWith("Not executed:"), transport.responses()[3].message())
         assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must still stay running when Gemini passes its exact label")
+
+        // "Why not just cancel the Alchemist table" must preserve "Why not ..." and still refuse cancelling owned Noma.
+        Live.turn(transport, "Why not just cancel the Alchemist table")
+        transport.push(Live.call("x3", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 5 }
+        assertTrue(transport.responses()[4].message().startsWith("Not executed:"), transport.responses()[4].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'Why not just cancel the Alchemist table' must still block cancelling Noma")
+
+        // continue_task("Alchemist") matching detached Dinner booking by request detail must refuse instead of starting a fresh Hermes run.
+        Live.turn(transport, "Check Alchemist")
+        transport.push(Live.call("c3", args = mapOf("continue_task" to "Alchemist")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 6 }
+        assertEquals(1, asked.size, "continue_task('Alchemist') must refuse instead of starting a new run")
+        assertTrue(transport.responses()[5].message().startsWith("Not executed:"), transport.responses()[5].message())
         call.stop()
     }
 }

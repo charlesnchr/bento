@@ -636,4 +636,23 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     sv.advance(0.1);
     assert.equal(sv.commands.filter((c) => c.type === "tool.cancel").length, 1, `voice mode should cancel on: ${phrase}`);
   }
+
+  // Multi-word "don't ... cancel" negations refuse in voice mode as well.
+  for (const phrase of [
+    "Please don't accidentally cancel the Noma booking",
+    "Do not under any circumstances cancel the Noma booking",
+    "I don't want you to cancel the Noma table",
+    "Don't you dare cancel the Noma table",
+    "Don't you cancel the Noma table",
+  ]) {
+    const sv2 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv2.advance(0.1);
+    sv2.turn("Book a table at Noma");
+    sv2.toolCall("c1", "ask_hermes", { label: "Noma table" });
+    sv2.advance(0.3);
+    sv2.turn(phrase);
+    sv2.toolCall("x1", "cancel_task", { task: "Noma table" });
+    sv2.advance(0.1);
+    assert.equal(sv2.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode must refuse: ${phrase}`);
+  }
 });

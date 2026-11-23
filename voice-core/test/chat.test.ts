@@ -1572,4 +1572,54 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s5.calls("cancel_task", { task: "Noma table" });
   s5.advance(0.1);
   assert.equal(s5.commands.filter((c) => c.type === "tool.cancel").length, 0, "'Cancel everything except that one' must fail closed");
+
+  // 6) Multi-word "don't ... cancel" negations still refuse, while "I'm not the one..." still cancels and lowercase "not noma" protects Noma.
+  for (const phrase of [
+    "Please don't accidentally cancel the Noma booking",
+    "Do not under any circumstances cancel the Noma booking",
+    "I don't want you to cancel the Noma table",
+    "Don't you dare cancel the Noma table",
+    "Don't you cancel the Noma table",
+  ]) {
+    const s6 = chat();
+    s6.type("Book a table at Noma");
+    s6.calls("ask_hermes", { label: "Noma table" });
+    s6.advance(0.1);
+    s6.type(phrase);
+    s6.calls("cancel_task", { task: "Noma table" });
+    s6.advance(0.1);
+    assert.equal(s6.commands.filter((c) => c.type === "tool.cancel").length, 0, `must refuse negation: ${phrase}`);
+  }
+  const s7 = chat();
+  s7.type("Book a table at Noma");
+  s7.calls("ask_hermes", { label: "Noma table" });
+  s7.advance(0.1);
+  s7.type("Check weather");
+  s7.calls("ask_hermes", { label: "Weather" });
+  s7.advance(0.1);
+  s7.type("cancel the weather not noma");
+  s7.calls("cancel_task", { task: "Noma table" });
+  s7.advance(0.1);
+  assert.equal(s7.commands.filter((c) => c.type === "tool.cancel").length, 0, "lowercase 'not noma' must protect Noma");
+  s7.calls("cancel_task", { task: "Weather" });
+  s7.advance(0.1);
+  assert.equal(s7.commands.filter((c) => c.type === "tool.cancel").length, 1, "lowercase 'cancel the weather not noma' must cancel Weather");
+
+  const s8 = chat();
+  s8.type("Book a table at Noma");
+  s8.calls("ask_hermes", { label: "Noma table" });
+  s8.advance(0.1);
+  s8.type("Cancel the Noma table, I'm not the one who wants it");
+  s8.calls("cancel_task", { task: "Noma table" });
+  s8.advance(0.1);
+  assert.equal(s8.commands.filter((c) => c.type === "tool.cancel").length, 1, "copula 'I'm not the one...' must not block cancelling Noma");
+
+  // 7) continue_task naming a detached task only by its request ("Alchemist" when label is "Dinner booking") refuses instead of starting a fresh Hermes run.
+  const s9 = chat();
+  s9.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Book a table at Alchemist", active: true, request: "Book a table at Alchemist" });
+  s9.advance(0.1);
+  s9.type("Check Alchemist status");
+  s9.calls("ask_hermes", { continue_task: "Alchemist" });
+  s9.advance(0.1);
+  assert.equal(s9.hermes().length, 0, "continue_task('Alchemist') matching detached Dinner booking by request must refuse instead of starting a new run");
 });

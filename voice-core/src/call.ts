@@ -74,8 +74,8 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Clause-level phrasing that explicitly forbids cancelling (distinct from "Don't bother with...", "Never mind...", "Why not just cancel..."). */
-const DONT_CANCEL = /\b(?:(?:don'?t|do\s+not|doesn'?t|never)\s+(?:(?:ever|actually|really|please|just|yet|still|even|want|need|try|dare|to)\s+){0,3}(?:cancel|stop|abort|kill|drop|end|halt)\b|(?<!\bwhy\s+)not\s+(?:(?:ever|actually|really|just|yet|still|even|to)\s+){0,2}(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+/** Clause-level phrasing that explicitly forbids cancelling (keeps open gap for "don't you dare / accidentally / under any circumstances cancel", while skipping idioms "never mind", "don't wait", "don't bother", "why not", "not that/this/now/sure"). */
+const DONT_CANCEL = /\b(?:(?:don'?t|do\s+not|doesn'?t|never)\s+(?!mind\b|wait\b|bother\b)(?:(?!\b(?:mind|wait|bother)\b)[\w']+\s+){0,4}?(?:cancel|stop|abort|kill|drop|end|halt)\b|(?<!\bwhy\s+)not\s+(?!that\b|this\b|now\b|sure\b)(?:(?!\b(?:that|this|now|sure)\b)[\w']+\s+){0,3}?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Clause-level phrasing asking to keep or leave a task running (applies even without naming a task, e.g. "Keep it running", "Leave it alone"). */
 const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|(?!me\b|us\b)[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
 /** Clause-level "keep <task>" phrasing (protects a task only when the clause resolves to that task, never via the unnamed fallback). */
@@ -1993,7 +1993,11 @@ export class Call {
       this.respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", false);
       return;
     }
-    const target = named != null ? this.findTarget(named, false) : null;
+    let target = named != null ? this.findTarget(named, false) : null;
+    if (target == null && named != null && this.externalTasks.length > 0) {
+      const byDetail = this.findTarget(named, true);
+      if (byDetail != null && byDetail.kind !== "owned") target = byDetail;
+    }
     const where = this.textLine ? "this chat" : "this call";
     const whereReply = this.textLine ? "its reply" : "its reply in chat";
     if (target?.kind === "external") {
@@ -2661,10 +2665,23 @@ export class Call {
    * ("Not that one cancel the weather", "Never mind cancel the weather").
    */
   private splitClauses(said: string): string[] {
-    const normalized = said
+    const labelWords = new Set<string>();
+    for (const t of this.tasks.values()) {
+      for (const w of TaskNames.distinctive(t.label)) if (!CANCEL_ACTION_WORDS.has(w) && !QUESTION_VERBS.has(w)) labelWords.add(w);
+    }
+    for (const ext of this.externalTasks) {
+      for (const w of TaskNames.distinctive(ext.label)) if (!CANCEL_ACTION_WORDS.has(w) && !QUESTION_VERBS.has(w)) labelWords.add(w);
+    }
+    let normalized = said
       .replace(/\b(not\s+(?:that|this)(?:\s+one)?|not\s+now|never\s+mind)\s+(?=(?:please\s+|just\s+|also\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/gi, "$1, ")
-      .replace(/(?<!\b(?:do|did|does|why|would|should|could|will|can|may|might|must))\s+(?=\bnot\s+[A-Z])/g, ", ");
-    return normalized.split(/[.?!;]+|\s*,\s*|\s+\b(?:but|while|though|although)\b\s+|\s+(?=\bexcept\b)|\s+(?=\bnot\s+(?:the|that|this|my)\b)/i)
+      .replace(/(?<!\b(?:do|did|does|why|would|should|could|will|can|may|might|must|i'm|you're|we're|they're|he's|she's|it's|that's|am|is|are|was|were|be|been|being))\s+(?=\bnot\s+[A-Z])/g, ", ");
+    if (labelWords.size > 0) {
+      normalized = normalized.replace(
+        /(?<!\b(?:do|did|does|why|would|should|could|will|can|may|might|must|i'm|you're|we're|they're|he's|she's|it's|that's|am|is|are|was|were|be|been|being))\s+(?=\bnot\s+([\p{L}\p{N}']+))/giu,
+        (m, word: string) => (labelWords.has(word.toLowerCase()) ? ", " : m),
+      );
+    }
+    return normalized.split(/[.?!;]+|\s*,\s*|\s+\b(?:but|while|though|although)\b\s+|\s+(?=\bexcept\b)|(?<!\b(?:i'm|you're|we're|they're|he's|she's|it's|that's|am|is|are|was|were|be|been|being))\s+(?=\bnot\s+(?:the|that|this|my)\b)/i)
       .map((c) => c.trim())
       .filter((c) => c.length > 0);
   }

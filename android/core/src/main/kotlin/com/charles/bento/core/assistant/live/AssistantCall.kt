@@ -1486,8 +1486,12 @@ class AssistantCall(
                     respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", executed = false)
                     return@launch
                 }
-                // A follow-up names its task: refuse external detached tasks and ambiguous cross-session ties instead of fuzzy-matching owned runs.
-                val target = named?.let { findTarget(it, byRequest = false) }
+                // A follow-up names its task: refuse external detached tasks (including by request detail) and ambiguous ties instead of fuzzy-matching owned runs or starting a fresh run.
+                var target = named?.let { findTarget(it, byRequest = false) }
+                if (target == null && named != null && externalTasks.isNotEmpty()) {
+                    val byDetail = findTarget(named, byRequest = true)
+                    if (byDetail != null && byDetail !is Target.Owned) target = byDetail
+                }
                 if (target is Target.External) {
                     respond(d.id, "Not executed: \"${target.label}\" ran in an earlier call, so this call cannot continue that session directly. " +
                         "Tell the user to open \"${target.label}\"'s reply in chat and tap Continue it, or ask them to restate the full request if they want a new task. No action was run.", executed = false)
@@ -1550,6 +1554,29 @@ class AssistantCall(
         data class Owned(val task: Task) : Target
         data class External(val label: String) : Target
         data class Ambiguous(val owned: List<Task>, val external: List<String>) : Target
+    }
+
+    /** Extracts active (non-excluded / non-kept) cancellation clauses from [said] while preserving idioms like "Why not just cancel...". */
+    private fun cancelScopeText(said: String): String {
+        val active = said
+            .split(Regex("[,.;?!]+|\\s+\\b(?:but|while|though|although)\\b\\s+|\\s+(?=\\bexcept\\b)|(?<!\\b(?:why|do|did|does|would|should|could|will|can|may|might|must|i'm|am|is|are|was|were))\\s+(?=\\bnot\\s+(?:the|that|this|my)\\b)", RegexOption.IGNORE_CASE))
+            .flatMap { clause ->
+                val parts = clause.split(Regex("\\s+\\band\\b\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
+                val kept = ArrayList<String>()
+                var protecting = false
+                for (p in parts) {
+                    when {
+                        Regex("^(?:not|except)\\b|\\bkeep\\b|\\bleave\\b", RegexOption.IGNORE_CASE).containsMatchIn(p) -> protecting = true
+                        !protecting || Regex("^(?:(?:please|just|also)\\s+)*(?:cancel|stop|abort|kill|drop|end|halt)\\b", RegexOption.IGNORE_CASE).containsMatchIn(p) -> {
+                            protecting = false
+                            kept.add(p)
+                        }
+                    }
+                }
+                kept
+            }
+            .joinToString(". ")
+        return active.ifEmpty { said }
     }
 
     /** Detached task labels identified by [text] via a distinctive word absent from [owned]'s label and request. */
@@ -1921,11 +1948,7 @@ class AssistantCall(
                             }
                         }
                         target is Target.Owned -> {
-                            val cancelText = lastWords.split(Regex("[,.;?!]+|\\s+(?=\\b(?:not|except)\\b)", RegexOption.IGNORE_CASE))
-                                .map { it.trim() }
-                                .filter { it.isNotEmpty() && !Regex("^(?:not|except)\\b", RegexOption.IGNORE_CASE).containsMatchIn(it) }
-                                .joinToString(". ")
-                                .ifEmpty { lastWords }
+                            val cancelText = cancelScopeText(lastWords)
                             val wordConflicts = externalConflicts(cancelText, target.task)
                             if (wordConflicts.isNotEmpty()) {
                                 val extNames = wordConflicts.joinToString(", ") { "\"$it\"" }
