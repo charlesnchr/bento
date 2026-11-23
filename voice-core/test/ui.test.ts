@@ -7,6 +7,7 @@ import {
   normalizeSideFilter,
   parsePrefix,
   plainPreview,
+  resolveMobileBannerFilter,
   resolveSideSections,
   shouldClearUnreadResults,
 } from "../web/ui.ts";
@@ -48,6 +49,14 @@ describe("web UI helpers", () => {
     assert.equal(shouldClearUnreadResults(true, true, "active"), false); // drawer open, but filtered to Active
     assert.equal(shouldClearUnreadResults(true, true, "all"), true);
     assert.equal(shouldClearUnreadResults(true, true, "results"), true);
+  });
+
+  it("picks a mobile banner filter that shows whichever alert the banner advertises", () => {
+    assert.equal(resolveMobileBannerFilter("results", 1, 0), "all"); // approval/active task while on Results
+    assert.equal(resolveMobileBannerFilter("active", 1, 0), "active"); // already showing active tasks
+    assert.equal(resolveMobileBannerFilter("all", 2, 1), "all");
+    assert.equal(resolveMobileBannerFilter("active", 0, 2), "results"); // unread results alert
+    assert.equal(resolveMobileBannerFilter("all", 0, 1), "results");
   });
 
   it("flattens markdown into a single-line plain preview and truncates cleanly", () => {

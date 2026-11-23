@@ -20,6 +20,7 @@ import {
   normalizeSideFilter,
   parsePrefix,
   plainPreview,
+  resolveMobileBannerFilter,
   resolveSideSections,
   shouldClearUnreadResults,
   type SideFilter,
@@ -1421,7 +1422,8 @@ function tabs() {
   $("tasks-toggle").onclick = () => setTasksOpen(!document.body.classList.contains("tasks-open"), $("tasks-toggle"));
   $("mobile-tasks-bar").onclick = () => {
     const activeTotal = [...tasks.values()].filter(isActiveTask).length + earlierActiveCount;
-    if (activeTotal === 0 && unreadMobileResults > 0) setSideFilter("results");
+    const nextFilter = resolveMobileBannerFilter(sideFilter, activeTotal, unreadMobileResults);
+    if (nextFilter !== sideFilter) setSideFilter(nextFilter);
     setTasksOpen(true, $("mobile-tasks-bar"));
   };
   $("tasks-close").onclick = () => setTasksOpen(false);

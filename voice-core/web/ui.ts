@@ -44,6 +44,13 @@ export function shouldClearUnreadResults(isMobile: boolean, drawerOpen: boolean,
   return !isMobile || (drawerOpen && filter !== "active");
 }
 
+/** Pick the filter to show when tapping the mobile live-status banner so the advertised item is visible. */
+export function resolveMobileBannerFilter(current: SideFilter, activeTotal: number, unreadResults: number): SideFilter {
+  if (activeTotal > 0) return current === "results" ? "all" : current;
+  if (unreadResults > 0) return "results";
+  return current;
+}
+
 /** Flatten a Markdown agent reply into a single-line plain-text preview for inline handoff chips. */
 export function plainPreview(text: string, maxLen = 150): string {
   const cleaned = text
