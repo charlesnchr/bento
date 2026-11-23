@@ -272,15 +272,15 @@ const REPORTING_IN_CONTINUATION = /\b(?:telling|asking|explaining|saying|said|to
 const THAT_COMPLEMENT = /^\s+that\s+\S/i;
 /** Trailing reading/time adverbials stripped when checking whether a `that ...` phrase is a demonstrative noun phrase ("that sales report every morning", "that staff rota aloud", "that staff meeting this week"). */
 const TRAILING_READING_OR_TIME_ADV = /\s+(?:aloud|out\s+loud|(?:every|each|this|that|last|next)\s+(?:day|morning|afternoon|evening|night|week|month|year|time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|all\s+the\s+time|every\s+time|all\s+day|all\s+week|today|tonight|now|again)\s*$/i;
-/** Strictly singular countable nouns that cannot act as a finite transitive verb or a bare singular object of one ("that staff meeting agenda", "that sales report summary"). */
-const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|rota|article|memo|letter|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|outline|overview|template)$/i;
+/** Strictly singular document-compound heads that cannot act as a finite transitive verb or an uncountable bare object ("that sales report summary", "that staff meeting agenda"). */
+const COUNTABLE_TOPIC_NOUN = /^(?:summary|agenda|outline|overview|template|briefing|memo|spreadsheet|transcript|bulletin|newsletter)$/i;
 const PURE_TOPIC_NOUN = /^(?:meeting|agenda|rota|summary|article|doc|memo|letter|policy|manual|booking|reservation|flight|receipt|reminder|briefing|spec|proposal|slides|spreadsheet|story|chapter|paragraph|transcript|menu|itinerary|confirmation|announcement|bulletin|newsletter|item|entry|agreement|clause|terms)$/i;
 const AMBIG_TOPIC_NOUN = /^(?:report|list|update|note|notes|plan|review|schedule|draft|order|bill|alert|log|logs|post|file|rule|rules|record|quote|issue|comment|reply|email|message|page|line|table|trip|ticket|invoice|chart|deck|slide|sheet|script|headline|contract|document|budget|forecast|notice|thread|section)$/i;
 const MANNER_TAIL_START = /^(?:so|very|too|twice|once|again|aloud|out|over|word|back|through|silently|quietly|loudly|slowly|quickly|fast)$/i;
 const DET_OR_OBJ_PRONOUN = /^(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)$/i;
 /** Reported-speech `that <subject> <verb> <det/pronoun>` predicate clause immediately after a speaking verb ("Stop reading that staff/hosts waive the fee and cancel..."), without blocking noun phrases like "that staff meeting", "that report", or "that report about the weather". */
 const THAT_PREDICATE_CLAUSE = /^\s+that\s+(?:(?!\b(?:of|for|in|at|on|to|from|with|by|about)\b)[\w']+\s+){2,}(?:the|a|an|my|our|your|their|his|her|its|this|that|these|those|some|any|no|every|each|all|it|them|me|us|you|him|her)\b/i;
-/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff training material aloud", "that sales report every morning / so slowly"). */
+/** Bare-object or adverbial reported-speech `that (det?) <plural/collective/pronoun subject> <verb> <object/adverb>` ("that they send notes", "that staff document safety incidents", "that people order twice", "that staff waive corkage/fees"), after ruling out non-pronoun demonstrative topic noun phrases ("that sales report summary", "that staff meeting agenda", "that staff report aloud", "that staff training material aloud", "that sales report every morning / so slowly"). */
 const SUBJECT_PRONOUN = /^(?:i|we|you|they|he|she|it)$/i;
 const COLLECTIVE_SUBJECT = /^(?:staff|crew|management|people|police|children|men|women)$/i;
 function isThatPredicateClause(prefix: string): boolean {
@@ -293,6 +293,8 @@ function isThatPredicateClause(prefix: string): boolean {
     const core = rawBody.replace(TRAILING_READING_OR_TIME_ADV, "").trim();
     const coreWords = core.length > 0 ? core.split(/\s+/) : [];
     if (coreWords.length <= 1) return false;
+    // A 2-word topic followed directly by a reading adverb ("that staff report aloud", "that hotels list out loud") is always a demonstrative noun phrase.
+    if (coreWords.length === 2 && /\s+(?:aloud|out\s+loud)\s*$/i.test(rawBody)) return false;
     const second = coreWords[1];
     const notDetThird = coreWords.length === 2 || !DET_OR_OBJ_PRONOUN.test(coreWords[2]);
     if ((PURE_TOPIC_NOUN.test(second) || /^[a-z]{4,}ing$/i.test(second)) && notDetThird) return false;
@@ -315,8 +317,8 @@ const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|because|tha
 const UNSAFE_SPLIT_END = /\b(?:to|will|would|should|could|can|might|must|may|won'?t|wouldn'?t|shouldn'?t|couldn'?t|can'?t|cannot|don'?t|doesn'?t|didn'?t)\s*$/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
-/** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
-const CANCEL_ALL_SCOPE = /\b(?:(?:cancel|stop|abort|kill|drop|end|clear)\s+(?:\w+\s+){0,2}?(?:all|both|everything)\b|(?:all|both|every)\s+(?:of\s+)?(?:them|the\s+tasks|tasks|runs|searches|bookings|requests|jobs)\b)/i;
+/** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or exact task labels like "All the Time". */
+const CANCEL_ALL_SCOPE = /\b(?:(?:cancel|stop|abort|kill|drop|end|clear)\s+(?:\w+\s+){0,2}?(all|both|everything)\b|(all|both|every)\s+(?:of\s+)?(?:them|the\s+tasks|tasks|runs|searches|bookings|requests|jobs)\b)/gi;
 
 /** Merges request prompts within [max] characters, preserving both the original prompt head and the newest follow-up tail. */
 function mergeRequest(prev: string, next: string, max = 1000): string {
@@ -3065,7 +3067,7 @@ export class Call {
     };
     const SHORT_STOP = new Set(["the", "and", "for", "with", "from", "into", "about", "now", "yet", "too", "all", "any", "our", "its", "his", "her", "you", "not", "but", "can", "may", "was", "are", "has", "had", "did", "get", "got", "one", "two", "out", "off", "day", "way", "new", "old", "use", "let", "see", "run", "set", "put", "try", "ask", "say", "end", "bit", "lot", "own", "per", "via", "etc", "to", "of", "in", "on", "at", "by", "as", "or", "if", "is", "be", "do", "so", "no", "up", "my", "me", "us", "we", "he", "it"]);
     const shortTokens = (s: string): Set<string> => new Set((s.toLowerCase().match(/[a-z0-9]{2,}/g) ?? []).filter((w) => !SHORT_STOP.has(w)));
-    const tailNamesShortCompetitor = (tailText: string, otherLabel: string, otherExtra: string, bestTask: Task, bestFull: number): boolean => {
+    const tailNamesShortCompetitor = (keptText: string, tailText: string, otherLabel: string, otherExtra: string, bestTask: Task, bestFull: number, otherDirect: number): boolean => {
       const tailWords = shortTokens(tailText);
       if (tailWords.size === 0) return false;
       const bestWords = shortTokens(`${bestTask.label} ${bestTask.latest} ${bestTask.request}`);
@@ -3073,8 +3075,9 @@ export class Call {
       if (cleanOtherLabel.length >= 2 && cleanOtherLabel.length <= 3 && !SHORT_STOP.has(cleanOtherLabel) && tailWords.has(cleanOtherLabel) && !bestWords.has(cleanOtherLabel)) {
         return true;
       }
-      if (bestFull === 0) {
-        const otherWords = shortTokens(`${otherLabel} ${otherExtra}`);
+      const otherWords = shortTokens(`${otherLabel} ${otherExtra}`);
+      const sharesKeptTopic = bestFull === 0 || otherDirect > 0 || [...shortTokens(keptText)].some((w) => otherWords.has(w));
+      if (sharesKeptTopic) {
         for (const w of tailWords) {
           if (w.length <= 3 && otherWords.has(w) && !bestWords.has(w)) return true;
         }
@@ -3084,14 +3087,15 @@ export class Call {
     const tailConflictsWithOther = (keptText: string, fullText: string, bestTask: Task, isWithPrep: boolean, isExactLabel: boolean): boolean => {
       const bestDirect = this.clauseScore(keptText, bestTask.label, bestTask.latest + " " + bestTask.request);
       const bestFull = this.clauseScore(fullText, bestTask.label, bestTask.latest + " " + bestTask.request);
-      const tailText = fullText.slice(keptText.length);
+      const keptIdx = fullText.indexOf(keptText);
+      const tailText = keptIdx >= 0 ? fullText.slice(keptIdx + keptText.length) : "";
       for (const other of this.tasks.values()) {
         if (other.state !== RUNNING || other.id === bestTask.id) continue;
         const otherExtra = other.latest + " " + other.request;
         const otherDirect = this.clauseScore(keptText, other.label, otherExtra);
         const otherFull = this.clauseScore(fullText, other.label, otherExtra);
         if (!isWithPrep && otherFull > 0 && otherFull >= bestFull) return true;
-        if (!isWithPrep && tailNamesShortCompetitor(tailText, other.label, otherExtra, bestTask, bestFull)) return true;
+        if (!isWithPrep && tailNamesShortCompetitor(keptText, tailText, other.label, otherExtra, bestTask, bestFull, otherDirect)) return true;
         if (otherDirect > 0 && otherFull > otherDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${other.label} ${otherExtra}`)) return true;
         }
@@ -3101,7 +3105,7 @@ export class Call {
         const extDirect = this.clauseScore(keptText, ext.label, extExtra);
         const extFull = this.clauseScore(fullText, ext.label, extExtra);
         if (extFull > 0 && extFull >= bestFull) return true;
-        if (tailNamesShortCompetitor(tailText, ext.label, extExtra, bestTask, bestFull)) return true;
+        if (tailNamesShortCompetitor(keptText, tailText, ext.label, extExtra, bestTask, bestFull, extDirect)) return true;
         if (extDirect > 0 && extFull > extDirect && bestFull === bestDirect) {
           if (!isExactLabel || coversAllLabelWords(bestTask.label, `${ext.label} ${extExtra}`)) return true;
         }
@@ -3281,11 +3285,45 @@ export class Call {
     return active.length > 0 ? active : said;
   }
 
+  /** Whether [text] requests cancelling all tasks, ignoring scope words ("all"/"both"/"everything") that appear inside an exact known task label such as "All the Time". */
+  private isBroadCancel(text: string): boolean {
+    const lower = text.toLowerCase();
+    const isWordChar = (ch: string | undefined): boolean => ch != null && /[\p{L}\p{N}]/u.test(ch);
+    const labels = [
+      ...[...this.tasks.values()].filter((t) => t.state === RUNNING).map((t) => t.label.trim().toLowerCase()),
+      ...this.externalTasks.map((e) => e.label.trim().toLowerCase()),
+    ].filter((l) => l.length > 0);
+    CANCEL_ALL_SCOPE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CANCEL_ALL_SCOPE.exec(lower)) != null) {
+      const scopeWord = m[1] ?? m[2];
+      const wordStart = m.index + m[0].lastIndexOf(scopeWord);
+      const wordEnd = wordStart + scopeWord.length;
+      let insideLabel = false;
+      for (const lbl of labels) {
+        let from = 0;
+        while (from <= lower.length - lbl.length) {
+          const idx = lower.indexOf(lbl, from);
+          if (idx < 0) break;
+          const end = idx + lbl.length;
+          if (idx <= wordStart && wordEnd <= end && !isWordChar(lower[idx - 1]) && !isWordChar(lower[end])) {
+            insideLabel = true;
+            break;
+          }
+          from = idx + 1;
+        }
+        if (insideLabel) break;
+      }
+      if (!insideLabel) return true;
+    }
+    return false;
+  }
+
   private protectsTask(said: string, task: Task): boolean {
     const spans = this.parseCancelSpans(said);
     const activeParts = spans.filter((s) => s.kind === "active").flatMap((s) => s.parts);
     const activeNamesThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
-    const broadCancel = CANCEL_ALL_SCOPE.test(activeParts.join(". "));
+    const broadCancel = this.isBroadCancel(activeParts.join(". "));
     for (const span of spans) {
       if (span.kind !== "protect") continue;
       const isExcept = /^except\b/i.test(span.parts[0] ?? "");
@@ -3399,7 +3437,7 @@ export class Call {
       }
       const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
       const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
-      const targetsOnlyOther = mentionsOther && !mentionsThis && !CANCEL_ALL_SCOPE.test(activeText);
+      const targetsOnlyOther = mentionsOther && !mentionsThis && !this.isBroadCancel(activeText);
       if (!targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, TaskNames.mentions(activeText, task.label, task.latest + " " + task.request))) return true;
       this.cancelDoubt = { tasks: new Set([task.id]), seq: answeredSeq };
       return false;
@@ -3425,7 +3463,7 @@ export class Call {
     // Score each active cancel conjunct separately so "Cancel the weather and the Noma table booking" names both tasks.
     const mentionsThis = activeParts.some((p) => this.clauseResolution(p, task).namedThis);
     const mentionsOther = activeParts.some((p) => this.clauseResolution(p, task).namedOther);
-    const targetsOnlyOther = !mentionsThis && mentionsOther && !CANCEL_ALL_SCOPE.test(activeText);
+    const targetsOnlyOther = !mentionsThis && mentionsOther && !this.isBroadCancel(activeText);
     if (activeText.length > 0 && !targetsOnlyOther && asksToCancel(activeText, this.c.voiceCommands, names, mentionsThis)) {
       this.cancelDoubt = null;
       return true;

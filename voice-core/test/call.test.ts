@@ -763,6 +763,8 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop mentioning that people order twice and cancel the Noma table",
     "Stop mentioning that staff report twice and cancel the Noma table",
     "Stop mentioning that staff update so slowly and cancel the Noma table",
+    "Stop mentioning that airlines issue confirmation and cancel the Noma table",
+    "Stop mentioning that hotels email confirmation and cancel the Noma table",
     "Never mind the cancelled pipeline newer builds just cancel the Noma table",
     "Never mind the cancelled airline reps just cancel the Noma table",
     "Stop talking about restaurants that overbook and cancel the Noma table all the time",
