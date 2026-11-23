@@ -4821,12 +4821,25 @@ class AssistantCallTest {
         assertTrue(transport.responses()[4].message().startsWith("Not executed:"), transport.responses()[4].message())
         assertEquals(AssistantCall.Status.Working, call.status.value, "'Why not just cancel the Alchemist table' must still block cancelling Noma")
 
+        // "Cancel the Alchemist booking before I leave. Thanks" and "Okay, keep the Noma table and then cancel the Alchemist one" must preserve Alchemist and block cancelling Noma.
+        Live.turn(transport, "Cancel the Alchemist booking before I leave. Thanks")
+        transport.push(Live.call("x4", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 6 }
+        assertTrue(transport.responses()[5].message().startsWith("Not executed:"), transport.responses()[5].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'before I leave' must not drop the Alchemist cancel clause")
+
+        Live.turn(transport, "Okay, keep the Noma table and then cancel the Alchemist one")
+        transport.push(Live.call("x5", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 7 }
+        assertTrue(transport.responses()[6].message().startsWith("Not executed:"), transport.responses()[6].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'and then cancel the Alchemist one' must stay in active cancel scope")
+
         // continue_task("Alchemist") matching detached Dinner booking by request detail must refuse instead of starting a fresh Hermes run.
         Live.turn(transport, "Check Alchemist")
         transport.push(Live.call("c3", args = mapOf("continue_task" to "Alchemist")))
-        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 6 }
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 8 }
         assertEquals(1, asked.size, "continue_task('Alchemist') must refuse instead of starting a new run")
-        assertTrue(transport.responses()[5].message().startsWith("Not executed:"), transport.responses()[5].message())
+        assertTrue(transport.responses()[7].message().startsWith("Not executed:"), transport.responses()[7].message())
         call.stop()
     }
 }

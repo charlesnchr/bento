@@ -1486,11 +1486,23 @@ class AssistantCall(
                     respond(d.id, "Not executed: no complete new transcribed request could be identified. Ask the user to repeat a short, specific request. No action was run.", executed = false)
                     return@launch
                 }
-                // A follow-up names its task: refuse external detached tasks (including by request detail) and ambiguous ties instead of fuzzy-matching owned runs or starting a fresh run.
+                // A follow-up names its task: refuse external detached tasks (including by request detail or user words) and cross-session ties instead of fuzzy-matching owned runs or starting a fresh run.
                 var target = named?.let { findTarget(it, byRequest = false) }
                 if (target == null && named != null && externalTasks.isNotEmpty()) {
                     val byDetail = findTarget(named, byRequest = true)
-                    if (byDetail != null && byDetail !is Target.Owned) target = byDetail
+                    if (byDetail is Target.External || (byDetail is Target.Ambiguous && byDetail.external.isNotEmpty())) {
+                        target = byDetail
+                    } else {
+                        val extByUserLabel = externalTasks.values.map { it.first }.filter { label ->
+                            val labelWords = TaskNames.distinctive(label)
+                            labelWords.isNotEmpty() && labelWords.any { it in TaskNames.distinctive(request.task) }
+                        }
+                        val extConflicts = if (byDetail is Target.Owned) {
+                            externalConflicts(named, byDetail.task) + externalConflicts(request.task, byDetail.task)
+                        } else emptyList()
+                        val matchedExt = extByUserLabel.lastOrNull() ?: extConflicts.lastOrNull()
+                        if (matchedExt != null) target = Target.External(matchedExt)
+                    }
                 }
                 if (target is Target.External) {
                     respond(d.id, "Not executed: \"${target.label}\" ran in an earlier call, so this call cannot continue that session directly. " +
@@ -1556,18 +1568,31 @@ class AssistantCall(
         data class Ambiguous(val owned: List<Task>, val external: List<String>) : Target
     }
 
-    /** Extracts active (non-excluded / non-kept) cancellation clauses from [said] while preserving idioms like "Why not just cancel...". */
+    /** Extracts active (non-excluded / non-kept) cancellation clauses from [said] while preserving idioms like "Why not just cancel..." and "before I leave". */
     private fun cancelScopeText(said: String): String {
+        val protectPart = Regex(
+            "^(?:not|except)\\b|\\bkeep\\b|\\bleave\\s+(?:[\\w']+\\s+){0,3}?(?:running|going|alone|as\\s+it\\s+is|be)\\b|\\blet\\s+(?:it|that|this|the|(?!me\\b|us\\b)[\\w']+)\\s+(?:keep\\s+)?(?:running|run|going|finish|continue)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+        val cancelStart = Regex(
+            "^(?:(?:please|just|also|now|then)\\s+)*(?:cancel|stop|abort|kill|drop|end|halt|forget|never\\s+mind|don'?t\\s+bother)\\b",
+            RegexOption.IGNORE_CASE,
+        )
         val active = said
-            .split(Regex("[,.;?!]+|\\s+\\b(?:but|while|though|although)\\b\\s+|\\s+(?=\\bexcept\\b)|(?<!\\b(?:why|do|did|does|would|should|could|will|can|may|might|must|i'm|am|is|are|was|were))\\s+(?=\\bnot\\s+(?:the|that|this|my)\\b)", RegexOption.IGNORE_CASE))
+            .split(
+                Regex(
+                    "[,.;?!]+|\\s+\\b(?:but|while|though|although)\\b\\s+|\\s+(?=\\bexcept\\b)|(?<!\\b(?:why|do|did|does|would|should|could|will|can|may|might|must|i'm|you're|we're|they're|he's|she's|it's|that's|am|is|are|was|were|be|been|being))\\s+(?=\\bnot\\s+(?:the|that|this|my)\\b)",
+                    RegexOption.IGNORE_CASE,
+                ),
+            )
             .flatMap { clause ->
                 val parts = clause.split(Regex("\\s+\\band\\b\\s+", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
                 val kept = ArrayList<String>()
                 var protecting = false
                 for (p in parts) {
                     when {
-                        Regex("^(?:not|except)\\b|\\bkeep\\b|\\bleave\\b", RegexOption.IGNORE_CASE).containsMatchIn(p) -> protecting = true
-                        !protecting || Regex("^(?:(?:please|just|also)\\s+)*(?:cancel|stop|abort|kill|drop|end|halt)\\b", RegexOption.IGNORE_CASE).containsMatchIn(p) -> {
+                        protectPart.containsMatchIn(p) && !cancelStart.containsMatchIn(p) -> protecting = true
+                        !protecting || cancelStart.containsMatchIn(p) -> {
                             protecting = false
                             kept.add(p)
                         }

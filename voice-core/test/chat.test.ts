@@ -1622,4 +1622,35 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s9.calls("ask_hermes", { continue_task: "Alchemist" });
   s9.advance(0.1);
   assert.equal(s9.hermes().length, 0, "continue_task('Alchemist') matching detached Dinner booking by request must refuse instead of starting a new run");
+
+  // 8) When continue_task hits an owned task's request (discarded) while user's words name a detached task, refuse instead of starting a fresh run.
+  const s10 = chat();
+  s10.push({ type: "note", id: "call-1-1", label: "Dinner booking", text: "Book a table on the Noma patio", active: true, request: "Book a table on the Noma patio" });
+  s10.advance(0.1);
+  s10.type("Check patio hours");
+  s10.calls("ask_hermes", { label: "Menu research" });
+  s10.advance(0.1);
+  s10.type("For the dinner booking, yes, use the Noma patio");
+  s10.calls("ask_hermes", { continue_task: "Noma patio hours" });
+  s10.advance(0.1);
+  assert.equal(s10.hermes().length, 1, "detached Dinner booking referenced in user's words must refuse instead of starting a fresh run");
+
+  // 9) Affirmative cancel lead-ins ("Don't worry/forget/hesitate", "don't need it", "not needed/working") still cancel cleanly.
+  for (const phrase of [
+    "Don't worry just cancel the weather",
+    "Don't forget to cancel the weather",
+    "Don't hesitate to cancel the weather",
+    "I don't need it just cancel the weather",
+    "It's not needed anymore cancel the weather",
+    "If it's not working cancel the weather",
+  ]) {
+    const s11 = chat();
+    s11.type("Check Paris weather");
+    s11.calls("ask_hermes", { label: "Paris weather" });
+    s11.advance(0.1);
+    s11.type(phrase);
+    s11.calls("cancel_task", { task: "Paris weather" });
+    s11.advance(0.1);
+    assert.equal(s11.commands.filter((c) => c.type === "tool.cancel").length, 1, `should cancel on: ${phrase}`);
+  }
 });

@@ -625,6 +625,12 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "No don't wait just cancel the weather",
     "Why not just cancel the weather",
     "Not that one cancel the weather",
+    "Don't worry just cancel the weather",
+    "Don't forget to cancel the weather",
+    "Don't hesitate to cancel the weather",
+    "I don't need it just cancel the weather",
+    "It's not needed anymore cancel the weather",
+    "If it's not working cancel the weather",
   ]) {
     const sv = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv.advance(0.1);

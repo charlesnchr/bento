@@ -74,8 +74,18 @@ const ANSWER_TURNS = 2;
 /** Affirmative reply confirming a previously questioned cancellation, without negation or "keep". */
 const AFFIRMATIVE_CANCEL = /^(?:yes|yeah|yep|yup|yea|please do|go ahead|do it|confirm|sure|ok(?:ay)?)\b/i;
 const NEGATIVE_OR_KEEP = /\b(?:no|nope|nah|don'?t|do not|doesn'?t|keep|leave|not|never|still)\b/i;
-/** Clause-level phrasing that explicitly forbids cancelling (keeps open gap for "don't you dare / accidentally / under any circumstances cancel", while skipping idioms "never mind", "don't wait", "don't bother", "why not", "not that/this/now/sure"). */
-const DONT_CANCEL = /\b(?:(?:don'?t|do\s+not|doesn'?t|never)\s+(?!mind\b|wait\b|bother\b)(?:(?!\b(?:mind|wait|bother)\b)[\w']+\s+){0,4}?(?:cancel|stop|abort|kill|drop|end|halt)\b|(?<!\bwhy\s+)not\s+(?!that\b|this\b|now\b|sure\b)(?:(?!\b(?:that|this|now|sure)\b)[\w']+\s+){0,3}?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
+/** Matches negation before a cancel verb; `isDontCancel` filters out non-prohibiting idioms where the negation modifies another verb ("don't worry/forget/hesitate/need/wait", "never mind", "not working/needed"). */
+const NEG_TO_CANCEL = /\b(?:(don'?t|do\s+not|doesn'?t|never)|(?<!\bwhy\s+)(not))\s+((?:[\w']+\s+){0,4}?)(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+const NON_PROHIBITING_GAP = /\b(?:mind|wait|bother|worry|forget|hesitate|need|needed|finished|done|ready|working|responding|loading|happening|moving|care|think|know|have|like|use|feel|see|hear|sure|that|this|now|anymore|it|them)\b/i;
+
+function isDontCancel(clause: string): boolean {
+  const m = NEG_TO_CANCEL.exec(clause);
+  if (!m) return false;
+  const gap = m[3] ?? "";
+  if (NON_PROHIBITING_GAP.test(gap)) return false;
+  if (m[2] != null && gap.trim().split(/\s+/).filter(Boolean).length > 2) return false;
+  return true;
+}
 /** Clause-level phrasing asking to keep or leave a task running (applies even without naming a task, e.g. "Keep it running", "Leave it alone"). */
 const KEEP_RUNNING = /\b(?:keep\s+(?:[\w']+\s+){0,3}?(?:running|going|open|active|working)\b|keep\s+(?:it|that|this|the)\b|leave\s+(?:[\w']+\s+){0,3}?(?:running|going|alone|as\s+it\s+is|be)\b|let\s+(?:it|that|this|the|(?!me\b|us\b)[\w']+)\s+(?:keep\s+)?(?:running|run|going|finish|continue)\b)/i;
 /** Clause-level "keep <task>" phrasing (protects a task only when the clause resolves to that task, never via the unnamed fallback). */
@@ -1996,7 +2006,18 @@ export class Call {
     let target = named != null ? this.findTarget(named, false) : null;
     if (target == null && named != null && this.externalTasks.length > 0) {
       const byDetail = this.findTarget(named, true);
-      if (byDetail != null && byDetail.kind !== "owned") target = byDetail;
+      if (byDetail != null && (byDetail.kind === "external" || (byDetail.kind === "ambiguous" && byDetail.external.length > 0))) {
+        target = byDetail;
+      } else {
+        // Even if `named` didn't resolve to a detached task on its own (or hit an owned request discarded by label-only matching),
+        // check whether the user's words name a detached task or whether `named`/user words conflict with a detached task before starting a fresh run.
+        const extByUserLabel = this.externalTasks.filter((e) => TaskNames.mentions(request.task, e.label, ""));
+        const extConflicts = byDetail?.kind === "owned"
+          ? [...this.externalConflicts(named, byDetail.task), ...this.externalConflicts(request.task, byDetail.task)]
+          : [];
+        const matchedExt = extByUserLabel[extByUserLabel.length - 1] ?? extConflicts[extConflicts.length - 1] ?? null;
+        if (matchedExt != null) target = { kind: "external", task: matchedExt };
+      }
     }
     const where = this.textLine ? "this chat" : "this call";
     const whereReply = this.textLine ? "its reply" : "its reply in chat";
@@ -2736,7 +2757,7 @@ export class Call {
     for (const clause of this.splitClauses(said)) {
       let cur: { kind: "active" | "protect"; explicitDontOrKeep: boolean; explicitExcl: boolean; restOnly: boolean; parts: string[] } | null = null;
       for (const part of this.splitAnd(clause)) {
-        const explicitDontOrKeep = DONT_CANCEL.test(part) || KEEP_RUNNING.test(part);
+        const explicitDontOrKeep = isDontCancel(part) || KEEP_RUNNING.test(part);
         const targetOnlyProtect = KEEP_TARGET.test(part) || EXCLUDE_TASK.test(part);
         if (explicitDontOrKeep || targetOnlyProtect) {
           cur = {
