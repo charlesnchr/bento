@@ -397,3 +397,24 @@ test("an answer of thoughts alone is no answer: the user is told, and the chat g
   s.writes("Sunlight scatters.");
   assert.equal(s.lines().at(-1)!.text, "Sunlight scatters.");
 });
+
+test("an external detached result note enters context without triggering a turn or breaking a pending question", () => {
+  const s = chat();
+  s.type("Book a table at Noma");
+  s.calls("ask_hermes", { label: "Noma table" });
+  s.advance(0.1);
+  s.complete("There is a table at eight. Shall I book it?");
+  const requestsBefore = s.requests().length;
+  // A detached voice-call task finishes while this typed chat is open.
+  s.push({ type: "note", label: "Copenhagen weather", text: "Sunny, 12 degrees." });
+  s.advance(0.2);
+  assert.equal(s.requests().length, requestsBefore, "a note does not start a model turn on its own");
+  s.type("Yes, book it");
+  const turns = s.sentTurns();
+  assert.ok(turns.some((t: any) => String(t.parts?.[0]?.text ?? "").includes("Copenhagen weather") && String(t.parts?.[0]?.text ?? "").includes("Sunny, 12 degrees.")));
+  s.calls("ask_hermes");
+  s.advance(0.1);
+  assert.equal(s.hermes().length, 2);
+  assert.equal(s.hermes()[1].taskId, s.hermes()[0].taskId);
+  assert.equal(s.hermes()[1].followUp, true);
+});

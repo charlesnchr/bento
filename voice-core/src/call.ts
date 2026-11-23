@@ -551,6 +551,7 @@ export class Call {
       case "cancelAll": return this.defer(() => this.cancelAll());
       case "interrupt": return this.interrupt();
       case "say": return this.typed(e.text);
+      case "note": return this.note(e.label, e.text, e.failed === true);
       case "llm.data": this.textLine?.data(e.id, e.data); return;
       case "llm.end": this.textLine?.end(e.id, e.error ?? (e.status != null && (e.status < 200 || e.status > 299) ? `HTTP ${e.status}` : null), e.status ?? null); return;
       case "ask": return this.defer(() => this.askFromScreen(e.text, e.agent === "t3" ? "t3" : "hermes", e.project ?? null));
@@ -2162,6 +2163,16 @@ export class Call {
   private shown(task: Task, text: string, asked: string | null, failed: boolean): void {
     if (asked != null) { task.askedAt = ++this.asks; task.askedTurn = this.userTurns; this.questionsChanged(); }
     this.send(noteFrame(resultNote(task.label, text, asked, failed)), true);
+  }
+
+  /** A result that arrived outside this call/chat (e.g. a detached voice task): kept in history and fenced into text chat context. */
+  private note(label: string, text: string, failed: boolean): void {
+    if (!this.active) return;
+    if (!failed && text.trim().length > 0) {
+      this.chat.push({ role: "assistant", speaker: REPLY_OF + label, text });
+      this.boundary = true;
+    }
+    if (this.textLine) this.send(noteFrame(resultNote(label, text, null, failed)), true);
   }
 
   private cue(earcon: "taskStarted" | "resultArrived"): void {

@@ -194,6 +194,8 @@ class AssistantController(
     private var chatJob: Job? = null
     /** Messages typed while the chat's core was loading. */
     private val typedEarly = ArrayList<String>()
+    /** Detached voice-call results that arrived while the chat's core was loading, replayed into CoreChat as notes. */
+    private val notedEarly = ArrayList<Triple<String, String, Boolean>>()
     /** The row Gemini's words of one of the core's transcript lines go on. */
     private var chatLine: Pair<Int, String>? = null
     /** The voice core's bundle couldn't be read: typed messages go straight to Hermes. */
@@ -208,8 +210,6 @@ class AssistantController(
     private var serverScope: CoroutineScope = newServerScope()
     private var activeCallBoard: TaskBoard? = null
     private var activeChatBoard: TaskBoard? = null
-    /** A detached voice task landed in this conversation while CoreChat was busy; refresh CoreChat before the next typed turn. */
-    private var chatContextStale = false
     /** Where the main thread's conversation is kept between runs of the app: Hermes stores only each task's own session. */
     private val mainFile = File(context.filesDir, MAIN_THREAD_FILE)
 
@@ -496,7 +496,6 @@ class AssistantController(
      * the composer is free again at once. The first one starts the chat on the conversation on screen.
      */
     private fun say(message: String) {
-        if (chatContextStale && !_state.value.chatBusy) endChat()
         val history = callHistory(_state.value.messages)
         set { it.copy(error = null) }
         messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
@@ -520,6 +519,8 @@ class AssistantController(
             c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
             chat = c
             c.start()
+            for ((label, text, failed) in notedEarly) c.note(label, text, failed)
+            notedEarly.clear()
             for (typed in typedEarly) c.say(typed)
             typedEarly.clear()
             launch {
@@ -557,6 +558,7 @@ class AssistantController(
         chatJob = null
         val typed = typedEarly.joinToString("\n\n")
         typedEarly.clear()
+        notedEarly.clear()
         set { it.copy(thinking = false, error = why) }
         if (typed.isNotEmpty() && !_state.value.working) {
             turnJob = scope.launch { runTurn(typed, TYPED_INSTRUCTIONS + callContext(_state.value.messages), null) }
@@ -587,11 +589,11 @@ class AssistantController(
         val board = activeChatBoard
         chat = null
         activeChatBoard = null
-        chatContextStale = false
         board?.detach()
         chatJob?.cancel()
         chatJob = null
         typedEarly.clear()
+        notedEarly.clear()
         chatLine = null
         c?.stop()
         set { s -> endChatState(s) }
@@ -1072,9 +1074,15 @@ class AssistantController(
             }
             voiceBoundary = true
             chatLine = null
-            // If an already-open typed CoreChat missed this detached reply, refresh it so its next turn has the updated context.
-            if (board.detached && chat != null && status != "cancelled") {
-                if (!_state.value.chatBusy) endChat() else chatContextStale = true
+            // Feed detached voice-call results into the active typed chat without rebuilding it or dropping pending questions.
+            if (board.detached && status != "cancelled") {
+                val noteText = if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
+                if (noteText.isNotBlank()) {
+                    val failed = status == "failed" && turn.answer.isBlank()
+                    val openChat = chat
+                    if (openChat != null) openChat.note(label, noteText, failed)
+                    else if (chatJob != null) notedEarly.add(Triple(label, noteText, failed))
+                }
             }
         }
         return when {

@@ -259,6 +259,8 @@ export type Event =
   | { t: number; type: "interrupt" }
   /** The user typed to the model: a turn of its own, as if said. In a typed chat, every message of theirs. */
   | { t: number; type: "say"; text: string }
+  /** A task result that landed outside this call/chat (e.g. a detached voice-call task): added to context without starting a turn. */
+  | { t: number; type: "note"; label: string; text: string; failed?: boolean }
   /**
    * The text model's answer to `llm.request` [id]: one `generateContent` response as JSON, whole
    * or one chunk of a stream (each `data:` line of `streamGenerateContent?alt=sse`).

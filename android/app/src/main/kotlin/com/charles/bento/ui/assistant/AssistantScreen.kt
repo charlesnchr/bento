@@ -163,6 +163,8 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
 
     // Active tasks on screen: the call's while one is on, plus any detached tasks still running from an earlier call.
     val allTasks = state.call?.tasks.orEmpty() + state.tasks
+    // Completed detached result links open PeekSheet (which has "Continue it"); live and call-scoped tasks open TaskSheet.
+    val sheetTasks = state.call?.tasks.orEmpty() + state.tasks.filter { !it.detached || it.active }
     val detachedDuringCall = if (state.call != null) state.tasks.filter { it.detached && it.active } else emptyList()
     Column(modifier.fillMaxSize().imePadding()) {
         TopAppBar(
@@ -189,7 +191,7 @@ fun AssistantScreen(modifier: Modifier, nav: NavController, homeAction: MutableS
                 else -> Messages(state.sessionId, state.messages, state.caption, state.working || state.thinking,
                                  workingLabel = if (state.working) "Hermes is working…" else "Gemini is thinking…",
                                  savedScroll = { graph.prefs.hermesScroll.value }, saveScroll = { graph.prefs.hermesScroll.value = it }, onAnswer = assistant::answer,
-                                 onOpen = { m -> m.link?.let { link -> allTasks.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
+                                 onOpen = { m -> m.link?.let { link -> sheetTasks.firstOrNull { it.sessionId == link }?.let { shownTask = it.id } ?: assistant.peek(link) } })
             }
         }
         state.error?.let { ErrorBar(it) { assistant.dismissError() } }

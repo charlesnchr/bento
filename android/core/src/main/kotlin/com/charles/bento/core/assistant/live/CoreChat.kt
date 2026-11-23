@@ -121,6 +121,11 @@ class CoreChat(
     /** What the user typed. */
     fun say(text: String) = post { push(event("say") { put("text", text) }) }
 
+    /** A task reply that landed outside this chat (e.g. a detached voice-call task): added to model context without triggering a turn. */
+    fun note(label: String, text: String, failed: Boolean = false) = post {
+        push(event("note") { put("label", label); put("text", text); if (failed) put("failed", true) })
+    }
+
     /** The screen's progress line for a task, for check_task and list_tasks. */
     fun progress(taskId: String, text: String) = post { push(event("task.progress") { put("task", taskId); put("text", text) }) }
 

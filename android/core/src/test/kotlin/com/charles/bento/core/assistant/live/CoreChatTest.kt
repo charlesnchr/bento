@@ -216,4 +216,25 @@ class CoreChatTest {
         c.start()
         assertEquals(CoreChat.LOAD_FAILED, withTimeout(5000) { c.ended.first { it != null } })
     }
+
+    @Test fun aDetachedNoteEntersContextWithoutBreakingAPendingQuestion() = blocking {
+        val model = Scripted(calls("ask_hermes", """{"label":"Noma table"}"""), calls("ask_hermes"))
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val c = chat(model) { call -> asked.add(call); ToolReply(if (call.followUp) "Booked." else "There's a table at eight. Shall I book it?") }
+        c.start()
+        c.say("Book a table at Noma")
+        until("the question") { c.questions.value == mapOf("1" to "Shall I book it?") }
+        val requestsBefore = model.bodies.size
+        c.note("Copenhagen weather", "Sunny, 12 degrees.")
+        delay(200)
+        assertEquals(requestsBefore, model.bodies.size, "a detached note must not trigger a model turn")
+        assertEquals(mapOf("1" to "Shall I book it?"), c.questions.value, "pending question survives the detached note")
+        c.say("Yes, book it")
+        until("the follow-up") { asked.size == 2 }
+        assertEquals("1", asked[1].taskId)
+        assertTrue(asked[1].followUp, "answering the pending question still routes to its original session")
+        val texts = model.texts(1)
+        assertTrue(texts.any { "<bento_note>" in it && "Copenhagen weather" in it && "Sunny, 12 degrees." in it }, texts.toString())
+        c.stop()
+    }
 }
