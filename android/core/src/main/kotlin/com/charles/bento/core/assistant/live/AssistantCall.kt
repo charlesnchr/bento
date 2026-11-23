@@ -1687,8 +1687,8 @@ class AssistantCall(
 
     /**
      * Matches owned and detached tasks whose entire label appears contiguously in [ref] (preserving meaningful
-     * symbols such as `C++`), dropping spans strictly contained inside a longer match from the other side
-     * ("Email" inside "Landlord email" in either direction) and returning ambiguous on disjoint or tied matches.
+     * symbols such as `C++`), dropping spans strictly contained inside a longer match from either side
+     * ("Email" inside "Landlord email") and returning ambiguous on disjoint or tied matches.
      */
     private fun findWholeLabelTarget(ref: String): Target? {
         if (externalTasks.isEmpty()) return null
@@ -1709,18 +1709,16 @@ class AssistantCall(
         val said = tokens(ref)
         if (said.isEmpty()) return null
         val rawOwned = tasks.values.mapNotNull { t ->
-            val lt = tokens(t.label)
-            val spans = spansOf(said, lt)
-            if (spans.isNotEmpty()) Triple(t, lt.size, spans) else null
+            val spans = spansOf(said, tokens(t.label))
+            if (spans.isNotEmpty()) t to spans else null
         }
         val rawExt = externalTasks.values.mapNotNull { (label, _) ->
-            val lt = tokens(label)
-            val spans = spansOf(said, lt)
-            if (spans.isNotEmpty()) Triple(label, lt.size, spans) else null
+            val spans = spansOf(said, tokens(label))
+            if (spans.isNotEmpty()) label to spans else null
         }
-        val allSpans = rawOwned.flatMap { it.third } + rawExt.flatMap { it.third }
-        val liveOwned = rawOwned.filter { o -> o.third.any { !subsumedBy(it, allSpans) } }.map { it.first }
-        val liveExt = rawExt.filter { e -> e.third.any { !subsumedBy(it, allSpans) } }.map { it.first }
+        val allSpans = rawOwned.flatMap { it.second } + rawExt.flatMap { it.second }
+        val liveOwned = rawOwned.filter { o -> o.second.any { !subsumedBy(it, allSpans) } }.map { it.first }
+        val liveExt = rawExt.filter { e -> e.second.any { !subsumedBy(it, allSpans) } }.map { it.first }
         return when {
             liveOwned.isEmpty() && liveExt.isEmpty() -> null
             liveOwned.isNotEmpty() && liveExt.isNotEmpty() -> Target.Ambiguous(liveOwned, liveExt)

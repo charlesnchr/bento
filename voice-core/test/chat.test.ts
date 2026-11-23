@@ -1604,7 +1604,10 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Don't forget the cancelled Noma table at the end of the report",
     "Don't worry about the stopped Noma table the rain will end soon",
     "Don't worry about the cancelled Noma table we can drop by later",
+    "Don't worry about the cancelled Noma table we can just drop by later",
+    "Don't worry about the stopped Noma table it will just end soon",
     "Don't worry about the cancelled Noma table I'll stop by tomorrow",
+    "Don't worry about the cancelled Noma table I'll just stop by tomorrow",
     "Don't worry about the cancelled Noma table",
     "Don't wait for the stopped Noma table",
     "Don't worry about a stopped Noma table",
@@ -1612,6 +1615,7 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
     "Stop talking about whether we should just cancel the Noma table",
+    "Stop talking about Noma and what happens when we then cancel the Noma table",
     "Stop telling me to just cancel the Noma table",
     "Stop asking me whether to just cancel the Noma table",
     "Stop explaining why I should just cancel the Noma table",
@@ -1909,17 +1913,50 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
   s10q.advance(0.1);
   assert.equal(s10q.commands.filter((c) => c.type === "tool.cancel").length, 1, "'and the flights then cancel the weather' must cancel Weather");
 
+  // 8k) Comma-less lead-in idiom splits off its object ("Don't worry about the cancelled Noma table just cancel the weather") so Noma is refused and Weather is cancelled; indirect questions ("what happens when we then cancel the weather") stay refused.
+  const s10r = chat();
+  s10r.type("Book a table at Noma");
+  s10r.calls("ask_hermes", { label: "Noma table" });
+  s10r.advance(0.1);
+  s10r.type("Check Copenhagen weather");
+  s10r.calls("ask_hermes", { label: "Weather" });
+  s10r.advance(0.1);
+  s10r.type("Don't worry about the cancelled Noma table just cancel the weather");
+  s10r.calls("cancel_task", { task: "Noma table" });
+  s10r.advance(0.1);
+  assert.equal(s10r.commands.filter((c) => c.type === "tool.cancel").length, 0, "lead-in object 'cancelled Noma table' must not cancel Noma");
+  s10r.calls("cancel_task", { task: "Weather" });
+  s10r.advance(0.1);
+  assert.equal(s10r.commands.filter((c) => c.type === "tool.cancel").length, 1, "'just cancel the weather' after lead-in must cancel Weather");
+
+  const s10s = chat();
+  s10s.type("Book a table at Noma");
+  s10s.calls("ask_hermes", { label: "Noma table" });
+  s10s.advance(0.1);
+  s10s.type("Check Copenhagen weather");
+  s10s.calls("ask_hermes", { label: "Weather" });
+  s10s.advance(0.1);
+  s10s.type("Stop talking about Noma and what happens when we then cancel the weather");
+  s10s.calls("cancel_task", { task: "Weather" });
+  s10s.advance(0.1);
+  assert.equal(s10s.commands.filter((c) => c.type === "tool.cancel").length, 0, "embedded wh-question 'what happens when we then cancel the weather' must not cancel Weather");
+
   // 9) Affirmative cancel lead-ins (comma-less idioms, modals governing another verb, and state clauses) still cancel cleanly.
   for (const phrase of [
     "Don't worry just cancel the weather",
     "Don't worry about the cancellation fee just cancel the weather",
     "Never mind the dropped call just cancel the weather",
+    "Never mind the dropped call can you cancel the weather",
     "Don't worry about the ending just cancel the weather",
     "Don't worry about the stopwatch cancel the weather",
     "Stop the weather check and stop talking about it",
     "Stop talking and stop the weather",
     "Stop talking about it just cancel the weather",
     "Stop rambling please cancel the weather",
+    "Stop talking about flights to Paris and cancel the weather",
+    "Stop mentioning Noma and cancel the weather",
+    "Stop telling me about Noma then cancel the weather",
+    "Stop talking about the trip to Paris then cancel the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",

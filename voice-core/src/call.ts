@@ -90,7 +90,40 @@ const NOT_STATE_TAIL = /^(?:(?:anymore|now|yet|just|so|then)\s*)*$/;
 const NOT_THAT_ONE = /^(?:that|this)\s+one(?:\s+(?:just|so|then))*$/;
 const NOT_GOING_OTHER = /^going\s+to\s+(?:need|want|use|wait)(?:\s+(?:it|that|this|them|anymore|just|so|then))*$/;
 
-const LATER_CANCEL_CMD = /\b(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b/i;
+const LATER_CANCEL_RE = /\b(?:(?:just|then|so|please|now)\s+(?:(?:please|just|now)\s+)?|(?:can|could|would|will)\s+you\s+(?:(?:please|just)\s+)?)(?:cancel|abort|kill|halt|stop(?!\s+(?:by|in|over|off|talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b))\b/gi;
+const DECLARATIVE_BEFORE = /\b(?:don'?t|do\s+not|never|not|i|i'll|we|we'll|they|they'll|he|he'll|she|she'll|it|it'll|you'll|that'll)(?:\s+(?:can|will|would|could|should|might|may|must))?\s*$/i;
+
+/** Index of a standalone cancel command/request inside [text] (not preceded by a negation or declarative subject), or -1. */
+function findLaterCancelCmd(text: string): number {
+  LATER_CANCEL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = LATER_CANCEL_RE.exec(text)) != null) {
+    if (!DECLARATIVE_BEFORE.test(text.slice(0, m.index))) return m.index;
+  }
+  return -1;
+}
+
+/** When [clause] is a direct lead-in idiom containing an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), returns the split index of the following standalone cancel command, or -1. */
+function idiomCancelSplitIndex(clause: string): number {
+  NEG_OPENER.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = NEG_OPENER.exec(clause)) != null) {
+    if (open[2] != null) continue;
+    const afterOpen = open.index + open[0].length;
+    const rest = clause.slice(afterOpen);
+    const m = TO_CANCEL_VERB.exec(rest);
+    if (!m || BASE_CANCEL_VERB.test(m[2])) continue;
+    const words = (m[1] ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const start = words.length > 1 && LEAD_ADV.test(words[0]) ? 1 : 0;
+    const verb = words[start] ?? "";
+    const prev = words[words.length - 1] ?? "";
+    if (!DIRECT_IDIOM_VERB.test(verb) || !/^(?:the|a|an|that|this|my|our)$/.test(prev)) continue;
+    const afterInflection = afterOpen + m.index + m[0].length;
+    const rel = findLaterCancelCmd(clause.slice(afterInflection));
+    if (rel >= 0) return afterInflection + rel;
+  }
+  return -1;
+}
 
 function isDontCancel(clause: string): boolean {
   NEG_OPENER.lastIndex = 0;
@@ -105,10 +138,10 @@ function isDontCancel(clause: string): boolean {
     const tail = words.slice(start + 1).join(" ");
     const full = words.join(" ");
     if (!BASE_CANCEL_VERB.test(m[2])) {
-      // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if an explicit cancel command follows in the same clause.
+      // Only skip an article-preceded noun/adjective ("Never mind the dropped call just cancel...") if an explicit cancel command/request follows in the same clause.
       const prev = words[words.length - 1] ?? "";
       const after = rest.slice(m.index + m[0].length);
-      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && LATER_CANCEL_CMD.test(after)) continue;
+      if (open[2] == null && DIRECT_IDIOM_VERB.test(verb) && /^(?:the|a|an|that|this|my|our)$/.test(prev) && findLaterCancelCmd(after) >= 0) continue;
       return true;
     }
     if (open[2] != null) {
@@ -145,9 +178,10 @@ const CANCEL_VERB_START = /^(?:(?:please|just|also|now|then)\s+)*(?:cancel|stop|
 const STOP_SPEAKING_PART = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/i;
 /** Transition before an explicit cancel command following a stop-speaking phrase in the same clause ("Stop talking about Noma then cancel the weather", "Stop talking about it just cancel the weather"). */
 const SPLIT_AFTER_SPEAKING = /\s+(?:(?:then|so|now|just|please)\s+)+(?=(?:please\s+|just\s+|now\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
-/** Text allowed between a stop-speaking verb and a split-out cancel command: empty or an "about ..." topic without an embedded clause. */
-const SAFE_SPEAK_TOPIC = /^(?:\s+about\b.*)?$/i;
-const EMBEDDED_CLAUSE = /\b(?:to|whether|why|if|how|should|could|would|might|may|must|can|will)\b/i;
+/** Person-object direct/reported speech after "stop telling/asking me ..." without "about" ("Stop telling me to just cancel..."). */
+const DIRECT_SPEECH_LEAD = /^(?:\s+(?:me|us|him|her|them))\b(?!\s+about\b)/i;
+/** Embedded-clause markers (indirect wh-questions, reported speech, infinitive cancel complements) kept inside stop-speaking spans without blocking prepositional nouns like "flights to Paris". */
+const EMBEDDED_CLAUSE = /\b(?:whether|why|if|how|what|when|who|where|that\s+(?:i|we|you|they|he|she|it)\b|(?:i|we|you|they|he|she|it)(?:'ll|'d|'ve|'m|'re|'s)?\s+(?:should|could|would|might|must|can|will|need|want|have|just|then|so|now)\b|to\s+(?:(?:just|please|now|really|actually|simply)\s+)?(?:cancel|stop|abort|kill|drop|end|halt)\b)/i;
 /** Phrases like "keep the rest" / "keep the others" that protect every task EXCEPT the one explicitly named for cancellation. */
 const KEEP_THE_REST = /\b(?:the\s+rest|the\s+others|everything\s+else|all\s+the\s+rest)\b/i;
 /** Explicit all-tasks cancellation scope ("cancel everything", "cancel them all", "stop both of them"), not incidental uses like "that's all" or "after all". */
@@ -2315,8 +2349,8 @@ export class Call {
 
   /**
    * Matches owned and detached tasks whose entire label appears contiguously in [ref] (preserving meaningful
-   * symbols such as `C++`), dropping spans strictly contained inside a longer match from the other side
-   * ("Email" inside "Landlord email" in either direction) and returning ambiguous on disjoint or tied matches.
+   * symbols such as `C++`), dropping spans strictly contained inside a longer match from either side
+   * ("Email" inside "Landlord email") and returning ambiguous on disjoint or tied matches.
    */
   private findWholeLabelTarget(
     ref: string,
@@ -2346,10 +2380,10 @@ export class Call {
     const said = tokens(ref);
     if (said.length === 0) return null;
     const rawOwned = [...this.tasks.values()]
-      .map((t) => { const lt = tokens(t.label); return { task: t, len: lt.length, spans: spansOf(said, lt) }; })
+      .map((t) => ({ task: t, spans: spansOf(said, tokens(t.label)) }))
       .filter((o) => o.spans.length > 0);
     const rawExt = this.externalTasks
-      .map((ext) => { const lt = tokens(ext.label); return { ext, len: lt.length, spans: spansOf(said, lt) }; })
+      .map((ext) => ({ ext, spans: spansOf(said, tokens(ext.label)) }))
       .filter((e) => e.spans.length > 0);
     const allSpans = [...rawOwned.flatMap((o) => o.spans), ...rawExt.flatMap((e) => e.spans)];
     const liveOwned = rawOwned.filter((o) => o.spans.some((sp) => !subsumedBy(sp, allSpans))).map((o) => o.task);
@@ -2898,11 +2932,11 @@ export class Call {
           };
           spans.push(cur);
         } else if (speakMatch != null) {
-          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") and embedded clauses ("Stop telling me to just cancel...") out of active cancel scope, while splitting standalone cancel commands after an empty or "about ..." topic.
+          // Stop-speaking spans keep coordinated objects ("Stop talking about Noma and the weather") and embedded clauses ("Stop telling me to just cancel...", "what happens when we then cancel...") out of active cancel scope, while splitting standalone cancel commands after plain topics ("about flights to Paris", "mentioning Noma", "telling me about Noma").
           const tail = part.slice(speakMatch.index + speakMatch[0].length);
           const split = SPLIT_AFTER_SPEAKING.exec(tail);
           const between = split != null ? tail.slice(0, split.index) : tail;
-          const safeTopic = SAFE_SPEAK_TOPIC.test(between) && !EMBEDDED_CLAUSE.test(between);
+          const safeTopic = !DIRECT_SPEECH_LEAD.test(between) && !EMBEDDED_CLAUSE.test(between);
           if (split != null && safeTopic) {
             const before = part.slice(0, speakMatch.index + speakMatch[0].length + split.index).trim();
             const after = tail.slice(split.index + split[0].length).trim();
@@ -2914,8 +2948,18 @@ export class Call {
             spans.push(cur);
           }
         } else if (cur == null || ((cur.kind === "protect" || (cur.kind === "ignore" && cur.canSplit)) && CANCEL_VERB_START.test(part))) {
-          cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [part] };
-          spans.push(cur);
+          // If a direct lead-in idiom contains an article-preceded inflected cancel word ("Don't worry about the cancelled Noma table just cancel the weather"), split off the lead-in object so it cannot be scored as the cancel target.
+          const idiomSplit = idiomCancelSplitIndex(part);
+          if (idiomSplit > 0) {
+            const before = part.slice(0, idiomSplit).trim();
+            const after = part.slice(idiomSplit).trim();
+            if (before.length > 0) spans.push({ kind: "ignore", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [before] });
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [after] };
+            spans.push(cur);
+          } else {
+            cur = { kind: "active", explicitDontOrKeep: false, explicitExcl: false, restOnly: false, canSplit: true, parts: [part] };
+            spans.push(cur);
+          }
         } else if (cur.kind === "ignore" && cur.canSplit) {
           const split = SPLIT_AFTER_SPEAKING.exec(part);
           if (split != null && !EMBEDDED_CLAUSE.test(part.slice(0, split.index))) {

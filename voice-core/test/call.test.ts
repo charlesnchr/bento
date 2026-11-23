@@ -628,12 +628,17 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Don't worry just cancel the weather",
     "Don't worry about the cancellation fee just cancel the weather",
     "Never mind the dropped call just cancel the weather",
+    "Never mind the dropped call can you cancel the weather",
     "Don't worry about the ending just cancel the weather",
     "Don't worry about the stopwatch cancel the weather",
     "Stop the weather check and stop talking about it",
     "Stop talking and stop the weather",
     "Stop talking about it just cancel the weather",
     "Stop rambling please cancel the weather",
+    "Stop talking about flights to Paris and cancel the weather",
+    "Stop mentioning Noma and cancel the weather",
+    "Stop telling me about Noma then cancel the weather",
+    "Stop talking about the trip to Paris then cancel the weather",
     "Don't forget to cancel the weather",
     "Don't hesitate to cancel the weather",
     "I don't need it just cancel the weather",
@@ -692,7 +697,10 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Don't forget the cancelled Noma table at the end of the report",
     "Don't worry about the stopped Noma table the rain will end soon",
     "Don't worry about the cancelled Noma table we can drop by later",
+    "Don't worry about the cancelled Noma table we can just drop by later",
+    "Don't worry about the stopped Noma table it will just end soon",
     "Don't worry about the cancelled Noma table I'll stop by tomorrow",
+    "Don't worry about the cancelled Noma table I'll just stop by tomorrow",
     "Don't worry about the cancelled Noma table",
     "Don't wait for the stopped Noma table",
     "Don't worry about a stopped Noma table",
@@ -700,6 +708,7 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     "Stop talking about the Noma table",
     "Stop talking about the cancellation fee for the Noma table",
     "Stop talking about whether we should just cancel the Noma table",
+    "Stop talking about Noma and what happens when we then cancel the Noma table",
     "Stop telling me to just cancel the Noma table",
     "Stop asking me whether to just cancel the Noma table",
     "Stop explaining why I should just cancel the Noma table",
@@ -776,4 +785,20 @@ test("a voice call with a registered detached task refuses cancel_task for the d
   sv5.toolCall("x2", "cancel_task", { task: "Weather" });
   sv5.advance(0.1);
   assert.equal(sv5.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'and the flights then cancel' must cancel Weather");
+
+  const sv6 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv6.advance(0.1);
+  sv6.turn("Book a table at Noma");
+  sv6.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv6.advance(0.3);
+  sv6.turn("Check Copenhagen weather");
+  sv6.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv6.advance(0.3);
+  sv6.turn("Don't worry about the cancelled Noma table just cancel the weather");
+  sv6.toolCall("x1", "cancel_task", { task: "Noma table" });
+  sv6.advance(0.1);
+  assert.equal(sv6.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode lead-in object must not cancel Noma");
+  sv6.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv6.advance(0.1);
+  assert.equal(sv6.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'just cancel the weather' after lead-in must cancel Weather");
 });
