@@ -3344,7 +3344,7 @@ export class Call {
   private static readonly AMP_NAME_CONT = /^\s*(?:Bar|Kitchen|Bistro|Cafe|Café|Pub|Tavern|Inn|Arms|Co|Company|Sons|Partners|Bros|Brothers|Bakery|Deli|Brewery|Roastery|Spa|Terrace|Cellar|Pantry|Larder|Hearth)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
   /** Positive coordinated booking-item grammar shared by comma and and/as-well-as/& continuations: positive determiner/quantifier + up to 4 validated pre-nominal modifiers + bookable head noun (supporting compounds like "train station hotel", "two night Paris hotel", "en-suite hotel room" while rejecting SVO clauses like "some friends recommend Paris hotels" and "the Paris hotel upgraded rooms"), followed ONLY by bounded place, time, venue, amenity, trailing-adverb, or short booking-relative modifiers. */
   private static readonly COORD_BOOK_DET = /^\s*(?:(a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?/i;
-  private static readonly COORD_MOD_FORBIDDEN = /^(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those|no|not|never|is|are|was|were|has|have|had|do|does|did|can|could|will|would|should|may|might|must|friends?|wife|husband|kids?|children|parents?|agents?|people|colleagues?|reviewers?|locals?|guests?|clients?|customers?|visitors?|travelers?|travellers?|bloggers?|owners?|managers?|hosts?|recommends?|recommended|suggests?|suggested|mentions?|mentioned|prefers?|preferred|loves?|likes?|hates?|wants?|needs?|says?|said|thinks?|knows?|feels?|looks?|seems?|gets?|got|goes?|went|comes?|came|takes?|took|makes?|made|keeps?|kept|runs?|ran|closes?|closed|opens?|opened|falls?|fell|sells?|sold|costs?|cost|picked|booked|cancelled|canceled|upgrades?|upgraded|offers?|offered|includes?|included)$/;
+  private static readonly COORD_MOD_FORBIDDEN = /^(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those|no|not|never|is|are|was|were|has|have|had|do|does|did|can|could|will|would|should|may|might|must|friends?|wife|husband|kids?|children|parents?|agents?|people|colleagues?|reviewers?|locals?|guests?|clients?|customers?|visitors?|travelers?|travellers?|bloggers?|owners?|managers?|hosts?|recommends?|recommended|suggests?|suggested|mentions?|mentioned|prefers?|preferred|loves?|likes?|hates?|wants?|needs?|says?|said|thinks?|knows?|feels?|looks?|seems?|gets?|got|goes?|went|comes?|came|takes?|took|makes?|made|keeps?|kept|runs?|ran|closes?|closed|opens?|opened|falls?|fell|sells?|sold|costs?|cost|picked|booked|cancelled|canceled|upgrades?|upgraded|offers?|offered|includes?|included|covers|operates|handles|provides|requires|supports|allows|accepts|charges|guarantees|manages|praises|endorses|adores|enjoys|avoids)$/;
   private static readonly COORD_COMPOUND_BRIDGE = /^(?:station|park|terminal|airport|port|pier|center|centre|balcony|night|nights|day|days|week|weeks|star|stars|bed|beds|bedroom|bedrooms|room|rooms|suite|suites)$/;
   private static readonly COORD_PLACE_CONNECTOR = /^(?:on|upon|in|at|by|of|en|sur|sous|le|la|les|de|du|des|am|im|an|ob|zur)$/;
   private static readonly COORD_LOWER_PLACE_PREFIX = /^(?:san|santa|saint|st|new|los|las|el|la|le|rio|sao|buenos|hong|costa|kuala|tel|abu|addis|fort|port|mount|mt|cape|lake|palm|long|west|east|north|south|grand|big|green|red|twin|old|high|bel|monte|villa|boca|palo|key|bay|salt)$/;
@@ -3672,16 +3672,18 @@ export class Call {
         const compoundTail = /^\s+(?:bookings?|reservations?)\b/i.exec(afterHead);
         const tailMatch = parseRest(afterHead) ? "plain" : compoundTail != null && parseRest(afterHead.slice(compoundTail[0].length)) ? "compound" : null;
         if (tailMatch == null) continue;
-        // Only plural heads ("hotels", "spas", "hotel bookings") or uncountable/bare-object singular heads ("dinner", "lunch", "rental", "room", "hotel booking") can serve as bare direct objects in English SVO clauses ("some resorts operate spas in Paris", "my insurance covers car rental in Paris", "some editors praise paris hotels", "my family enjoys hotels in Paris"). Singular countable heads ("a puerto rico hotel", "a ho chi minh city hotel") cannot, so multi-word lowercase place names stay accepted.
+        // Plural heads ("hotels", "spas", "hotel bookings") can always be bare direct objects in English SVO clauses; singular uncountable heads ("dinner", "lunch", "rental", "room", "hotel booking") can be bare objects when not explicitly introduced by a singular indefinite article ("a"/"an"/"another"/"one"), preserving phrases like "a ho chi minh city car rental" while still rejecting "my insurance covers car rental in Paris" and "some resorts operate spas in Paris".
+        const detLow = (detMatch[1] ?? "").toLowerCase();
+        const isSingIndef = detLow === "a" || detLow === "an" || detLow === "another" || detLow === "one";
         const compoundWord = tailMatch === "compound" && compoundTail != null ? compoundTail[0].trim().toLowerCase() : "";
-        const canBeBareObject =
-          (headLow.endsWith("s") && headLow !== "bus") ||
+        const isPluralHead = (headLow.endsWith("s") && headLow !== "bus") || compoundWord.endsWith("s");
+        const isUncountableHead =
           headLow === "dinner" ||
           headLow === "lunch" ||
           headLow === "rental" ||
           headLow === "room" ||
-          compoundWord === "booking" ||
-          compoundWord.endsWith("s");
+          compoundWord === "booking";
+        const canBeBareObject = isPluralHead || (!isSingIndef && isUncountableHead);
         if (canBeBareObject && unknownLowerIdxs.length > 0) {
           const allInModSet = unknownLowerIdxs.every((idx) => modifierSet.has(mods[idx].tok.toLowerCase()));
           if (!allInModSet) {
@@ -3814,14 +3816,8 @@ export class Call {
             let headIdx = -1;
             for (let i = 0; i < toks.length; i++) {
               const low = toks[i].tok.toLowerCase();
-              if (
-                firstHeadIdx >= 0 &&
-                /^(?:in|at|to|near|for|from|on|with|without|by|close|under|below|around|about|over|during|before|after|that|which|who|where|when|while|because|since|if|unless|bookings?|reservations?|i|we|you|he|she|they|is|are|was|were|has|have|had|can|could|will|would|should|may|might|must|asap|please|thanks|today|tonight|tomorrow|now|too|only|instead)$/.test(
-                  low,
-                )
-              ) {
-                break;
-              }
+              const prevIsBridge = i > 0 && Call.COORD_COMPOUND_BRIDGE.test(toks[i - 1].tok.toLowerCase());
+              if (firstHeadIdx >= 0 && !Call.BOOK_ITEM_HEAD_WORD.test(low) && !Call.COORD_COMPOUND_BRIDGE.test(low) && !(prevIsBridge && /^\p{Lu}/u.test(toks[i].tok))) break;
               if (Call.BOOK_ITEM_HEAD_WORD.test(low)) {
                 if (firstHeadIdx < 0) firstHeadIdx = i;
                 headIdx = i;
@@ -3860,11 +3856,12 @@ export class Call {
             if (subHeads == null || ![...heads].some((h) => subHeads.has(h))) return false;
             if ([...heads].some((h) => Call.PARENT_BOOK_CATEGORIES.has(h) && h !== cat)) return false;
             const catPat = cat.endsWith("y") ? `${cat.slice(0, -1)}(?:y|ies)` : `${cat}(?:e?s)?`;
-            const facTail = `(?!\\s+(?:station|park|terminal|airport|port|pier|stop|depot|hub|lot|garage|center|centre)\\b)`;
-            const postRe = new RegExp(`\\b(?:at|in|on|for)\\s+(?:(?:a|an|the|my|our|your|this|that)\\s+)?(?:[\\p{L}\\p{N}-]+\\s+){0,2}${catPat}\\b${facTail}`, "iu");
+            const facTail = `(?!\\s+(?:station|park|terminal|airport|port|pier|stop|depot|hub|lot|garage|center|centre)s?\\b)`;
+            const postRe = new RegExp(`\\b(?:at|in|on|for)\\s+(?:(?:a|an|the|my|our|your|this|that)\\s+)?(?:[\\p{L}\\p{N}-]+\\s+){0,2}${catPat}(?![\\p{L}\\p{N}-])${facTail}`, "iu");
             if (postRe.test(afterHead)) return true;
-            const preRe = new RegExp(`\\b${catPat}\\b${facTail}`, "iu");
-            return preRe.test(preHeadToks.join(" "));
+            const catTokenRe = new RegExp(`^${catPat}$`, "iu");
+            const facTokenRe = /^(?:station|park|terminal|airport|port|pier|stop|depot|hub|lot|garage|center|centre)s?$/i;
+            return preHeadToks.some((t, idx) => catTokenRe.test(t) && !facTokenRe.test(preHeadToks[idx + 1] ?? ""));
           };
           const itemMatchesMods = (part: string, modsToCheck: string[]): boolean => {
             const pw = wordSet(part);

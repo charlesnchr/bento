@@ -3157,6 +3157,13 @@ test("coordinated keep spans, 'Keep X and cancel Y', bare 'Not that one', and 'k
     ["Both Paris car bookings", "Book a flight to London and my insurance covers car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
     ["Both Paris ticket bookings", "Book a Paris concert balcony ticket and a London hotel", "Euro trip", "Cancel both Paris ticket bookings in progress", 1],
     ["Both Paris concert bookings", "Book a Paris concert balcony ticket and a London hotel", "Euro trip", "Cancel both Paris concert bookings in progress", 1],
+    ["Both Paris spa bookings", "Book a Paris hotel featuring a spa", "Paris stay", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a Paris hotel featuring a spa", "Paris stay", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Mumbai train bookings", "Book a Mumbai train-station platform ticket", "Mumbai ticket", "Cancel both Mumbai train bookings in progress", 0],
+    ["Both car bookings", "Book a London flight and a ho chi minh city car rental", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both Paris concert bookings", "Book a London hotel and a Paris non-concert seat", "Euro trip", "Cancel both Paris concert bookings in progress", 0],
+    ["Both Paris show bookings", "Book a London hotel and a Paris after-show seat", "Euro trip", "Cancel both Paris show bookings in progress", 0],
+    ["Both Paris flight bookings", "Book a train to London and a Paris pre-flight lounge seat", "Euro trip", "Cancel both Paris flight bookings in progress", 0],
   ] as const) {
     const s10bs = chat();
     s10bs.type(`Check ${finishedLabel}`);
