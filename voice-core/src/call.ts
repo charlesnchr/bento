@@ -3347,7 +3347,9 @@ export class Call {
   private static readonly COORD_MOD_FORBIDDEN = /^(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those|no|not|never|to|for|with|without|from|into|onto|about|toward|towards|over|through|throughout|after|before|during|between|among|amongst|against|around|near|beside|behind|beyond|above|below|underneath|aboard|unto|via|per|as|than|minus|except|off|inside|outside|across|along|alongside|opposite|past|unlike|vs|versus|plus|within|amid|atop|despite|beneath|until|till|incl|is|are|was|were|has|have|had|do|does|did|can|cannot|could|will|would|shall|should|may|might|must|ought|gotta|gonna|wanna|friends?|wife|husband|kids?|children|parents?|agents?|people|colleagues?|reviewers?|locals?|guests?|clients?|customers?|visitors?|travelers?|travellers?|bloggers?|owners?|managers?|hosts?|recommends?|recommended|suggests?|suggested|mentions?|mentioned|prefers?|preferred|loves?|likes?|hates?|wants?|needs?|says?|said|thinks?|knows?|feels?|looks?|seems?|gets?|got|goes?|went|comes?|came|takes?|took|makes?|made|keeps?|kept|runs?|ran|closes?|closed|opens?|opened|falls?|fell|sells?|sold|costs?|cost|picked|booked|cancelled|canceled|upgrades?|upgraded|offers?|offered|includes?|included|covers|operates|handles|provides|requires|supports|allows|accepts|charges|guarantees|manages|praises|endorses|adores|enjoys|avoids)$/;
   private static readonly COORD_COMPOUND_BRIDGE = /^(?:station|park|terminal|airport|port|pier|center|centre|balcony|night|nights|day|days|week|weeks|star|stars|bed|beds|bedroom|bedrooms|room|rooms|suite|suites)$/;
   private static readonly COORD_ENGLISH_PLACE_PREP = /^(?:on|upon|in|at|by|of|under)$/;
-  private static readonly COORD_NON_PLACE_PREP_SUBJ = /^(?:voucher|vouchers|discount|discounts|deal|deals|credit|credits|refund|refunds|coupon|coupons|code|codes|offer|offers|promo|promos|rebate|rebates|rate|rates|price|prices|fee|fees|charge|charges|tax|taxes|tip|tips|quote|quotes|note|notes|memo|memos|email|emails|info|guide|guides|review|reviews|report|reports|limit|limits|cap|caps|rule|rules|policy|policies|terms|receipt|receipts|brochure|brochures|package|packages|plan|plans|pass|passes|card|cards|bonus|perk|perks)$/;
+  private static readonly COORD_NON_PLACE_PREP_SUBJ = /^(?:voucher|vouchers|discount|discounts|deal|deals|credit|credits|refund|refunds|coupon|coupons|code|codes|offer|offers|promo|promos|rebate|rebates|rate|rates|price|prices|fee|fees|charge|charges|tax|taxes|tip|tips|quote|quotes|note|notes|memo|memos|email|emails|info|guide|guides|review|reviews|report|reports|limit|limits|cap|caps|rule|rules|policy|policies|terms|receipt|receipts|brochure|brochures|package|packages|plan|plans|pass|passes|card|cards|bonus|perk|perks|sale|sales|ban|bans|surcharge|surcharges|update|updates|deposit|deposits|waiver|waivers|penalty|penalties|cashback|reduction|reductions|hold|claim|claims|freeze)$/;
+  private static readonly COORD_NON_PLACE_PREP_ADJ = /^(?:premium|cheap|cheapest|budget|luxury|economy|compact|midsize|fullsize|deluxe|standard|basic|fancy|upscale|affordable|inexpensive|expensive|pricey)$/;
+  private static readonly COORD_KNOWN_CONNECTOR_PLACE = /^(?:stoke on trent|stratford upon avon|stratford on avon|southend on sea|clacton on sea|walton on thames|henley on thames|kingston upon thames|newcastle upon tyne|newcastle under lyme|ashton under lyne|berwick upon tweed|burton upon trent|barton upon humber|port of spain|isle of wight|isle of man|isle of skye|city of london)$/;
   private static readonly COORD_PLACE_CONNECTOR = /^(?:on|upon|in|at|by|of|under|en|sur|sous|le|la|les|de|du|des|am|im|an|ob|zur)$/;
   private static readonly COORD_LOWER_PLACE_PREFIX = /^(?:san|santa|saint|st|new|los|las|el|la|le|rio|sao|buenos|hong|costa|kuala|tel|abu|addis|fort|port|puerto|punta|playa|cabo|chiang|bora|sri|mount|mt|cape|lake|palm|long|west|east|north|south|grand|big|green|red|twin|old|high|bel|monte|villa|boca|palo|key|bay|salt)$/;
   private static readonly COORD_GEO_PLACE_SUFFIX = /^(?:city|town|island|islands|beach|valley|hills|springs|falls|coast|harbor|harbour|county|republic|kingdom|emirates)$/;
@@ -3664,19 +3666,20 @@ export class Call {
             const nextTok = j + 1 < mods.length ? mods[j + 1].tok : "";
             const prevLow = prevTok.toLowerCase();
             const nextLow = nextTok.toLowerCase();
-            const bothCap = /^\p{Lu}/u.test(prevTok) && /^\p{Lu}/u.test(nextTok);
+            const bothCap =
+              /^\p{Lu}/u.test(prevTok) &&
+              /^\p{Lu}/u.test(nextTok) &&
+              !Call.COORD_NON_PLACE_PREP_ADJ.test(nextLow);
             const bothInModSet = modifierSet.has(prevLow) && modifierSet.has(nextLow);
-            const lowerOnPlace =
-              (low === "on" || low === "upon") &&
-              !Call.COORD_NON_PLACE_PREP_SUBJ.test(prevLow) &&
-              !isKnownDescriptiveMod(prevTok) &&
-              !isKnownDescriptiveMod(nextTok);
+            const knownPlaceTriplet = Call.COORD_KNOWN_CONNECTOR_PLACE.test(`${prevLow} ${low} ${nextLow}`);
             const validSides =
               prevTok.length > 0 &&
               nextTok.length > 0 &&
               !Call.BOOK_ITEM_HEAD_WORD.test(prevLow) &&
               !Call.BOOK_ITEM_HEAD_WORD.test(nextLow) &&
-              (bothCap || bothInModSet || lowerOnPlace);
+              !Call.COORD_NON_PLACE_PREP_SUBJ.test(prevLow) &&
+              !Call.COORD_NON_PLACE_PREP_SUBJ.test(nextLow) &&
+              (bothCap || bothInModSet || knownPlaceTriplet);
             if (!validSides) {
               modsValid = false;
               break;
