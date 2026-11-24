@@ -1452,6 +1452,13 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both hotel bookings", "Book a flight to London and a surcharge on rome hotel", "London flight", "Cancel both hotel bookings in progress", 0],
     ["Both Paris hotel bookings", "Book a flight to London and a Summary of Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
     ["Both hotel bookings", "Book a flight to London and a bowness on windermere hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both tour bookings", "Book a flight to New York and a Statue of Liberty tour", "New York trip", "Cancel both tour bookings in progress", 1],
+    ["Both tour bookings", "Book a flight to Malaga and a Rock of Gibraltar tour", "Spain trip", "Cancel both tour bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a Survey on Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Research on Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Lecture in Paris hotel", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a Walkout on Paris car rental", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Head of Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
