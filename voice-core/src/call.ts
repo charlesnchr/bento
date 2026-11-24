@@ -3349,6 +3349,8 @@ export class Call {
   private static readonly COORD_PLACE_CONNECTOR = /^(?:on|upon|in|at|by|of|en|sur|sous|le|la|les|de|du|des|am|im|an|ob|zur)$/;
   private static readonly COORD_LOWER_PLACE_PREFIX = /^(?:san|santa|saint|st|new|los|las|el|la|le|rio|sao|buenos|hong|costa|kuala|tel|abu|addis|fort|port|mount|mt|cape|lake|palm|long|west|east|north|south|grand|big|green|red|twin|old|high|bel|monte|villa|boca|palo|key|bay|salt)$/;
   private static readonly COORD_COLLECTIVE_SUBJ = /^(?:family|team|staff|group)$/;
+  private static readonly COORD_IRREG_PAST_OR_CLAUSE_ADV = /^(?:already|always|often|usually|recently|probably|definitely|actually|paid|bought|sent|found|gave|left|met|won|wrote|spent|built|held|cut|put|set|let|hit|hurt|saw|told|chose|drove|ate|flew|forgot|grew|heard|knew|led|lent|lost|meant|spoke|stood|taught|thought|threw|wore|broke|brought|caught|dealt|fed|felt|fought|froze|hung|laid|lit|quit|rang|sank|shot|shut|slept|slid|spread|stole|stuck|struck|swore|swept|tore|understood|woke)$/;
+  private static readonly FALLBACK_POST_HEAD_STOP = /^(?:in|at|to|near|for|from|on|with|without|by|beside|opposite|behind|above|below|under|over|inside|outside|around|about|across|along|through|during|before|after|between|beyond|close|next|off|into|onto|per|plus|minus|except|unlike|via|vs|versus|that|which|who|whom|whose|where|when|while|because|since|if|unless|as|than|bookings?|reservations?|i|we|you|he|she|they|it|this|these|those|last|every|each|some|any|one|two|three|four|five|asap|please|thanks|today|tonight|tomorrow|now|too|only|instead|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thurs|fri|sat|sun|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|weekend|weekday|morning|afternoon|evening)$/;
   private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|by|close\s+to|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?:\s+(?:hotel|restaurant|spa|resort|inn|lodge|villa|hostel|bistro|cafe|café|pub|bar|station|airport|terminal|port|pier))?(?![\p{L}\p{N}])/u;
   private static readonly COORD_BOOK_ITEM_TIME_OR_VENUE_PP = /^\s+(?:(?:in|at|near|by|close\s+to|to|from)\s+the\s+(?:city\s+cent(?:er|re)|old\s+town|airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|sea|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront|coast|bay|lake|hill)|(?:on|in|for|by|before|after)\s+(?:(?:next|this)\s+)?(?:(?:mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?)|(?:for|over|during)\s+(?:(?:the|my|our|your|his|her|their)\s+(?:[\p{L}\p{N}-]+\s+){0,2}(?:trip|weekend|week|stay|holiday|vacation|conference|event|meeting|wedding|visit|family|parents?|wife|husband|partner|mom|mum|dad|mother|father|sister|brother|kids?|children|guests?|clients?|team|staff|friends?|group|boss)|me|us|him|her|them|tonight|tomorrow|today|next\s+\w+|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|adults?|guests?|kids?|children))|(?:with|without)\s+(?:no\s+)?(?:(?:a|an|the|free|included|private|shared|early|late|extra|good|fast|great|full)\s+)?(?:(?:sea|ocean|city|garden|park|lake|river|pool|harbou?r|mountain|street)\s+)?(?:breakfast|wifi|wi-fi|parking|pool|gym|spa|balcony|view|views|smoking|pets|children|kids|cancell?ation|refunds?|kitchen|air\s+conditioning|ac|transfer|transfers|shuttle|lounge|luggage|baggage|bags?|meals?|dinner|lunch|drinks?|bar|terrace|garden|beach\s+access|room\s+service|late\s+checkout|early\s+checkin)(?:\s+(?:included|only|preferred|available))?|(?:under|below|around|about)\s+[$£€]?\d+(?:\s*(?:pounds?|dollars?|euros?|gbp|usd|eur))?|(?:next|this)\s+(?:week|weekend|month|year|trip|stay|mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/iu;
   private static readonly COORD_BOOK_ITEM_TRAILING_ADV = /^\s+(?:asap|please|thanks|thank\s+you|today|tonight|tomorrow|now|too|as\s+well|only|instead)\b/i;
@@ -3583,37 +3585,43 @@ export class Call {
         cursor = tm.index + tm[0].length;
       }
       if (toks.length === 0) return null;
-      const parseRest = (initialRest: string): boolean => {
+      const parseRest = (initialRest: string): { ok: boolean; hasPlacePp: boolean } => {
         let rest = initialRest;
+        let hasPlacePp = false;
         while (rest.trim().length > 0) {
           const relIs = Call.COORD_BOOK_ITEM_REL_IS.exec(rest);
           if (relIs != null) {
             const afterIs = rest.slice(relIs[0].length);
+            const placeMatch = Call.COORD_BOOK_ITEM_PLACE_PP.exec(afterIs);
             const isCands = [
               Call.COORD_BOOK_ITEM_REL_IS_ADJ.exec(afterIs),
               Call.COORD_BOOK_ITEM_TIME_OR_VENUE_PP.exec(afterIs),
-              Call.COORD_BOOK_ITEM_PLACE_PP.exec(afterIs),
+              placeMatch,
             ].filter((m): m is RegExpExecArray => m != null);
             if (isCands.length > 0) {
               const best = isCands.reduce((a, b) => (b[0].length > a[0].length ? b : a));
+              if (best === placeMatch) hasPlacePp = true;
               rest = afterIs.slice(best[0].length);
               continue;
             }
-            return false;
+            return { ok: false, hasPlacePp };
           }
+          const placeMatch = Call.COORD_BOOK_ITEM_PLACE_PP.exec(rest);
           const candidates = [
             Call.COORD_BOOK_ITEM_TIME_OR_VENUE_PP.exec(rest),
             Call.COORD_BOOK_ITEM_TRAILING_ADV.exec(rest),
-            Call.COORD_BOOK_ITEM_PLACE_PP.exec(rest),
+            placeMatch,
             Call.COORD_BOOK_ITEM_REL_CLAUSE.exec(rest),
           ].filter((m): m is RegExpExecArray => m != null);
           if (candidates.length > 0) {
             const best = candidates.reduce((a, b) => (b[0].length > a[0].length ? b : a));
+            if (best === placeMatch) hasPlacePp = true;
             rest = rest.slice(best[0].length);
             continue;
           }
           const modPp = Call.COORD_BOOK_ITEM_LOWER_MOD_PP.exec(rest);
           if (modPp != null && modifierSet.has(modPp[1]) && !Call.NON_PLACE_HEAD.has(modPp[1]) && !Call.INFINITIVE_VERB.has(modPp[1])) {
+            hasPlacePp = true;
             rest = rest.slice(modPp[0].length);
             continue;
           }
@@ -3625,12 +3633,13 @@ export class Call {
             !Call.COMMENTARY_STATE_NOUN.has(indefPp[2]) &&
             !(indefPp[1] === "to" && Call.INFINITIVE_VERB.has(indefPp[2]))
           ) {
+            hasPlacePp = true;
             rest = rest.slice(indefPp[0].length);
             continue;
           }
-          return false;
+          return { ok: false, hasPlacePp };
         }
-        return true;
+        return { ok: true, hasPlacePp };
       };
       const maxHeadIdx = hasDet ? Math.min(toks.length - 1, 5) : Math.min(toks.length - 1, 1);
       for (let hi = 0; hi <= maxHeadIdx; hi++) {
@@ -3670,9 +3679,12 @@ export class Call {
         if (!modsValid) continue;
         const afterHead = frag.slice(toks[hi].end);
         const compoundTail = /^\s+(?:bookings?|reservations?)\b/i.exec(afterHead);
-        const tailMatch = parseRest(afterHead) ? "plain" : compoundTail != null && parseRest(afterHead.slice(compoundTail[0].length)) ? "compound" : null;
+        const plainRest = parseRest(afterHead);
+        const compRest = !plainRest.ok && compoundTail != null ? parseRest(afterHead.slice(compoundTail[0].length)) : null;
+        const tailMatch = plainRest.ok ? "plain" : compRest?.ok ? "compound" : null;
         if (tailMatch == null) continue;
-        // Plural heads ("hotels", "spas", "hotel bookings") can always be bare direct objects in English SVO clauses; singular uncountable heads ("dinner", "lunch", "rental", "room", "hotel booking") can be bare objects when not explicitly introduced by a singular indefinite article ("a"/"an"/"another"/"one"), preserving phrases like "a ho chi minh city car rental" while still rejecting "my insurance covers car rental in Paris" and "some resorts operate spas in Paris".
+        const tailHasPlacePp = plainRest.ok ? plainRest.hasPlacePp : compRest?.hasPlacePp ?? false;
+        // Plural heads ("hotels", "spas", "hotel bookings") can always be bare direct objects in English SVO clauses; singular uncountable heads ("dinner", "lunch", "rental", "room", "hotel booking") can also be bare objects unless explicitly introduced by a singular indefinite article ("a"/"an"/"another"/"one") with no post-head place PP and no finite-verb-like (-s/-ed or irregular past) or clause-adverb unknown modifier ("a ho chi minh city car rental" passes; "a voucher funds car rental in Paris" and "a coworker already arranged car rental in Paris" stay rejected).
         const detLow = (detMatch[1] ?? "").toLowerCase();
         const isSingIndef = detLow === "a" || detLow === "an" || detLow === "another" || detLow === "one";
         const compoundWord = tailMatch === "compound" && compoundTail != null ? compoundTail[0].trim().toLowerCase() : "";
@@ -3683,7 +3695,12 @@ export class Call {
           headLow === "rental" ||
           headLow === "room" ||
           compoundWord === "booking";
-        const canBeBareObject = isPluralHead || (!isSingIndef && isUncountableHead);
+        const hasFiniteVerbLikeUnknown = unknownLowerIdxs.some((idx) => {
+          const w = mods[idx].tok.toLowerCase();
+          return /^[a-z]{3,}(?:s|ed)$/.test(w) || Call.COORD_IRREG_PAST_OR_CLAUSE_ADV.test(w);
+        });
+        const allowSingIndefUncountable = isSingIndef && !tailHasPlacePp && !hasFiniteVerbLikeUnknown;
+        const canBeBareObject = isPluralHead || (isUncountableHead && !allowSingIndefUncountable);
         if (canBeBareObject && unknownLowerIdxs.length > 0) {
           const allInModSet = unknownLowerIdxs.every((idx) => modifierSet.has(mods[idx].tok.toLowerCase()));
           if (!allInModSet) {
@@ -3815,9 +3832,16 @@ export class Call {
             let firstHeadIdx = -1;
             let headIdx = -1;
             for (let i = 0; i < toks.length; i++) {
-              const low = toks[i].tok.toLowerCase();
-              const prevIsBridge = i > 0 && Call.COORD_COMPOUND_BRIDGE.test(toks[i - 1].tok.toLowerCase());
-              if (firstHeadIdx >= 0 && !Call.BOOK_ITEM_HEAD_WORD.test(low) && !Call.COORD_COMPOUND_BRIDGE.test(low) && !(prevIsBridge && /^\p{Lu}/u.test(toks[i].tok))) break;
+              const tok = toks[i].tok;
+              const low = tok.toLowerCase();
+              if (
+                firstHeadIdx >= 0 &&
+                (Call.FALLBACK_POST_HEAD_STOP.test(low) ||
+                  Call.COORD_MOD_FORBIDDEN.test(low) ||
+                  /^[a-z]{3,}(?:ing|ed)$/i.test(tok))
+              ) {
+                break;
+              }
               if (Call.BOOK_ITEM_HEAD_WORD.test(low)) {
                 if (firstHeadIdx < 0) firstHeadIdx = i;
                 headIdx = i;

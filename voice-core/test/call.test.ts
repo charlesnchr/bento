@@ -1389,6 +1389,15 @@ test("a voice call with a registered detached task refuses cancel_task for the d
     ["Both Paris concert bookings", "Book a London hotel and a Paris non-concert seat", "Euro trip", "Cancel both Paris concert bookings in progress", 0],
     ["Both Paris show bookings", "Book a London hotel and a Paris after-show seat", "Euro trip", "Cancel both Paris show bookings in progress", 0],
     ["Both Paris flight bookings", "Book a train to London and a Paris pre-flight lounge seat", "Euro trip", "Cancel both Paris flight bookings in progress", 0],
+    ["Both Mumbai train bookings", "Book a Mumbai train station platform ticket", "Mumbai ticket", "Cancel both Mumbai train bookings in progress", 0],
+    ["Both Paris ticket bookings", "Book a Paris concert VIP ticket with a backstage pass", "Paris concert", "Cancel both Paris ticket bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a coworker already arranged car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a voucher funds car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and another card reimburses car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a flight to London and a voucher funds dinner in Paris", "London flight", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a flight to London and a package bundles dinner in Paris", "London flight", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris room bookings", "Book a flight to London and a voucher funds room in Paris", "London flight", "Cancel both Paris room bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a voucher funds hotel booking in Paris", "London flight", "Cancel both Paris hotel bookings in progress", 0],
   ] as const) {
     const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
     sv19.advance(0.1);
