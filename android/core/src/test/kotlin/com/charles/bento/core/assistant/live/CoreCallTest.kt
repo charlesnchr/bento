@@ -1,5 +1,10 @@
 package com.charles.bento.core.assistant.live
 
+import com.charles.bento.core.assistant.AssistantTranscript
+import com.charles.bento.core.assistant.HermesClient
+import com.charles.bento.core.assistant.HermesEndpoint
+import com.charles.bento.core.assistant.HermesEvent
+import com.charles.bento.core.assistant.TurnState
 import com.charles.bento.core.voice.FakeTransport
 import com.charles.bento.core.voice.Frames
 import com.charles.bento.core.voice.blocking
@@ -7,6 +12,10 @@ import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -15,6 +24,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import mockwebserver3.MockResponse
+import mockwebserver3.MockResponseBody
+import mockwebserver3.MockWebServer
+import okhttp3.OkHttpClient
+import okio.BufferedSink
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -61,11 +77,12 @@ class CoreCallTest {
         captions: CallCaptions? = null,
         opening: (() -> ByteArray?)? = null,
         ending: (LiveTransport) -> LiveSocketEnding = { LiveSocketEnding() },
+        toolScope: CoroutineScope? = null,
     ): CoreCall {
         val left = ArrayDeque(sockets)
         return CoreCall(
             source, CoreCall.config(history, "2026-11-22", standbyAfter, hangUpAfter, fast), { left.removeFirst() }, audio, onTool,
-            ending = ending, captions = captions, opening = opening, tickMillis = 20,
+            ending = ending, captions = captions, opening = opening, tickMillis = 20, toolScope = toolScope,
         )
     }
 
@@ -404,5 +421,262 @@ class CoreCallTest {
         val call = CoreCall("this is not JavaScript (", CoreCall.config(today = "2026-11-22"), { FakeTransport(emptyList()) }, FakeAudio(), { ToolReply("") })
         call.start()
         assertEquals(CoreCall.LOAD_FAILED, call.ended().message)
+    }
+
+    @Test fun hangingUpWithToolScopeLeavesDispatchedHermesTaskRunning() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio()
+            val captions = Captions()
+            val asked = CompletableDeferred<HermesCall>()
+            val reply = CompletableDeferred<ToolReply>()
+            val cancelled = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<String>()
+            val call = call(
+                listOf(transport), audio, captions = captions, toolScope = toolScope,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        reply.await().also { finished.complete(it.text) }
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+            )
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "Book the dentist.")
+            transport.push(Live.call("c1", args = mapOf("label" to "Dentist")))
+            withTimeout(5_000) { asked.await() }
+            call.awaitStatus(AssistantCall.Status.Working)
+
+            call.stop()
+            assertNull(call.ended().message)
+            assertTrue(audio.stopped)
+            assertTrue(captions.stopped)
+            assertEquals(1, transport.closeCount)
+
+            val sentAtEnd = transport.sent.size
+            val cuesAtEnd = audio.cues.size
+            delay(200)
+            assertFalse(cancelled.isCompleted, "hanging up must not cancel an already-dispatched Hermes task")
+
+            reply.complete(ToolReply("Booked for Tuesday at 10am."))
+            assertEquals("Booked for Tuesday at 10am.", withTimeout(5_000) { finished.await() })
+            delay(150)
+            assertEquals(sentAtEnd, transport.sent.size, "late result must not write to the closed Gemini socket")
+            assertEquals(cuesAtEnd, audio.cues.size, "late result must not play cues on stopped call audio")
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun sayingGoodbyeWithToolScopeLeavesDispatchedHermesTaskRunning() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio()
+            val asked = CompletableDeferred<HermesCall>()
+            val reply = CompletableDeferred<ToolReply>()
+            val cancelled = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<String>()
+            val call = call(
+                listOf(transport), audio, toolScope = toolScope,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        reply.await().also { finished.complete(it.text) }
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+            )
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "Book the dentist.")
+            transport.push(Live.call("c1"))
+            withTimeout(5_000) { asked.await() }
+            call.awaitStatus(AssistantCall.Status.Working)
+
+            Live.turn(transport, "Goodbye.")
+            assertNull(call.ended().message)
+            assertTrue(audio.stopped)
+            assertEquals(1, transport.closeCount)
+            delay(200)
+            assertFalse(cancelled.isCompleted, "saying goodbye must not cancel a dispatched Hermes task")
+
+            reply.complete(ToolReply("Booked."))
+            assertEquals("Booked.", withTimeout(5_000) { finished.await() })
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun explicitCancelStillCancelsHermesTaskWithToolScope() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val asked = CompletableDeferred<HermesCall>()
+            val cancelled = CompletableDeferred<Unit>()
+            val call = call(
+                listOf(transport), toolScope = toolScope,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        CompletableDeferred<ToolReply>().await()
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+            )
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "Book the dentist.")
+            transport.push(Live.call("c1"))
+            val taskId = withTimeout(5_000) { asked.await() }.taskId
+            call.cancelTask(taskId)
+            withTimeout(5_000) { cancelled.await() }
+            call.awaitStatus(AssistantCall.Status.Listening)
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun hangingUpMidHermesSseStreamKeepsSessionAliveAndNeverCallsStop() = blocking {
+        val server = MockWebServer().apply { start() }
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val streamStarted = CompletableDeferred<String>()
+        val releaseRest = CountDownLatch(1)
+        val finalAnswer = CompletableDeferred<Pair<String?, String>>()
+        val stopCalls = CopyOnWriteArrayList<String>()
+        val http = OkHttpClient()
+        try {
+            val client = HermesClient({ HermesEndpoint(server.url("/"), "secret-token") }, http)
+            server.enqueue(MockResponse.Builder().code(201).addHeader("Content-Type", "application/json")
+                .body("""{"object":"hermes.session","session":{"id":"api_detached_1","source":"api_server"}}""").build())
+            val sseBody = object : MockResponseBody {
+                override val contentLength: Long = -1L
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeUtf8("event: run.started\ndata: {\"run_id\":\"run_detached_1\",\"session_id\":\"api_detached_1\"}\n\n")
+                    sink.writeUtf8("event: tool.started\ndata: {\"tool_name\":\"web_search\",\"preview\":\"Copenhagen weather\"}\n\n")
+                    sink.flush()
+                    assertTrue(releaseRest.await(10, TimeUnit.SECONDS))
+                    sink.writeUtf8("event: tool.completed\ndata: {\"tool_name\":\"web_search\",\"preview\":\"12C sunny\"}\n\n")
+                    sink.writeUtf8("event: assistant.delta\ndata: {\"delta\":\"Sunny, twelve degrees.\"}\n\n")
+                    sink.writeUtf8("event: assistant.completed\ndata: {\"content\":\"Sunny, twelve degrees.\",\"session_id\":\"api_detached_1\"}\n\n")
+                    sink.writeUtf8("event: run.completed\ndata: {\"status\":\"completed\",\"session_id\":\"api_detached_1\"}\n\n")
+                    sink.writeUtf8("event: done\ndata: {}\n\n")
+                    sink.flush()
+                }
+            }
+            server.enqueue(MockResponse.Builder().code(200).addHeader("Content-Type", "text/event-stream").body(sseBody).build())
+
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio()
+            val call = call(
+                listOf(transport), audio, toolScope = toolScope,
+                onTool = { req ->
+                    val sid = client.createSession().id
+                    var turn = TurnState(sessionId = sid)
+                    var rows = emptyList<com.charles.bento.core.assistant.ChatMessage>()
+                    var runId: String? = null
+                    try {
+                        client.chat(sid, req.message ?: req.task).collect { event ->
+                            if (event is HermesEvent.RunStarted) {
+                                runId = event.runId
+                                streamStarted.complete(event.runId)
+                            }
+                            val (next, t) = AssistantTranscript.apply(rows, turn, event)
+                            rows = next
+                            turn = t
+                        }
+                    } catch (e: CancellationException) {
+                        runId?.let { stopCalls.add(it) }
+                        throw e
+                    }
+                    finalAnswer.complete(turn.sessionId to turn.answer)
+                    ToolReply(turn.answer)
+                },
+            )
+
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "What's the weather in Copenhagen?")
+            transport.push(Live.call("c1", args = mapOf("label" to "Copenhagen weather")))
+            assertEquals("run_detached_1", withTimeout(5_000) { streamStarted.await() })
+
+            // Hang up mid-stream while Hermes is still running.
+            call.stop()
+            assertNull(call.ended().message)
+            assertTrue(audio.stopped)
+            assertEquals(1, transport.closeCount)
+
+            // Hermes finishes after the call ended: SSE stream stays open and completes cleanly.
+            releaseRest.countDown()
+            val (sid, answer) = withTimeout(5_000) { finalAnswer.await() }
+            assertEquals("api_detached_1", sid)
+            assertEquals("Sunny, twelve degrees.", answer)
+            assertTrue(stopCalls.isEmpty(), "hanging up must not invoke /v1/runs/{run}/stop")
+            assertEquals(2, server.requestCount, "only createSession + chat/stream, no stop request")
+            assertEquals("/api/sessions", server.takeRequest().url.encodedPath)
+            assertEquals("/api/sessions/api_detached_1/chat/stream", server.takeRequest().url.encodedPath)
+        } finally {
+            releaseRest.countDown()
+            toolScope.cancel()
+            server.close()
+            http.dispatcher.executorService.shutdown()
+            http.connectionPool.evictAll()
+        }
+    }
+
+    @Test fun aFailedTaskWithToolScopeIsToldAsOne() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val call = call(listOf(transport), toolScope = toolScope, onTool = { throw IOException("Hermes is unreachable") })
+            call.start()
+            call.awaitStatus(AssistantCall.Status.Listening)
+            Live.turn(transport, "Book the dentist.")
+            transport.push(Live.call("c1"))
+            transport.awaitSent { s -> s.any { "Task failed." in it && "Hermes is unreachable" in it } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun cancellingToolScopeStopsInFlightTaskWithoutCrashingTheCall() = blocking {
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val asked = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val call = call(
+            listOf(transport), toolScope = serverScope,
+            onTool = {
+                asked.complete(Unit)
+                try {
+                    CompletableDeferred<ToolReply>().await()
+                } catch (e: CancellationException) {
+                    cancelled.complete(Unit)
+                    throw e
+                }
+            },
+        )
+        call.start()
+        call.awaitStatus(AssistantCall.Status.Listening)
+        Live.turn(transport, "Book the dentist.")
+        transport.push(Live.call("c1"))
+        withTimeout(5_000) { asked.await() }
+
+        // Simulates leaveServer(): cancelling the server-owned scope cancels the Hermes task immediately.
+        serverScope.cancel()
+        withTimeout(5_000) { cancelled.await() }
+        call.stop()
+        assertNull(call.ended().message)
     }
 }

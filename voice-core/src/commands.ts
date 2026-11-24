@@ -35,8 +35,10 @@ export function commandIn(utterance: string, commands: VoiceCommands, names: str
 }
 
 /** Words that take a request back. */
-const CANCELS = /\b(?:cancel\w*|abort\w*|kill|scrap|scratch|drop|forget|undo|terminate|never ?mind|call (?:it|that|this) off|(?:dont|do not) (?:bother|need|want|do)|no need|no longer|not anymore|leave it|skip (?:it|that))\b/;
+const CANCELS = /\b(?:cancel(?:s|l?ed|l?ing)?|abort(?:s|ed|ing)?|kill|scrap|scratch|drop|forget|undo|terminate|never ?mind|call (?:it|that|this) off|(?:dont|do not) (?:bother|need|want|do)|no need|no longer|not anymore|leave it|skip (?:it|that))\b/;
 const STOPS = /\b(?:stop\w*|halt|quit|end)\b/;
+/** Requests to stop speaking/talking about a topic, not to cancel a running task. */
+const STOP_SPEAKING = /\b(?:stop|quit)\s+(?:talking|speaking|chatting|rambling|repeating|mentioning|reading|explaining|telling|asking|going\s+on)\b/;
 
 /**
  * Whether [utterance] asks for a task to be cancelled, for a cancel_task the model called on it. "Stop" alone and the
@@ -49,5 +51,6 @@ export function asksToCancel(utterance: string, commands: VoiceCommands, names: 
   if (said.length === 0) return true;
   const command = commandIn(utterance, commands, names);
   if (command === "stop" || command === "hangUp") return false;
+  if (STOP_SPEAKING.test(said) && !CANCELS.test(said)) return false;
   return command === "cancelAll" || named || CANCELS.test(said) || STOPS.test(said);
 }

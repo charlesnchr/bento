@@ -186,7 +186,9 @@ A call continues the conversation on screen (Gemini gets a recap, `helper/live_r
 runs in a microphone foreground service, uses the voice-call microphone with echo
 cancellation and plays through a headset or the loudspeaker. Open mic or tap to talk is a
 setting; speaking over Gemini interrupts it but cancels no task, End call (also in the
-notification) ends the call and every task, and so does a phone call. When only Hermes is
+notification) and phone calls end the voice call while leaving already-dispatched Hermes
+sessions running while Bento stays alive (their results still land in the chat and session
+history; cancel an individual task from its sheet). When only Hermes is
 left to wait for, the call leaves Gemini after a quiet spell and comes back when the user
 starts talking (by the microphone's level; the words that woke it go to the new session) or
 with the first result; results whose session has gone go in as a turn. Hermes's approval prompts offer Allow once, Allow for

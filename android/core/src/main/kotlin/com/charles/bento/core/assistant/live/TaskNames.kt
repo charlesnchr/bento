@@ -27,7 +27,7 @@ object TaskNames {
     private fun words(text: String) = text.lowercase().split(Regex("[^\\p{L}\\p{N}']+")).map { it.trim('\'') }.filter { it.isNotEmpty() }
 
     /** Distinctive words: a few letters long and not filler. */
-    private fun distinctive(text: String) = words(text).filter { it.length >= 4 && it !in stop }.toSet()
+    internal fun distinctive(text: String) = words(text).filter { it.length >= 4 && it !in stop }.toSet()
 
     /** A name the user's own words give a task when Gemini gave none: up to three words of what was asked, from its first clause. */
     fun fromRequest(request: String): String {
@@ -126,6 +126,40 @@ object TaskNames {
             .filter { it.second > 0 }.sortedByDescending { it.second }
         if (scored.isEmpty() || scored.size > 1 && scored[0].second == scored[1].second) return null
         return scored[0].first
+    }
+
+    /**
+     * All keys tied for the best match to [ref] among (name, request) pairs by key: exact name first,
+     * then possessive-loose name, then unique whole-name containment, falling through containment ties
+     * to distinctive-word scoring (including request text). Empty when nothing matches.
+     */
+    internal fun <K> matches(ref: String, tasks: Map<K, Pair<String, String>>): List<K> {
+        val whole = norm(ref)
+        if (whole.isEmpty()) return emptyList()
+        for (r in forms(whole)) {
+            val exact = tasks.entries.filter { norm(it.value.first) == r }.map { it.key }
+            if (exact.isNotEmpty()) return exact
+            val b = bare(r)
+            val loose = tasks.entries.filter { bare(it.value.first) == b }.map { it.key }
+            if (loose.isNotEmpty()) return loose
+        }
+        val r = forms(whole).last()
+        if (r.isEmpty()) return emptyList()
+        val said = bare(r)
+        val within = tasks.entries.mapNotNull { e ->
+            val name = bare(e.value.first)
+            if (name.isEmpty() || !(said.containsAll(name) || name.containsAll(said))) null else e.key to name.count { it in said }
+        }
+        val most = within.maxOfOrNull { it.second }
+        val topWithin = if (most != null) within.filter { it.second == most }.map { it.first } else emptyList()
+        if (topWithin.size == 1) return topWithin
+        val wanted = distinctive(r)
+        if (wanted.isEmpty()) return topWithin
+        val scored = tasks.entries.map { it.key to (distinctive(it.value.first).count { w -> w in wanted } * 2 + distinctive(it.value.second).count { w -> w in wanted }) }
+            .filter { it.second > 0 }.sortedByDescending { it.second }
+        if (scored.isEmpty()) return topWithin
+        val top = scored[0].second
+        return scored.filter { it.second == top }.map { it.first }
     }
 
     /**

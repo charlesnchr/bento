@@ -87,13 +87,8 @@ const NOTE_TAG = "bento_note";
  * unfenced the model took that message for the end of the note and wrote nothing, in about half the tries.
  */
 export function fencedNote(text: string): string {
-  const close = new RegExp("</\\s*" + NOTE_TAG + "\\s*>", "gi");
-  return `<${NOTE_TAG}>\n${text.replace(close, "")}\n</${NOTE_TAG}>`;
-}
-
-/** Whether a turn the call sends is the recap of an earlier conversation, which has its own fence. */
-export function isRecap(text: string): boolean {
-  return text.includes(`<${RECAP_TAG}>`);
+  const close = new RegExp("</\\s*" + NOTE_TAG + "\\s*>", "i");
+  return `<${NOTE_TAG}>\n${unfence(text, close)}\n</${NOTE_TAG}>`;
 }
 
 export function chatInstructionFor(platform: string): string {

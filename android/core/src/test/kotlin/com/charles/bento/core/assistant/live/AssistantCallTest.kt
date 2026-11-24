@@ -7,7 +7,12 @@ import com.charles.bento.core.voice.blocking
 import com.charles.bento.core.voice.json
 import com.charles.bento.core.voice.live.LiveSocketEnding
 import com.charles.bento.core.voice.live.LiveTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -4667,6 +4672,279 @@ class AssistantCallTest {
         assertEquals("Gemini rejected the API key. Check it in Settings → Dictation.", AssistantCall.endingMessage(LiveSocketEnding(httpStatus = 403), false))
         assertEquals("Gemini voice disconnected. No task was retried.", AssistantCall.endingMessage(LiveSocketEnding(closeCode = 1000), false))
         assertEquals("Gemini voice failed (HTTP 500, close 1011). No task was retried.", AssistantCall.endingMessage(LiveSocketEnding(500, 1011), false))
+    }
+
+    @Test fun hangingUpWithToolScopeLeavesDispatchedHermesTaskRunning() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val audio = FakeAudio()
+            val asked = CompletableDeferred<HermesCall>()
+            val reply = CompletableDeferred<String>()
+            val cancelled = CompletableDeferred<Unit>()
+            val finished = CompletableDeferred<String>()
+            val call = AssistantCall(
+                transport, audio, null,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        reply.await().also { finished.complete(it) }
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            withTimeout(5_000) { asked.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+
+            call.stop()
+            assertNull(call.ended().message)
+            assertTrue(audio.stopped)
+            assertEquals(1, transport.closeCount)
+
+            val sentAtEnd = transport.sent.size
+            val cuesAtEnd = audio.cues.size
+            delay(200)
+            assertFalse(cancelled.isCompleted, "hanging up must not cancel a dispatched Hermes task")
+
+            reply.complete("Booked for 8pm.")
+            assertEquals("Booked for 8pm.", withTimeout(5_000) { finished.await() })
+            delay(150)
+            assertEquals(sentAtEnd, transport.sent.size)
+            assertEquals(cuesAtEnd, audio.cues.size)
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun explicitCancelStillCancelsHermesTaskWithToolScope() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val asked = CompletableDeferred<HermesCall>()
+            val cancelled = CompletableDeferred<Unit>()
+            val call = AssistantCall(
+                transport, FakeAudio(), null,
+                onTool = { req ->
+                    asked.complete(req)
+                    try {
+                        CompletableDeferred<String>().await()
+                    } catch (e: CancellationException) {
+                        cancelled.complete(Unit)
+                        throw e
+                    }
+                },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            withTimeout(5_000) { asked.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Working } }
+
+            call.cancelTask("1")
+            withTimeout(5_000) { cancelled.await() }
+            withTimeout(5_000) { call.status.first { it == AssistantCall.Status.Listening } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun aFailedTaskWithToolScopeIsToldAsOne() = blocking {
+        val toolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transport = FakeTransport(listOf(Frames.setupComplete()))
+            val call = AssistantCall(
+                transport, FakeAudio(), null,
+                onTool = { throw IOException("Hermes is unreachable") },
+                limits = fast,
+                toolScope = toolScope,
+            )
+            call.start()
+            transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+            Live.turn(transport, "Book a table")
+            transport.push(Live.call("c1"))
+            transport.awaitSent { s -> s.any { "Task failed." in it && "Hermes is unreachable" in it } }
+            call.stop()
+        } finally {
+            toolScope.cancel()
+        }
+    }
+
+    @Test fun detachedRequestConflictsRefuseCrossSessionFollowUpAndCancel() = blocking {
+        val transport = FakeTransport(listOf(Frames.setupComplete()))
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val gate = CompletableDeferred<String>()
+        val call = AssistantCall(transport, FakeAudio(), null, { c -> asked.add(c); gate.await() }, limits = fast)
+        call.start()
+        transport.awaitSent { s -> s.any { "realtimeInput" in it } }
+        call.note("Dinner booking", "Book a table at Alchemist", inHistory = true, id = "call-1-1", active = true, request = "Book a table at Alchemist")
+        Live.turn(transport, "Book a table at Noma")
+        transport.push(Live.call("c1", args = mapOf("label" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 1 }
+        assertEquals(1, asked.size)
+
+        // continue_task("Alchemist table") must refuse instead of fuzzy-matching owned Noma table.
+        Live.turn(transport, "Make it nine at Alchemist")
+        transport.push(Live.call("c2", args = mapOf("continue_task" to "Alchemist table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 2 }
+        assertEquals(1, asked.size, "follow-up naming detached Alchemist must not route to owned Noma")
+        assertTrue(transport.responses()[1].message().startsWith("Not executed:"), transport.responses()[1].message())
+
+        // cancel_task("Alchemist table") must refuse instead of cancelling owned Noma table.
+        Live.turn(transport, "Cancel the Alchemist table")
+        transport.push(Live.call("x1", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Alchemist table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 3 }
+        assertTrue(transport.responses()[2].message().startsWith("Not executed:"), transport.responses()[2].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must stay running")
+
+        // Even when Gemini passes the exact owned label "Noma table", the user's words ("Cancel the Alchemist table") must still block cancelling Noma.
+        transport.push(Live.call("x2", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 4 }
+        assertTrue(transport.responses()[3].message().startsWith("Not executed:"), transport.responses()[3].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "owned Noma task must still stay running when Gemini passes its exact label")
+
+        // "Why not just cancel the Alchemist table" must preserve "Why not ..." and still refuse cancelling owned Noma.
+        Live.turn(transport, "Why not just cancel the Alchemist table")
+        transport.push(Live.call("x3", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 5 }
+        assertTrue(transport.responses()[4].message().startsWith("Not executed:"), transport.responses()[4].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'Why not just cancel the Alchemist table' must still block cancelling Noma")
+
+        // "Cancel the Alchemist booking before I leave. Thanks" and "Okay, keep the Noma table and then cancel the Alchemist one" must preserve Alchemist and block cancelling Noma.
+        Live.turn(transport, "Cancel the Alchemist booking before I leave. Thanks")
+        transport.push(Live.call("x4", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 6 }
+        assertTrue(transport.responses()[5].message().startsWith("Not executed:"), transport.responses()[5].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'before I leave' must not drop the Alchemist cancel clause")
+
+        Live.turn(transport, "Okay, keep the Noma table and then cancel the Alchemist one")
+        transport.push(Live.call("x5", name = CallProtocol.CANCEL_TASK, args = mapOf("task" to "Noma table")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 7 }
+        assertTrue(transport.responses()[6].message().startsWith("Not executed:"), transport.responses()[6].message())
+        assertEquals(AssistantCall.Status.Working, call.status.value, "'and then cancel the Alchemist one' must stay in active cancel scope")
+
+        // continue_task("Alchemist") matching detached Dinner booking by request detail must refuse instead of starting a fresh Hermes run.
+        Live.turn(transport, "Check Alchemist")
+        transport.push(Live.call("c3", args = mapOf("continue_task" to "Alchemist")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 8 }
+        assertEquals(1, asked.size, "continue_task('Alchemist') must refuse instead of starting a new run")
+        assertTrue(transport.responses()[7].message().startsWith("Not executed:"), transport.responses()[7].message())
+
+        // Unmatched continue_task("Friday seating") when user's words name detached Alchemist must also refuse instead of starting a fresh run.
+        Live.turn(transport, "For the Alchemist, yes, make it Friday")
+        transport.push(Live.call("c4", args = mapOf("continue_task" to "Friday seating")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 9 }
+        assertEquals(1, asked.size, "user's words naming detached Alchemist must refuse continue_task('Friday seating')")
+        assertTrue(transport.responses()[8].message().startsWith("Not executed:"), transport.responses()[8].message())
+
+        // Unfiltered detached label check still catches verb-like labels such as "Email" when continue_task misses.
+        call.note("Email", "Drafted a note to Sam.", inHistory = true, id = "call-1-2", active = false, request = "Write a message to Sam")
+        Live.turn(transport, "For the email, yes, make it shorter")
+        transport.push(Live.call("c5", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 10 }
+        assertEquals(1, asked.size, "user's words naming detached label 'Email' must refuse continue_task('Revision')")
+        assertTrue(transport.responses()[9].message().startsWith("Not executed:"), transport.responses()[9].message())
+
+        // Stronger detached match ("Alchemist table") beats a more recent weaker match ("Geranium table"), and ties ask for clarification.
+        call.note("Alchemist table", "Alchemist can seat four.", inHistory = true, id = "call-1-3", active = false, request = "Book at Alchemist")
+        call.note("Geranium table", "Geranium has a waitlist.", inHistory = true, id = "call-1-4", active = false, request = "Book at Geranium")
+        Live.turn(transport, "For the Alchemist table, yes, make it Friday")
+        transport.push(Live.call("c6", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 11 }
+        assertEquals(1, asked.size, "stronger detached match must refuse instead of starting a fresh run")
+        val msg6 = transport.responses()[10].message()
+        assertTrue("\"Alchemist table\"" in msg6 && "\"Geranium table\"" !in msg6, msg6)
+
+        // Three-candidate tie excludes the weaker detached match ("Geranium table") when two tie higher.
+        call.note("Kadeau table", "Kadeau has a waitlist.", inHistory = true, id = "call-1-5", active = false, request = "Book at Kadeau")
+        Live.turn(transport, "For the table at Alchemist or Kadeau on Friday")
+        transport.push(Live.call("c7", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 12 }
+        assertEquals(1, asked.size, "three-candidate tie must refuse instead of starting a new run")
+        val msg7 = transport.responses()[11].message()
+        assertTrue("\"Alchemist table\"" in msg7 && "\"Kadeau table\"" in msg7 && "\"Geranium table\"" !in msg7, msg7)
+
+        // Owned "Friday morning" must not hide detached "Email" when user says "For the email, yes, make it Friday morning".
+        Live.turn(transport, "Schedule Friday morning standup")
+        transport.push(Live.call("c8", args = mapOf("label" to "Friday morning")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 13 }
+        assertEquals(2, asked.size)
+        Live.turn(transport, "For the email, yes, make it Friday morning")
+        transport.push(Live.call("c9", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 14 }
+        assertEquals(2, asked.size, "owned 'Friday morning' must not hide detached 'Email' and start a new run")
+        val msg9 = transport.responses()[13].message()
+        assertTrue("\"Email\"" in msg9, msg9)
+
+        // Partial label overlap ("Friday diary") must not override stronger detail evidence for another detached task ("Restaurant search").
+        call.note("Restaurant search", "Alchemist in Copenhagen has vegetarian seating.", inHistory = true, id = "call-1-6", active = false, request = "Find vegetarian seating at Alchemist in Copenhagen")
+        call.note("Friday diary", "No entries.", inHistory = true, id = "call-1-7", active = false, request = "Check Friday diary")
+        Live.turn(transport, "For the vegetarian seating at Alchemist in Copenhagen, make it Friday")
+        transport.push(Live.call("c10", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 15 }
+        assertEquals(2, asked.size, "stronger detail match must refuse instead of starting a fresh run")
+        val msg10 = transport.responses()[14].message()
+        assertTrue("\"Restaurant search\"" in msg10 && "\"Friday diary\"" !in msg10, msg10)
+
+        // Contiguous punctuation-preserving whole-label matching picks "C build" over "C++ build rollout".
+        call.note("C build", "C build queued.", inHistory = true, id = "call-1-8", active = false, request = "Run the C build")
+        call.note("C++ build rollout", "C++ rollout paused.", inHistory = true, id = "call-1-9", active = false, request = "Run C++ rollout")
+        Live.turn(transport, "For the C build please move the rollout to Friday")
+        transport.push(Live.call("c11", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 16 }
+        assertEquals(2, asked.size, "detached 'C build' must refuse instead of starting a fresh run")
+        val msg11 = transport.responses()[15].message()
+        assertTrue("\"C build\"" in msg11 && "\"C++ build rollout\"" !in msg11, msg11)
+
+        // Detached "Email" subsumed inside owned "Landlord email" queues behind the active owned run instead of hijacking or starting a fresh run.
+        Live.turn(transport, "Draft an email to the landlord")
+        transport.push(Live.call("c12", args = mapOf("label" to "Landlord email")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 17 }
+        assertEquals(3, asked.size)
+        val landlordTaskId = asked[2].taskId
+        Live.turn(transport, "Make the landlord email shorter")
+        transport.push(Live.call("c13", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 18 }
+        assertEquals(3, asked.size, "follow-up to active owned 'Landlord email' must queue instead of starting a fresh run")
+        gate.complete("Done.")
+        withTimeout(5_000) { while (asked.size < 4) delay(20) }
+        assertEquals(landlordTaskId, asked[3].taskId, "queued follow-up must keep original Landlord email taskId")
+        assertTrue(asked[3].followUp, "queued follow-up must run with followUp=true")
+
+        // Symmetric span subsumption: owned "Note" nested inside detached "Landlord note" directs directly to "Landlord note", while a separate mention stays ambiguous.
+        call.note("Landlord note", "Drafted.", inHistory = true, id = "call-1-10", active = false, request = "Write landlord note")
+        Live.turn(transport, "Draft a quick note")
+        transport.push(Live.call("c14", args = mapOf("label" to "Note")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 19 }
+        Live.turn(transport, "Make the landlord note shorter")
+        transport.push(Live.call("c15", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 20 }
+        val msg15 = transport.responses().first { it.id() == "c15" }.message()
+        assertTrue("\"Landlord note\"" in msg15 && "is ambiguous" !in msg15, msg15)
+        Live.turn(transport, "For the note, make the landlord note shorter")
+        transport.push(Live.call("c16", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 21 }
+        val msg16 = transport.responses().first { it.id() == "c16" }.message()
+        assertTrue("is ambiguous" in msg16 && "\"Note\"" in msg16 && "\"Landlord note\"" in msg16, msg16)
+
+        // Disjoint owned labels of different lengths ("Note" and "Noma table") stay ambiguous instead of picking the longer label.
+        Live.turn(transport, "Put the Noma table time in the note")
+        transport.push(Live.call("c17", args = mapOf("continue_task" to "Revision")))
+        transport.awaitSent { s -> s.count { "toolResponse" in it } >= 22 }
+        val msg17 = transport.responses().first { it.id() == "c17" }.message()
+        assertTrue(msg17.startsWith("Not executed:") && "\"Note\"" in msg17 && "\"Noma table\"" in msg17, msg17)
+        call.stop()
     }
 }
 

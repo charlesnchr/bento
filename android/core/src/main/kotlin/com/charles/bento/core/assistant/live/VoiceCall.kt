@@ -29,9 +29,22 @@ interface VoiceCall {
     fun reclaim()
     /** The screen's progress line for a task, for check_task and list_tasks. */
     fun progress(taskId: String, text: String)
+    /** Registers a detached task from an earlier call so cancel/follow-up guards won't fuzzy-match it onto this call's runs. */
+    fun note(
+        label: String,
+        text: String,
+        failed: Boolean = false,
+        inHistory: Boolean = false,
+        id: String? = null,
+        turnsAgo: Int = 0,
+        active: Boolean = false,
+        request: String? = null,
+    ) {}
+    /** Removes a previously registered detached task by [id] once cancelled or finished with no text. */
+    fun removeNote(id: String) {}
     /** Cancels one running task; the call and the other tasks go on. */
     fun cancelTask(taskId: String)
-    /** Ends the call at once; running Hermes tasks are cancelled, not undone. */
+    /** Ends the call at once; dispatched Hermes tasks continue when run on an external tool scope. */
     fun stop(message: String? = null)
 }
 

@@ -35,6 +35,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +52,7 @@ import okhttp3.OkHttpClient
 import java.io.File
 import java.time.LocalDate
 import java.util.UUID
+import kotlin.coroutines.coroutineContext
 
 /** What the Assistant tab shows. */
 data class AssistantUi(
@@ -65,11 +68,11 @@ data class AssistantUi(
     val caption: String? = null,
     /** In the chat's main thread, Gemini is writing its answer (or handing the message to Hermes). */
     val thinking: Boolean = false,
-    /** The chat's Hermes tasks, in the order they started: what typed messages were handed to Hermes, while no call is on. */
+    /** Hermes tasks shown outside an active call: typed chat tasks and tasks that outlived an ended voice call. */
     val tasks: List<TaskUi> = emptyList(),
 ) {
-    /** The chat's main thread has something under way: Gemini is answering, or a task is running. */
-    val chatBusy: Boolean get() = thinking || tasks.any { it.active }
+    /** The chat's main thread has something under way: Gemini is answering, or a chat-owned task is running. */
+    val chatBusy: Boolean get() = thinking || tasks.any { it.active && !it.detached }
     /** Something is under way that a new conversation or a call would cut off. */
     val busy: Boolean get() = working || chatBusy
 }
@@ -127,6 +130,8 @@ data class TaskUi(
     val messages: List<ChatMessage> = emptyList(),
     /** When Hermes got the request it's working on (`SystemClock.elapsedRealtime`), for the time shown in standby. */
     val startedAt: Long = 0,
+    /** Detached from a voice call that ended while this Hermes session was still running. */
+    val detached: Boolean = false,
 ) {
     val active: Boolean get() = status == "running" || status == "waiting"
     val inFlight: Boolean get() = active || (status == "completed" && question != null)
@@ -187,14 +192,44 @@ class AssistantController(
     /** The chat's main thread, once a message has been typed to it ([say]); null again when a call or another conversation takes over. */
     private var chat: CoreChat? = null
     private var chatJob: Job? = null
-    /** Messages typed while the chat's core was loading. */
-    private val typedEarly = ArrayList<String>()
+    private data class DetachedNote(
+        val id: String,
+        val label: String,
+        val text: String,
+        val failed: Boolean,
+        val userTurnsAt: Int,
+        val active: Boolean = false,
+        val request: String = "",
+    )
+    private sealed interface EarlyChatEvent {
+        data class Typed(val text: String) : EarlyChatEvent
+        data class Noted(val note: DetachedNote) : EarlyChatEvent
+        data class Removed(val id: String) : EarlyChatEvent
+    }
+
+    /** User messages and detached notes that arrived while the chat's core was loading, replayed in arrival order. */
+    private val earlyChatEvents = ArrayList<EarlyChatEvent>()
+    /** Detached voice-call results in this conversation: kept until leaving the conversation so every CoreChat startup registers their labels and questions. */
+    private val conversationDetached = ArrayList<DetachedNote>()
     /** The row Gemini's words of one of the core's transcript lines go on. */
     private var chatLine: Pair<Int, String>? = null
     /** The voice core's bundle couldn't be read: typed messages go straight to Hermes. */
     private var chatUnavailable = false
+    /** Monotonic prefix for each call/chat board so task UI ids never collide across calls or chats. */
+    private var nextBoardSeq = 0L
+    /** Incremented when leaving the current conversation on screen, so late detached results don't inject into another chat. */
+    private var conversationEpoch = 0L
+    /** Running Hermes task coroutines by TaskUi id, so detached post-call tasks can still be cancelled explicitly or on server switch. */
+    private val taskJobs = LinkedHashMap<String, Job>()
+    /** Child scope for dispatched Hermes runs: cancelled and replaced synchronously on leaveServer so queued work never hits a new server. */
+    private var serverScope: CoroutineScope = newServerScope()
+    private var activeCallBoard: TaskBoard? = null
+    private var activeChatBoard: TaskBoard? = null
     /** Where the main thread's conversation is kept between runs of the app: Hermes stores only each task's own session. */
     private val mainFile = File(context.filesDir, MAIN_THREAD_FILE)
+
+    private fun newServerScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext.minusKey(Job) + SupervisorJob(scope.coroutineContext[Job]))
 
     init {
         scope.launch {
@@ -250,10 +285,12 @@ class AssistantController(
 
     fun newChat() {
         if (_state.value.busy || call != null) return
+        conversationEpoch++
+        conversationDetached.clear()
         endChat()
         prefs.hermesSession.value = ""
         loadedSession = null
-        set { AssistantUi() }
+        set { s -> AssistantUi(tasks = s.tasks.filter { it.detached && it.active }) }
     }
 
     /**
@@ -262,11 +299,21 @@ class AssistantController(
      * conversations aren't this one's, so a switch starts over.
      */
     fun leaveServer(switching: Boolean) {
+        // Cancel the server-owned task scope synchronously first so any tool run already queued on Main never starts against a new server.
+        serverScope.cancel()
+        serverScope = newServerScope()
+        conversationDetached.clear()
         endCall()
         endChat()
+        for (job in taskJobs.values.toList()) job.cancel()
+        taskJobs.clear()
         _peek.value = null
         turnJob?.cancel() // closing the stream stops the turn on the old server
-        if (!switching) return
+        if (!switching) {
+            set { it.copy(tasks = emptyList()) }
+            return
+        }
+        conversationEpoch++
         prefs.hermesSession.value = ""
         prefs.hermesConversations.value = ""
         // Another server has other models: the pick and the list are this one's.
@@ -280,6 +327,9 @@ class AssistantController(
         set { AssistantUi() }
     }
 
+    /** Active task currently running in Hermes session [sessionId], if any. */
+    fun activeTaskForSession(sessionId: String): TaskUi? = activeTaskForSession(_state.value, sessionId)
+
     /** Hermes no longer has [id]: drop it here too, so the next message starts a new conversation. */
     private fun dropSession(id: String) {
         forget(id)
@@ -290,9 +340,12 @@ class AssistantController(
 
     fun open(id: String) {
         if (_state.value.busy || call != null) return
+        if (activeTaskForSession(id) != null) return
+        conversationEpoch++
+        conversationDetached.clear()
         endChat()
         prefs.hermesSession.value = id
-        set { it.copy(sessionId = id, messages = emptyList(), title = null, error = null) }
+        set { s -> s.copy(sessionId = id, messages = emptyList(), title = null, error = null, tasks = s.tasks.filter { it.detached && it.active }) }
         load(id)
     }
 
@@ -460,14 +513,26 @@ class AssistantController(
      * A message for the chat's main thread: Gemini answers it or hands it to Hermes as a task, and
      * the composer is free again at once. The first one starts the chat on the conversation on screen.
      */
+    private fun recordDetached(note: DetachedNote) {
+        conversationDetached.removeAll { it.id == note.id }
+        conversationDetached.add(note)
+        if (conversationDetached.size > 20) conversationDetached.removeAt(0)
+    }
+
+    /** Combined original + follow-up request history for active detached tasks so a new chat or call after newChat() keeps their full identifying words. */
+    private val detachedRequests = HashMap<String, String>()
+
     private fun say(message: String) {
         val history = callHistory(_state.value.messages)
+        val turnsBefore = _state.value.messages.count { it.role == "user" }
+        val preChatNotes = conversationDetached.toList()
+        val preChatActive = _state.value.tasks.filter { it.detached && it.active }
         set { it.copy(error = null) }
         messages { it + ChatMessage(UUID.randomUUID().toString(), "user", message, call = true) }
         chatLine = null
         voiceBoundary = true
         chat?.let { it.say(message); return }
-        typedEarly.add(message)
+        earlyChatEvents.add(EarlyChatEvent.Typed(message))
         if (chatJob != null) return // its core is loading: the message goes with the first
         chatJob = scope.launch {
             val bundle = withContext(Dispatchers.IO) {
@@ -475,24 +540,54 @@ class AssistantController(
                     .onFailure { Log.w(TAG, "the voice core's bundle couldn't be read: typed messages go straight to Hermes", it) }.getOrNull()
             }
             if (bundle == null) { chatFailed(null); return@launch }
+            val board = newBoard(spoken = false, prefix = "chat-${++nextBoardSeq}")
             val c = CoreChat(bundle, CoreChat.config(history, LocalDate.now().toString()), GeminiChatModel({ secrets.geminiKey }, http),
-                             onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request, chatBoard) } })
+                             onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request, board) } })
+            board.attach { id, text -> c.progress(id, text) }
+            activeChatBoard = board
             c.onWords = { line, text -> scope.launch { if (chat === c) wrote(line, text) } }
             c.onError = { why -> scope.launch { if (chat === c) chatNotice(why) } }
             chat = c
             c.start()
-            for (typed in typedEarly) c.say(typed)
-            typedEarly.clear()
+            val registeredIds = HashSet<String>()
+            for (n in preChatNotes) {
+                val age = (turnsBefore - n.userTurnsAt).coerceAtLeast(0)
+                c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age, active = n.active, request = n.request.ifBlank { null })
+                registeredIds.add(n.id)
+            }
+            for (t in preChatActive) {
+                if (registeredIds.add(t.id)) {
+                    val req = detachedRequests[t.id] ?: t.request
+                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = req)
+                }
+            }
+            for (event in earlyChatEvents) when (event) {
+                is EarlyChatEvent.Typed -> c.say(event.text)
+                is EarlyChatEvent.Noted -> c.note(event.note.label, event.note.text, event.note.failed, inHistory = event.note.active, id = event.note.id, active = event.note.active, request = event.note.request.ifBlank { null })
+                is EarlyChatEvent.Removed -> c.removeNote(event.id)
+            }
+            earlyChatEvents.clear()
             launch {
                 c.thinking.collect { thinking ->
                     // Gemini's turn is over: its message is whole.
                     set { s -> s.copy(thinking = thinking, messages = if (thinking) s.messages else s.messages.map { if (it.streaming && it.speaker == GEMINI) it.copy(streaming = false) else it }) }
                 }
             }
-            launch { c.questions.collect { asked -> set { s -> s.copy(tasks = s.tasks.map { it.copy(question = asked[it.id]) }) } } }
+            launch {
+                c.questions.collect { asked ->
+                    set { s ->
+                        s.copy(tasks = s.tasks.map { t ->
+                            val coreId = board.coreId(t.id)
+                            if (coreId != null) t.copy(question = asked[coreId]) else t
+                        })
+                    }
+                }
+            }
             val why = c.ended.first { it != null }
             if (chat === c) {
                 chat = null
+                if (activeChatBoard === board) activeChatBoard = null
+                board.detach()
                 chatJob = null
                 if (why == CoreChat.LOAD_FAILED) chatFailed(why)
                 else set { it.copy(thinking = false, error = why?.takeIf { w -> w.isNotEmpty() } ?: it.error) }
@@ -505,8 +600,8 @@ class AssistantController(
     private fun chatFailed(why: String?) {
         chatUnavailable = true
         chatJob = null
-        val typed = typedEarly.joinToString("\n\n")
-        typedEarly.clear()
+        val typed = earlyChatEvents.filterIsInstance<EarlyChatEvent.Typed>().joinToString("\n\n") { it.text }
+        earlyChatEvents.clear()
         set { it.copy(thinking = false, error = why) }
         if (typed.isNotEmpty() && !_state.value.working) {
             turnJob = scope.launch { runTurn(typed, TYPED_INSTRUCTIONS + callContext(_state.value.messages), null) }
@@ -531,16 +626,19 @@ class AssistantController(
         messages { it + ChatMessage(UUID.randomUUID().toString(), "assistant", why, speaker = GEMINI, failed = true, call = true) }
     }
 
-    /** Ends the chat's main thread: a call, another conversation or another server takes over. Its tasks stop with it. */
+    /** Ends the chat's main thread: a call, another conversation or another server takes over. Its own tasks stop with it; detached voice tasks stay. */
     private fun endChat() {
         val c = chat
+        val board = activeChatBoard
         chat = null
+        activeChatBoard = null
+        board?.detach()
         chatJob?.cancel()
         chatJob = null
-        typedEarly.clear()
+        earlyChatEvents.clear()
         chatLine = null
         c?.stop()
-        set { s -> s.copy(thinking = false, tasks = emptyList(), messages = s.messages.map { if (it.streaming && it.speaker == GEMINI) it.copy(streaming = false) else it }) }
+        set { s -> endChatState(s) }
     }
 
     /** Stops what's being written: Gemini's answer in the main thread (tasks go on), or the turn Hermes is on. */
@@ -714,34 +812,62 @@ class AssistantController(
                 runCatching { context.assets.open(CORE_BUNDLE).bufferedReader().use { it.readText() } }
                     .onFailure { Log.w(TAG, "the voice core's bundle couldn't be read: the built-in call runs instead", it) }.getOrNull()
             }
+            val board = newBoard(spoken = true, prefix = "call-${++nextBoardSeq}")
+            val callToolScope = serverScope
             val c: VoiceCall = if (bundle != null) {
                 // The core keeps the conversation itself from here: what's said, Hermes's replies, and the recap after standby.
                 val config = CoreCall.config(callHistory(_state.value.messages), LocalDate.now().toString(),
                                              standbyAfter = prefs.hermesStandbySeconds.value.toDouble(), hangUpAfter = hangUpAfter)
                 CoreCall(bundle, config, { OkHttpLiveTransport({ key }) }, audio,
-                         onTool = { request -> withContext(Dispatchers.Main) { runVoiceTask(request, callBoard) } },
+                         onTool = { request -> runVoiceTask(request, board) },
                          ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() },
-                         captions = captions, opening = wake?.opening)
+                         captions = captions, opening = wake?.opening, toolScope = callToolScope)
             } else {
                 AssistantCall(OkHttpLiveTransport({ key }), audio, resume, onTool = { request ->
-                    withContext(Dispatchers.Main) { runVoiceTask(request, callBoard).text }
+                    runVoiceTask(request, board).text
                 }, ending = { (it as? OkHttpLiveTransport)?.ending ?: LiveSocketEnding() }, reconnect = { OkHttpLiveTransport({ key }) },
                     standbyAfter = { prefs.hermesStandbySeconds.value.toDouble() },
                     // Back from standby, a new session hears the conversation so far, the call's words and Hermes's replies.
                     recap = { runCatching { CallSetup.resume(AssistantTranscript.liveRecap(_state.value.messages)) }.getOrNull() },
                     captions = captions,
                     opening = wake?.opening,
-                    hangUpAfter = { hangUpAfter })
+                    hangUpAfter = { hangUpAfter },
+                    toolScope = callToolScope)
             }
+            board.attach { id, text -> c.progress(id, text) }
+            activeCallBoard = board
             c.muted = tap
             c.onTranscript = { role, text -> scope.launch { heard(role, text) } }
             c.onCaption = { text -> scope.launch { if (call === c) { set { it.copy(caption = text) }; noticeSoon() } } }
             call = c
             voiceBoundary = true
             c.start()
+            // Register detached tasks from earlier calls so cancel_task/continue_task in this call won't fuzzy-match them onto this call's runs.
+            val turnsNow = _state.value.messages.count { it.role == "user" }
+            val registeredIds = HashSet<String>()
+            for (n in conversationDetached) {
+                val age = (turnsNow - n.userTurnsAt).coerceAtLeast(0)
+                c.note(n.label, n.text, n.failed, inHistory = true, id = n.id, turnsAgo = age, active = n.active, request = n.request.ifBlank { null })
+                registeredIds.add(n.id)
+            }
+            for (t in _state.value.tasks) {
+                if (t.detached && t.active && registeredIds.add(t.id)) {
+                    val req = detachedRequests[t.id] ?: t.request
+                    c.note(t.label, t.request, failed = false, inHistory = true, id = t.id, active = true, request = req)
+                }
+            }
             launch { c.microphoneSilent.collect { silent -> set { s -> s.copy(call = s.call?.copy(micSilent = silent)) } } }
             // Which tasks wait for the user's answer is the call's to say: a question lapses there once the user talks past it.
-            launch { c.questions.collect { asked -> set { s -> s.copy(call = s.call?.copy(tasks = s.call.tasks.map { it.copy(question = asked[it.id]) })) } } }
+            launch {
+                c.questions.collect { asked ->
+                    set { s ->
+                        s.copy(call = s.call?.copy(tasks = s.call.tasks.map { t ->
+                            val coreId = board.coreId(t.id)
+                            if (coreId != null) t.copy(question = asked[coreId]) else t
+                        }))
+                    }
+                }
+            }
             c.status.collect { status ->
                 when (status) {
                     AssistantCall.Status.Connecting -> Unit
@@ -760,11 +886,29 @@ class AssistantController(
                     is AssistantCall.Status.Ended -> {
                         call = null
                         if (lentFrom === c) lentFrom = null
+                        if (activeCallBoard === board) activeCallBoard = null
+                        // Drop the call reference and hand any still-running Hermes tasks to the chat task strip.
+                        board.detach()
                         VoiceService.exit(context, VoiceService.KIND_ASSISTANT)
-                        // A request the call abandoned ends with it: nothing on screen keeps spinning.
-                        val all = TurnState(ids = _state.value.messages.map { it.id }.toSet(), status = "cancelled")
-                        val (list, _) = AssistantTranscript.finish(_state.value.messages, all)
-                        set { it.copy(messages = list, call = null, caption = null, error = status.message) }
+                        set { s -> endCallState(s, status.message) }
+                        if (conversationEpoch == board.epoch) {
+                            val turnsNow = _state.value.messages.count { it.role == "user" }
+                            for (t in _state.value.tasks) {
+                                if (board.ownsUi(t.id) && t.detached && t.active) {
+                                    val combined = board.requestHistory(t.id, t.request)
+                                    detachedRequests[t.id] = combined
+                                    if (conversationDetached.none { it.id == t.id }) {
+                                        recordDetached(DetachedNote(t.id, t.label, t.request, failed = false, userTurnsAt = turnsNow, active = true, request = combined))
+                                    }
+                                }
+                            }
+                        } else {
+                            for (t in _state.value.tasks) {
+                                if (board.ownsUi(t.id) && t.detached && t.active) {
+                                    detachedRequests[t.id] = board.requestHistory(t.id, t.request)
+                                }
+                            }
+                        }
                         wake?.ended?.invoke(status.message)
                         callJob?.cancel()
                         callJob = null
@@ -778,12 +922,29 @@ class AssistantController(
     /** Back from standby before Hermes finishes, to talk. */
     fun wakeCall() { call?.wake() }
 
-    /** Cancels one of the call's tasks, or with no call on one of the chat's; the rest goes on, and Gemini is told. */
-    fun cancelTask(id: String) { call?.cancelTask(id) ?: chat?.cancelTask(id) }
+    /** Cancels one task: in the active call, in the active chat, or one still running after a call ended. */
+    fun cancelTask(id: String) {
+        val cb = activeCallBoard
+        if (call != null && cb != null && cb.ownsUi(id)) {
+            cb.coreId(id)?.let { call?.cancelTask(it) }
+            // Also cancel the Hermes job directly in case the call already ended on its thread before Main saw Status.Ended.
+            taskJobs[id]?.cancel()
+            return
+        }
+        val tb = activeChatBoard
+        if (chat != null && tb != null && tb.ownsUi(id)) {
+            tb.coreId(id)?.let { chat?.cancelTask(it) }
+            taskJobs[id]?.cancel()
+            return
+        }
+        taskJobs[id]?.cancel()
+    }
 
     fun endCall() {
         val c = call
         if (c != null) c.stop() else {
+            activeCallBoard?.detach()
+            activeCallBoard = null
             callJob?.cancel(); callJob = null
             VoiceService.exit(context, VoiceService.KIND_ASSISTANT)
             set { it.copy(call = null, caption = null) }
@@ -825,61 +986,80 @@ class AssistantController(
         noticeSoon()
     }
 
-    /** Where a main thread's tasks show: the call's bar, or the chat's strip above the composer. */
-    private inner class Board(private val typed: Boolean) {
-        /** The user's words on the task's own page: spoken in a call, typed in the chat. */
-        val spoken: Boolean get() = !typed
-        fun tasks(): List<TaskUi> = if (typed) _state.value.tasks else _state.value.call?.tasks.orEmpty()
-        fun find(id: String): TaskUi? = tasks().firstOrNull { it.id == id }
-        fun update(f: (List<TaskUi>) -> List<TaskUi>) =
-            set { s -> if (typed) s.copy(tasks = f(s.tasks)) else s.copy(call = s.call?.copy(tasks = f(s.call.tasks))) }
-        fun task(id: String, f: (TaskUi) -> TaskUi) = update { list -> list.map { if (it.id == id) f(it) else it } }
-        /** The task's latest step, for Gemini's check_task and list_tasks. */
-        fun progress(id: String, text: String) { if (typed) chat?.progress(id, text) else call?.progress(id, text) }
-    }
-
-    private val callBoard = Board(typed = false)
-    private val chatBoard = Board(typed = true)
+    private fun newBoard(spoken: Boolean, prefix: String) =
+        TaskBoard(spoken = spoken, prefix = prefix, epoch = conversationEpoch, state = { _state.value }, updateState = ::set)
 
     /**
      * Gemini's `ask_hermes`: the user's words go to Hermes as a task in a session of its own, so
      * several run at once, and a follow-up goes into its task's session, so Hermes has what it did.
-     * The [board] shows the task and its progress (the call's bar, or the chat's strip); the chat
-     * gets only what needs the user (an approval) and Hermes's reply. Returns the reply for Gemini.
+     * The [board] shows the task and its progress (the call's bar while attached, or the chat's
+     * strip once detached / in text chat); the chat gets only what needs the user (an approval)
+     * and Hermes's reply. Returns the reply for Gemini.
      */
-    private suspend fun runVoiceTask(request: HermesCall, board: Board): ToolReply {
-        val id = request.taskId
+    private suspend fun runVoiceTask(request: HermesCall, board: TaskBoard): ToolReply {
+        val coreId = request.taskId
+        val uiId = board.uiId(coreId)
         val ask = ChatMessage(UUID.randomUUID().toString(), "user", request.task, voice = board.spoken)
-        val known = board.find(id)
+        val known = board.find(uiId)
+        val priorSid = (known?.sessionId ?: board.sessionId(uiId))?.takeIf { request.followUp }
+        if (known != null && known.request.isNotBlank()) board.seedRequest(uiId, known.request)
+        val combinedRequest = board.accumulateRequest(uiId, request.task)
+        val displayRequest = known?.request?.takeIf { it.isNotBlank() } ?: board.firstRequest(uiId, request.task)
         val now = SystemClock.elapsedRealtime()
         val label = request.label.ifEmpty { TaskLabel.short(request.task) }
-        if (known == null) board.update { it + TaskUi(id, request.task, label, messages = listOf(ask), startedAt = now) }
-        else board.task(id) { it.copy(status = "running", progress = null, question = null, messages = it.messages + ask, startedAt = now) }
-        voiceBoundary = true
-        chatLine = null
-        fun task(id: String, f: (TaskUi) -> TaskUi) = board.task(id, f)
+        var taskMessages = known?.messages.orEmpty() + ask
+        if (known == null) {
+            board.update { it + TaskUi(uiId, displayRequest, label, sessionId = priorSid, messages = taskMessages, startedAt = now, detached = board.detached) }
+        } else {
+            board.task(uiId) { it.copy(status = "running", progress = null, question = null, messages = taskMessages, startedAt = now) }
+        }
+        if (conversationEpoch == board.epoch) {
+            voiceBoundary = true
+            chatLine = null
+            if (board.detached) {
+                detachedRequests[uiId] = combinedRequest
+                val activeNote = DetachedNote(uiId, label, displayRequest, failed = false, userTurnsAt = _state.value.messages.count { it.role == "user" }, active = true, request = combinedRequest)
+                recordDetached(activeNote)
+                val openChat = chat
+                when {
+                    openChat != null -> openChat.note(label, displayRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
+                    chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(activeNote))
+                }
+                call?.note(label, displayRequest, failed = false, inHistory = true, id = uiId, active = true, request = combinedRequest)
+            }
+        }
+        val myJob = coroutineContext[Job]
+        if (myJob != null) taskJobs[uiId] = myJob
+        // Pin the endpoint for this run so a later server switch never routes its requests or /stop to the new server.
+        val pinned = endpoint()
+        val runClient = if (pinned != null) HermesClient({ pinned }, http) else client
+        fun task(f: (TaskUi) -> TaskUi) = board.task(uiId, f)
         var turn = TurnState()
         var run: String? = null
-        fun shown() = board.find(id)?.messages.orEmpty()
+        var sessionId: String? = priorSid
+        fun shown() = board.find(uiId)?.messages ?: taskMessages
         fun apply(event: HermesEvent) {
             val (list, t) = AssistantTranscript.apply(shown(), turn, event)
+            taskMessages = list
             turn = t
-            show(board, id, list, t)
+            show(board, uiId, coreId, list, t)
         }
         try {
-            val sid = known?.sessionId?.takeIf { request.followUp } ?: try {
-                client.createSession().id.also { sid ->
+            val sid = sessionId ?: try {
+                runClient.createSession().id.also { sid ->
+                    sessionId = sid
+                    board.setSessionId(uiId, sid)
                     remember(sid)
-                    task(id) { it.copy(sessionId = sid) }
+                    task { it.copy(sessionId = sid) }
                 }
             } catch (e: HermesError) {
                 apply(HermesEvent.Failed(e.message.orEmpty()))
-                return finished(board, id, turn.copy(status = "failed"))
+                return finished(board, uiId, label, combinedRequest, sessionId, shown(), turn.copy(status = "failed"))
             }
             turn = turn.copy(sessionId = sid)
             val choice = choiceFor(sid)
             // A task whose session is gone starts over in a new one, with nothing to follow up there.
-            val follows = request.followUp && sid == known?.sessionId
+            val follows = request.followUp && sid == priorSid
             // The shared core words the request itself; the built-in call leaves that to voiceMessage.
             val message = request.message?.let { if (follows) it else it.replace(FOLLOWS_UP, "") }
                 ?: voiceMessage(request.copy(followUp = follows), LocalDate.now().toString())
@@ -887,7 +1067,7 @@ class AssistantController(
             val until = System.nanoTime() + BUSY_WAIT_NANOS
             while (true) {
                 try {
-                    client.chat(sid, message, null, choice).collect { event ->
+                    runClient.chat(sid, message, null, choice).collect { event ->
                         if (event is HermesEvent.RunStarted) {
                             run = event.runId
                             if (choice.picked) markLocked(sid)
@@ -900,32 +1080,44 @@ class AssistantController(
                     delay(1_000)
                 }
             }
-            if (!turn.finished) AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(board, id, list, t) }
+            if (!turn.finished) AssistantTranscript.finish(shown(), turn).let { (list, t) -> taskMessages = list; turn = t; show(board, uiId, coreId, list, t) }
             val newId = turn.sessionId
             if (newId != null && newId != sid) {
-                // Hermes compressed the task's conversation into a new session: the task and its link follow.
+                // Hermes compressed the task's conversation into a new session: the task, links and any open view follow.
+                sessionId = newId
+                board.setSessionId(uiId, newId)
                 remember(newId); forget(sid); followLock(sid, newId)
-                task(id) { it.copy(sessionId = newId) }
+                task { it.copy(sessionId = newId) }
                 messages { list -> list.map { if (it.link == sid) it.copy(link = newId) else it } }
+                if (_state.value.sessionId == sid) {
+                    prefs.hermesSession.value = newId
+                    loadedSession = newId
+                    prefs.hermesScroll.value = ChatScroll.moved(prefs.hermesScroll.value, sid, newId)
+                    set { it.copy(sessionId = newId) }
+                }
             }
         } catch (e: HermesError) {
-            if (e.code == "session_not_found") turn.sessionId?.let { sid -> forget(sid); task(id) { it.copy(sessionId = null) } }
+            if (e.code == "session_not_found") {
+                turn.sessionId?.let { sid -> forget(sid); sessionId = null; board.setSessionId(uiId, null); task { it.copy(sessionId = null) } }
+            }
             apply(HermesEvent.Failed(e.message.orEmpty()))
-            AssistantTranscript.finish(shown(), turn).let { (list, t) -> turn = t; show(board, id, list, t) }
+            AssistantTranscript.finish(shown(), turn).let { (list, t) -> taskMessages = list; turn = t; show(board, uiId, coreId, list, t) }
         } catch (e: CancellationException) {
-            // Cancelled by the user, Gemini or the call ending: closing the stream stops the turn, and Hermes is told too.
+            // Cancelled explicitly by the user, Gemini, or leaving the server: closing the stream stops the turn, and Hermes is told too.
             withContext(NonCancellable) {
-                run?.let { r -> scope.launch { runCatching { client.stop(r) } } }
+                run?.let { r -> scope.launch { runCatching { runClient.stop(r) } } }
                 apply(HermesEvent.Finished("cancelled", null, null))
-                finished(board, id, turn)
+                finished(board, uiId, label, combinedRequest, sessionId, shown(), turn)
             }
             throw e
+        } finally {
+            if (myJob != null && taskJobs[uiId] === myJob) taskJobs.remove(uiId)
         }
-        return finished(board, id, turn)
+        return finished(board, uiId, label, combinedRequest, sessionId, shown(), turn)
     }
 
     /** The task's conversation after an event: its progress for Gemini and the screen, and approvals in the chat. */
-    private fun show(board: Board, id: String, list: List<ChatMessage>, turn: TurnState) {
+    private fun show(board: TaskBoard, uiId: String, coreId: String, list: List<ChatMessage>, turn: TurnState) {
         val mine = list.filter { it.id in turn.ids }
         val waiting = mine.any { it.role == "approval" && it.status == "pending" }
         val latest = mine.lastOrNull { it.role == "tool" || it.role == "approval" || it.role == "assistant" }
@@ -935,40 +1127,75 @@ class AssistantController(
             latest?.role == "assistant" && latest.streaming -> "Writing its reply"
             else -> null
         }
-        board.task(id) { t -> t.copy(messages = list, progress = progress ?: t.progress, status = if (t.active) (if (waiting) "waiting" else "running") else t.status) }
-        progress?.let { board.progress(id, it) }
-        // An approval waits for the user wherever they look: the chat shows it too.
-        val known = _state.value.messages.map { it.id }.toSet()
-        val approvals = mine.filter { it.role == "approval" && it.id !in known }
-        if (approvals.isNotEmpty()) messages { it + approvals }
+        board.task(uiId) { t -> t.copy(messages = list, progress = progress ?: t.progress, status = if (t.active) (if (waiting) "waiting" else "running") else t.status) }
+        progress?.let { board.progress(coreId, it) }
+        // An approval waits for the user wherever they look: the chat shows it too (while still on the same conversation).
+        if (conversationEpoch == board.epoch) {
+            val known = _state.value.messages.map { it.id }.toSet()
+            val approvals = mine.filter { it.role == "approval" && it.id !in known }
+            if (approvals.isNotEmpty()) messages { it + approvals }
+        }
     }
 
     /** Marks the task's request done; the reply (or why it failed) joins the chat, linked to the task's session. Returns what Gemini hears. */
-    private fun finished(board: Board, id: String, turn: TurnState): ToolReply {
+    private fun finished(board: TaskBoard, uiId: String, label: String, requestText: String, sessionId: String?, taskMessages: List<ChatMessage>, turn: TurnState): ToolReply {
         val status = when (turn.status) {
             "completed" -> "completed"
             "cancelled" -> "cancelled"
             null -> if (turn.answer.isNotBlank()) "completed" else "failed"
             else -> "failed"
         }
-        val task = board.find(id)
-        val failure = task?.messages?.lastOrNull { it.failed && it.id in turn.ids }?.text
-        board.task(id) { it.copy(status = status, progress = null) }
-        val label = task?.label ?: id
-        messages { list ->
-            // Approvals nobody answered lapse with the request.
-            val (marked, _) = AssistantTranscript.finish(list, TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
-            val link = turn.sessionId ?: task?.sessionId
-            when {
-                status == "cancelled" -> marked
-                turn.answer.isNotBlank() -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(label), link = link, call = true)
-                status == "failed" -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", "\"$label\" failed. " + failure.orEmpty(),
-                                                           speaker = taskSpeaker(label), failed = true, link = link, call = true)
-                else -> marked
+        val failure = taskMessages.lastOrNull { it.failed && it.id in turn.ids }?.text
+        board.task(uiId) { it.copy(status = status, progress = null) }
+        val link = turn.sessionId ?: sessionId
+        if (board.detached) detachedRequests.remove(uiId)
+        if (conversationEpoch == board.epoch) {
+            messages { list ->
+                // Approvals nobody answered lapse with the request.
+                val (marked, _) = AssistantTranscript.finish(list, TurnState(ids = turn.ids.filter { i -> list.any { it.id == i && it.role == "approval" } }.toSet()))
+                when {
+                    status == "cancelled" -> marked
+                    turn.answer.isNotBlank() -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", turn.answer, speaker = taskSpeaker(label), link = link, call = true)
+                    status == "failed" -> marked + ChatMessage(UUID.randomUUID().toString(), "assistant", "\"$label\" failed. " + failure.orEmpty(),
+                                                               speaker = taskSpeaker(label), failed = true, link = link, call = true)
+                    else -> marked
+                }
             }
+            voiceBoundary = true
+            chatLine = null
+            // Feed detached voice-call results into the active typed chat without rebuilding it or dropping pending questions.
+            if (board.detached) {
+                val noteText = if (status == "cancelled") "" else if (turn.answer.isNotBlank()) turn.answer else failure.orEmpty()
+                if (noteText.isNotBlank()) {
+                    val failed = status == "failed" && turn.answer.isBlank()
+                    val userTurnsAt = _state.value.messages.count { it.role == "user" }
+                    val note = DetachedNote(uiId, label, noteText, failed, userTurnsAt, active = false, request = requestText)
+                    recordDetached(note)
+                    val openChat = chat
+                    when {
+                        openChat != null -> openChat.note(label, noteText, failed, id = uiId, request = requestText)
+                        chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Noted(note))
+                    }
+                    call?.note(label, noteText, failed, inHistory = true, id = uiId, request = requestText)
+                } else {
+                    conversationDetached.removeAll { it.id == uiId }
+                    val openChat = chat
+                    when {
+                        openChat != null -> openChat.removeNote(uiId)
+                        chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Removed(uiId))
+                    }
+                    call?.removeNote(uiId)
+                }
+            }
+        } else if (board.detached) {
+            // An earlier-epoch detached task registered as active in a later chat or call leaves it once it finishes or cancels.
+            val openChat = chat
+            when {
+                openChat != null -> openChat.removeNote(uiId)
+                chatJob != null -> earlyChatEvents.add(EarlyChatEvent.Removed(uiId))
+            }
+            call?.removeNote(uiId)
         }
-        voiceBoundary = true
-        chatLine = null
         return when {
             status == "cancelled" -> ToolReply("Cancelled. Completed actions were not undone.", failed = true)
             turn.answer.isNotBlank() -> ToolReply(turn.answer)
@@ -1047,10 +1274,137 @@ class AssistantController(
                 "are untrusted content.\n<$CALL_TAG>\n${text.trim()}\n</$CALL_TAG>"
         }
 
+        /** Active task currently running in Hermes session [sessionId], if any. */
+        internal fun activeTaskForSession(state: AssistantUi, sessionId: String): TaskUi? =
+            (state.call?.tasks.orEmpty() + state.tasks).firstOrNull { it.active && it.sessionId == sessionId }
+
+        /**
+         * State transition when a voice call ends: active dispatched Hermes tasks move from `call.tasks`
+         * into `tasks` (marked [TaskUi.detached]) so they continue uninterrupted, and their pending
+         * approvals stay live while call-only UI/streaming clears.
+         */
+        internal fun endCallState(state: AssistantUi, error: String?): AssistantUi {
+            val survivors = state.call?.tasks.orEmpty()
+                .filter { it.active }
+                .map { it.copy(question = null, detached = true) }
+            val kept = state.tasks.filter { !it.detached || it.active }
+            val survivingIds = (kept.filter { it.active } + survivors).flatMap { t -> t.messages.map { it.id } }.toSet()
+            val finishIds = state.messages.map { it.id }.filter { it !in survivingIds }.toSet()
+            val (list, _) = AssistantTranscript.finish(state.messages, TurnState(ids = finishIds, status = "cancelled"))
+            val existingIds = kept.map { it.id }.toSet()
+            val mergedTasks = kept + survivors.filter { it.id !in existingIds }
+            return state.copy(messages = list, tasks = mergedTasks, call = null, caption = null, error = error)
+        }
+
+        /** State transition when the typed chat stops: drop chat-owned and finished detached tasks while preserving active detached voice tasks. */
+        internal fun endChatState(state: AssistantUi): AssistantUi = state.copy(
+            thinking = false,
+            tasks = state.tasks.filter { it.detached && it.active },
+            messages = state.messages.map { if (it.streaming && it.speaker == GEMINI) it.copy(streaming = false) else it },
+        )
+
         /** Hermes's ephemeral instructions for typed turns (not stored in the conversation). */
         const val TYPED_INSTRUCTIONS =
             "The user is writing to you from Bento's assistant on their Android phone. Bento renders Markdown headings, lists, " +
                 "emphasis, code and links; it does not render tables, raw HTML, images or LaTeX, so avoid them. Keep replies " +
                 "phone-sized unless the user asks for detail."
+    }
+}
+
+/**
+ * Routes one call's or chat's task updates to the right list in [AssistantUi] without leaking the
+ * call once it ends. A voice call's board starts on `state.call.tasks`; [detach] drops its progress
+ * callback (releasing the [VoiceCall]) and redirects subsequent updates for surviving tasks to
+ * `state.tasks`.
+ */
+internal class TaskBoard(
+    val spoken: Boolean,
+    private val prefix: String,
+    val epoch: Long,
+    private val state: () -> AssistantUi,
+    private val updateState: ((AssistantUi) -> AssistantUi) -> Unit,
+) {
+    private var callEnded = false
+    private var onProgress: ((coreTaskId: String, text: String) -> Unit)? = null
+    private val coreToUi = HashMap<String, String>()
+    private val uiToCore = HashMap<String, String>()
+    /** Session IDs remembered per UI task id so a dispatched follow-up recovers its session even if its completed row was dropped at hang-up. */
+    private val sessions = HashMap<String, String>()
+    /** Original first prompt per UI task id, kept for card display even after a completed row is dropped at hang-up. */
+    private val firstRequests = HashMap<String, String>()
+    /** Accumulated distinct prompts per UI task id (bounded while preserving both head and newest tail) so original and follow-up identifying words survive hang-up. */
+    private val taskRequests = HashMap<String, String>()
+
+    fun firstRequest(uiId: String, fallback: String): String =
+        firstRequests[uiId] ?: fallback
+
+    fun seedRequest(uiId: String, request: String) {
+        if (uiId !in taskRequests) accumulateRequest(uiId, request)
+    }
+
+    fun accumulateRequest(uiId: String, request: String): String {
+        val clean = request.trim()
+        if (clean.isNotBlank()) firstRequests.putIfAbsent(uiId, clean)
+        val prev = taskRequests[uiId]
+        val cap: (String) -> String = { s ->
+            if (s.length <= 1000) s
+            else "${s.take(500).trimEnd()} ${s.takeLast(499).trimStart()}".trim()
+        }
+        val merged = when {
+            prev.isNullOrBlank() -> cap(clean)
+            clean.isBlank() || prev.contains(clean, ignoreCase = true) -> cap(prev)
+            clean.contains(prev, ignoreCase = true) -> cap(clean)
+            else -> cap("$prev $clean")
+        }
+        if (merged.isNotBlank()) taskRequests[uiId] = merged
+        return merged
+    }
+
+    fun requestHistory(uiId: String, fallback: String): String =
+        taskRequests[uiId] ?: fallback
+
+    /** True once a voice call ended and its surviving tasks live in `state.tasks`. */
+    val detached: Boolean get() = spoken && callEnded
+
+    private val inChatList: Boolean get() = !spoken || callEnded
+
+    fun attach(progress: (coreTaskId: String, text: String) -> Unit) {
+        onProgress = progress
+    }
+
+    fun uiId(coreTaskId: String): String = coreToUi.getOrPut(coreTaskId) {
+        "$prefix-$coreTaskId".also { uiToCore[it] = coreTaskId }
+    }
+
+    fun coreId(uiId: String): String? = uiToCore[uiId]
+
+    fun ownsUi(uiId: String): Boolean = uiId in uiToCore
+
+    fun sessionId(uiId: String): String? = sessions[uiId]
+
+    fun setSessionId(uiId: String, sessionId: String?) {
+        if (sessionId == null) sessions.remove(uiId) else sessions[uiId] = sessionId
+    }
+
+    fun tasks(): List<TaskUi> = if (inChatList) state().tasks else state().call?.tasks.orEmpty()
+
+    fun find(uiId: String): TaskUi? = tasks().firstOrNull { it.id == uiId }
+
+    fun update(f: (List<TaskUi>) -> List<TaskUi>) = updateState { s ->
+        if (inChatList) s.copy(tasks = f(s.tasks))
+        else s.copy(call = s.call?.copy(tasks = f(s.call.tasks)))
+    }
+
+    fun task(uiId: String, f: (TaskUi) -> TaskUi) = update { list ->
+        list.map { if (it.id == uiId) f(it) else it }
+    }
+
+    fun progress(coreTaskId: String, text: String) {
+        onProgress?.invoke(coreTaskId, text)
+    }
+
+    fun detach() {
+        callEnded = true
+        onProgress = null
     }
 }

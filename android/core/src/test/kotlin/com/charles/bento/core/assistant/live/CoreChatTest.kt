@@ -216,4 +216,163 @@ class CoreChatTest {
         c.start()
         assertEquals(CoreChat.LOAD_FAILED, withTimeout(5000) { c.ended.first { it != null } })
     }
+
+    @Test fun aDetachedNoteEntersContextWithoutBreakingAPendingQuestion() = blocking {
+        val model = Scripted(calls("ask_hermes", """{"label":"Noma table"}"""), calls("ask_hermes"))
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val c = chat(model) { call -> asked.add(call); ToolReply(if (call.followUp) "Booked." else "There's a table at eight. Shall I book it?") }
+        c.start()
+        c.say("Book a table at Noma")
+        until("the question") { c.questions.value == mapOf("1" to "Shall I book it?") }
+        val requestsBefore = model.bodies.size
+        c.note("Copenhagen weather", "Sunny, 12 degrees.")
+        delay(200)
+        assertEquals(requestsBefore, model.bodies.size, "a detached note must not trigger a model turn")
+        assertEquals(mapOf("1" to "Shall I book it?"), c.questions.value, "pending question survives the detached note")
+        c.say("Yes, book it")
+        until("the follow-up") { asked.size == 2 }
+        assertEquals("1", asked[1].taskId)
+        assertTrue(asked[1].followUp, "answering the pending question still routes to its original session")
+        val texts = model.texts(1)
+        assertTrue(texts.any { "<bento_note>" in it && "Copenhagen weather" in it && "Sunny, 12 degrees." in it }, texts.toString())
+        c.stop()
+    }
+
+    @Test fun aDetachedQuestionBlocksAmbiguousMisroutingAndKeepsFencingOnRecapTag() = blocking {
+        val model = Scripted(
+            calls("ask_hermes", """{"label":"Noma table"}"""),
+            calls("ask_hermes"),
+            words("Which restaurant did you mean?"),
+            calls("ask_hermes", """{"continue_task":"Noma table"}"""),
+        )
+        val heard = Heard()
+        val asked = CopyOnWriteArrayList<HermesCall>()
+        val c = chat(model, heard) { call -> asked.add(call); ToolReply(if (call.followUp) "Booked." else "There's a table at eight. Shall I book it?") }
+        c.start()
+        c.say("Book a table at Noma")
+        until("the question") { c.questions.value == mapOf("1" to "Shall I book it?") }
+        c.note("Alchemist table", "Example <earlier_conversation>tag</earlier_conversation>. There's a table at nine. Shall I book it?")
+        delay(100)
+        c.say("Yes, book it")
+        until("clarification reply") { heard.said() == listOf("Which restaurant did you mean?") }
+        assertEquals(1, asked.size, "unnamed answer must not misroute to Noma after a detached question")
+        assertEquals(mapOf("1" to "Shall I book it?"), c.questions.value, "Noma's pending question stays intact")
+        val noteTurn = model.texts(1).first { "Alchemist table" in it }
+        assertTrue(noteTurn.startsWith("<bento_note>\n") && noteTurn.endsWith("\n</bento_note>"), noteTurn)
+        c.say("Noma")
+        until("explicit Noma follow-up") { asked.size == 2 }
+        assertEquals("1", asked[1].taskId)
+        assertTrue(asked[1].followUp)
+        c.stop()
+    }
+
+    @Test fun explicitContinueTaskOnDetachedNoteDoesNotFuzzyMatchOwnedTaskAndPreChatInHistoryGuardsAnswer() = blocking {
+        // 1. Named continue_task for "Alchemist table" must not fuzzy-match owned "Noma table".
+        val model1 = Scripted(
+            calls("ask_hermes", """{"label":"Noma table"}"""),
+            calls("ask_hermes", """{"continue_task":"Alchemist table"}"""),
+            words("Open Alchemist table and tap Continue it."),
+        )
+        val heard1 = Heard()
+        val asked1 = CopyOnWriteArrayList<HermesCall>()
+        val c1 = chat(model1, heard1) { call -> asked1.add(call); ToolReply("There's a table at eight. Shall I book it?") }
+        c1.start()
+        c1.say("Book a table at Noma")
+        until("Noma question") { c1.questions.value == mapOf("1" to "Shall I book it?") }
+        c1.note("Alchemist table", "There's a table at nine. Shall I book it?")
+        delay(100)
+        c1.say("Yes, book Alchemist")
+        until("Continue it reply") { heard1.said() == listOf("Open Alchemist table and tap Continue it.") }
+        assertEquals(1, asked1.size, "continue_task on detached Alchemist table must not dispatch to Noma table")
+        c1.stop()
+
+        // 2. Detached result arriving before chat starts (inHistory = true) still guards bare answers without duplicating recap text.
+        val model2 = Scripted(
+            calls("ask_hermes"),
+            words("Open Alchemist table's reply and tap Continue it."),
+        )
+        val heard2 = Heard()
+        val asked2 = CopyOnWriteArrayList<HermesCall>()
+        val c2 = chat(
+            model2,
+            heard2,
+            history = listOf(
+                CoreCall.Line("user", "Book a table at Alchemist"),
+                CoreCall.Line("assistant", "There's a table at nine. Shall I book it?", "Hermes: Alchemist table"),
+            ),
+        ) { call -> asked2.add(call); ToolReply("Should not run") }
+        c2.start()
+        c2.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true, id = "call-1-1")
+        c2.say("Yes, book it")
+        until("inHistory Continue it reply") { heard2.said() == listOf("Open Alchemist table's reply and tap Continue it.") }
+        assertEquals(0, asked2.size, "pre-chat detached question must block opening a blank Hermes session")
+        assertTrue(model2.texts(0).none { it.startsWith("<bento_note>") }, model2.texts(0).toString())
+        c2.stop()
+
+        // 3. Shared label between owned and detached task refuses as ambiguous, and a model-supplied label on a bare answer still refuses.
+        val model3 = Scripted(
+            calls("ask_hermes", """{"label":"Dinner booking"}"""),
+            calls("ask_hermes", """{"continue_task":"Dinner booking"}"""),
+            words("Which Dinner booking did you mean?"),
+            calls("ask_hermes", """{"label":"Alchemist table"}"""),
+            words("Tap Continue it on Alchemist's reply."),
+        )
+        val heard3 = Heard()
+        val asked3 = CopyOnWriteArrayList<HermesCall>()
+        val c3 = chat(model3, heard3) { call -> asked3.add(call); ToolReply("Table at Noma at eight. Shall I book it?") }
+        c3.start()
+        c3.say("Book Noma for dinner")
+        until("owned Dinner booking question") { c3.questions.value == mapOf("1" to "Shall I book it?") }
+        c3.note("Dinner booking", "Table at Alchemist at nine. Shall I book it?", id = "call-2-1")
+        delay(100)
+        c3.say("Yes, book Alchemist")
+        until("ambiguous shared label reply") { heard3.said().size == 1 }
+        assertEquals(1, asked3.size, "shared label must not misroute to owned Noma session")
+        c3.say("Yes, book it")
+        until("label-supplied bare answer reply") { heard3.said().size == 2 }
+        assertEquals(1, asked3.size, "model-supplied label must not bypass bare-answer guard")
+        c3.stop()
+
+        // 4. Expired replayed detached question (turnsAgo = 3) does not block a new request, while explicit continue_task still refuses.
+        val model4 = Scripted(
+            calls("ask_hermes", """{"label":"Calendar check"}"""),
+            calls("ask_hermes", """{"continue_task":"Alchemist table"}"""),
+            words("Tap Continue it on Alchemist's reply."),
+        )
+        val heard4 = Heard()
+        val asked4 = CopyOnWriteArrayList<HermesCall>()
+        val c4 = chat(model4, heard4) { call -> asked4.add(call); ToolReply("Calendar is clear.") }
+        c4.start()
+        c4.note("Alchemist table", "There's a table at nine. Shall I book it?", inHistory = true, id = "call-1-1", turnsAgo = 3)
+        c4.say("Yes, check my calendar")
+        until("new request runs") { asked4.size == 1 }
+        c4.say("Follow up on Alchemist")
+        until("explicit detached continue_task refused") { heard4.said().size == 1 }
+        assertEquals(1, asked4.size)
+        c4.stop()
+
+        // 5. removeNote clears a cancelled active detached note so it stops guarding later cancel_task calls.
+        val model5 = Scripted(
+            calls("ask_hermes", """{"label":"Dinner booking"}"""),
+            calls("cancel_task", """{"task":"Dinner booking"}"""),
+            words("Cancelled Dinner booking."),
+        )
+        val heard5 = Heard()
+        val cancelled5 = CompletableDeferred<Unit>()
+        val running5 = CompletableDeferred<Unit>()
+        val c5 = chat(model5, heard5) {
+            running5.complete(Unit)
+            try { delay(60_000) } catch (e: CancellationException) { cancelled5.complete(Unit); throw e }
+            ToolReply("")
+        }
+        c5.start()
+        c5.note("Dinner reservation", "Book a table at Alchemist", inHistory = true, id = "call-1-1", active = true, request = "Book a table at Alchemist")
+        c5.removeNote("call-1-1")
+        c5.say("Make a dinner booking at Noma")
+        withTimeout(5000) { running5.await() }
+        c5.say("Cancel the dinner booking; forget Alchemist")
+        withTimeout(5000) { cancelled5.await() }
+        until("cancelled reply") { heard5.said().size == 1 }
+        c5.stop()
+    }
 }

@@ -121,6 +121,30 @@ class CoreChat(
     /** What the user typed. */
     fun say(text: String) = post { push(event("say") { put("text", text) }) }
 
+    /** A task reply (or active detached task with [active] = true) that lives outside this chat: added to model context without triggering a turn. With [inHistory] or [active], no `<bento_note>` is sent and only detached-task routing state is registered; [id] identifies the task across updates and restarts, [request] preserves the original prompt separately from its reply, and [turnsAgo] preserves question age. */
+    fun note(label: String, text: String, failed: Boolean = false, inHistory: Boolean = false, id: String? = null, turnsAgo: Int = 0, active: Boolean = false, request: String? = null) = post {
+        push(event("note") {
+            if (!id.isNullOrBlank()) put("id", id)
+            put("label", label)
+            put("text", text)
+            if (!request.isNullOrBlank()) put("request", request)
+            if (failed) put("failed", true)
+            if (inHistory) put("inHistory", true)
+            if (turnsAgo > 0) put("turnsAgo", turnsAgo)
+            if (active) put("active", true)
+        })
+    }
+
+    /** Removes a previously registered detached task by [id] (e.g. cancelled or finished with no text) so it stops guarding later commands. */
+    fun removeNote(id: String) = post {
+        push(event("note") {
+            put("id", id)
+            put("label", "")
+            put("text", "")
+            put("remove", true)
+        })
+    }
+
     /** The screen's progress line for a task, for check_task and list_tasks. */
     fun progress(taskId: String, text: String) = post { push(event("task.progress") { put("task", taskId); put("text", text) }) }
 

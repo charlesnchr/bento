@@ -13,7 +13,7 @@
 // go back as they came, since they carry the thought signatures its function calls are checked
 // against. What the user types while a turn is under way waits for the turn to end.
 
-import { fencedNote, isRecap } from "./setup.ts";
+import { fencedNote } from "./setup.ts";
 import type { Command } from "./types.ts";
 
 type Json = Record<string, unknown>;
@@ -71,7 +71,10 @@ export class TextLine {
   /** An answer asked the model to go on (anything but a silent one). */
   private speak = false;
   /** User turns that came while the model's turn was under way. */
-  private readonly held: { content: Content; complete: boolean }[] = [];
+  private readonly held: { content: Content; complete: boolean; turn: { seq: number; turnId: number | null; text: string } | null }[] = [];
+  /** Sequence, protocol turn id and text of the latest complete user turn accepted into `contents`. */
+  private nextUserTurn = 0;
+  private latestUserTurn: { seq: number; turnId: number | null; text: string } | null = null;
   /** A user turn waits for the model's answer. */
   private due = false;
   private turnOpen = false;
@@ -82,6 +85,8 @@ export class TextLine {
    * turn as of then, not one typed while the model was still writing.
    */
   asOf = 0;
+  /** The exact complete user turn the current model turn is answering (immune to same-timestamp queuing). */
+  answeredTurn: { seq: number; turnId: number | null; text: string } | null = null;
   private readonly host: LineHost;
   private readonly c: LineConfig;
 
@@ -103,8 +108,8 @@ export class TextLine {
     this.tools = declarations.length > 0 ? [{ functionDeclarations: declarations }] : [];
   }
 
-  /** A frame the call would send Gemini Live. */
-  send(frame: string): void {
+  /** A frame the call would send Gemini Live. [recap]: the earlier conversation's own recap frame, which carries its own fence. */
+  send(frame: string, recap = false, turnId: number | null = null): void {
     if (this.stopped) return;
     const f = parse(frame);
     if (!f) return;
@@ -115,8 +120,10 @@ export class TextLine {
         const text = arr(obj(turn)?.parts).map((p) => obj(p)?.text).filter((t): t is string => typeof t === "string").join("\n");
         if (text.length === 0) return;
         // A turn the model isn't to answer is a note of Bento's (a result, a cancellation): fenced, so the user's next message stands apart from it.
-        const note = content.turnComplete !== true && !isRecap(text);
-        this.take({ role: "user", parts: [{ text: note ? fencedNote(text) : text }] }, content.turnComplete === true && i === turns.length - 1);
+        const complete = content.turnComplete === true && i === turns.length - 1;
+        const note = content.turnComplete !== true && !recap;
+        const userTurn = complete ? { seq: ++this.nextUserTurn, turnId, text } : null;
+        this.take({ role: "user", parts: [{ text: note ? fencedNote(text) : text }] }, complete, userTurn);
       });
       return;
     }
@@ -127,10 +134,10 @@ export class TextLine {
     return this.request != null || this.calls.length > 0;
   }
 
-  private take(content: Content, complete: boolean): void {
-    if (this.busy) { this.held.push({ content, complete }); return; }
+  private take(content: Content, complete: boolean, turn: { seq: number; turnId: number | null; text: string } | null): void {
+    if (this.busy) { this.held.push({ content, complete, turn }); return; }
     this.contents.push(content);
-    if (complete) this.due = true;
+    if (complete) { this.due = true; if (turn) this.latestUserTurn = turn; }
     this.host.defer(() => this.go());
   }
 
@@ -160,7 +167,10 @@ export class TextLine {
   private go(): void {
     if (this.stopped || this.busy) return;
     if (!this.due) {
-      for (const h of this.held.splice(0)) { this.contents.push(h.content); if (h.complete) this.due = true; }
+      for (const h of this.held.splice(0)) {
+        this.contents.push(h.content);
+        if (h.complete) { this.due = true; if (h.turn) this.latestUserTurn = h.turn; }
+      }
       if (!this.due) return;
     }
     this.due = false;
@@ -168,7 +178,7 @@ export class TextLine {
     const id = this.nextId++;
     const now = this.host.now();
     this.request = { id, parts: [], lastAt: now, error: null };
-    if (!this.turnOpen) { this.turnOpen = true; this.asOf = now; }
+    if (!this.turnOpen) { this.turnOpen = true; this.asOf = now; this.answeredTurn = this.latestUserTurn; }
     this.setThinking(true);
     const body: Json = { systemInstruction: { parts: [{ text: this.system }] }, contents: this.contents };
     if (this.tools.length > 0) body.tools = this.tools;

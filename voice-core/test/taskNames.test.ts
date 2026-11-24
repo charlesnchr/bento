@@ -112,6 +112,26 @@ test("the model finds a task by what it says", () => {
   assert.equal(N.find("The Guardian task", banks), "4");
   assert.equal(N.find("the capital one", tasks({ "1": ["capital", "What's the capital of Peru?"] })), "1");
   assert.equal(N.find("", t), null);
+  // A containment tie falls through to distinctive-word scoring (including request text).
+  const sarah = tasks({
+    "a": ["Sarah dinner", "book dinner with Sarah at Alchemist"],
+    "b": ["Sarah gift", "buy a scarf for my sister"],
+  });
+  assert.equal(N.find("Sarah", sarah), "a");
+  // Exact match still distinguishes owned tasks that differ only by possessive.
+  const poss = tasks({
+    "1": ["Sarah booking", "Book Sarah"],
+    "2": ["Sarah's booking", "Book Sarah's follow-up"],
+  });
+  assert.equal(N.find("Sarah's booking", poss), "2");
+  assert.equal(N.find("Sarah booking", poss), "1");
+  // Containment tie scores the full pool (not just the tied containment entries), matching main & Kotlin.
+  const travel = tasks({
+    "1": ["Sarah", "Ask Sarah"],
+    "2": ["travel", "Check travel"],
+    "3": ["travel budget options", "Compare travel budget options"],
+  });
+  assert.equal(N.find("Sarah travel budget", travel), "3");
 });
 
 test("a reply asks what its summary asks", () => {

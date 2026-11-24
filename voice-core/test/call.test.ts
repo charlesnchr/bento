@@ -554,3 +554,955 @@ test("cancelling a task that failed: 'already finished' as before, 'already fail
     assert.ok(message.includes(supervise ? "has already failed" : "is already finished"), message);
   }
 });
+
+test("a voice call with a registered detached task refuses cancel_task for the detached task instead of cancelling its own run", () => {
+  const s = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s.advance(0.1);
+  // Detached task from an earlier call registered via note.
+  s.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Book a table at Alchemist", inHistory: true, active: true, request: "Book a table at Alchemist" });
+  s.advance(0.1);
+  s.turn("Book a table at Noma");
+  s.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  s.advance(0.3);
+  // User asks to cancel Alchemist; Gemini calls cancel_task("Alchemist table") or cancel_task("Noma table").
+  s.turn("Cancel the Alchemist table");
+  s.toolCall("x1", "cancel_task", { task: "Alchemist table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "cancel_task('Alchemist table') must not fuzzy-match and cancel owned Noma table");
+  const r1 = s.responses().find((r) => r.id === "x1").response;
+  assert.equal(r1.status, "not_executed");
+  assert.ok(r1.message.includes("ran in an earlier call"), r1.message);
+  s.toolCall("x2", "cancel_task", { task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 0, "cancel_task('Noma table') when user said 'Cancel the Alchemist table' must refuse");
+
+  // Naming the detached task as an exclusion ("Cancel the Noma table, not the Alchemist table") allows cancelling owned Noma.
+  s.turn("Cancel the Noma table, not the Alchemist table");
+  s.toolCall("x3", "cancel_task", { task: "Noma table" });
+  s.advance(0.1);
+  assert.equal(s.commands.filter((c) => c.type === "tool.cancel").length, 1, "excluding detached Alchemist must not block cancelling Noma");
+
+  // Voice mode also honors explicit exclusions for owned tasks ("Cancel the weather, not the Alchemist table and not the Noma table booking").
+  const s2 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s2.advance(0.1);
+  s2.push({ type: "note", id: "call-1-1", label: "Alchemist table", text: "Book a table at Alchemist", inHistory: true, active: true, request: "Book a table at Alchemist" });
+  s2.advance(0.1);
+  s2.turn("Book a table at Noma");
+  s2.toolCall("c1", "ask_hermes", { label: "Noma table booking" });
+  s2.advance(0.3);
+  s2.turn("Check the weather");
+  s2.toolCall("c2", "ask_hermes", { label: "Weather" });
+  s2.advance(0.3);
+  s2.turn("Cancel the weather, not the Alchemist table and not the Noma table booking");
+  s2.toolCall("x4", "cancel_task", { task: "Noma table booking" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 0, "explicit exclusion must protect Noma in voice mode");
+  s2.toolCall("x5", "cancel_task", { task: "Weather" });
+  s2.advance(0.1);
+  assert.equal(s2.commands.filter((c) => c.type === "tool.cancel").length, 1, "Weather cancels cleanly in voice mode");
+
+  // Comma-less voice transcript exclusion ("Cancel the weather not the Noma table") protects Noma and cancels Weather.
+  const s3 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  s3.advance(0.1);
+  s3.turn("Book a table at Noma");
+  s3.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  s3.advance(0.3);
+  s3.turn("Check the weather");
+  s3.toolCall("c2", "ask_hermes", { label: "Weather" });
+  s3.advance(0.3);
+  s3.turn("Cancel the weather not the Noma table");
+  s3.toolCall("x6", "cancel_task", { task: "Noma table" });
+  s3.advance(0.1);
+  assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 0, "comma-less voice exclusion must protect Noma");
+  s3.toolCall("x7", "cancel_task", { task: "Weather" });
+  s3.advance(0.1);
+  assert.equal(s3.commands.filter((c) => c.type === "tool.cancel").length, 1, "comma-less voice exclusion must cancel Weather");
+
+  // Comma-less idiomatic voice cancels ("Never mind cancel...", "Why not just cancel...", "Not that one cancel...") still cancel.
+  for (const phrase of [
+    "Never mind cancel the weather",
+    "Actually never mind stop the weather",
+    "No don't wait just cancel the weather",
+    "Why not just cancel the weather",
+    "Not that one cancel the weather",
+    "Don't worry just cancel the weather",
+    "Don't worry about the cancellation fee just cancel the weather",
+    "Don't worry about the cancelled Copenhagen dinner reservation just cancel the weather",
+    "Never mind the cancelled trip from Paris just cancel the weather",
+    "Never mind the cancelled Lisbon flights just cancel the weather",
+    "Don't worry about the cancelled Noma bookings just cancel the weather",
+    "Don't worry about the cancelled Noma bus just cancel the weather",
+    "Never mind the dropped call just cancel the weather",
+    "Never mind the dropped call can you cancel the weather",
+    "Never mind the dropped call just end the weather task",
+    "Never mind the dropped call just drop the weather",
+    "Don't worry about the ending just cancel the weather",
+    "Don't worry about the stopwatch cancel the weather",
+    "Stop the weather check and stop talking about it",
+    "Stop talking and stop the weather",
+    "Stop talking about it just cancel the weather",
+    "Stop rambling please cancel the weather",
+    "Stop talking about flights to Paris and cancel the weather",
+    "Stop mentioning Noma and cancel the weather",
+    "Stop explaining the Noma policy and cancel the weather",
+    "Stop explaining just cancel the weather",
+    "Stop repeating yourself just cancel the weather",
+    "Stop reading that report and cancel the weather",
+    "Stop repeating that and cancel the weather",
+    "Stop repeating that then cancel the weather",
+    "Stop telling me about Noma then cancel the weather",
+    "Stop talking about the trip to Paris then cancel the weather",
+    "Stop talking about that Noma table then cancel the weather",
+    "Stop talking about that trip to Paris then cancel the weather",
+    "Don't forget to cancel the weather",
+    "Don't hesitate to cancel the weather",
+    "I don't need it just cancel the weather",
+    "I don't really need it just cancel the weather",
+    "I don't care just stop the weather",
+    "I don't care about that just cancel the weather",
+    "It doesn't matter just cancel the weather",
+    "I don't know just cancel the weather",
+    "You don't have to wait just cancel the weather",
+    "I don't want to wait cancel the weather",
+    "I don't have time cancel the weather",
+    "I'm not going to need it cancel the weather",
+    "I don't think so cancel the weather",
+    "It's not needed anymore cancel the weather",
+    "If it's not working cancel the weather",
+  ]) {
+    const sv = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv.advance(0.1);
+    sv.turn("Check the weather");
+    sv.toolCall("c1", "ask_hermes", { label: "Weather" });
+    sv.advance(0.3);
+    sv.turn(phrase);
+    sv.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv.advance(0.1);
+    assert.equal(sv.commands.filter((c) => c.type === "tool.cancel").length, 1, `voice mode should cancel on: ${phrase}`);
+  }
+
+  // Multi-word "don't ... cancel" negations refuse in voice mode as well.
+  for (const phrase of [
+    "Please don't accidentally cancel the Noma booking",
+    "Do not under any circumstances cancel the Noma booking",
+    "I don't want you to cancel the Noma table",
+    "I don't want you to prematurely cancel the Noma table",
+    "I don't want it to stop",
+    "I don't want that to stop",
+    "Do not let it stop",
+    "Never let it stop",
+    "Don't make it stop",
+    "Don't you dare cancel the Noma table",
+    "Don't you cancel the Noma table",
+    "I don't think you should cancel the Noma table",
+    "I don't need you to cancel the Noma table",
+    "Don't have them cancel the Noma table",
+    "Don't have your assistant cancel the Noma table",
+    "Don't have it cancel the Noma table",
+    "Don't have it stop",
+    "Do not have that stop",
+    "Don't have Sam cancel the Noma table",
+    "Don't have the Noma table task stop",
+    "I'm not going to have you cancel the Noma table",
+    "I don't want it stopped",
+    "I don't want the Noma table cancelled",
+    "Please don't go cancelling the Noma table",
+    "Don't let the Noma table get cancelled",
+    "Don't forget the cancelled Noma table policy",
+    "Don't forget the cancelled Noma table at the end of the report",
+    "Don't worry about the stopped Noma table the rain will end soon",
+    "Don't worry about the cancelled Noma table we can drop by later",
+    "Don't worry about the cancelled Noma table we can just drop by later",
+    "Don't worry about the stopped Noma table it will just end soon",
+    "Don't worry about the cancelled Noma table I'll stop by tomorrow",
+    "Don't worry about the cancelled Noma table I'll just stop by tomorrow",
+    "Don't worry about the cancelled Noma table he can't just cancel the Noma table",
+    "Don't worry about the cancelled Noma table he can't even just cancel the Noma table",
+    "Don't worry about the cancelled Noma table the team will just cancel the Noma table",
+    "Don't worry about the cancelled Noma table the team will probably just cancel the Noma table",
+    "Don't worry about the cancelled Noma table I know you will just cancel the Noma table",
+    "Don't worry about the cancelled Noma table I know you will definitely just cancel the Noma table",
+    "Don't worry about the cancelled Noma table people just cancel the Noma table",
+    "Don't worry about the cancelled Noma table restaurants just cancel the Noma table all the time",
+    "Don't worry about the cancelled flight budget carriers just cancel them all the time",
+    "Don't worry about the cancelled Noma table the chefs just cancel the Noma table",
+    "Don't worry about the cancelled Noma table my parents just cancel the Noma table",
+    "Don't worry about the cancelled flight bookings travel agencies just cancel these all the time",
+    "Don't worry about the cancelled flight staff just cancel the Noma table when needed",
+    "Don't worry about the cancelled Noma table staff just cancel them all the time",
+    "Don't worry about the cancelled Noma table kitchen staff just cancel them all the time",
+    "Never mind the cancelled airlines just cancel them all the time",
+    "Never mind the cancelled restaurants just cancel them all the time",
+    "Don't worry about the cancelled flight crew just cancel them all the time",
+    "Don't worry about the cancelled Noma table management just cancel the Noma table",
+    "Don't worry about the cancelled Noma table why would you cancel the Noma table",
+    "Never mind the dropped call why would you cancel the Noma table",
+    "Never mind the dropped call just drop me a note about the Noma table",
+    "Never mind the dropped call just end the summary with the Noma table",
+    "Never mind the dropped call just end this summary with the Noma table",
+    "Don't worry about the cancelled Noma table",
+    "Don't wait for the stopped Noma table",
+    "Don't worry about a stopped Noma table",
+    "I don't care if they cancel the Noma table",
+    "Stop talking about the Noma table",
+    "Stop talking about the cancellation fee for the Noma table",
+    "Stop reading that staff can waive the fee and cancel the Noma table at their discretion",
+    "Stop reading that hosts waive the fee and cancel the Noma table",
+    "Stop reading that staff waive fees and cancel the Noma table",
+    "Stop reading that they waive fees and cancel the Noma table",
+    "Stop reading that the hosts waive fees and cancel the Noma table",
+    "Stop mentioning that airlines overbook every morning and cancel the Noma table first",
+    "Stop mentioning that airlines overbook constantly and cancel the Noma table",
+    "Stop mentioning that airlines overbook regularly and cancel the Noma table first",
+    "Stop mentioning that hosts often cancel and cancel the Noma table",
+    "Stop mentioning that staff waive corkage and cancel the Noma table after fifteen minutes",
+    "Stop mentioning that they send notes and cancel the Noma table every morning",
+    "Stop mentioning that staff rewrite policy and cancel the Noma table",
+    "Stop mentioning that airlines send alerts and cancel the Noma table",
+    "Stop mentioning that staff document safety incidents and cancel the Noma table",
+    "Stop mentioning that people order twice and cancel the Noma table",
+    "Stop mentioning that staff report twice and cancel the Noma table",
+    "Stop mentioning that staff update so slowly and cancel the Noma table",
+    "Stop mentioning that airlines issue confirmation and cancel the Noma table",
+    "Stop mentioning that hotels email confirmation and cancel the Noma table",
+    "Stop mentioning that guests complain out loud and cancel the Noma table",
+    "Stop reading that people order aloud and cancel the Noma table",
+    "Stop reading that people cheer out loud and cancel the Noma table",
+    "Stop reading that children sing aloud and cancel the Noma table",
+    "Stop reading that women laugh aloud and cancel the Noma table",
+    "Stop reading that men shout out loud then cancel the Noma table",
+    "Stop reading that staff vote aloud and cancel the Noma table",
+    "Stop reading that hotels cancel aloud and cancel the Noma table",
+    "Stop reading that auditors review terms aloud and cancel the Noma table",
+    "Stop reading that airlines catalog complaints and cancel the Noma table",
+    "Stop reading that engineers spec parts and cancel the Noma table",
+    "Stop reading that staff outline risks then cancel the Noma table",
+    "Stop reading that managers outline plans and cancel the Noma table",
+    "Stop reading that hosts outline changes and cancel the Noma table",
+    "Stop reading that restaurants abstract fees and cancel the Noma table",
+    "Stop reading that hosts preface apologies and cancel the Noma table",
+    "Stop reading that managers overview bookings and cancel the Noma table",
+    "Never mind the cancelled pipeline newer builds just cancel the Noma table",
+    "Never mind the cancelled airline reps just cancel the Noma table",
+    "Stop talking about restaurants that overbook and cancel the Noma table all the time",
+    "Stop talking about airlines that overbook and cancel the Noma table all the time",
+    "Never mind the cancelled flight airlines just cancel the Noma table",
+    "Never mind the cancelled order suppliers just cancel it",
+    "Don't worry about the cancelled Noma table guests just cancel them",
+    "Don't worry about the cancelled Noma table owners just cancel the Noma table",
+    "Never mind the cancelled flights travellers just cancel them",
+    "Stop repeating just cancel the Noma table",
+    "Stop asking please cancel the Noma table",
+    "Stop repeating that some restaurants just cancel the Noma table all the time",
+    "Stop repeating to me that restaurants just cancel the Noma table",
+    "Stop repeating restaurants just cancel the Noma table",
+    "Stop explaining to me that restaurants just cancel the Noma table",
+    "Stop explaining to my wife that restaurants just cancel the Noma table",
+    "Stop explaining restaurants just cancel the Noma table",
+    "Stop explaining the policy restaurants just cancel the Noma table",
+    "Stop explaining airlines just cancel the Noma table when bookings are low",
+    "Stop talking about plans to just cancel the Noma table",
+    "Stop talking about plans to really just cancel the Noma table",
+    "Stop explaining that my manager will just cancel the Noma table",
+    "Stop telling people to just cancel the Noma table",
+    "Stop telling people to maybe just cancel the Noma table",
+    "Stop asking Hermes to just cancel the Noma table",
+    "Stop asking Hermes to maybe just cancel the Noma table",
+    "Stop telling everyone to please cancel the Noma table",
+    "Stop telling people the team will probably just cancel the Noma table",
+    "Stop telling everyone Sam said just cancel the Noma table",
+    "Stop talking about Noma and telling people to just cancel the Noma table",
+    "Stop talking about whether we should just cancel the Noma table",
+    "Stop talking about Noma and what happens when we then cancel the Noma table",
+    "Stop telling me to just cancel the Noma table",
+    "Stop asking me whether to just cancel the Noma table",
+    "Stop explaining why I should just cancel the Noma table",
+    "It doesn't matter just stop talking about the Noma table",
+    "I don't like it when you cancel the Noma table",
+    "I don't know if you should cancel the Noma table",
+    "Don't bother to cancel the Noma table",
+    "I'm not ready to cancel the Noma table",
+    "Don't worry don't cancel the Noma table",
+  ]) {
+    const sv2 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv2.advance(0.1);
+    sv2.turn("Book a table at Noma");
+    sv2.toolCall("c1", "ask_hermes", { label: "Noma table" });
+    sv2.advance(0.3);
+    sv2.turn(phrase);
+    sv2.toolCall("x1", "cancel_task", { task: "Noma table" });
+    sv2.advance(0.1);
+    assert.equal(sv2.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode must refuse: ${phrase}`);
+  }
+
+  // Voice mode: coordinated objects under stop-talking do not cancel Weather, while "and cancel" / "then cancel" do.
+  const sv3 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv3.advance(0.1);
+  sv3.turn("Book a table at Noma");
+  sv3.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv3.advance(0.3);
+  sv3.turn("Check Copenhagen weather");
+  sv3.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv3.advance(0.3);
+  sv3.turn("Stop talking about Noma and the weather");
+  sv3.toolCall("x0", "cancel_task", { task: "Weather" });
+  sv3.advance(0.1);
+  assert.equal(sv3.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode must not cancel Weather on coordinated stop-talking");
+  sv3.turn("Stop talking about the Noma table and cancel the weather");
+  sv3.toolCall("x1", "cancel_task", { task: "Noma table" });
+  sv3.advance(0.1);
+  assert.equal(sv3.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode must not cancel Noma on stop-talking clause");
+  sv3.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv3.advance(0.1);
+  assert.equal(sv3.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode must still cancel Weather");
+
+  const sv4 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv4.advance(0.1);
+  sv4.turn("Book a table at Noma");
+  sv4.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv4.advance(0.3);
+  sv4.turn("Check Copenhagen weather");
+  sv4.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv4.advance(0.3);
+  sv4.turn("Stop talking about Noma then cancel the weather");
+  sv4.toolCall("x1", "cancel_task", { task: "Noma table" });
+  sv4.advance(0.1);
+  assert.equal(sv4.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'then cancel' must not cancel Noma");
+  sv4.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv4.advance(0.1);
+  assert.equal(sv4.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'then cancel' must cancel Weather");
+
+  const sv5 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv5.advance(0.1);
+  sv5.turn("Book a table at Noma");
+  sv5.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv5.advance(0.3);
+  sv5.turn("Find flights to Paris");
+  sv5.toolCall("c2", "ask_hermes", { label: "Paris flights" });
+  sv5.advance(0.3);
+  sv5.turn("Check Copenhagen weather");
+  sv5.toolCall("c3", "ask_hermes", { label: "Weather" });
+  sv5.advance(0.3);
+  sv5.turn("Stop talking about Noma and the flights then cancel the weather");
+  sv5.toolCall("x1", "cancel_task", { task: "Paris flights" });
+  sv5.advance(0.1);
+  assert.equal(sv5.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode coordinated stop-talking must not cancel Paris flights");
+  sv5.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv5.advance(0.1);
+  assert.equal(sv5.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'and the flights then cancel' must cancel Weather");
+
+  const sv6 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv6.advance(0.1);
+  sv6.turn("Book a table at Noma");
+  sv6.toolCall("c1", "ask_hermes", { label: "Noma table" });
+  sv6.advance(0.3);
+  sv6.turn("Check Copenhagen weather");
+  sv6.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv6.advance(0.3);
+  sv6.turn("Don't worry about the cancelled Noma table just cancel the weather");
+  sv6.toolCall("x1", "cancel_task", { task: "Noma table" });
+  sv6.advance(0.1);
+  assert.equal(sv6.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode lead-in object must not cancel Noma");
+  sv6.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv6.advance(0.1);
+  assert.equal(sv6.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'just cancel the weather' after lead-in must cancel Weather");
+
+  // Voice mode: exact label "All the Time" stays out of cancel-all scope even after being cancelled first in the same turn, and short request-only recipients ("for HR" / "with HR") block cancelling QA "PDF export".
+  const sv7 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv7.advance(0.1);
+  sv7.turn("Search All the Time");
+  sv7.toolCall("c1", "ask_hermes", { label: "All the Time" });
+  sv7.advance(0.3);
+  sv7.turn("Check Paris weather");
+  sv7.toolCall("c2", "ask_hermes", { label: "Weather" });
+  sv7.advance(0.3);
+  sv7.turn("Cancel All the Time");
+  sv7.toolCall("x1", "cancel_task", { task: "All the Time" });
+  sv7.advance(0.1);
+  assert.equal(sv7.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode must cancel All the Time");
+  sv7.toolCall("x2", "cancel_task", { task: "Weather" });
+  sv7.advance(0.1);
+  assert.equal(sv7.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode must not cancel unrelated Weather after All the Time stops running");
+
+  const sv8 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv8.advance(0.1);
+  sv8.push({ type: "note", id: "call-1-30", label: "Payroll", text: "Exporting.", active: true, request: "Export the PDF for HR" });
+  sv8.advance(0.1);
+  sv8.turn("Export the PDF for QA");
+  sv8.toolCall("c1", "ask_hermes", { label: "PDF export" });
+  sv8.advance(0.3);
+  sv8.turn("Never mind the dropped call just end the PDF export for HR");
+  sv8.toolCall("x1", "cancel_task", { task: "PDF export" });
+  sv8.advance(0.1);
+  assert.equal(sv8.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode detached Payroll requesting 'PDF for HR' must block cancelling QA 'PDF export'");
+
+  const sv9 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv9.advance(0.1);
+  sv9.turn("Export the PDF for QA");
+  sv9.toolCall("c1", "ask_hermes", { label: "PDF export" });
+  sv9.advance(0.3);
+  sv9.turn("Export the PDF with HR");
+  sv9.toolCall("c2", "ask_hermes", { label: "Payroll" });
+  sv9.advance(0.3);
+  sv9.turn("Never mind the dropped call just end the PDF export with HR");
+  sv9.toolCall("x1", "cancel_task", { task: "PDF export" });
+  sv9.advance(0.1);
+  assert.equal(sv9.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode owned Payroll requesting 'PDF with HR' must block cancelling QA 'PDF export'");
+
+  for (const phrase of [
+    "Cancel All the Time",
+    "Cancel All the Time, I think it is still running",
+    "Cancel All the Time if it's still running",
+    "Cancel All the Time if it is still going",
+    "Stop All the Time if it's currently running",
+    "Cancel All the Time, the one that's still running",
+  ]) {
+    const sv10 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv10.advance(0.1);
+    sv10.turn("Search All the Time");
+    sv10.toolCall("c1", "ask_hermes", { label: "All the Time" });
+    sv10.advance(0.3);
+    sv10.complete("Found it.", sv10.hermes()[0].run);
+    sv10.advance(0.3);
+    sv10.turn("Check Paris weather");
+    sv10.toolCall("c2", "ask_hermes", { label: "Weather" });
+    sv10.advance(0.3);
+    sv10.turn(phrase);
+    sv10.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv10.advance(0.1);
+    assert.equal(sv10.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode finished 'All the Time' must not cancel Weather on: ${phrase}`);
+  }
+
+  const sv11 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv11.advance(0.1);
+  sv11.turn("Check both bookings");
+  sv11.toolCall("c1", "ask_hermes", { label: "Both bookings" });
+  sv11.advance(0.3);
+  sv11.complete("Done.", sv11.hermes()[0].run);
+  sv11.advance(0.3);
+  sv11.turn("Book a hotel");
+  sv11.toolCall("c2", "ask_hermes", { label: "Hotel booking" });
+  sv11.advance(0.3);
+  sv11.turn("Check Paris weather");
+  sv11.toolCall("c3", "ask_hermes", { label: "Weather" });
+  sv11.advance(0.3);
+  sv11.turn("Cancel both bookings in progress");
+  sv11.toolCall("x1", "cancel_task", { task: "Weather" });
+  sv11.advance(0.1);
+  assert.equal(sv11.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Cancel both bookings in progress' must not cancel unrelated Weather");
+
+  for (const [finishedLabel, weatherReq, phrase] of [
+    ["Both our bookings", "Check the weather for our trip", "Cancel both our bookings that are still running"],
+    ["All of the bookings", "Check the Paris weather", "Cancel all of the bookings in progress"],
+    ["All your bookings", "What's your forecast for Paris", "Cancel all your bookings in progress"],
+  ] as const) {
+    const sv12 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv12.advance(0.1);
+    sv12.turn(`Check ${finishedLabel}`);
+    sv12.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv12.advance(0.3);
+    sv12.complete("Done.", sv12.hermes()[0].run);
+    sv12.advance(0.3);
+    sv12.turn("Book a hotel");
+    sv12.toolCall("c2", "ask_hermes", { label: "Hotel booking" });
+    sv12.advance(0.3);
+    sv12.turn(weatherReq);
+    sv12.toolCall("c3", "ask_hermes", { label: "Weather" });
+    sv12.advance(0.3);
+    sv12.turn(phrase);
+    sv12.toolCall("x1", "cancel_task", { task: "Weather" });
+    sv12.advance(0.1);
+    assert.equal(sv12.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode function words in '${finishedLabel}' must not cancel Weather on: ${phrase}`);
+  }
+
+  // Voice mode: finished group requires both non-generic head and short/hyphenated modifiers; agentive plural "auditors report verbatim" stays blocked.
+  const sv13 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv13.advance(0.1);
+  sv13.turn("Render both video renders");
+  sv13.toolCall("c1", "ask_hermes", { label: "Both video renders" });
+  sv13.advance(0.3);
+  sv13.complete("Done.", sv13.hermes()[0].run);
+  sv13.advance(0.3);
+  sv13.turn("Render the product video");
+  sv13.toolCall("c2", "ask_hermes", { label: "Product render" });
+  sv13.advance(0.3);
+  sv13.turn("Review the product videos");
+  sv13.toolCall("c3", "ask_hermes", { label: "Product review" });
+  sv13.advance(0.3);
+  sv13.turn("Cancel both video renders in progress");
+  sv13.toolCall("x1", "cancel_task", { task: "Product review" });
+  sv13.advance(0.1);
+  assert.equal(sv13.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Both video renders' must refuse Product review");
+  sv13.toolCall("x2", "cancel_task", { task: "Product render" });
+  sv13.advance(0.1);
+  assert.equal(sv13.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'Both video renders' must cancel Product render");
+
+  const sv14 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv14.advance(0.1);
+  sv14.turn("Check both last-minute bookings");
+  sv14.toolCall("c1", "ask_hermes", { label: "Both last-minute bookings" });
+  sv14.advance(0.3);
+  sv14.complete("Done.", sv14.hermes()[0].run);
+  sv14.advance(0.3);
+  sv14.turn("Book a last-minute hotel");
+  sv14.toolCall("c2", "ask_hermes", { label: "Last-minute hotel booking" });
+  sv14.advance(0.3);
+  sv14.turn("Book a last-minute train");
+  sv14.toolCall("c3", "ask_hermes", { label: "Last-minute train booking" });
+  sv14.advance(0.3);
+  sv14.turn("Cancel both last-minute bookings that are still running");
+  sv14.toolCall("x1", "cancel_task", { task: "Last-minute hotel booking" });
+  sv14.toolCall("x2", "cancel_task", { task: "Last-minute train booking" });
+  sv14.advance(0.1);
+  assert.equal(sv14.commands.filter((c) => c.type === "tool.cancel").length, 2, "voice mode hyphenated 'Both last-minute bookings' must cancel both matching bookings");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase] of [
+    ["Both car bookings", "Book a hotel", "Hotel booking", "Cancel both car bookings that are still running"],
+    ["Both tax tasks", "Check Paris weather", "Weather", "Cancel both tax tasks in progress"],
+  ] as const) {
+    const sv15 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv15.advance(0.1);
+    sv15.turn(`Check ${finishedLabel}`);
+    sv15.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv15.advance(0.3);
+    sv15.complete("Done.", sv15.hermes()[0].run);
+    sv15.advance(0.3);
+    sv15.turn(activeReq);
+    sv15.toolCall("c2", "ask_hermes", { label: activeLabel });
+    sv15.advance(0.3);
+    sv15.turn(phrase);
+    sv15.toolCall("x1", "cancel_task", { task: activeLabel });
+    sv15.advance(0.1);
+    assert.equal(sv15.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode short modifier '${finishedLabel}' must refuse '${activeLabel}'`);
+  }
+
+  const sv16 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv16.advance(0.1);
+  sv16.turn("Run the audit");
+  sv16.toolCall("c1", "ask_hermes", { label: "Audit" });
+  sv16.advance(0.3);
+  sv16.turn("Stop reading that auditors report verbatim and cancel the audit");
+  sv16.toolCall("x1", "cancel_task", { task: "Audit" });
+  sv16.advance(0.1);
+  assert.equal(sv16.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode agentive plural 'auditors report verbatim' must stay blocked");
+  sv16.turn("Stop reading that routers list out loud and cancel the audit");
+  sv16.toolCall("x2", "cancel_task", { task: "Audit" });
+  sv16.advance(0.1);
+  assert.equal(sv16.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode inanimate 'routers list out loud' must cancel Audit");
+
+  const sv17 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv17.advance(0.1);
+  sv17.turn("Run both screenings");
+  sv17.toolCall("c1", "ask_hermes", { label: "Both screenings" });
+  sv17.advance(0.3);
+  sv17.complete("Done.", sv17.hermes()[0].run);
+  sv17.advance(0.3);
+  sv17.turn("Repair the laptop screen");
+  sv17.toolCall("c2", "ask_hermes", { label: "Screen repair" });
+  sv17.advance(0.3);
+  sv17.turn("Run the application screening");
+  sv17.toolCall("c3", "ask_hermes", { label: "Application screening" });
+  sv17.advance(0.3);
+  sv17.turn("Cancel both screenings in progress");
+  sv17.toolCall("x1", "cancel_task", { task: "Screen repair" });
+  sv17.advance(0.1);
+  assert.equal(sv17.commands.filter((c) => c.type === "tool.cancel").length, 0, "voice mode 'Both screenings' must refuse Screen repair");
+  sv17.toolCall("x2", "cancel_task", { task: "Application screening" });
+  sv17.advance(0.1);
+  assert.equal(sv17.commands.filter((c) => c.type === "tool.cancel").length, 1, "voice mode 'Both screenings' must cancel Application screening");
+
+  const sv18 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+  sv18.advance(0.1);
+  sv18.turn("Check both hotel reservations");
+  sv18.toolCall("c1", "ask_hermes", { label: "Both hotel reservations" });
+  sv18.advance(0.3);
+  sv18.complete("Done.", sv18.hermes()[0].run);
+  sv18.advance(0.3);
+  sv18.turn("Reserve a London hotel");
+  sv18.toolCall("c2", "ask_hermes", { label: "London hotel" });
+  sv18.advance(0.3);
+  sv18.turn("Reserve a Paris hotel");
+  sv18.toolCall("c3", "ask_hermes", { label: "Paris hotel" });
+  sv18.advance(0.3);
+  sv18.turn("Cancel both hotel reservations that are still running");
+  sv18.toolCall("x1", "cancel_task", { task: "London hotel" });
+  sv18.toolCall("x2", "cancel_task", { task: "Paris hotel" });
+  sv18.advance(0.1);
+  assert.equal(sv18.commands.filter((c) => c.type === "tool.cancel").length, 2, "voice mode 'Both hotel reservations' must cancel both hotels requested with 'Reserve'");
+
+  for (const [finishedLabel, activeReq, activeLabel, phrase, expected] of [
+    ["Both IT tasks", "Check if it rains in Paris", "Weather", "Cancel both IT tasks in progress", 0],
+    ["Both US bookings", "Book a hotel", "Hotel booking", "Cancel both US bookings that are still running", 0],
+    ["Both IT tasks", "Reset my IT laptop", "IT laptop reset", "Cancel both IT tasks in progress", 1],
+    ["Both constructors", "Check Paris weather", "Weather", "Cancel both constructors in progress", 0],
+    ["Both hotel reservations", "Summarize the reserved parking rules at the hotel", "Parking rules", "Cancel both hotel reservations in progress", 0],
+    ["Both hotel reservations", "Reserve price for the London hotel auction, please", "Auction reserve", "Cancel both hotel reservations in progress", 0],
+    ["Both bookings", "Remind me to go to book club on Friday", "Club reminder", "Cancel both bookings in progress", 0],
+    ["Both reservations", "Move 50 pounds to reserve savings", "Savings move", "Cancel both reservations in progress", 0],
+    ["Both hotel bookings", "Can you please book a hotel in London", "London hotel", "Cancel both hotel bookings that are still running", 1],
+    ["Both hotel bookings", "Could you please book a flight to London and check hotel prices", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Check hotel prices and book a flight to London", "London trip", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a London hotel and book a room for Friday", "London hotel", "Cancel both hotel bookings that are still running", 1],
+    ["Both hotel reservations", "Find a London hotel and reserve a room for Friday", "London hotel", "Cancel both hotel reservations that are still running", 1],
+    ["Both bookings", "Book 2 summary please", "Book summary", "Cancel both bookings in progress", 0],
+    ["Both reservations", "Help me reserve some savings for the trip", "Savings", "Cancel both reservations in progress", 0],
+    ["Both London hotel bookings", "Check London flight prices and book a Paris hotel", "Paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and gather hotel prices", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and book a hotel near Paddington", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book two adjoining rooms at the London hotel", "London rooms", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices and book that tour", "London tour", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Check hotel prices and book one tour of the Tower", "Tower tour", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a flight to London and check hotel prices, then book it", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Find a cheap flight to London, check hotel prices, and book it", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London bookings", "Check London weather and book a ferry to Paris", "Paris ferry", "Cancel both London bookings in progress", 0],
+    ["Both London bookings", "Check London weather and book a table at Le Comptoir in Paris", "Paris dinner", "Cancel both London bookings in progress", 0],
+    ["Both London hotel bookings", "Check London hotel prices, then book two adjoining rooms in Paris", "Paris rooms", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a hotel in Soho, London", "Soho stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight and hotel in London", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and hotel in Paris", "Trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book flights and hotels for the London trip", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a hotel, a car and a flight for London", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a hotel near Hyde Park, London", "Hyde Park stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices but book a hotel near Paddington", "Paddington stay", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Check hotel prices and please book a hotel near Paddington", "Paddington stay", "Cancel both hotel bookings in progress", 1],
+    ["Both London restaurant bookings", "Find a London restaurant with a table for two and book it for Friday", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both train bookings", "Summarize: Book Two chapters about trains", "Book summary", "Cancel both train bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a hotel in London and a flight to Paris", "Trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and the hotel prices too", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant, then find a table at the Paris wedding venue and book it for Friday", "Paris wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, the hotel can wait", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, London hotels can wait", "Paris flight", "Cancel both London hotel bookings in progress", 0],
+    ["Both Rome hotel bookings", "Book a hotel in London, a car in Rome and a flight to Paris", "Euro trip", "Cancel both Rome hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a hotel in London and flights to Paris and a car", "Euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a hotel in London, a flight to Paris", "Euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book a room in early June", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel, then book it in the morning", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it for two nights at the best rate", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both cheap hotel bookings", "Find a cheap hotel and book a room in London", "London stay", "Cancel both cheap hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in NYC", "NYC stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "find a london hotel and book a room in paris", "paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "book a hotel in london and a flight to paris", "trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant with a table for two, then find a table at the Paris wedding venue and book it for Friday", "Paris wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a restaurant in London with a table for two and book it for Friday", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both London hotel bookings", "Book a flight to Paris, the London hotel closes early", "Paris flight", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, a cheap boutique hotel in London", "Euro trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London, no hotel", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, skip hotels", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, without hotel", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, hotel already sorted", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, the hotel later", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book a room in Nice", "Nice stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both Nice hotel bookings", "Find a hotel in Nice and book a room in Paris", "Paris stay", "Cancel both Nice hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in Long Beach", "Long Beach stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Check London hotel prices, then book a room in Mid Wales", "Mid Wales stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, the hotel in London costs more", "Paris flight", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, hotel on hold", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a table at the London wedding venue near a restaurant on King Street with a table for two, then book it for Friday", "London wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant and book it at 7pm", "London dinner", "Cancel both London restaurant bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it for Friday at under 150 pounds", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to celebrate", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a BA flight to paris and a hotel in London", "Euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London restaurant bookings", "Find a London restaurant before you search for a table at the Paris wedding venue, then book it for Friday", "Paris wedding", "Cancel both London restaurant bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, a hotel in London on Friday", "Euro trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London, a hotel near the airport", "London trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London, hotel at capacity", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London, hotel in progress", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to london, hotel in progress", "london flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book a room in Sept", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both Cheap Hotel Bookings", "Find a cheap hotel and book a room in London", "London stay", "Cancel both cheap hotel bookings in progress", 1],
+    ["Both Dubrovnik hotel bookings", "Find a Dubrovnik hotel and book a room in split", "Split stay", "Cancel both Dubrovnik hotel bookings in progress", 0],
+    ["Both Dallas hotel bookings", "Find a Dallas hotel and book a room in Spring, Texas", "Spring stay", "Cancel both Dallas hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to london, the hotel to close", "london flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to london, hotel to decide", "london flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to london, hotel in flux", "london flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a flight to Paris, a hotel in london", "Euro trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both Spring hotel bookings", "Find a hotel in Spring and book a room in Houston", "Houston stay", "Cancel both Spring hotel bookings in progress", 0],
+    ["Both new hotel bookings", "Find a new hotel and book a room in London", "London stay", "Cancel both new hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to surprise Anna", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both New York hotel bookings", "Book a flight to new York and a hotel in Boston", "US trip", "Cancel both New York hotel bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome Friday", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book it to madrid Friday", "Madrid flight", "Cancel both London flight bookings in progress", 0],
+    ["Both Dallas hotel bookings", "Find a Dallas hotel and book a room in Spring, TX", "Spring stay", "Cancel both Dallas hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to paris, a cheap boutique hotel in london", "euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "book a flight to london, a hotel in flux", "london flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book it at dinner", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "book a London flight, a hotel in paris", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a Paris flight, a hotel in london", "euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a London flight and a hotel in paris", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both Dallas hotel bookings", "Find a Dallas hotel and book a room in Spring, TX Friday", "Spring stay", "Cancel both Dallas hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book a room in Summer, ASAP", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in foreclosure: find out who owns it", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book it to accommodate the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Check London flights and book a ticket to paris a few days later", "Paris flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the fifteenth", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London hotel bookings", "Book a hotel in Paris, OR compare London options", "Paris stay", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to paris, a hotel in rome", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: refundable only", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book a room in May, OK", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight, a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Nice hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London car bookings", "Book a London hotel and a Paris car", "Euro trip", "Cancel both London car bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in disrepair: figure out who owns it", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in decline: dig into why", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in disrepair", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "book a flight to paris, a hotel in disrepair: figure out who owns it", "paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Find a London hotel and book it to house the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to entertain the clients", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the family is already there", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Summarize the Reviews", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a Québec hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight, a Québec hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in rome", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a paris hotel", "euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight & a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a hotel ASAP", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hotel please, Thanks", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a two-night Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a non-smoking hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a pet-friendly hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a romantic hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a seaside hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a charming hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Book a London hotel and a red-eye flight", "London trip", "Cancel both London flight bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in lockdown; check when it reopens", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Photograph the Lobby", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Who Owns It", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight & book a Paris hotel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight as well as a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Fortnum & Mason in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to reassure the guests", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Find a London hotel and book it to please the clients", "London stay", "Cancel both London hotel bookings in progress", 1],
+    ["Both London flight bookings", "Find a London flight and book a seat to split the family is already there", "Split flight", "Cancel both London flight bookings in progress", 0],
+    ["Both Dubrovnik flight bookings", "Find a Dubrovnik flight and book a seat to split", "Split flight", "Cancel both Dubrovnik flight bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a stratford-upon-avon hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London night bookings", "Book a London flight and two Paris nights", "Euro trip", "Cancel both London night bookings in progress", 0],
+    ["Both London flight bookings", "Book a flight to Paris & Meet in London", "Paris trip", "Cancel both London flight bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in London: Inspect The Hotel", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in rome: refundable only", "Euro trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to Paris, a hotel in rome: Discuss Ritz Hotel", "Paris flight", "Cancel both hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a bel-air hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Poppies Fish & Chips in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London flight bookings", "Book a London hotel and an early-morning flight", "London trip", "Cancel both London flight bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and an en-suite hotel room", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a brand-new hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a Stoke on Trent hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a mystic hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London flight bookings", "Find a London flight and book a seat to rome the family and me", "Rome flight", "Cancel both London flight bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a winston-salem hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "book a london flight and a new-york hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a dinner at Borough Market & Walk in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a fantastic hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a la-rochelle hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a long-island hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a mountain-view hotel", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a west-end hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a dinner at The Ivy Chelsea Garden & Wander in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a dinner at Borough Market & Sightsee in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a pornic hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and an EPIC Hotel room", "US trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at Smith & Wollensky in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London dinner bookings", "Book a dinner at Duck & Waffle in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both Paris dinner bookings", "Book a dinner at Borough Market & Fish in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a lake-view hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and an ambleside hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a merseyside hotel", "UK trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight and a poolside hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight and a hilltop hotel", "London trip", "Cancel both London hotel bookings in progress", 1],
+    ["Both London dinner bookings", "Book a dinner at The Dog & Duck in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London dinner bookings", "Book a dinner at The Crown & Anchor in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both London dinner bookings", "Book a dinner at The Fox & Hounds in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both Paris dinner bookings", "Book a dinner at The Ivy Chelsea Garden & Grill in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a dinner at The Ivy Chelsea Garden&Grill in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both London dinner bookings", "Book a dinner at The Victoria Pub & Kitchen in London", "London dinner", "Cancel both London dinner bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight&a Paris hotel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both London hotel bookings", "Book a London flight& a Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both London room bookings", "Book a room at a b&b in London", "London stay", "Cancel both London room bookings in progress", 1],
+    ["Both Paris dinner bookings", "Book a dinner at the BBC&I walk in Paris", "London dinner", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London&the Paris hotel is already booked", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight&some Paris hotels", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris flight bookings", "Book a London flight and a Paris hotel", "Euro trip", "Cancel both Paris flight bookings in progress", 0],
+    ["Both Paris ferry bookings", "Book a London ferry and a Paris hotel", "Euro trip", "Cancel both Paris ferry bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and some Paris hotels close tomorrow", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel looks fine", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel sold out", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel for May", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel in May", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel on May 3rd", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel without breakfast", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel with no smoking", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel that has a pool", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel I like", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel we can cancel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel has no rooms", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel that has a pool sold out", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London, my wife loves the Paris hotel", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which has closed", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both London hotel bookings", "Book a London flight, a small cheap central Paris hotel", "Euro trip", "Cancel both London hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Paris hotel next weekend", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a Paris hotel with breakfast included", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel for 2 adults", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel with a sea view", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel in the city centre", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel close to the Louvre", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight, a Paris hotel near the Park Hyatt", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which is at capacity", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which is in trouble", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel that is in limbo", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which is at risk", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which is in administration", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel that is by appointment", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a train station hotel in Paris", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a car park hotel in Paris", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a ferry terminal hotel in Paris", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London, some friends recommend Paris hotels with breakfast included", "Euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel that includes breakfast", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a Paris hotel which is near the Park Hyatt", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a London flight and a two night Paris hotel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel upgraded rooms", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris train bookings", "Book a flight to London and a train station hotel in Paris", "Euro trip", "Cancel both Paris train bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Paris hotel reservation for my parents", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a hotel reservation in Paris", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a Paris hotel booking", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London, a Paris hotel reservation", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel reservation is confirmed", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London, some guests prefer paris hotels with breakfast included", "Euro trip", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London, my family enjoys hotels in Paris", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and two rooms at the Paris hotel", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris train bookings", "Book a flight to London and a concert ticket at the Paris train station", "Euro trip", "Cancel both Paris train bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and the Paris hotel which is now", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris spa bookings", "Book a flight to London and a Paris hotel reservation without a spa", "Euro trip", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Paris hotel which has a restaurant", "Euro trip", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Paris restaurant bookings", "Book a flight to London and a Paris hotel which has a restaurant", "Euro trip", "Cancel both Paris restaurant bookings in progress", 0],
+    ["Both Puerto Rico hotel bookings", "Book a flight to London and a puerto rico hotel", "Caribbean trip", "Cancel both Puerto Rico hotel bookings in progress", 1],
+    ["Both Ho Chi Minh City hotel bookings", "Book a flight to London and a ho chi minh city hotel", "Asia trip", "Cancel both Ho Chi Minh City hotel bookings in progress", 1],
+    ["Both Paris spa bookings", "Book a flight to London and some resorts operate spas in Paris", "London flight", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and my insurance covers car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris ticket bookings", "Book a Paris concert balcony ticket and a London hotel", "Euro trip", "Cancel both Paris ticket bookings in progress", 1],
+    ["Both Paris concert bookings", "Book a Paris concert balcony ticket and a London hotel", "Euro trip", "Cancel both Paris concert bookings in progress", 1],
+    ["Both Paris spa bookings", "Book a Paris hotel featuring a spa", "Paris stay", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a Paris hotel featuring a spa", "Paris stay", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both Mumbai train bookings", "Book a Mumbai train-station platform ticket", "Mumbai ticket", "Cancel both Mumbai train bookings in progress", 0],
+    ["Both car bookings", "Book a London flight and a ho chi minh city car rental", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both Paris concert bookings", "Book a London hotel and a Paris non-concert seat", "Euro trip", "Cancel both Paris concert bookings in progress", 0],
+    ["Both Paris show bookings", "Book a London hotel and a Paris after-show seat", "Euro trip", "Cancel both Paris show bookings in progress", 0],
+    ["Both Paris flight bookings", "Book a train to London and a Paris pre-flight lounge seat", "Euro trip", "Cancel both Paris flight bookings in progress", 0],
+    ["Both Mumbai train bookings", "Book a Mumbai train station platform ticket", "Mumbai ticket", "Cancel both Mumbai train bookings in progress", 0],
+    ["Both Paris ticket bookings", "Book a Paris concert VIP ticket with a backstage pass", "Paris concert", "Cancel both Paris ticket bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a coworker already arranged car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a voucher funds car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and another card reimburses car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a flight to London and a voucher funds dinner in Paris", "London flight", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a flight to London and a package bundles dinner in Paris", "London flight", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris room bookings", "Book a flight to London and a voucher funds room in Paris", "London flight", "Cancel both Paris room bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a voucher funds hotel booking in Paris", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris spa bookings", "Book a Paris hotel west of Guerlain Spa", "Paris stay", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a Paris hotel west of Guerlain Spa", "Paris stay", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and a ho chi minh city car rental at Sixt", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a sponsor withheld car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a voucher offset car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a sponsor co-funded car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris ticket bookings", "Book a Ryanair flight 123 ticket to Paris", "Paris travel", "Cancel both Paris ticket bookings in progress", 1],
+    ["Both Paris spa bookings", "Book a Paris hotel 2 adults spa access included", "Paris stay", "Cancel both Paris spa bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a Paris hotel 2 adults spa access included", "Paris stay", "Cancel both Paris hotel bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and a siem reap car rental at Sixt", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and a dominican republic car rental", "Caribbean trip", "Cancel both car bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and an orange county car rental", "US trip", "Cancel both car bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and a cayman islands car rental", "Caribbean trip", "Cancel both car bookings in progress", 1],
+    ["Both dinner bookings", "Book a London flight and a dominican republic dinner", "Caribbean trip", "Cancel both dinner bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a vendor axed car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a voucher covering car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris dinner bookings", "Book a flight to London and a package bundling dinner in Paris", "London flight", "Cancel both Paris dinner bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a coworker ought to arrange car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a coworker gotta arrange car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a firm arrange car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and an agency handle car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both car bookings", "Book a flight to London and a beijing capital airport car rental", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both car bookings", "Book a flight to London and a ho chi minh car rental", "Asia trip", "Cancel both car bookings in progress", 1],
+    ["Both dinner bookings", "Book a flight to London and a charity gala dinner in Paris", "Euro trip", "Cancel both dinner bookings in progress", 1],
+    ["Both dinner bookings", "Book a London flight and a wedding anniversary dinner", "Euro trip", "Cancel both dinner bookings in progress", 1],
+    ["Both car bookings", "Book a London flight and a wyoming county car rental", "US trip", "Cancel both car bookings in progress", 1],
+    ["Both Orange County car bookings", "Book a flight to London and a voucher covering orange county car rental", "London flight", "Cancel both Orange County car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a discount voucher for car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a discount voucher off car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a discount voucher incl car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a loyalty voucher across car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and a Newcastle Under Lyme hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both car bookings", "Book a flight to London and a red boiling springs car rental", "US trip", "Cancel both car bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a voucher under paris car rental", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a voucher under premium car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a discount on premium car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a deal on cheap car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a refund under premium hotel in Paris", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and an Ile de Re hotel", "France trip", "Cancel both hotel bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a voucher re car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris spa bookings", "Book a Paris hotel re spa access", "Paris stay", "Cancel both Paris spa bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and a stoke on trent hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and a Frankfurt am Main hotel", "Germany trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and a Port of Spain hotel", "Caribbean trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and a City of London hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both Frankfurt am Main hotel bookings", "Book a flight to London and a frankfurt am main hotel", "Germany trip", "Cancel both Frankfurt am Main hotel bookings in progress", 1],
+    ["Both Port of Spain hotel bookings", "Book a flight to London and a port of spain hotel", "Caribbean trip", "Cancel both Port of Spain hotel bookings in progress", 1],
+    ["Both Paris car bookings", "Book a flight to London and a Discount on Premium car rental in Paris", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and an update on paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a sale on paris car rental", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both car bookings", "Book a flight to London and a ban on london car rental", "London flight", "Cancel both car bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and a surcharge on rome hotel", "London flight", "Cancel both hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Summary of Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and a bowness on windermere hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both tour bookings", "Book a flight to New York and a Statue of Liberty tour", "New York trip", "Cancel both tour bookings in progress", 1],
+    ["Both tour bookings", "Book a flight to Malaga and a Rock of Gibraltar tour", "Spain trip", "Cancel both tour bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a Survey on Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Research on Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Lecture in Paris hotel", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Paris car bookings", "Book a flight to London and a Walkout on Paris car rental", "London flight", "Cancel both Paris car bookings in progress", 0],
+    ["Both Paris hotel bookings", "Book a flight to London and a Head of Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both hotel bookings", "Book a flight to London and a Richmond upon Thames hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both tour bookings", "Book a flight to London and a House of Commons tour", "UK trip", "Cancel both tour bookings in progress", 1],
+    ["Both Paris hotel bookings", "Book a flight to London and a House of Paris hotel bookings", "London flight", "Cancel both Paris hotel bookings in progress", 0],
+    ["Both Hull hotel bookings", "Book a flight to London and a Zoom on Hull hotel bookings", "London flight", "Cancel both Hull hotel bookings in progress", 0],
+    ["Both Hull hotel bookings", "Book a flight to London and a Feature on Hull hotel bookings", "London flight", "Cancel both Hull hotel bookings in progress", 0],
+    ["Both Thames hotel bookings", "Book a flight to London and a Podcast on Thames hotel bookings", "London flight", "Cancel both Thames hotel bookings in progress", 0],
+    ["Both Caves of Drach tour bookings", "Book a flight to Palma and a Caves of Drach tour", "Mallorca trip", "Cancel both Caves of Drach tour bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and a Stockton on Tees hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and an Abingdon on Thames hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+    ["Both hotel bookings", "Book a flight to London and a Sunbury on Thames hotel", "UK trip", "Cancel both hotel bookings in progress", 1],
+  ] as const) {
+    const sv19 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv19.advance(0.1);
+    sv19.turn(`Check ${finishedLabel}`);
+    sv19.toolCall("c1", "ask_hermes", { label: finishedLabel });
+    sv19.advance(0.3);
+    sv19.complete("Done.", sv19.hermes()[0].run);
+    sv19.advance(0.3);
+    sv19.turn(activeReq);
+    sv19.toolCall("c2", "ask_hermes", { label: activeLabel });
+    sv19.advance(0.3);
+    sv19.turn(phrase);
+    sv19.toolCall("x1", "cancel_task", { task: activeLabel });
+    sv19.advance(0.1);
+    assert.equal(sv19.commands.filter((c) => c.type === "tool.cancel").length, expected, `voice mode group check '${finishedLabel}' vs '${activeLabel}'`);
+  }
+
+  for (const phrase of [
+    "Stop reading that chemists report verbatim and cancel the audit",
+    "Stop reading that defendants report aloud and cancel the audit",
+    "Stop reading that nurses report aloud and cancel the audit",
+    "Stop reading that witnesses report verbatim and cancel the audit",
+    "Stop reading that guests report aloud and cancel the audit",
+    "Stop reading that judges report aloud and cancel the audit",
+    "Stop reading that colleagues report aloud and cancel the audit",
+  ]) {
+    const sv20 = new Sim({ config: { supervise: true, limits: { settleQuiet: 0.1, settleMax: 1.5, tick: 0.05 } } as any });
+    sv20.advance(0.1);
+    sv20.turn("Run the audit");
+    sv20.toolCall("c1", "ask_hermes", { label: "Audit" });
+    sv20.advance(0.3);
+    sv20.turn(phrase);
+    sv20.toolCall("x1", "cancel_task", { task: "Audit" });
+    sv20.advance(0.1);
+    assert.equal(sv20.commands.filter((c) => c.type === "tool.cancel").length, 0, `voice mode agentive plural must stay blocked on: ${phrase}`);
+  }
+});
