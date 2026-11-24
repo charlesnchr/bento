@@ -3344,11 +3344,14 @@ export class Call {
   private static readonly AMP_NAME_CONT = /^\s*(?:Bar|Kitchen|Bistro|Cafe|Café|Pub|Tavern|Inn|Arms|Co|Company|Sons|Partners|Bros|Brothers|Bakery|Deli|Brewery|Roastery|Spa|Terrace|Cellar|Pantry|Larder|Hearth)(?=\s*(?:$|[.,?!;:]|\s+(?:in|at|on|for|to|near|from|with|next|this|today|tonight|tomorrow)\b))/u;
   /** Positive coordinated booking-item grammar shared by comma and and/as-well-as/& continuations: positive determiner/quantifier + up to 4 validated pre-nominal modifiers + bookable head noun (supporting compounds like "train station hotel", "two night Paris hotel", "en-suite hotel room" while rejecting SVO clauses like "some friends recommend Paris hotels" and "the Paris hotel upgraded rooms"), followed ONLY by bounded place, time, venue, amenity, trailing-adverb, or short booking-relative modifiers. */
   private static readonly COORD_BOOK_DET = /^\s*(?:(a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?/i;
-  private static readonly COORD_MOD_FORBIDDEN = /^(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those|no|not|never|is|are|was|were|has|have|had|do|does|did|can|could|will|would|should|may|might|must|friends?|wife|husband|kids?|children|parents?|agents?|people|colleagues?|reviewers?|locals?|recommends?|recommended|suggests?|suggested|mentions?|mentioned|loves?|likes?|hates?|wants?|needs?|says?|said|thinks?|knows?|feels?|looks?|seems?|gets?|got|goes?|went|comes?|came|takes?|took|makes?|made|keeps?|kept|runs?|ran|closes?|closed|opens?|opened|falls?|fell|sells?|sold|costs?|cost|picked|booked|cancelled|canceled|upgrades?|upgraded|offers?|offered|includes?|included)$/;
+  private static readonly COORD_MOD_FORBIDDEN = /^(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those|no|not|never|is|are|was|were|has|have|had|do|does|did|can|could|will|would|should|may|might|must|friends?|wife|husband|kids?|children|parents?|agents?|people|colleagues?|reviewers?|locals?|guests?|clients?|customers?|visitors?|travelers?|travellers?|bloggers?|owners?|managers?|hosts?|recommends?|recommended|suggests?|suggested|mentions?|mentioned|prefers?|preferred|loves?|likes?|hates?|wants?|needs?|says?|said|thinks?|knows?|feels?|looks?|seems?|gets?|got|goes?|went|comes?|came|takes?|took|makes?|made|keeps?|kept|runs?|ran|closes?|closed|opens?|opened|falls?|fell|sells?|sold|costs?|cost|picked|booked|cancelled|canceled|upgrades?|upgraded|offers?|offered|includes?|included)$/;
   private static readonly COORD_COMPOUND_BRIDGE = /^(?:station|park|terminal|airport|port|pier|center|centre|night|nights|day|days|week|weeks|star|stars|bed|beds|bedroom|bedrooms|room|rooms|suite|suites)$/;
   private static readonly COORD_PLACE_CONNECTOR = /^(?:on|upon|in|at|by|of|en|sur|sous|le|la|les|de|du|des|am|im|an|ob|zur)$/;
-  private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|by|close\s+to|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?![\p{L}\p{N}])/u;
-  private static readonly COORD_BOOK_ITEM_TIME_OR_VENUE_PP = /^\s+(?:(?:in|at|near|by|close\s+to|to|from)\s+the\s+(?:city\s+cent(?:er|re)|old\s+town|airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|sea|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront|coast|bay|lake|hill)|(?:on|in|for|by|before|after)\s+(?:(?:next|this)\s+)?(?:(?:mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?)|(?:for|over|during)\s+(?:(?:the|my|our|your|his|her|their)\s+(?:[\p{L}\p{N}-]+\s+){0,2}(?:trip|weekend|week|stay|holiday|vacation|conference|event|meeting|wedding|visit|family|parents?|wife|husband|partner|mom|mum|dad|mother|father|sister|brother|kids?|children|guests?|clients?|team|staff|friends?|group|boss)|me|us|him|her|them|tonight|tomorrow|today|next\s+\w+|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|adults?|guests?|kids?|children))|(?:with|without)\s+(?:no\s+)?(?:(?:a|an|the|free|included|private|shared|early|late|extra|good|fast|great|full)\s+)?(?:(?:sea|ocean|city|garden|park|lake|river|pool|harbou?r|mountain|street)\s+)?(?:breakfast|wifi|wi-fi|parking|pool|gym|spa|balcony|view|views|smoking|pets|children|kids|cancell?ation|refunds?|kitchen|air\s+conditioning|ac|transfer|transfers|shuttle|lounge|luggage|baggage|bags?|meals?|dinner|lunch|drinks?|bar|terrace|garden|beach\s+access|room\s+service|late\s+checkout|early\s+checkin)(?:\s+(?:included|only|preferred|available))?|(?:under|below|around|about)\s+[$£€]?\d+(?:\s*(?:pounds?|dollars?|euros?|gbp|usd|eur))?|(?:next|this)\s+(?:week|weekend|month|year|trip|stay|mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:asap|please|thanks|thank\s+you|today|tonight|tomorrow|now|too|as\s+well|only|instead))\b/iu;
+  private static readonly COORD_LOWER_PLACE_PREFIX = /^(?:san|santa|saint|st|new|los|las|el|la|le|rio|sao|buenos|hong|costa|kuala|tel|abu|addis|fort|port|mount|mt|cape|lake|palm|long|west|east|north|south|grand|big|green|red|twin|old|high|bel|monte|villa|boca|palo|key|bay|salt)$/;
+  private static readonly COORD_COLLECTIVE_SUBJ = /^(?:family|team|staff|group)$/;
+  private static readonly COORD_BOOK_ITEM_PLACE_PP = /^\s+(?:in|at|near|by|close\s+to|for|from|to)\s+(?:(?:the\s+)?\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)?|\p{Lu}{2,})(?:\s+(?:hotel|restaurant|spa|resort|inn|lodge|villa|hostel|bistro|cafe|café|pub|bar|station|airport|terminal|port|pier))?(?![\p{L}\p{N}])/u;
+  private static readonly COORD_BOOK_ITEM_TIME_OR_VENUE_PP = /^\s+(?:(?:in|at|near|by|close\s+to|to|from)\s+the\s+(?:city\s+cent(?:er|re)|old\s+town|airport|station|beach|cent(?:er|re)|city|harbo(?:r|ur)|park|river|sea|square|museum|theat(?:er|re)|venue|office|campus|terminal|port|pier|downtown|waterfront|coast|bay|lake|hill)|(?:on|in|for|by|before|after)\s+(?:(?:next|this)\s+)?(?:(?:mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?)|(?:for|over|during)\s+(?:(?:the|my|our|your|his|her|their)\s+(?:[\p{L}\p{N}-]+\s+){0,2}(?:trip|weekend|week|stay|holiday|vacation|conference|event|meeting|wedding|visit|family|parents?|wife|husband|partner|mom|mum|dad|mother|father|sister|brother|kids?|children|guests?|clients?|team|staff|friends?|group|boss)|me|us|him|her|them|tonight|tomorrow|today|next\s+\w+|(?:one|two|three|four|five|\d+)\s+(?:nights?|days?|weeks?|people|adults?|guests?|kids?|children))|(?:with|without)\s+(?:no\s+)?(?:(?:a|an|the|free|included|private|shared|early|late|extra|good|fast|great|full)\s+)?(?:(?:sea|ocean|city|garden|park|lake|river|pool|harbou?r|mountain|street)\s+)?(?:breakfast|wifi|wi-fi|parking|pool|gym|spa|balcony|view|views|smoking|pets|children|kids|cancell?ation|refunds?|kitchen|air\s+conditioning|ac|transfer|transfers|shuttle|lounge|luggage|baggage|bags?|meals?|dinner|lunch|drinks?|bar|terrace|garden|beach\s+access|room\s+service|late\s+checkout|early\s+checkin)(?:\s+(?:included|only|preferred|available))?|(?:under|below|around|about)\s+[$£€]?\d+(?:\s*(?:pounds?|dollars?|euros?|gbp|usd|eur))?|(?:next|this)\s+(?:week|weekend|month|year|trip|stay|mon|tue|tues|wed|thu|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/iu;
+  private static readonly COORD_BOOK_ITEM_TRAILING_ADV = /^\s+(?:asap|please|thanks|thank\s+you|today|tonight|tomorrow|now|too|as\s+well|only|instead)\b/i;
   private static readonly COORD_BOOK_ITEM_REL_IS = /^\s+(?:that|which)\s+is\b/i;
   private static readonly COORD_BOOK_ITEM_REL_IS_ADJ = /^\s+(?:refundable|cancell?able|quiet|central|cheap|pet-?friendly|non-?smoking|family-?friendly)\b/i;
   private static readonly COORD_BOOK_ITEM_REL_CLAUSE = /^\s+(?:(?:that|which)\s+(?:has|have|offers?|includes?|allows?)\s+(?:(?:a|an|the|free|good|fast|great|private|shared|no)\s+)?(?:(?:sea|ocean|city|garden|park|lake|river|pool)\s+)?(?:pool|wifi|wi-fi|breakfast|parking|gym|spa|balcony|view|views|kitchen|terrace|garden|bar|lounge|restaurant|ac|shuttle|elevator|lift|sauna|beach|tub|shower|smoking|pets)|(?:i|we)\s+(?:like|liked|love|loved|prefer|preferred|want|wanted|picked|chose|know|trust|can\s+(?:cancel|change|refund|walk\s+to)))\b/iu;
@@ -3418,6 +3421,23 @@ export class Call {
     ["spa", /^(?:(?:me|us)\s+)?(?:(?:a|an|the|my|our|your|this|that|these|those|another|one|two|three|four|five|\d+|some)\s+)?(?:[a-z]+\s+){0,2}(?:sessions?|appointments?|slots?)\b/],
   ]);
   private static readonly BOOK_CATEGORIES = ["hotel", "flight", "train", "bus", "ferry", "car", "spa", "dinner", "lunch", "restaurant", "tour", "concert", "show", "table", "ticket"];
+  /** Sub-unit head nouns that can inherit an explicit parent category from a post-head attachment phrase ("two adjoining rooms at the London hotel", "a table at the Paris restaurant"), never from facility modifiers ("train station", "car park", "ferry terminal"). */
+  private static readonly CATEGORY_SUBUNIT_HEADS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+    ["hotel", new Set(["room", "stay", "suite", "night"])],
+    ["dinner", new Set(["table", "seat", "spot"])],
+    ["lunch", new Set(["table", "seat", "spot"])],
+    ["restaurant", new Set(["table", "seat", "spot"])],
+    ["flight", new Set(["seat", "ticket"])],
+    ["train", new Set(["seat", "ticket"])],
+    ["bus", new Set(["seat", "ticket"])],
+    ["ferry", new Set(["seat", "ticket"])],
+    ["car", new Set(["vehicle", "rental"])],
+    ["spa", new Set(["session", "appointment", "slot"])],
+    ["concert", new Set(["ticket", "seat", "spot"])],
+    ["show", new Set(["ticket", "seat", "spot"])],
+    ["tour", new Set(["ticket", "seat", "spot"])],
+  ]);
+  private static readonly PARENT_BOOK_CATEGORIES = new Set(["hotel", "flight", "train", "bus", "ferry", "car", "spa", "dinner", "lunch", "restaurant", "tour", "concert", "show"]);
   /** Parent categories for per-occurrence sub-unit attachment checks ("table" attached to "restaurant|dinner|lunch"; "ticket" attached to "flight|train|bus|concert|show"). */
   private static readonly SUBUNIT_OCCURRENCE: ReadonlyMap<string, { occ: RegExp; parent: RegExp }> = new Map([
     ["table", { occ: /\btables?\b/gi, parent: /\b(?:restaurants?|dinners?|lunch(?:es)?)\b/i }],
@@ -3580,6 +3600,7 @@ export class Call {
           }
           const candidates = [
             Call.COORD_BOOK_ITEM_TIME_OR_VENUE_PP.exec(rest),
+            Call.COORD_BOOK_ITEM_TRAILING_ADV.exec(rest),
             Call.COORD_BOOK_ITEM_PLACE_PP.exec(rest),
             Call.COORD_BOOK_ITEM_REL_CLAUSE.exec(rest),
           ].filter((m): m is RegExpExecArray => m != null);
@@ -3620,6 +3641,7 @@ export class Call {
         for (let j = 0; j < mods.length; j++) {
           if (/^\p{Lu}/u.test(mods[j].tok)) lastCapModIdx = j;
         }
+        const unknownLowerIdxs: number[] = [];
         for (let j = 0; j < mods.length; j++) {
           const tok = mods[j].tok;
           const low = tok.toLowerCase();
@@ -3636,10 +3658,32 @@ export class Call {
             modsValid = false;
             break;
           }
+          if (!isCap && !isKnownDescriptiveMod(tok) && !Call.COORD_PLACE_CONNECTOR.test(low) && !Call.BOOK_ITEM_HEAD_WORD.test(low)) {
+            unknownLowerIdxs.push(j);
+          }
           if (Call.BOOK_ITEM_HEAD_WORD.test(low)) sawEarlierHead = true;
         }
+        // Reject case-insensitive SVO clauses ("some guests prefer paris hotels", "some bloggers endorse paris hotels", "my family enjoys hotels in Paris", "some staff endorse hotels in Paris") where 2+ unknown lowercase tokens sit in the modifier slot (unless forming a 2-word lowercase place pair like "san francisco" or "stoke on trent") or an unknown lowercase verb follows a collective subject noun ("family"/"team"/"staff"/"group").
+        if (unknownLowerIdxs.length > 2) modsValid = false;
+        else if (unknownLowerIdxs.length === 2) {
+          const [i0, i1] = unknownLowerIdxs;
+          const firstLow = mods[i0].tok.toLowerCase();
+          const bridgedByConnector = i1 === i0 + 2 && Call.COORD_PLACE_CONNECTOR.test(mods[i0 + 1].tok.toLowerCase());
+          const placePrefixPair = i1 === i0 + 1 && Call.COORD_LOWER_PLACE_PREFIX.test(firstLow);
+          if (!bridgedByConnector && !placePrefixPair) modsValid = false;
+        }
+        if (modsValid && unknownLowerIdxs.length > 0) {
+          for (let j = 0; j < mods.length; j++) {
+            if (Call.COORD_COLLECTIVE_SUBJ.test(mods[j].tok.toLowerCase()) && unknownLowerIdxs.some((idx) => idx > j)) {
+              modsValid = false;
+              break;
+            }
+          }
+        }
         if (!modsValid) continue;
-        if (parseRest(frag.slice(toks[hi].end))) return true;
+        const afterHead = frag.slice(toks[hi].end);
+        const compoundTail = /^\s+(?:bookings?|reservations?|rentals?)\b/i.exec(afterHead);
+        if (parseRest(afterHead) || (compoundTail != null && parseRest(afterHead.slice(compoundTail[0].length)))) return true;
       }
       return false;
     };
@@ -3750,6 +3794,49 @@ export class Call {
               return true;
             });
           };
+          /** Extracts the actual booking head noun (plus an immediately adjacent compound head like "hotel room", never a facility-bridged modifier like "train" in "train station hotel") and trailing post-head text so "a train station hotel in Paris" matches "hotel" bookings (not "train"), while "two adjoining rooms at the London hotel" matches "hotel" via its sub-unit head + post-head venue attachment. */
+          const itemHeadInfo = (part: string): { heads: Set<string>; afterHead: string } => {
+            const tokenRe = /[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu;
+            const toks: Array<{ tok: string; end: number }> = [];
+            let tm: RegExpExecArray | null;
+            while ((tm = tokenRe.exec(part)) != null) toks.push({ tok: tm[0], end: tm.index + tm[0].length });
+            let firstHeadIdx = -1;
+            let headIdx = -1;
+            for (let i = 0; i < toks.length; i++) {
+              const low = toks[i].tok.toLowerCase();
+              if (firstHeadIdx >= 0 && /^(?:in|at|to|near|for|from|on|with)$/.test(low)) break;
+              if (Call.BOOK_ITEM_HEAD_WORD.test(low)) {
+                if (firstHeadIdx < 0) firstHeadIdx = i;
+                headIdx = i;
+              }
+            }
+            const heads = new Set<string>();
+            if (headIdx < 0) return { heads, afterHead: "" };
+            for (const v of stemVariants(toks[headIdx].tok.toLowerCase())) heads.add(v);
+            if (headIdx > 0 && Call.BOOK_ITEM_HEAD_WORD.test(toks[headIdx - 1].tok.toLowerCase())) {
+              for (const v of stemVariants(toks[headIdx - 1].tok.toLowerCase())) heads.add(v);
+            }
+            return { heads, afterHead: part.slice(toks[headIdx].end) };
+          };
+          const itemMatchesCategory = (part: string, pw: Set<string>, cat: string): boolean => {
+            const { heads, afterHead } = itemHeadInfo(part);
+            if (heads.size === 0) return matchesIn(pw, cat);
+            if (matchesIn(heads, cat)) return true;
+            const subHeads = Call.CATEGORY_SUBUNIT_HEADS.get(cat);
+            if (subHeads == null || ![...heads].some((h) => subHeads.has(h))) return false;
+            if ([...heads].some((h) => Call.PARENT_BOOK_CATEGORIES.has(h) && h !== cat)) return false;
+            const catPat = cat.endsWith("y") ? `${cat.slice(0, -1)}(?:y|ies)` : `${cat}(?:e?s)?`;
+            const postRe = new RegExp(`\\b(?:at|in|on|for)\\s+(?:(?:a|an|the|my|our|your|this|that)\\s+)?(?:[\\p{L}\\p{N}-]+\\s+){0,2}${catPat}\\b(?!\\s+(?:station|park|terminal|airport|port|pier|stop|depot|hub|lot|garage|center|centre)\\b)`, "iu");
+            return postRe.test(afterHead);
+          };
+          const itemMatchesMods = (part: string, modsToCheck: string[]): boolean => {
+            const pw = wordSet(part);
+            return modsToCheck.every((mod) => {
+              const cat = modCategories.find((c) => stemVariants(mod).includes(c));
+              if (cat != null) return itemMatchesCategory(part, pw, cat);
+              return matchesIn(pw, mod);
+            });
+          };
           const laterHasPlace = coordParts.slice(1).some((p) => extractPlaces(p, true).length > 0 || hasPrenominalPlace(p));
           if (
             coordParts.length > 1 &&
@@ -3761,10 +3848,10 @@ export class Call {
               return placeMods.some((mod) => matchesIn(pw, mod));
             })
           ) {
-            return coordParts.some((p) => {
-              const pw = wordSet(p);
-              return modifiers.every((mod) => matchesIn(pw, mod));
-            });
+            return coordParts.some((p) => itemMatchesMods(p, modifiers));
+          }
+          if (modCategories.length > 0) {
+            if (!modCategories.every((cat) => coordParts.some((p) => itemMatchesCategory(p, wordSet(p), cat)))) return false;
           }
           return true;
         }
