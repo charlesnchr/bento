@@ -3350,7 +3350,8 @@ export class Call {
   private static readonly COORD_OF_PLACE_HEAD = /^(?:port|city|town|village|hamlet|parish|shire|isle|island|islands|park|palace|tower|castle|abbey|cathedral|church|chapel|fort|fortress|citadel|statue|rock|monument|arch|ruins|fountain|dome|spire|bridge|gate|hall|manor|estate|square|plaza|gardens|garden|borough|county|district|state|province|kingdom|republic|duchy|principality|commonwealth|federation|union|emirate|sultanate|gulf|bay|cape|strait|straits|sea|sound|channel|firth|loch|lough|lake|lagoon|reef|atoll|peninsula|valley|vale|glen|dale|canyon|gorge|mount|peak|point|cove|harbor|harbour|haven|beach|coast|shore|cliff|cliffs|downs|hills|plains|woods|forest|fields|meadows|springs|falls|wells|baths|university|college|academy|museum|gallery|temple|shrine|monastery|priory)$/;
   private static readonly COORD_NON_PLACE_PREP_SUBJ = /^(?:voucher|vouchers|discount|discounts|deal|deals|credit|credits|refund|refunds|coupon|coupons|code|codes|offer|offers|promo|promos|rebate|rebates|rate|rates|price|prices|cost|costs|fee|fees|charge|charges|tax|taxes|duty|duties|levy|levies|fine|fines|tariff|tariffs|strike|strikes|walkout|walkouts|tip|tips|quote|quotes|note|notes|memo|memos|email|emails|info|information|guide|guides|review|reviews|report|reports|summary|summaries|overview|comparison|breakdown|analysis|history|status|details|options|list|lists|draft|drafts|copy|copies|schedule|schedules|itinerary|itineraries|invoice|invoices|bill|bills|payment|payments|reminder|reminders|notice|notices|alert|alerts|warning|warnings|advisory|restriction|restrictions|limit|limits|cap|caps|rule|rules|policy|policies|terms|receipt|receipts|brochure|brochures|package|packages|plan|plans|pass|passes|card|cards|bonus|perk|perks|sale|sales|ban|bans|surcharge|surcharges|markup|saving|savings|budget|update|updates|deposit|deposits|waiver|waivers|penalty|penalties|cashback|reduction|reductions|hold|claim|claims|freeze|comment|comments|feedback|rating|ratings|hour|hours|weather|forecast|survey|surveys|research|article|articles|advice|study|studies|thought|thoughts|promotion|promotions|lecture|lectures)$/;
   private static readonly COORD_NON_PLACE_PREP_ADJ = /^(?:premium|cheap|cheapest|budget|luxury|economy|compact|midsize|fullsize|deluxe|standard|basic|fancy|upscale|affordable|inexpensive|expensive|pricey)$/;
-  private static readonly COORD_KNOWN_CONNECTOR_PLACE = /^(?:stoke on trent|stratford upon avon|stratford on avon|southend on sea|clacton on sea|burnham on sea|bexhill on sea|frinton on sea|milford on sea|barton on sea|lee on solent|walton on thames|henley on thames|kingston upon thames|kingston upon hull|newcastle upon tyne|newcastle under lyme|ashton under lyne|berwick upon tweed|burton upon trent|burton on trent|barton upon humber|bowness on windermere|barrow in furness|hay on wye|ross on wye|bradford on avon|upton upon severn|stourport on severn|moreton in marsh|weston on trent|fairfield by marriott|courtyard by marriott|moxy by marriott|aloft by marriott|springhill by marriott|towneplace by marriott|home2 by hilton|tru by hilton|curio by hilton|tapestry by hilton|statue of liberty|rock of gibraltar|tower of london|palace of versailles|port of spain|isle of wight|isle of man|isle of skye|isle of palms|isle of mull|isle of arran|city of london|park of monza|gulf of naples|bay of islands|cape of good hope|lake of como|valley of fire)$/;
+  private static readonly COORD_ON_WATERWAY_TAIL = /^(?:thames|sea|avon|trent|tyne|tweed|humber|windermere|hull|wye|severn|solent|water|hudson|potomac|rhine|danube|seine|loire|rhone|elbe|oder|nile|clyde|forth|tay|mersey|wear|tees|ouse|cam|stour|exe|dart|tamar|shannon|liffey)$/;
+  private static readonly COORD_KNOWN_CONNECTOR_PLACE = /^(?:stoke on trent|stratford upon avon|stratford on avon|southend on sea|clacton on sea|burnham on sea|bexhill on sea|frinton on sea|milford on sea|barton on sea|leigh on sea|lee on solent|walton on thames|henley on thames|kingston upon thames|richmond upon thames|kingston upon hull|newcastle upon tyne|newcastle under lyme|ashton under lyne|berwick upon tweed|burton upon trent|burton on trent|barton upon humber|bowness on windermere|barrow in furness|henley in arden|hay on wye|ross on wye|bradford on avon|upton upon severn|stourport on severn|moreton in marsh|weston on trent|fairfield by marriott|courtyard by marriott|moxy by marriott|aloft by marriott|springhill by marriott|towneplace by marriott|home2 by hilton|tru by hilton|curio by hilton|tapestry by hilton|statue of liberty|rock of gibraltar|tower of london|palace of versailles|palace of westminster|house of commons|houses of parliament|house of lords|house of blues|hall of fame|hall of mirrors|bank of england|bridge of sighs|arch of triumph|temple of heaven|temple of karnak|valley of kings|port of spain|isle of wight|isle of man|isle of skye|isle of palms|isle of mull|isle of arran|city of london|park of monza|gulf of naples|bay of islands|cape of good hope|lake of como|valley of fire)$/;
   private static readonly COORD_PLACE_CONNECTOR = /^(?:on|upon|in|at|by|of|under|en|sur|sous|le|la|les|de|du|des|am|im|an|ob|zur)$/;
   private static readonly COORD_LOWER_PLACE_PREFIX = /^(?:san|santa|saint|st|new|los|las|el|la|le|rio|sao|buenos|hong|costa|kuala|tel|abu|addis|fort|port|puerto|punta|playa|cabo|chiang|bora|sri|mount|mt|cape|lake|palm|long|west|east|north|south|grand|big|green|red|twin|old|high|bel|monte|villa|boca|palo|key|bay|salt)$/;
   private static readonly COORD_GEO_PLACE_SUFFIX = /^(?:city|town|island|islands|beach|valley|hills|springs|falls|coast|harbor|harbour|county|republic|kingdom|emirates)$/;
@@ -3667,13 +3668,18 @@ export class Call {
             const nextTok = j + 1 < mods.length ? mods[j + 1].tok : "";
             const prevLow = prevTok.toLowerCase();
             const nextLow = nextTok.toLowerCase();
+            const bothCap = /^\p{Lu}/u.test(prevTok) && /^\p{Lu}/u.test(nextTok);
             const bothCapOfPlace =
               low === "of" &&
-              /^\p{Lu}/u.test(prevTok) &&
-              /^\p{Lu}/u.test(nextTok) &&
+              bothCap &&
               Call.COORD_OF_PLACE_HEAD.test(prevLow) &&
               !Call.COORD_NON_PLACE_PREP_ADJ.test(nextLow);
-            const bothInModSet = modifierSet.has(prevLow) && modifierSet.has(nextLow);
+            const bothCapOnWaterway =
+              (low === "on" || low === "upon") && bothCap && Call.COORD_ON_WATERWAY_TAIL.test(nextLow);
+            const bothInModSet =
+              modifierSet.has(prevLow) &&
+              modifierSet.has(nextLow) &&
+              (low !== "of" || Call.COORD_OF_PLACE_HEAD.test(prevLow));
             const knownPlaceTriplet = Call.COORD_KNOWN_CONNECTOR_PLACE.test(`${prevLow} ${low} ${nextLow}`);
             const validSides =
               prevTok.length > 0 &&
@@ -3682,7 +3688,7 @@ export class Call {
               !Call.BOOK_ITEM_HEAD_WORD.test(nextLow) &&
               !Call.COORD_NON_PLACE_PREP_SUBJ.test(prevLow) &&
               !Call.COORD_NON_PLACE_PREP_SUBJ.test(nextLow) &&
-              (bothCapOfPlace || bothInModSet || knownPlaceTriplet);
+              (bothCapOfPlace || bothCapOnWaterway || bothInModSet || knownPlaceTriplet);
             if (!validSides) {
               modsValid = false;
               break;
