@@ -3564,9 +3564,12 @@ export class Call {
         (!tok.includes("-") && Call.LOWERCASE_ADJ_SUFFIX.test(low))
       );
     };
-    const isCoordBookItem = (frag: string, allowIndefIn = true): boolean => {
+    const parseCoordBookItem = (
+      frag: string,
+      allowIndefIn = true,
+    ): { headTok: string; prevHeadTok?: string; headEnd: number; preHeadToks: string[] } | null => {
       const detMatch = Call.COORD_BOOK_DET.exec(frag);
-      if (detMatch == null) return false;
+      if (detMatch == null) return null;
       const hasDet = detMatch[1] != null;
       const hasIndef = Call.COORD_INDEF_START.test(frag);
       const tokenRe = /[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu;
@@ -3579,7 +3582,7 @@ export class Call {
         toks.push({ tok: tm[0], start: tm.index, end: tm.index + tm[0].length });
         cursor = tm.index + tm[0].length;
       }
-      if (toks.length === 0) return false;
+      if (toks.length === 0) return null;
       const parseRest = (initialRest: string): boolean => {
         let rest = initialRest;
         while (rest.trim().length > 0) {
@@ -3631,7 +3634,8 @@ export class Call {
       };
       const maxHeadIdx = hasDet ? Math.min(toks.length - 1, 5) : Math.min(toks.length - 1, 1);
       for (let hi = 0; hi <= maxHeadIdx; hi++) {
-        if (!Call.BOOK_ITEM_HEAD_WORD.test(toks[hi].tok.toLowerCase())) continue;
+        const headLow = toks[hi].tok.toLowerCase();
+        if (!Call.BOOK_ITEM_HEAD_WORD.test(headLow)) continue;
         if (!hasDet && hi === 1 && !Call.BOOK_ITEM_HEAD_WORD.test(toks[0].tok.toLowerCase())) continue;
         const mods = toks.slice(0, hi);
         if (mods.length > 4 && !Call.BOOK_ITEM_HEAD_WORD.test(mods[mods.length - 1].tok.toLowerCase())) continue;
@@ -3663,30 +3667,50 @@ export class Call {
           }
           if (Call.BOOK_ITEM_HEAD_WORD.test(low)) sawEarlierHead = true;
         }
-        // Reject case-insensitive SVO clauses ("some guests prefer paris hotels", "some bloggers endorse paris hotels", "my family enjoys hotels in Paris", "some staff endorse hotels in Paris") where 2+ unknown lowercase tokens sit in the modifier slot (unless forming a 2-word lowercase place pair like "san francisco" or "stoke on trent") or an unknown lowercase verb follows a collective subject noun ("family"/"team"/"staff"/"group").
-        if (unknownLowerIdxs.length > 2) modsValid = false;
-        else if (unknownLowerIdxs.length === 2) {
-          const [i0, i1] = unknownLowerIdxs;
-          const firstLow = mods[i0].tok.toLowerCase();
-          const bridgedByConnector = i1 === i0 + 2 && Call.COORD_PLACE_CONNECTOR.test(mods[i0 + 1].tok.toLowerCase());
-          const placePrefixPair = i1 === i0 + 1 && Call.COORD_LOWER_PLACE_PREFIX.test(firstLow);
-          if (!bridgedByConnector && !placePrefixPair) modsValid = false;
-        }
-        if (modsValid && unknownLowerIdxs.length > 0) {
-          for (let j = 0; j < mods.length; j++) {
-            if (Call.COORD_COLLECTIVE_SUBJ.test(mods[j].tok.toLowerCase()) && unknownLowerIdxs.some((idx) => idx > j)) {
-              modsValid = false;
-              break;
+        if (!modsValid) continue;
+        const afterHead = frag.slice(toks[hi].end);
+        const compoundTail = /^\s+(?:bookings?|reservations?)\b/i.exec(afterHead);
+        const tailMatch = parseRest(afterHead) ? "plain" : compoundTail != null && parseRest(afterHead.slice(compoundTail[0].length)) ? "compound" : null;
+        if (tailMatch == null) continue;
+        // Only plural or uncountable heads ("hotels", "hotel bookings", "dinner", "lunch") can serve as bare direct objects in English SVO clauses ("some editors praise paris hotels", "my family enjoys hotels in Paris"). Singular countable heads ("a puerto rico hotel", "a ho chi minh city hotel") cannot, so multi-word lowercase place names stay accepted.
+        const canBeBareObject =
+          isPluralWord(headLow) ||
+          headLow === "dinner" ||
+          headLow === "lunch" ||
+          (tailMatch === "compound" && compoundTail != null && /s$/i.test(compoundTail[0].trim()));
+        if (canBeBareObject && unknownLowerIdxs.length > 0) {
+          const allInModSet = unknownLowerIdxs.every((idx) => modifierSet.has(mods[idx].tok.toLowerCase()));
+          if (!allInModSet) {
+            if (unknownLowerIdxs.length > 2) modsValid = false;
+            else if (unknownLowerIdxs.length === 2) {
+              const [i0, i1] = unknownLowerIdxs;
+              const firstLow = mods[i0].tok.toLowerCase();
+              const bridgedByConnector = i1 === i0 + 2 && Call.COORD_PLACE_CONNECTOR.test(mods[i0 + 1].tok.toLowerCase());
+              const placePrefixPair = i1 === i0 + 1 && Call.COORD_LOWER_PLACE_PREFIX.test(firstLow);
+              if (!bridgedByConnector && !placePrefixPair) modsValid = false;
+            }
+          }
+          if (modsValid) {
+            for (let j = 0; j < mods.length; j++) {
+              if (Call.COORD_COLLECTIVE_SUBJ.test(mods[j].tok.toLowerCase()) && unknownLowerIdxs.some((idx) => idx > j && !modifierSet.has(mods[idx].tok.toLowerCase()))) {
+                modsValid = false;
+                break;
+              }
             }
           }
         }
         if (!modsValid) continue;
-        const afterHead = frag.slice(toks[hi].end);
-        const compoundTail = /^\s+(?:bookings?|reservations?|rentals?)\b/i.exec(afterHead);
-        if (parseRest(afterHead) || (compoundTail != null && parseRest(afterHead.slice(compoundTail[0].length)))) return true;
+        const prevTok = hi > 0 ? toks[hi - 1].tok : undefined;
+        return {
+          headTok: toks[hi].tok,
+          prevHeadTok: prevTok != null && Call.BOOK_ITEM_HEAD_WORD.test(prevTok.toLowerCase()) ? prevTok : undefined,
+          headEnd: toks[hi].end,
+          preHeadToks: mods.map((t) => t.tok),
+        };
       }
-      return false;
+      return null;
     };
+    const isCoordBookItem = (frag: string, allowIndefIn = true): boolean => parseCoordBookItem(frag, allowIndefIn) != null;
     const taskWords = wordSet(`${task.label} ${task.latest} ${task.request}`);
     const matchesIn = (set: Set<string>, w: string): boolean => stemVariants(w).some((v) => set.has(v));
     const matchesTask = (w: string): boolean => matchesIn(taskWords, w);
@@ -3767,21 +3791,45 @@ export class Call {
               !Call.NON_PLACE_MODIFIER.has(mod) &&
               (!Call.LOWERCASE_ONLY_NON_PLACE_MODIFIER.has(mod) || properModifiers.has(mod)),
           );
-          // Inspect only hyphen-preserving Unicode tokens BEFORE the last bookable head noun reached prior to any post-head preposition (so "Stoke on Trent hotel", "Southend on Sea hotel", "two-night Paris hotel", "two night Paris hotel", and "two Paris nights" all see their destination, while trailing words like "ASAP", "OK", "Thanks", or "for 3 nights" are ignored): lowercase hyphenated compounds are descriptive unless matching a place-style compound ("stratford-upon-avon", "aix-en-provence", "saint-tropez", "baden-baden", "bel-air", "paris-based").
-          const hasPrenominalPlace = (part: string): boolean => {
-            const toks = part.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [];
+          /** Extracts the actual booking head noun (plus an immediately adjacent compound head like "hotel room", never a facility-bridged modifier like "train" in "train station hotel" or an amenity/relative-clause noun like "spa" in "a Paris hotel reservation without a spa" or "restaurant" in "a Paris hotel which has a restaurant"), its pre-head tokens, and trailing post-head text. Uses `parseCoordBookItem` first, falling back to a strict head scan for free-form leading items. */
+          const itemHeadInfo = (part: string): { heads: Set<string>; afterHead: string; preHeadToks: string[] } => {
+            const parsed = parseCoordBookItem(part, true);
+            if (parsed != null) {
+              const heads = new Set<string>();
+              for (const v of stemVariants(parsed.headTok.toLowerCase())) heads.add(v);
+              if (parsed.prevHeadTok != null) {
+                for (const v of stemVariants(parsed.prevHeadTok.toLowerCase())) heads.add(v);
+              }
+              return { heads, afterHead: part.slice(parsed.headEnd), preHeadToks: parsed.preHeadToks };
+            }
+            const tokenRe = /[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu;
+            const toks: Array<{ tok: string; end: number }> = [];
+            let tm: RegExpExecArray | null;
+            while ((tm = tokenRe.exec(part)) != null) toks.push({ tok: tm[0], end: tm.index + tm[0].length });
             let firstHeadIdx = -1;
             let headIdx = -1;
             for (let i = 0; i < toks.length; i++) {
-              const low = toks[i].toLowerCase();
-              if (firstHeadIdx >= 0 && /^(?:in|at|to|near|for|from|on|with)$/.test(low)) break;
+              const low = toks[i].tok.toLowerCase();
+              const prevIsBridge = i > 0 && Call.COORD_COMPOUND_BRIDGE.test(toks[i - 1].tok.toLowerCase());
+              if (firstHeadIdx >= 0 && !Call.BOOK_ITEM_HEAD_WORD.test(low) && !Call.COORD_COMPOUND_BRIDGE.test(low) && !(prevIsBridge && /^\p{Lu}/u.test(toks[i].tok))) break;
               if (Call.BOOK_ITEM_HEAD_WORD.test(low)) {
                 if (firstHeadIdx < 0) firstHeadIdx = i;
                 headIdx = i;
               }
             }
-            if (headIdx <= 0) return false;
-            return toks.slice(0, headIdx).some((tok) => {
+            const heads = new Set<string>();
+            if (headIdx < 0) return { heads, afterHead: "", preHeadToks: [] };
+            for (const v of stemVariants(toks[headIdx].tok.toLowerCase())) heads.add(v);
+            if (headIdx > 0 && Call.BOOK_ITEM_HEAD_WORD.test(toks[headIdx - 1].tok.toLowerCase())) {
+              for (const v of stemVariants(toks[headIdx - 1].tok.toLowerCase())) heads.add(v);
+            }
+            return { heads, afterHead: part.slice(toks[headIdx].end), preHeadToks: toks.slice(0, headIdx).map((t) => t.tok) };
+          };
+          // Inspect only hyphen-preserving Unicode tokens BEFORE the parsed booking head noun (so "Stoke on Trent hotel", "Southend on Sea hotel", "two-night Paris hotel", "two night Paris hotel", and "two Paris nights" all see their destination, while trailing words like "ASAP", "OK", "Thanks", "for 3 nights", "without a spa", or "which has a restaurant" are ignored): lowercase hyphenated compounds are descriptive unless matching a place-style compound ("stratford-upon-avon", "aix-en-provence", "saint-tropez", "baden-baden", "bel-air", "paris-based").
+          const hasPrenominalPlace = (part: string): boolean => {
+            const { preHeadToks } = itemHeadInfo(part);
+            if (preHeadToks.length === 0) return false;
+            return preHeadToks.some((tok) => {
               if (tok.length < 2 || /^\d+$/.test(tok)) return false;
               if (Call.QUANTITY_HYPHEN_MOD.test(tok)) return false;
               if (Call.EXACT_DESCRIPTIVE_HYPHEN.test(tok) || (!Call.HYPHEN_PLACE_COMPOUND.test(tok) && Call.DESCRIPTIVE_HYPHEN_COMPOUND.test(tok))) return false;
@@ -3793,30 +3841,6 @@ export class Call {
               if (Call.CALENDAR_PROPER_WORD.test(tok) || (!isCap && Call.NON_PLACE_HEAD.has(low))) return false;
               return true;
             });
-          };
-          /** Extracts the actual booking head noun (plus an immediately adjacent compound head like "hotel room", never a facility-bridged modifier like "train" in "train station hotel") and trailing post-head text so "a train station hotel in Paris" matches "hotel" bookings (not "train"), while "two adjoining rooms at the London hotel" matches "hotel" via its sub-unit head + post-head venue attachment. */
-          const itemHeadInfo = (part: string): { heads: Set<string>; afterHead: string } => {
-            const tokenRe = /[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu;
-            const toks: Array<{ tok: string; end: number }> = [];
-            let tm: RegExpExecArray | null;
-            while ((tm = tokenRe.exec(part)) != null) toks.push({ tok: tm[0], end: tm.index + tm[0].length });
-            let firstHeadIdx = -1;
-            let headIdx = -1;
-            for (let i = 0; i < toks.length; i++) {
-              const low = toks[i].tok.toLowerCase();
-              if (firstHeadIdx >= 0 && /^(?:in|at|to|near|for|from|on|with)$/.test(low)) break;
-              if (Call.BOOK_ITEM_HEAD_WORD.test(low)) {
-                if (firstHeadIdx < 0) firstHeadIdx = i;
-                headIdx = i;
-              }
-            }
-            const heads = new Set<string>();
-            if (headIdx < 0) return { heads, afterHead: "" };
-            for (const v of stemVariants(toks[headIdx].tok.toLowerCase())) heads.add(v);
-            if (headIdx > 0 && Call.BOOK_ITEM_HEAD_WORD.test(toks[headIdx - 1].tok.toLowerCase())) {
-              for (const v of stemVariants(toks[headIdx - 1].tok.toLowerCase())) heads.add(v);
-            }
-            return { heads, afterHead: part.slice(toks[headIdx].end) };
           };
           const itemMatchesCategory = (part: string, pw: Set<string>, cat: string): boolean => {
             const { heads, afterHead } = itemHeadInfo(part);
