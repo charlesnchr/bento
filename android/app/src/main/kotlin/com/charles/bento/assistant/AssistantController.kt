@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.charles.bento.core.assistant.AssistantTranscript
 import com.charles.bento.core.assistant.ChatMessage
+import com.charles.bento.core.assistant.DpopSigner
 import com.charles.bento.core.assistant.HermesChoice
 import com.charles.bento.core.assistant.HermesClient
 import com.charles.bento.core.assistant.HermesEndpoint
@@ -167,8 +168,9 @@ class AssistantController(
     private val scope: CoroutineScope,
     /** Dictation or a meeting has the microphone. */
     private val microphoneBusy: () -> Boolean,
+    private val dpop: (HermesEndpoint) -> DpopSigner? = { null },
 ) {
-    val client = HermesClient({ endpoint() }, http)
+    val client = HermesClient({ endpoint() }, http, dpop)
     private val _state = MutableStateFlow(AssistantUi(sessionId = prefs.hermesSession.value.ifEmpty { null }))
     val state: StateFlow<AssistantUi> = _state.asStateFlow()
     private val _history = MutableStateFlow(HistoryUi())
@@ -1032,7 +1034,7 @@ class AssistantController(
         if (myJob != null) taskJobs[uiId] = myJob
         // Pin the endpoint for this run so a later server switch never routes its requests or /stop to the new server.
         val pinned = endpoint()
-        val runClient = if (pinned != null) HermesClient({ pinned }, http) else client
+        val runClient = if (pinned != null) HermesClient({ pinned }, http, dpop) else client
         fun task(f: (TaskUi) -> TaskUi) = board.task(uiId, f)
         var turn = TurnState()
         var run: String? = null

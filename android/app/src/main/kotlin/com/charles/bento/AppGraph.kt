@@ -69,7 +69,12 @@ class AppGraph(val app: Application) {
     val voice = com.charles.bento.voice.GeminiVoice(app, prefs, secrets, voiceSync, main)
     val voicePipeline: VoicePipeline get() = voice
     val meetings: com.charles.bento.voice.MeetingController = com.charles.bento.voice.MeetingController(app, prefs, secrets, voiceSync, main, { dictation.isBusy || assistant.callActive }) { _, md -> createNote(md) }
-    val assistant = com.charles.bento.assistant.AssistantController(app, prefs, secrets, http, main) { dictation.isBusy || meetings.isBusy }
+    val hermesDpop = com.charles.bento.settings.HermesDpopKey()
+    val assistant = com.charles.bento.assistant.AssistantController(
+        app, prefs, secrets, http, main,
+        microphoneBusy = { dictation.isBusy || meetings.isBusy },
+        dpop = { if (com.charles.bento.settings.HermesDpopKey.shouldUseFor(it)) hermesDpop else null },
+    )
     val wake = com.charles.bento.voice.WakeWord(app, prefs, main, { assistant }) { dictation.isBusy || meetings.isBusy }
     val captureThought: suspend (noteId: String?, text: String) -> String? = { id, text -> notes.captureThought(id, text) }
     var dictationSinks: DictationSinks = object : DictationSinks {

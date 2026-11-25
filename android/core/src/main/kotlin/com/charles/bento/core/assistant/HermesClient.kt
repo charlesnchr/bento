@@ -31,10 +31,15 @@ import kotlin.coroutines.resumeWithException
 /**
  * Hermes's native session API over HTTP (the gateway's `api_server` platform): conversations
  * are Hermes sessions, a turn is `POST /api/sessions/{id}/chat/stream` (server-sent events),
- * and a running turn stops through `POST /v1/runs/{run}/stop`. Every request carries the
+ * and a running turn stops through `POST /v1/runs/{run}/stop`. Every request carries either
+ * `Authorization: DPoP` with a fresh RFC 9449 proof (when [dpop] returns a signer) or a plain
  * bearer token; nothing here retries a turn.
  */
-class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClient) {
+class HermesClient(
+    private val endpoint: () -> HermesEndpoint?,
+    http: OkHttpClient,
+    private val dpop: (HermesEndpoint) -> DpopSigner? = { null },
+) {
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
     /** Hermes sends a keepalive comment every 10 s, so a minute of silence is a dead connection. */
     private val streaming = this.http.newBuilder().readTimeout(60, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
@@ -108,8 +113,7 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
 
     private suspend fun get(path: String, auth: Boolean = true): JsonObject {
         val e = endpoint() ?: throw notConfigured()
-        val r = request(e, path, "GET", null)
-        return execute(if (auth) r else r.newBuilder().removeHeader("Authorization").build(), e)
+        return execute(request(e, path, "GET", null, auth), e)
     }
 
     private suspend fun send(method: String, path: String, body: JsonObject?): JsonObject {
@@ -117,12 +121,19 @@ class HermesClient(private val endpoint: () -> HermesEndpoint?, http: OkHttpClie
         return execute(request(e, path, method, body?.toString()), e)
     }
 
-    private fun request(e: HermesEndpoint, path: String, method: String, json: String?): Request {
+    private fun request(e: HermesEndpoint, path: String, method: String, json: String?, auth: Boolean = true): Request {
         val url = resolve(e.url, path)
-        return Request.Builder().url(url)
-            .header("Authorization", "Bearer ${e.token}")
-            .method(method, json?.toRequestBody(JSON))
-            .build()
+        val builder = Request.Builder().url(url).method(method, json?.toRequestBody(JSON))
+        if (auth) {
+            val signer = dpop(e)
+            if (signer != null) {
+                builder.header("Authorization", "DPoP ${e.token}")
+                builder.header("DPoP", DpopProof.create(signer, method, url, e.token))
+            } else {
+                builder.header("Authorization", "Bearer ${e.token}")
+            }
+        }
+        return builder.build()
     }
 
     private suspend fun execute(request: Request, e: HermesEndpoint): JsonObject = withContext(Dispatchers.IO) {
