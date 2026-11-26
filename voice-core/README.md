@@ -183,7 +183,7 @@ that asked, `list_tasks`, `check_task`, `cancel_task`, steering and the screen's
 events all work as in a call. Nothing waits for a task: the user types on while Hermes works.
 
 What differs is the model's side (`src/textLine.ts`). A text model (`text.model`,
-`models/gemini-3.8-flash` by default, with `text.generation` as its `generationConfig`) is
+`models/gemini-4-neon` by default, with `text.generation` as its `generationConfig`) is
 reached by request and response in place of the Live socket:
 
 - `llm.request` carries a `generateContent` body; the host posts it with its own URL and

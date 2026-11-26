@@ -11,7 +11,7 @@ import { tidy } from "./taskNames.ts";
 export const MODEL = "models/gemini-3.8-live";
 export const VOICE = "Charon";
 /** The text model a typed chat runs on (CallConfig.medium "text"). */
-export const TEXT_MODEL = "models/gemini-3.8-flash";
+export const TEXT_MODEL = "models/gemini-4-neon";
 /** Gemini's transcription model, for captions of the user's speech (captions.ts). */
 export const CAPTIONS_MODEL = "models/gemini-3.5-transcribe-live";
 

@@ -47,7 +47,7 @@ test("a message goes to the text model with the instruction and the tools, and i
   const s = chat();
   s.type("Why is the sky blue?");
   const [request] = s.requests();
-  assert.equal(request.model, "models/gemini-3.8-flash");
+  assert.equal(request.model, "models/gemini-4-neon");
   assert.ok(request.body.systemInstruction.parts[0].text.startsWith("You are the main thread of the user's assistant in Bento on Android"));
   assert.deepEqual(request.body.generationConfig, { thinkingConfig: { thinkingLevel: "low" } });
   const tools = request.body.tools[0].functionDeclarations;

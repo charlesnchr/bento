@@ -2,7 +2,7 @@
  "config": {
   "medium": "voice",
   "text": {
-   "model": "models/gemini-3.8-flash",
+   "model": "models/gemini-4-neon",
    "generation": {
     "thinkingConfig": {
      "thinkingLevel": "low"
