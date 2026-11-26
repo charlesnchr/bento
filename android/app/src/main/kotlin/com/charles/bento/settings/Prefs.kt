@@ -78,8 +78,8 @@ class Prefs(context: Context) {
     /** The model this phone asks Hermes for: its provider's slug and its name (both empty = Hermes's default). */
     val hermesModelProvider = string("hermes.modelProvider", "")
     val hermesModel = string("hermes.model", "")
-    /** Reasoning effort for Hermes (HermesChoice.EFFORTS; empty = Hermes's default). */
-    val hermesEffort = string("hermes.effort", "")
+    /** Reasoning effort for Hermes (HermesChoice.EFFORTS; default "low"; empty = Hermes's default). */
+    val hermesEffort = string("hermes.effort", "low")
     /** Conversations a turn from this phone locked to a picked model, comma-separated (HermesChoice.forConversation). */
     val hermesLocked = string("hermes.locked", "")
     /**

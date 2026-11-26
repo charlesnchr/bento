@@ -56,7 +56,7 @@ const LIVE_MODEL = "gemini-3.8-live";
 const CAPTIONS_MODEL = "gemini-3.5-transcribe-live";
 const CAPTIONS_LOCATION = "global"; // us-central1 doesn't serve it (2026-11-22)
 /** The text model a typed chat runs on (the core's `medium: "text"`), at the global endpoint. */
-const TEXT_MODEL = process.env.VOICE_CORE_TEXT_MODEL ?? "gemini-3.8-flash";
+const TEXT_MODEL = process.env.VOICE_CORE_TEXT_MODEL ?? "gemini-4-neon";
 const TRACES = join(root, "traces");
 const ORT_DIR = join(root, "node_modules/onnxruntime-web/dist");
 const wakeModels = discoverWakeModels({

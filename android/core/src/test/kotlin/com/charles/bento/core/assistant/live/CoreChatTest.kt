@@ -97,7 +97,7 @@ class CoreChatTest {
         c.say("Why is the sky blue?")
         until("the answer") { heard.said() == listOf("Sunlight scatters off the air.") }
         until("the turn's end") { !c.thinking.value }
-        assertEquals("models/gemini-3.8-flash", model.models.single())
+        assertEquals("models/gemini-4-neon", model.models.single())
         val body = model.bodies.single()
         assertTrue(body["systemInstruction"].toString().contains("You are the main thread of the user's assistant in Bento on Android"))
         assertEquals(listOf("Why is the sky blue?"), model.texts(0))

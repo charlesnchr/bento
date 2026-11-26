@@ -126,7 +126,7 @@ scripts/hermes-phone-link    # on the Hermes machine: a QR code (with qrencode) 
 Typed or spoken, the conversation on the tab is a main thread. Gemini answers what it knows
 and hands the rest to Hermes as tasks, each in a Hermes session of its own and several at once,
 so nothing waits for Hermes: you can type the next message while a task runs. Typed, that is a
-chat on `gemini-3.8-flash` over the Gemini API with the paired key (`CoreChat`, the shared voice
+chat on `gemini-4-neon` over the Gemini API with the paired key (`CoreChat`, the shared voice
 core's `medium: "text"`, see voice-core/README.md); spoken, a call on Gemini Live. Both run the
 same logic, so a follow-up continues its task, an answer goes to the task that asked, and
 "what's running?" or "cancel the taxi" work either way. In the chat a strip above the composer
